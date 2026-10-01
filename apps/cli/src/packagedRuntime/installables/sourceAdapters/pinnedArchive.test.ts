@@ -1,4 +1,4 @@
-import { appendFile, chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { appendFile, chmod, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
@@ -29,9 +29,9 @@ vi.mock('@happier-dev/cli-common/agents', async (importOriginal) => {
   return { ...actual, downloadGitHubReleaseAsset: downloadMock };
 });
 
-vi.mock('@happier-dev/cli-common/firstPartyRuntime', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@happier-dev/cli-common/firstPartyRuntime')>();
-  return { ...actual, extractReleasePayloadRootFromArchive: extractRootMock };
+vi.mock('@happier-dev/release-runtime/archiveExtraction', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@happier-dev/release-runtime/archiveExtraction')>();
+  return { ...actual, extractArchivePayloadToDirectory: extractRootMock };
 });
 
 const tempDirs = new Set<string>();
@@ -51,16 +51,21 @@ const AGY_LINUX_ASSET = Object.freeze({
   args: ['--uid='] as const,
 });
 
+const AGY_ARCHIVE_EXTRACTION_LIMITS = Object.freeze({
+  maxArchiveBytes: 1024 * 1024 * 1024,
+  maxFileBytes: 2 * 1024 * 1024 * 1024,
+  maxExpandedBytes: 2 * 1024 * 1024 * 1024,
+  timeoutMs: 10 * 60_000,
+});
+
 function stageArchiveContaining(executableSubpath: string): void {
   downloadMock.mockImplementation(async (params: { destinationPath: string; digest?: string | null }) => {
     await writeFile(params.destinationPath, 'fake-archive-bytes');
   });
   extractRootMock.mockImplementation(async (params: { extractDir: string }) => {
-    const payloadRoot = join(params.extractDir, 'payload');
     const { mkdir, writeFile: write } = await import('node:fs/promises');
-    await mkdir(payloadRoot, { recursive: true });
-    await write(join(payloadRoot, executableSubpath), '#!/bin/sh\necho agy');
-    return payloadRoot;
+    await mkdir(params.extractDir, { recursive: true });
+    await write(join(params.extractDir, executableSubpath), '#!/bin/sh\necho agy');
   });
 }
 
@@ -139,9 +144,13 @@ describe('pinned archive runtime installable adapter', () => {
       installId: 'dep.antigravity.agy-acp-server',
       version: '1.1.0',
       asset: AGY_LINUX_ASSET,
+      archiveExtractionLimits: AGY_ARCHIVE_EXTRACTION_LIMITS,
       platform: 'linux',
     });
     expect(firstInstall).toMatchObject({ ok: true, integrityDigest: `sha256:${AGY_LINUX_ASSET.sha256}` });
+    expect(extractRootMock).toHaveBeenCalledWith(expect.objectContaining({
+      limits: AGY_ARCHIVE_EXTRACTION_LIMITS,
+    }));
 
     await expect(mod.resolveInstalledPinnedArchiveExecutable({
       installId: 'dep.antigravity.agy-acp-server',
@@ -167,7 +176,7 @@ describe('pinned archive runtime installable adapter', () => {
       version: '1.1.1',
       asset: { ...AGY_LINUX_ASSET, executableSubpath: '../../../../etc/passwd' },
       platform: 'linux',
-    })).resolves.toEqual({ ok: false, errorMessage: 'Pinned archive executable path is unsafe' });
+    })).resolves.toMatchObject({ ok: false, errorMessage: 'Pinned archive executable path is unsafe', errorCode: 'verification-failed' });
 
     await expect(mod.resolveInstalledPinnedArchiveExecutable({
       installId: 'dep.antigravity.agy-acp-server',
@@ -190,6 +199,42 @@ describe('pinned archive runtime installable adapter', () => {
       ok: false,
       errorMessage: 'Pinned archive executable missing at agy_acp_server.par',
     });
+  });
+
+  it('cleans failed staging without replacing the current verified install', async () => {
+    configurationState.happyHomeDir = await makeTempHome();
+    const mod = await import('./pinnedArchive');
+    stageArchiveContaining(AGY_LINUX_ASSET.executableSubpath);
+
+    const installId = 'dep.antigravity.agy-acp-server';
+    await expect(mod.installPinnedArchive({
+      installId,
+      version: '1.1.1',
+      asset: AGY_LINUX_ASSET,
+      platform: 'linux',
+    })).resolves.toMatchObject({ ok: true });
+    const installedPath = await mod.resolveInstalledPinnedArchiveExecutable({
+      installId,
+      executableSubpath: AGY_LINUX_ASSET.executableSubpath,
+      version: '1.1.1',
+      platform: 'linux',
+    });
+    expect(installedPath).not.toBeNull();
+    if (!installedPath) return;
+    const installedBytes = await readFile(installedPath);
+
+    extractRootMock.mockRejectedValueOnce(new Error('invalid archive'));
+    await expect(mod.installPinnedArchive({
+      installId,
+      version: '1.1.1',
+      asset: AGY_LINUX_ASSET,
+      platform: 'linux',
+    })).resolves.toEqual({ ok: false, errorMessage: 'invalid archive' });
+
+    await expect(readFile(installedPath)).resolves.toEqual(installedBytes);
+    const installRoot = join(configurationState.happyHomeDir, 'tools', installId);
+    await expect(readdir(installRoot)).resolves.toEqual(['.lock', '.tmp', 'current']);
+    await expect(readdir(join(installRoot, '.tmp'))).resolves.toEqual([]);
   });
 
   it('restores a mutated install through authoritative V2 ensure without extra downloads when clean', async () => {

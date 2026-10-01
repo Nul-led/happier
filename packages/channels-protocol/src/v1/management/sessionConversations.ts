@@ -1,0 +1,35 @@
+import type { PluginJsonSchema } from '@happier-dev/plugin-sdk/protocol';
+import {
+    defineProtocolArray,
+    defineProtocolLiteral,
+    defineProtocolNumber,
+    defineProtocolObject,
+    defineProtocolUnion,
+} from '@happier-dev/plugin-sdk/protocol';
+
+import { MAX_CONVERSATION_BINDINGS_PER_ACCOUNT } from '../bounds.js';
+import { ConversationBindingIdV1ProtocolSchema } from '../identity.js';
+
+/** A read-only custody summary; resolution never proves complete provider delivery. */
+export const ConversationSessionLastDeliveryV1Schema = defineProtocolObject({
+    bindingId: ConversationBindingIdV1ProtocolSchema,
+    /** Existing custody row update time, not an exact provider send time. */
+    atMs: defineProtocolNumber({ integer: true, minimum: 0, maximum: Number.MAX_SAFE_INTEGER }),
+    outcome: defineProtocolUnion([
+        defineProtocolLiteral('delivered'),
+        defineProtocolLiteral('notDelivered'),
+        defineProtocolLiteral('pending'),
+        defineProtocolLiteral('unknown'),
+    ]),
+}, { policy: 'closed' });
+export type ConversationSessionLastDeliveryV1 = ReturnType<typeof ConversationSessionLastDeliveryV1Schema.parse>;
+export type ConversationSessionLastDeliveryOutcomeV1 = ConversationSessionLastDeliveryV1['outcome'];
+export const ConversationSessionLastDeliveryV1JsonSchema: PluginJsonSchema = ConversationSessionLastDeliveryV1Schema.jsonSchema;
+
+/** Optional `lastDeliveries` sibling in `session-conversations-v1`, at most one per binding. */
+export const ConversationSessionLastDeliveriesV1Schema = defineProtocolArray(
+    ConversationSessionLastDeliveryV1Schema,
+    { maxItems: MAX_CONVERSATION_BINDINGS_PER_ACCOUNT },
+);
+export type ConversationSessionLastDeliveriesV1 = ReturnType<typeof ConversationSessionLastDeliveriesV1Schema.parse>;
+export const ConversationSessionLastDeliveriesV1JsonSchema: PluginJsonSchema = ConversationSessionLastDeliveriesV1Schema.jsonSchema;

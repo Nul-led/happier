@@ -3,6 +3,7 @@ import { Platform, View } from 'react-native';
 import { StyleSheet } from 'react-native-unistyles';
 
 import { IconButton } from '@/components/ui/buttons/IconButton';
+import { ICON_SIZE } from '@/components/ui/icons/Icon';
 import { resolveMinimumInteractiveTargetSize } from '@/components/ui/interactiveTargetSize';
 import type { BrowserToolbarModel } from '@/sync/domains/browser/shell';
 import { t } from '@/text';
@@ -22,7 +23,12 @@ const stylesheet = StyleSheet.create(() => ({
     root: {
         flexDirection: 'row',
         alignItems: 'center',
-        gap: 6,
+        gap: 2,
+    },
+    // The phone's bottom bar: every control is one evenly spaced thumb target across the bar.
+    spread: {
+        flex: 1,
+        justifyContent: 'space-between',
     },
 }));
 
@@ -33,8 +39,21 @@ export function BrowserToolbar(props: Readonly<{
     onForward: () => void;
     onReload: () => void;
     onStop: () => void;
+    /** Visible control size and glyph (`resolveBrowserChromeControlMetrics`); the dense row by default. */
+    controlSize?: number;
+    iconSize?: number;
+    /** The press target the controls grow to; none under a precise pointer. */
+    touchTargetFloorPx?: number | null;
+    /** Spread the controls (and `children`, the bar's other controls) evenly across the row. */
+    spread?: boolean;
+    children?: React.ReactNode;
     testID?: string;
 }>): React.ReactElement {
+    const controlSize = props.controlSize ?? 34;
+    const iconSize = props.iconSize ?? ICON_SIZE.sm;
+    const touchTargetFloorPx = props.touchTargetFloorPx === undefined
+        ? resolveMinimumInteractiveTargetSize(Platform.OS)
+        : props.touchTargetFloorPx ?? undefined;
     const shortcutLabels = props.shortcutLabels;
     const loading = props.model.isLoading;
     const testIDPrefix = props.testID ?? 'browser-toolbar';
@@ -42,7 +61,7 @@ export function BrowserToolbar(props: Readonly<{
     // the capability layer (`selectBrowserToolbarModel`) owns that per-engine decision. `disabled`
     // still expresses the transient case — history exists but there is nowhere to go back to yet.
     return (
-        <View testID={`${testIDPrefix}-toolbar`} style={stylesheet.root}>
+        <View testID={`${testIDPrefix}-toolbar`} style={[stylesheet.root, props.spread ? stylesheet.spread : null]}>
             {props.model.showBackForward ? (
                 <>
                     <IconButton
@@ -50,9 +69,11 @@ export function BrowserToolbar(props: Readonly<{
                         iconName="caret-left"
                         accessibilityLabel={t('browserShell.toolbar.back')}
                         tooltip={withShortcut(t('browserShell.toolbar.back'), shortcutLabels?.['browser.back'])}
-                        size={34}
-                        minimumInteractiveTargetSize={resolveMinimumInteractiveTargetSize(Platform.OS)}
-                        interactiveTargetGapPx={6}
+                        variant="plain"
+                        iconSize={iconSize}
+                        size={controlSize}
+                        minimumInteractiveTargetSize={touchTargetFloorPx}
+                        interactiveTargetGapPx={2}
                         disabled={!props.model.canGoBack}
                         onPress={props.onBack}
                     />
@@ -61,9 +82,11 @@ export function BrowserToolbar(props: Readonly<{
                         iconName="caret-right"
                         accessibilityLabel={t('browserShell.toolbar.forward')}
                         tooltip={withShortcut(t('browserShell.toolbar.forward'), shortcutLabels?.['browser.forward'])}
-                        size={34}
-                        minimumInteractiveTargetSize={resolveMinimumInteractiveTargetSize(Platform.OS)}
-                        interactiveTargetGapPx={6}
+                        variant="plain"
+                        iconSize={iconSize}
+                        size={controlSize}
+                        minimumInteractiveTargetSize={touchTargetFloorPx}
+                        interactiveTargetGapPx={2}
                         disabled={!props.model.canGoForward}
                         onPress={props.onForward}
                     />
@@ -77,13 +100,16 @@ export function BrowserToolbar(props: Readonly<{
                     tooltip={loading
                         ? t('browserShell.toolbar.stop')
                         : withShortcut(t('browserShell.toolbar.reload'), shortcutLabels?.['browser.reload'])}
-                    size={34}
-                    minimumInteractiveTargetSize={resolveMinimumInteractiveTargetSize(Platform.OS)}
-                    interactiveTargetGapPx={6}
+                    variant="plain"
+                    iconSize={iconSize}
+                    size={controlSize}
+                    minimumInteractiveTargetSize={touchTargetFloorPx}
+                    interactiveTargetGapPx={2}
                     disabled={loading ? !props.model.canStop : !props.model.canReload}
                     onPress={loading ? props.onStop : props.onReload}
                 />
             ) : null}
+            {props.children}
         </View>
     );
 }

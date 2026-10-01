@@ -106,12 +106,11 @@ describe('buildActionSettingsEntries', () => {
 
         const approvalDecision = entries.find((entry) => entry.actionId === 'approval.request.decide');
         expect(approvalDecision).toBeTruthy();
-        for (const targetId of ['api', 'plugin'] as const) {
-            expect(approvalDecision?.targets.find((target) => target.id === targetId)).toMatchObject({
+        expect(approvalDecision?.targets.find((target) => target.id === 'api')).toMatchObject({ state: 'on' });
+        expect(approvalDecision?.targets.find((target) => target.id === 'plugin')).toMatchObject({
                 state: 'unavailable',
                 reasonKey: 'settingsActions.reasons.presentUserRequired',
-            });
-        }
+        });
         expect(approvalDecision?.targets.find((target) => target.id === 'contextual_ui')).toMatchObject({
             state: 'on',
         });

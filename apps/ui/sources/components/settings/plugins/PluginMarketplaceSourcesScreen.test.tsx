@@ -72,14 +72,25 @@ vi.mock('@/components/ui/forms/Switch', async () => ({
 vi.mock('@/components/ui/lists/Item', async () => ({
     Item: (await import('@/dev/testkit/mocks/components')).createPassThroughComponent('Item'),
 }));
-vi.mock('@/components/ui/lists/ItemGroup', async () => ({
-    ItemGroup: (await import('@/dev/testkit/mocks/components')).createPassThroughComponent('ItemGroup'),
+vi.mock('@/components/ui/lists/ItemGroup', () => ({
+    // A page section renders its trailing action ("Add source") beside its title.
+    ItemGroup: (props: { action?: React.ReactNode; children?: React.ReactNode }) => React.createElement(
+        'ItemGroup',
+        props,
+        props.action,
+        props.children,
+    ),
 }));
 vi.mock('@/components/ui/lists/ItemList', async () => ({
     ItemList: (await import('@/dev/testkit/mocks/components')).createPassThroughComponent('ItemList'),
 }));
 
 import { PluginMarketplaceSourcesScreen } from './PluginMarketplaceSourcesScreen';
+
+/** The section's "Add source" action: the button owner, which carries its busy and disabled state. */
+function findAddSourceAction(screen: Awaited<ReturnType<typeof renderSettingsView>>) {
+    return screen.findAll((node) => node.props?.testID === 'settings.plugins.sources.add' && 'loading' in node.props)[0] ?? null;
+}
 
 function createRegistry(): MarketplaceSourceRegistryV1 {
     return {
@@ -192,7 +203,7 @@ describe('PluginMarketplaceSourcesScreen', () => {
 
         expect(mocks.upsertMarketplaceSource).not.toHaveBeenCalled();
         expect(mocks.alertAsync).not.toHaveBeenCalled();
-        expect(screen.findRow('settings.plugins.sources.add')?.props.loading).toBe(false);
+        expect(findAddSourceAction(screen)?.props.loading).toBe(false);
     });
 
     it('abandons the complete source draft when its form is cancelled', async () => {
@@ -254,8 +265,8 @@ describe('PluginMarketplaceSourcesScreen', () => {
             t('common.error'),
             t('settingsPlugins.sourceAdministration.operationFailed'),
         );
-        expect(screen.findRow('settings.plugins.sources.add')?.props.loading).toBe(false);
-        expect(screen.findRow('settings.plugins.sources.add')?.props.disabled).toBe(false);
+        expect(findAddSourceAction(screen)?.props.loading).toBe(false);
+        expect(findAddSourceAction(screen)?.props.disabled).toBe(false);
     });
 
     it('presents an error when toggling a source fails', async () => {
@@ -430,7 +441,7 @@ describe('PluginMarketplaceSourcesScreen', () => {
         expect(screen.findRow('settings.plugins.sources.empty')).toBeNull();
         expect(screen.findRow('settings.plugins.sources.retry')).toBeNull();
         // No authoritative registry exists yet, so adding a source stays unavailable.
-        expect(screen.findRow('settings.plugins.sources.add')?.props.disabled).toBe(true);
+        expect(findAddSourceAction(screen)?.props.disabled).toBe(true);
     });
 
     it('retains last-known source rows and indicates refresh while re-reading the registry', async () => {
@@ -443,7 +454,7 @@ describe('PluginMarketplaceSourcesScreen', () => {
         expect(screen.findRow('settings.plugins.sources.loading')).toBeTruthy();
         expect(screen.findRow('settings.plugins.sources.empty')).toBeNull();
         // The retained registry remains authoritative, so Add stays available.
-        expect(screen.findRow('settings.plugins.sources.add')?.props.disabled).toBe(false);
+        expect(findAddSourceAction(screen)?.props.disabled).toBe(false);
     });
 
     it('presents the load error and retry without an empty answer when the first load fails', async () => {

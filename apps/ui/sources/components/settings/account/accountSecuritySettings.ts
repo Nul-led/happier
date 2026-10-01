@@ -12,13 +12,13 @@ export const ACCOUNT_SECURITY_SETTINGS = defineSettingsPage({
             titleKey: 'settingsAccount.nativePassword.securitySectionTitle',
             settings: {
                 signInEmail: { titleKey: 'settingsAccount.nativePassword.signInEmail' },
-                password: { titleKey: 'settingsAccount.nativePassword.password' },
+                password: { titleKey: 'settingsAccount.nativePassword.password', sensitive: true },
             },
         },
         backup: {
             titleKey: 'settingsAccount.backup',
             settings: {
-                recoveryKey: { titleKey: 'settingsAccount.secretKey', descriptionKey: 'settingsAccount.backupDescription' },
+                recoveryKey: { titleKey: 'settingsAccount.secretKey', descriptionKey: 'settingsAccount.recoveryKeyRowDescription', sensitive: true },
             },
         },
         sessions: {

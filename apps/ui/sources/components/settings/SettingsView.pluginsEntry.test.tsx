@@ -75,12 +75,6 @@ vi.mock('expo-constants', () => ({
     default: { expoConfig: { version: '0.0.0-test' } },
 }));
 
-vi.mock('@/constants/Typography', () => ({
-    Typography: {
-        default: () => ({}),
-        mono: () => ({}),
-    },
-}));
 
 vi.mock('@/components/ui/text/Text', () => ({
     Text: 'Text',
@@ -107,20 +101,9 @@ vi.mock('@/utils/platform/platform', () => ({
     isRunningOnMac: () => false,
 }));
 
-vi.mock('@/utils/platform/desktopHost', () => ({
+vi.mock('@/utils/platform/desktopHost', async (importOriginal) => ({
+    ...await importOriginal<typeof import('@/utils/platform/desktopHost')>(),
     isDesktopHost: () => false,
-}));
-
-vi.mock('@/components/settings/usage/SettingsUsageSummaryStrip', () => ({
-    SettingsUsageSummaryStrip: () => null,
-}));
-
-vi.mock('@/components/settings/usage/useUsageBannerModel', () => ({
-    useUsageBannerModel: () => ({
-        viewModel: null,
-        isLoading: false,
-        errorMessage: null,
-    }),
 }));
 
 vi.mock('@/components/ui/lists/ItemList', () => ({
@@ -135,7 +118,8 @@ vi.mock('@/components/ui/lists/Item', () => ({
     Item: (props: any) => React.createElement('Item', props),
 }));
 
-vi.mock('@/components/appShell/plugins/AppShellPluginUiProjection', () => ({
+vi.mock('@/components/appShell/plugins/AppShellPluginUiProjection', async (importOriginal) => ({
+    ...await importOriginal<typeof import('@/components/appShell/plugins/AppShellPluginUiProjection')>(),
     useAppShellPluginUiProjection: () => ({
         pluginUiProjection: null,
     }),
@@ -176,7 +160,8 @@ vi.mock('@/hooks/ui/useHappyAction', () => ({
     useHappyAction: (fn: any) => [false, fn],
 }));
 
-vi.mock('@/sync/domains/profiles/profile', () => ({
+vi.mock('@/sync/domains/profiles/profile', async (importOriginal) => ({
+    ...await importOriginal<typeof import('@/sync/domains/profiles/profile')>(),
     getDisplayName: () => 'Test User',
     getAvatarUrl: () => null,
     getBio: () => '',
@@ -188,15 +173,6 @@ vi.mock('@/components/ui/avatar/Avatar', () => ({
 
 vi.mock('@/components/sessions/new/components/MachineCliGlyphs', () => ({
     MachineCliGlyphs: 'MachineCliGlyphs',
-}));
-
-vi.mock('@/agents/catalog/catalog', () => ({
-    AGENT_IDS: ['codex', 'claude', 'gemini'],
-    DEFAULT_AGENT_ID: 'agent_default',
-    getAgentCore: () => ({ uiConnectedService: { serviceId: 'anthropic', labelKey: 'agentInput.agent.claude', connectRoute: null } }),
-    getAgentIconSource: () => null,
-    getAgentIconTintColor: () => null,
-    resolveAgentIdFromConnectedServiceId: () => null,
 }));
 
 vi.mock('@/components/settings/supportUsBehavior', () => ({
@@ -219,7 +195,8 @@ vi.mock('@/hooks/server/useFeatureDecision', () => ({
     useFeatureDecision: () => null,
 }));
 
-vi.mock('@/sync/domains/server/serverProfiles', () => ({
+vi.mock('@/sync/domains/server/serverProfiles', async (importOriginal) => ({
+    ...await importOriginal<typeof import('@/sync/domains/server/serverProfiles')>(),
     getActiveServerSnapshot: () => ({ serverId: 'server-1', serverUrl: 'https://local.example.test', generation: 0 }),
     listServerProfiles: () => [],
     subscribeActiveServer: (listener: any) => {
@@ -245,7 +222,7 @@ describe('SettingsView plugin marketplace entry', () => {
         const { SettingsView } = await import('./SettingsView');
         const screen = await renderSettingsView(React.createElement(SettingsView));
 
-        await flushHookEffects({ cycles: 4, runAllTimers: true });
+        await flushHookEffects({ cycles: 4, advanceTimersMs: 1000 });
 
         const marketplaceItem = screen.findRow('settings-plugin-marketplace-item');
         expect(marketplaceItem).toBeTruthy();

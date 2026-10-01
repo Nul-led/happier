@@ -10,6 +10,8 @@ import {
   createMarketplaceNpmDiscoveryProjectionV1,
   createPluginCompatibilityProjectionV1,
 } from '@happier-dev/protocol';
+import type { PluginUiArtifactsManifestV2 } from '@happier-dev/protocol/plugins/ui';
+import { PUBLIC_TOOLCHAIN_SCAFFOLD_BINDINGS_V1 } from '@happier-dev/plugin-sdk/ui/build';
 
 import {
   type ResolvedLocalPathPluginSourceSuccess,
@@ -30,6 +32,7 @@ import {
 } from '../distribution/npm/stage';
 import { readGeneratedPluginUiArtifactsManifest } from '../install/ui/generatedArtifacts';
 import { archiveSha256IntegrityFromDigest } from '../distribution/archive/integrity';
+import { PLUGIN_SDK_PACKAGE_NAME } from '../authoring/hostSdkResolution';
 import {
   resolvePluginAuthoringSource,
 } from '../authoring/sourceModule';
@@ -80,6 +83,117 @@ function createDiagnostic(message: string): PluginCompatibilityDiagnostic {
     code: 'plugin_manifest_invalid',
     message,
   };
+}
+
+function canonicalPluginSdkSpecifier(): string {
+  const specifier = PUBLIC_TOOLCHAIN_SCAFFOLD_BINDINGS_V1.dependencies[PLUGIN_SDK_PACKAGE_NAME];
+  if (typeof specifier !== 'string' || specifier.trim().length === 0) {
+    throw new Error('The public toolchain compatibility packet does not declare a Plugin SDK dependency');
+  }
+  return specifier;
+}
+
+type PluginSdkDependencyDeclaration = Readonly<{
+  status: 'absent' | 'declared';
+  specifier: string | null;
+}>;
+
+async function readPluginSdkRuntimeDependencyDeclaration(
+  packageRootPath: string,
+): Promise<PluginSdkDependencyDeclaration | null> {
+  let packageJson: unknown;
+  try {
+    packageJson = JSON.parse(await readFile(join(packageRootPath, 'package.json'), 'utf8'));
+  } catch {
+    // No readable package manifest: a literal standalone file has no package
+    // dependency owner and is rejected later by the pack package contract.
+    return null;
+  }
+  if (!isRecord(packageJson)) return null;
+  if (!isRecord(packageJson.dependencies)) return { status: 'absent', specifier: null };
+  const specifier = packageJson.dependencies[PLUGIN_SDK_PACKAGE_NAME];
+  if (typeof specifier !== 'string') return { status: 'absent', specifier: null };
+  return { status: 'declared', specifier };
+}
+
+function isForbiddenDistributableSdkSpecifier(specifier: string): boolean {
+  return /^(?:file|link|workspace):/i.test(specifier)
+    || specifier.startsWith('.')
+    || specifier.startsWith('/')
+    || specifier.startsWith('~')
+    || /^[a-zA-Z]:[\\/]/u.test(specifier);
+}
+
+/**
+ * Typed, actionable pack rejection for the public SDK dependency contract.
+ * A packed package is a distributable artifact: it must declare the public
+ * Plugin SDK in its canonical runtime dependency field with the exact
+ * supported specifier from the toolchain compatibility packet, so consumers
+ * resolve it through normal package semantics. Host SDK resolution is never
+ * used to make pack pass.
+ */
+function createPluginSdkDependencyDiagnostic(
+  declaration: PluginSdkDependencyDeclaration,
+  failure?: Readonly<{ cause: string }>,
+): PluginCompatibilityDiagnostic {
+  const canonicalSpecifier = canonicalPluginSdkSpecifier();
+  if (declaration.status === 'absent' || declaration.specifier === null) {
+    return {
+      code: 'plugin_pack_sdk_dependency_invalid',
+      message: `Plugin pack requires '${PLUGIN_SDK_PACKAGE_NAME}': '${canonicalSpecifier}' in package.json dependencies`
+        + ' so the packed plugin resolves the public SDK through normal package semantics',
+    };
+  }
+  if (isForbiddenDistributableSdkSpecifier(declaration.specifier)) {
+    return {
+      code: 'plugin_pack_sdk_dependency_invalid',
+      message: `Plugin pack rejects the '${PLUGIN_SDK_PACKAGE_NAME}' dependency specifier '${declaration.specifier}'`
+        + ' because local, workspace, and link forms cannot ship in a distributable plugin package;'
+        + ` declare '${canonicalSpecifier}' in package.json dependencies`,
+    };
+  }
+  if (declaration.specifier !== canonicalSpecifier) {
+    return {
+      code: 'plugin_pack_sdk_dependency_invalid',
+      message: `Plugin pack requires the '${PLUGIN_SDK_PACKAGE_NAME}' dependency to use the supported specifier '${canonicalSpecifier}'`
+        + ` but package.json declares '${declaration.specifier}'; update package.json dependencies`,
+    };
+  }
+  return {
+    code: 'plugin_pack_sdk_dependency_invalid',
+    message: `Plugin pack declares '${PLUGIN_SDK_PACKAGE_NAME}': '${declaration.specifier}' but it could not be resolved from the isolated pack environment`
+      + `${failure ? `: ${failure.cause}` : ''};`
+      + ' prepare the declared dependency closure and pack again',
+  };
+}
+
+async function validatePackPluginSdkDependency(
+  operationRootPath: string,
+): Promise<PluginCompatibilityDiagnostic | null> {
+  const declaration = await readPluginSdkRuntimeDependencyDeclaration(operationRootPath);
+  if (declaration === null) return null;
+  if (
+    declaration.status === 'absent'
+    || declaration.specifier === null
+    || isForbiddenDistributableSdkSpecifier(declaration.specifier)
+    || declaration.specifier !== canonicalPluginSdkSpecifier()
+  ) {
+    return createPluginSdkDependencyDiagnostic(declaration);
+  }
+  return null;
+}
+
+async function createPluginSdkEvaluationFailureDiagnostic(
+  packageRootPath: string,
+  error: unknown,
+): Promise<PluginCompatibilityDiagnostic | null> {
+  const message = error instanceof Error ? error.message : String(error);
+  // Only an actual unresolved import of the bare SDK specifier upgrades to the
+  // SDK contract diagnostic; other resolution failures keep their own message.
+  if (!/@happier-dev\/plugin-sdk(?![\w./-])/.test(message)) return null;
+  const declaration = await readPluginSdkRuntimeDependencyDeclaration(packageRootPath);
+  if (declaration === null) return null;
+  return createPluginSdkDependencyDiagnostic(declaration, { cause: message });
 }
 
 function sanitizeArchiveSegment(value: string): string {
@@ -463,8 +577,9 @@ async function writeStagedPackageFiles(params: Readonly<{
   if (!isRecord(packageJson.happier) || packageJson.happier.manifest !== '.happier-plugin/plugin.json') {
     throw new Error('Plugin pack requires a public package.json happier.manifest contract');
   }
-  const generatedUiArtifacts = await readGeneratedPluginUiArtifactsManifest(params.stagedRootPath)
-    ?? { version: 1 as const, entries: [] as const };
+  const generatedUiArtifacts: PluginUiArtifactsManifestV2 =
+    await readGeneratedPluginUiArtifactsManifest(params.stagedRootPath)
+    ?? { version: 2, entries: [] };
   const compatibilityProjection = createPluginCompatibilityProjectionV1({
     manifest: params.manifest,
     uiArtifacts: generatedUiArtifacts,
@@ -518,7 +633,6 @@ async function resolvePackSource(locator: string): Promise<
   try {
     const runtimeSource = await evaluatePluginAuthorRuntimeStagingSource({
       locator: sourceResolution.entry.locator,
-      immutableGenerationId: 'plugin-author-pack',
       rootPath: sourceResolution.entry.packageRoot,
     });
     const { evaluated, sessionRunnerFactories } = runtimeSource;
@@ -539,6 +653,19 @@ async function resolvePackSource(locator: string): Promise<
       },
     };
   } catch (error) {
+    // An author source that imports the SDK without a resolvable canonical
+    // runtime dependency must fail with the SDK contract diagnostic, not a
+    // bare module-resolution error. The host alias never applies here, so a
+    // package cannot borrow host resolution to make pack pass.
+    if (sourceResolution.kind === 'code') {
+      const sdkDiagnostic = await createPluginSdkEvaluationFailureDiagnostic(
+        sourceResolution.entry.packageRoot,
+        error,
+      );
+      if (sdkDiagnostic) {
+        return { ok: false, diagnostics: [sdkDiagnostic] };
+      }
+    }
     return {
       ok: false,
       diagnostics: [createDiagnostic(error instanceof Error ? error.message : 'Plugin author source evaluation failed')],
@@ -567,6 +694,12 @@ async function preparePackOperationAuthoringSource(
     }
   }
 
+  // The public SDK dependency contract is verified before any dependency
+  // preparation so the author receives the actionable declaration error
+  // instead of an installer or module-resolution failure.
+  const sdkDependencyDiagnostic = await validatePackPluginSdkDependency(operation.operationRootPath);
+  if (sdkDependencyDiagnostic) return [sdkDependencyDiagnostic];
+
   const preparation = await preparePluginAuthorDependencies({
     projectRoot: operation.operationRootPath,
     ...(sdkRegistryOrigin ? { sdkRegistryOrigin } : {}),
@@ -574,14 +707,11 @@ async function preparePackOperationAuthoringSource(
   if (!preparation.ok) return [createDiagnostic(preparation.diagnostic.message)];
 
   // Retire only outputs claimed by the preceding daemon bundle before the
-  // current UI build and archive selection. This preserves author-owned and UI
-  // files that share `dist` while preventing a prior daemon/chunk graph from
-  // entering the new archive ahead of the freshly staged runtime below.
+  // current source evaluation and archive selection. This preserves
+  // author-owned and UI files that share `dist` while preventing a prior
+  // daemon/chunk graph from entering the new archive ahead of the freshly
+  // staged runtime below.
   await cleanupPluginDaemonOutputManifest(preparation.projectRoot);
-  const uiBuild = await runPluginUiArtifactBuild({
-    projectRoot: preparation.projectRoot,
-  });
-  if (!uiBuild.ok) return uiBuild.diagnostics.map((diagnostic) => createDiagnostic(diagnostic.message));
   return null;
 }
 
@@ -625,6 +755,31 @@ export async function packLocalPlugin(params: Readonly<{
     // traversal. The author tree itself remains untouched.
     if (resolvedSource.authorEntryPath === null) {
       await cleanupPluginAuthorGeneratedArtifacts(operation.operationRootPath);
+    } else {
+      // The Plugin UI builder consumes the canonical source manifest. A cold
+      // code-defined package has no authored JSON file, so publish the already
+      // evaluated canonical manifest into the isolated operation copy before
+      // invoking that existing builder. The author tree remains untouched and
+      // archive staging below rewrites the same canonical bytes.
+      await writeStagedCanonicalManifest({
+        manifest: resolvedSource.manifest,
+        stagedManifestPath: join(
+          operation.operationRootPath,
+          '.happier-plugin',
+          'plugin.json',
+        ),
+      });
+      const uiBuild = await runPluginUiArtifactBuild({
+        projectRoot: operation.operationRootPath,
+      });
+      if (!uiBuild.ok) {
+        return {
+          ok: false,
+          diagnostics: uiBuild.diagnostics.map((diagnostic) => (
+            createDiagnostic(diagnostic.message)
+          )),
+        };
+      }
     }
 
     const archivePath = await resolveArchivePath({

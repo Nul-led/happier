@@ -5,10 +5,13 @@ import {
   buildPromptPlanV1,
   buildQualifiedPluginContributionKey,
   renderPromptPlanV1,
+  renderSessionRoleBlockV1,
   resolveEffectiveCodingPromptBehaviorV1,
   type CodingPromptBehaviorV1,
   type PromptBlockV1,
   type PromptPlanV1,
+  type SessionRolePromptContextV1,
+  type AgentSessionStartupInstructionsV1,
 } from '@happier-dev/protocol';
 
 import type { StoredCredentials } from '@/persistence';
@@ -46,10 +49,12 @@ type AgentCompositionPromptArgs = Readonly<{
 }>;
 
 type ResolveEffectiveCodingPromptArgs = Readonly<{
-  credentials: StoredCredentials;
+  credentials?: StoredCredentials;
   settings: Record<string, unknown> | null | undefined;
   profileId: string | null | undefined;
   baseOverride?: string | null;
+  roleContext?: SessionRolePromptContextV1 | null;
+  startupInstructions?: AgentSessionStartupInstructionsV1;
   executionRunsFeatureEnabled?: boolean;
   memoryRecallGuidanceEnabled?: boolean;
   agentId?: string | null | undefined;
@@ -327,10 +332,17 @@ export async function resolveEffectiveCodingPromptPlan(
       },
     });
   })();
+  const roleInstructions = args.roleContext ? renderSessionRoleBlockV1(args.roleContext) : '';
   const plan = buildPromptPlanV1({
     modality: 'coding',
     blocks: [
       ...basePlan.blocks,
+      ...(roleInstructions
+        ? [{ id: 'session.role_instructions', scope: 'session' as const,
+            text: roleInstructions }] : []),
+      ...(args.startupInstructions
+        ? [{ id: 'caller.startup_instructions', scope: 'session' as const,
+            text: args.startupInstructions.instructions }] : []),
       ...promptStackBlocks,
       ...providerBehaviorBlocks,
       ...(args.promptAssetBlocks ?? []),

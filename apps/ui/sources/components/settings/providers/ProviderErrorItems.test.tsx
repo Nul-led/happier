@@ -35,6 +35,31 @@ describe('ProviderErrorItems', () => {
         expect(push).toHaveBeenCalledWith('/(app)/settings/providers/pc_a');
     });
 
+    it('fits one compact line in a picker: glyph + title, icon-only retry, detail behind the glyph', async () => {
+        const retry = vi.fn();
+        const { ProviderErrorItems } = await import('./ProviderErrorItems');
+        const screen = await renderScreen(<ProviderErrorItems
+            presentation="line"
+            error={{ v: 1, code: 'provider_rpc_response_invalid', retryable: true, action: 'retry' }}
+            retry={retry}
+        />);
+
+        // One line, no row chrome: no list Items at all.
+        expect(screen.findAllByType('Item')).toHaveLength(0);
+        const line = screen.findByTestId('provider-error:provider_rpc_response_invalid');
+        expect(line).toBeTruthy();
+        expect(screen.getTextContent()).toContain('settingsProviders.errors.rpcResponseInvalidTitle');
+        // The description is reachable (tooltip / accessible name on the glyph), not a second line.
+        expect(screen.getTextContent()).not.toContain('settingsProviders.errors.rpcResponseInvalidDescription');
+        expect(screen.findByTestId('provider-error-detail:provider_rpc_response_invalid')?.props.accessibilityLabel)
+            .toBe('settingsProviders.errors.rpcResponseInvalidDescription');
+        // Retry is an icon-only control with an accessible name.
+        const action = screen.findByTestId('provider-error-action:provider_rpc_response_invalid');
+        expect(action?.props.accessibilityLabel).toBe('settingsProviders.errors.actions.retry');
+        await React.act(async () => { await action?.props.onPress?.(); });
+        expect(retry).toHaveBeenCalledOnce();
+    });
+
     it('offers retry only when a retry callback is available', async () => {
         const retry = vi.fn();
         const { ProviderErrorItems } = await import('./ProviderErrorItems');

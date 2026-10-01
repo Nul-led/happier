@@ -1,0 +1,105 @@
+import { describe, expect, it } from 'vitest';
+
+import {
+    buildTriggerDefinition,
+    buildTriggerExecutionTarget,
+    buildTriggerTarget,
+    readTriggerThen,
+    readTriggerWhen,
+} from './sessionTriggerForm';
+
+describe('session trigger form', () => {
+    it('writes Notify me as one Notify me step: two Send to channels are both kept, none means your notification settings', () => {
+        const two = buildTriggerTarget({ kind: 'notifyMe', message: 'The review converged', title: '', channels: ['discord', 'push'] });
+        expect(two?.kind).toBe('inline');
+        if (two?.kind !== 'inline') return;
+        const [step] = two.definition.blocks;
+        expect(step).toMatchObject({
+            kind: 'action',
+            actionId: 'notifications.notify_me',
+            input: { message: { kind: 'literal', value: 'The review converged' }, channels: { kind: 'literal', value: ['discord', 'push'] } },
+        });
+        expect(readTriggerThen(two)).toEqual({ kind: 'notifyMe', message: 'The review converged', title: '', channels: ['discord', 'push'] });
+
+        const none = buildTriggerTarget({ kind: 'notifyMe', message: 'Done', title: 'Payments', channels: [] });
+        if (none?.kind !== 'inline') throw new Error('expected an inline target');
+        const [onlyStep] = none.definition.blocks;
+        expect(onlyStep?.kind === 'action' ? Object.keys(onlyStep.input).sort() : null).toEqual(['message', 'title']);
+    });
+
+    it('writes Send a prompt as one step that continues this session, and reads it back', () => {
+        const target = buildTriggerTarget({ kind: 'sendPrompt', prompt: '  Summarize overnight CI  ' });
+        if (target?.kind !== 'inline') throw new Error('expected an inline target');
+        expect(target.definition.defaults.conversation).toEqual({ kind: 'origin_session' });
+        expect(readTriggerThen(target)).toEqual({ kind: 'sendPrompt', prompt: 'Summarize overnight CI' });
+        // An Account trigger has no session to continue: its prompt starts a new one.
+        const account = buildTriggerTarget({ kind: 'sendPrompt', prompt: 'Morning digest' }, 'account');
+        expect(account?.kind === 'inline' ? account.definition.defaults.conversation : null).toEqual({ kind: 'fresh' });
+        // An empty prompt is not a target yet.
+        expect(buildTriggerTarget({ kind: 'sendPrompt', prompt: '   ' })).toBeNull();
+    });
+
+    it('writes Run a workflow as the reference arm', () => {
+        expect(buildTriggerTarget({ kind: 'runWorkflow', ref: 'builtin:review-and-converge' }))
+            .toEqual({ kind: 'workflow', ref: 'builtin:review-and-converge' });
+        expect(buildTriggerTarget({ kind: 'runWorkflow', ref: null })).toBeNull();
+    });
+
+    it('writes each session kind as its lifecycle events on this session, and a weekly schedule as its cron', () => {
+        expect(buildTriggerDefinition({ when: { kind: 'turnEnds' }, enabled: true, sessionId: 'session-1' })).toEqual({
+            kind: 'sessionLifecycle', enabled: true, sourceSessionId: 'session-1',
+            events: ['parentTurnCompleted', 'parentTurnFailed', 'parentTurnCancelled'], policy: { kind: 'everyMatch' },
+        });
+        expect(buildTriggerDefinition({ when: { kind: 'sessionArchived' }, enabled: false, sessionId: 'session-1' }))
+            .toMatchObject({ events: ['sessionArchived'], enabled: false });
+        const weekly = buildTriggerDefinition({
+            when: { kind: 'schedule', schedule: { repeat: 'weekly', hour: 2, minute: 30, day: 3 }, expression: '', timezone: 'Europe/Zurich' },
+            enabled: true,
+            sessionId: null,
+        });
+        expect(weekly).toEqual({ kind: 'schedule', enabled: true, schedule: { kind: 'cron', scheduleExpr: '30 2 * * 3', everyMs: null, timezone: 'Europe/Zurich' } });
+        // A session kind needs its session.
+        expect(buildTriggerDefinition({ when: { kind: 'needsYou' }, enabled: true, sessionId: null })).toBeNull();
+    });
+
+    it('reads a saved trigger back as the When it was written with', () => {
+        const archived = { kind: 'sessionLifecycle', events: ['sessionArchived'] } as unknown as Parameters<typeof readTriggerWhen>[0];
+        expect(readTriggerWhen(archived)).toEqual({ kind: 'sessionArchived' });
+        const custom = { kind: 'schedule', schedule: { kind: 'cron', scheduleExpr: '*/15 * * * *', everyMs: null, timezone: null } } as unknown as Parameters<typeof readTriggerWhen>[0];
+        // A cron that is not a simple schedule keeps its expression.
+        expect(readTriggerWhen(custom)).toEqual({ kind: 'schedule', schedule: null, expression: '*/15 * * * *', timezone: null });
+    });
+
+    it('writes Do an action as one Action step with literal fields, and reads it back', () => {
+        const target = buildTriggerTarget({ kind: 'doAction', actionId: 'session.message.send', input: { message: 'Status?', empty: '' } });
+        if (target?.kind !== 'inline') throw new Error('expected an inline target');
+        expect(target.definition.blocks[0]).toMatchObject({
+            kind: 'action', actionId: 'session.message.send', input: { message: { kind: 'literal', value: 'Status?' } },
+        });
+        // An empty field is not written as a value.
+        expect(target.definition.blocks[0]?.kind === 'action' ? Object.keys(target.definition.blocks[0].input) : null).toEqual(['message']);
+        expect(readTriggerThen(target)).toEqual({ kind: 'doAction', actionId: 'session.message.send', input: { message: 'Status?' } });
+        expect(buildTriggerTarget({ kind: 'doAction', actionId: null, input: {} })).toBeNull();
+    });
+
+    it('sends an Account prompt where Runs in says: a new session, a chosen session, or a background run', () => {
+        const existing = buildTriggerTarget({ kind: 'sendPrompt', prompt: 'Triage', runsIn: { kind: 'session', sessionId: 's-1', machineId: 'm-1' } }, 'account');
+        if (existing?.kind !== 'inline') throw new Error('expected an inline target');
+        expect(existing.definition.defaults.conversation).toEqual({ kind: 'existing_session', sessionId: 's-1', machineId: 'm-1' });
+        expect(readTriggerThen(existing)).toMatchObject({ runsIn: { kind: 'session', sessionId: 's-1', machineId: 'm-1' } });
+
+        const background = { kind: 'sendPrompt', prompt: 'Triage', runsIn: { kind: 'backgroundRun' } } as const;
+        expect(buildTriggerExecutionTarget(background)).toEqual({ kind: 'detached_run' });
+        const written = buildTriggerTarget(background, 'account');
+        if (written?.kind !== 'inline') throw new Error('expected an inline target');
+        expect(readTriggerThen(written, { kind: 'detached_run' })).toMatchObject({ runsIn: { kind: 'backgroundRun' } });
+        expect(buildTriggerExecutionTarget({ kind: 'sendPrompt', prompt: 'x' })).toEqual({ kind: 'session' });
+    });
+
+    it('binds "When this turn finishes…" to that exact turn, and keeps the binding when read back', () => {
+        const bound = buildTriggerDefinition({ when: { kind: 'turnEnds', sourceTurnId: 'turn-7' }, enabled: true, sessionId: 'session-1' });
+        expect(bound).toMatchObject({ kind: 'sessionLifecycle', policy: { kind: 'currentTurn', sourceTurnId: 'turn-7' } });
+        const saved = { kind: 'sessionLifecycle', events: ['parentTurnCompleted'], policy: { kind: 'currentTurn', sourceTurnId: 'turn-7' } } as unknown as Parameters<typeof readTriggerWhen>[0];
+        expect(readTriggerWhen(saved)).toEqual({ kind: 'turnEnds', sourceTurnId: 'turn-7' });
+    });
+});

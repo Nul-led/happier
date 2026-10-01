@@ -3,34 +3,54 @@ import type { AgentCatalogEntry } from '@/agent/catalog/types';
 import { readStoredCredentials } from '@/persistence';
 import { bootstrapAccountSettingsContext } from '@/settings/accountSettings/bootstrapAccountSettingsContext';
 import type { AgentId } from '@happier-dev/agents';
-import { BackendTargetRefSchema, type BackendTargetRefV1 } from '@happier-dev/protocol';
+import { getAgentModelConfig } from '@happier-dev/agents';
+import { BackendTargetRefSchema, normalizeBackendTargetRefV2InputToV1, type BackendTargetRefV1, RuntimeDescriptorV1Schema, type RuntimeDescriptorV1 } from '@happier-dev/protocol';
 
 export async function resolveProbeBackendContext(
   params?: Record<string, unknown>,
-  options: Readonly<{ requireCredentials?: boolean }> = {},
+  options: Readonly<{ requireCredentials?: boolean; catalogEntry?: AgentCatalogEntry | null }> = {},
 ): Promise<{
   backendTarget: BackendTargetRefV1 | undefined;
+  runtimeDescriptorV1?: RuntimeDescriptorV1;
+  runtimeKindOverride?: string;
   credentials: Awaited<ReturnType<typeof readStoredCredentials>> | null;
   accountSettings: Record<string, unknown> | null;
 }> {
-  const parsedBackendTarget = BackendTargetRefSchema.safeParse((params ?? {}).backendTarget);
+  const parsedBackendTarget = BackendTargetRefSchema.safeParse(normalizeBackendTargetRefV2InputToV1(params?.backendTarget));
   const backendTarget = parsedBackendTarget.success ? parsedBackendTarget.data : undefined;
   const agentId = typeof params?.agentId === 'string' ? params.agentId : null;
+  const runtimeDescriptorV1 = params?.runtimeDescriptorV1 == null
+    ? undefined : RuntimeDescriptorV1Schema.parse(params.runtimeDescriptorV1);
+  if (runtimeDescriptorV1 && runtimeDescriptorV1.agentId !== agentId) {
+    throw new TypeError('Probe runtime descriptor belongs to another Agent');
+  }
+  const runtimeContext = {
+    ...(runtimeDescriptorV1 ? { runtimeDescriptorV1 } : {}),
+    // cli-v0.2.12 and the moving 0.2 predecessor send this Agent-owned scalar.
+    // Preserve it at the seam; only the Agent interprets it, without rewriting settings.
+    ...(typeof params?.runtimeKindOverride === 'string' ? { runtimeKindOverride: params.runtimeKindOverride } : {}),
+  };
   const hasSelectedProfile = typeof params?.profileId === 'string' && params.profileId.trim().length > 0;
+  const catalogEntry = options.catalogEntry === undefined
+    ? (agentId ? AGENTS[agentId] : undefined)
+    : options.catalogEntry;
   const needsAccountSettingsForProbes =
-    agentId && (AGENTS[agentId as keyof typeof AGENTS] as AgentCatalogEntry | undefined)?.needsAccountSettingsForProbes === true;
+    agentId && (
+      catalogEntry?.needsAccountSettingsForProbes === true
+      || getAgentModelConfig(agentId as AgentId)?.dynamicProbeControl !== undefined
+    );
   const shouldLoadAccountSettings = backendTarget?.kind === 'configuredAcpBackend'
     || needsAccountSettingsForProbes
     || hasSelectedProfile;
   if (!shouldLoadAccountSettings && options.requireCredentials !== true) {
-    return { backendTarget, credentials: null, accountSettings: null };
+    return { ...runtimeContext, backendTarget, credentials: null, accountSettings: null };
   }
 
   const credentials = await readStoredCredentials().catch(() => null);
-  if (!credentials) return { backendTarget, credentials: null, accountSettings: null };
+  if (!credentials) return { ...runtimeContext, backendTarget, credentials: null, accountSettings: null };
 
   if (!shouldLoadAccountSettings) {
-    return { backendTarget, credentials, accountSettings: null };
+    return { ...runtimeContext, backendTarget, credentials, accountSettings: null };
   }
 
   const accountSettingsContext = await bootstrapAccountSettingsContext({
@@ -42,6 +62,7 @@ export async function resolveProbeBackendContext(
   }).catch(() => null);
 
   return {
+    ...runtimeContext,
     backendTarget,
     credentials,
     accountSettings: accountSettingsContext?.settings ?? null,

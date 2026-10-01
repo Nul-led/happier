@@ -1,95 +1,68 @@
 import * as React from 'react';
 
 import { getDefaultSystemTaskRunner, useSystemTaskSnapshot } from '@/components/systemTasks';
-import { useSystemTaskAuthRequestApproval } from '@/components/systemTasks/useSystemTaskAuthRequestApproval';
 import { readCachedMachineDoctorSnapshot } from '@/components/machines/doctorSnapshot/machineDoctorSnapshotCache';
 import { buildLocalDaemonServiceSystemTaskSpec } from '@/components/systemTasks/specs/localControl/buildLocalDaemonServiceSystemTaskSpec';
-import { toServerUrlDisplay } from '@/sync/domains/server/url/serverUrlDisplay';
 import { getActiveServerSnapshot } from '@/sync/domains/server/serverRuntime';
 import { areServerProfileIdentifiersEquivalent } from '@/sync/domains/server/serverProfiles';
 import { MACHINE_ADMINISTRATION_SELECTION_KEYS_V1 } from '@/sync/domains/machines/administration/selectionPreferences';
 import { machineAdministrationTargetsEqual } from '@/sync/domains/machines/administration/targetSelection';
 import { useMachineAdministrationTargetSelection } from '@/sync/domains/machines/administration/useTargetSelection';
 import { t } from '@/text';
-import { classifyRelayDrift, createRelayUrlComparableKeySafe, resolveKnownRelayEquivalentUrl } from '@/sync/domains/server/relayDrift/relayDriftModel';
-import { buildRelayDriftRepairSystemTaskSpec } from '@/sync/domains/server/relayDrift/relayDriftSystemTask';
+import { createRelayUrlComparableKeySafe, resolveKnownRelayEquivalentUrl } from '@/sync/domains/server/relayDrift/relayDriftModel';
+import { resolveThisComputerConnection, type ThisComputerDaemonFacts } from '@/sync/domains/server/relayDrift/thisComputerConnection';
 import { resolveWebappUrlFromServerUrl } from '@/sync/domains/server/url/resolveWebappUrlFromServerUrl';
 import type { RelayDriftBanner } from './relayDriftTypes';
 import { useLocalDaemonControl } from '@/components/settings/machines/localControl/useLocalDaemonControl';
+import { useAppAccountIdentity } from '@/components/settings/machines/localControl/useThisComputerConnection';
+import {
+    confirmThisComputerAccountMove,
+    presentThisComputerConnection,
+} from '@/components/settings/machines/localControl/thisComputerConnectionPresentation';
 
 /**
- * The daemon facts drift classification needs, from whichever source actually has them.
+ * Facts from the desktop's own live read of THIS computer's daemon.
  *
- * R10: a banner may only speak about a daemon the app knows something about. The two sources are
- * not equivalent — the cached doctor snapshot is written only when someone opens Diagnosis
- * (`machineDoctorSnapshotCache`), while `useLocalDaemonControl` refreshes the local status on
- * mount — so on an ordinary desktop the live local read is both the fresher fact and, for a long
- * while, the only one. Classifying from the doctor cache alone made every such desktop read as
- * "background service not configured".
- */
-type DaemonDriftFacts = Readonly<{
-    relayUrl: string | null;
-    alternateRelayUrls: readonly (string | null | undefined)[];
-    accountId: string | null;
-    needsAuth: boolean | undefined;
-    serviceInstalled: boolean | undefined;
-    running: boolean | undefined;
-}>;
-
-/**
- * Facts from the desktop's own live read, and only for the machine being administered — a status
- * for another machine says nothing about this target.
+ * R10: a banner may only speak about a daemon the app knows something about. The cached doctor
+ * snapshot is written only when someone opens Diagnosis (`machineDoctorSnapshotCache`), while
+ * `useLocalDaemonControl` refreshes the local status on mount, so on a desktop the live local read
+ * is both the fresher fact and usually the only one. It describes this computer whether or not
+ * this computer is one of the signed-in account's machines: a daemon signed in to another account
+ * (or another Home) is exactly the case no machine list can name (S11).
  *
- * `null` when this machine has no daemon at all: nothing installed and nothing running means
+ * `null` when this computer has no daemon at all: nothing installed and nothing running means
  * nothing that could have drifted, and the relay recorded in a config file is a default, not
- * knowledge of a daemon. Acquiring the first daemon belongs to the setup path, and the neutral
- * local-daemon status section already states the fact, so a warning here would only nag about an
- * ordinary first-run state.
+ * knowledge of a daemon. Acquiring the first daemon belongs to the setup path.
  */
 function daemonFactsFromLocalStatus(
-    status: Readonly<{
-        serviceInstalled: boolean;
-        daemonRunning: boolean;
-        needsAuth: boolean;
-        machineId: string | null;
-        daemonServerUrl?: string | null;
-        daemonAccountId?: string | null;
-    }> | null,
-    targetMachineId: string,
-): DaemonDriftFacts | null {
-    if (!status || !status.machineId || status.machineId !== targetMachineId) {
+    status: ReturnType<typeof useLocalDaemonControl>['status'],
+): ThisComputerDaemonFacts | null {
+    if (!status || !status.machineId) {
         return null;
     }
     if (!status.serviceInstalled && !status.daemonRunning) {
         return null;
     }
-    return {
-        relayUrl: status.daemonServerUrl ?? null,
-        alternateRelayUrls: [],
-        accountId: status.daemonAccountId ?? null,
-        needsAuth: status.needsAuth,
-        serviceInstalled: status.serviceInstalled,
-        running: status.daemonRunning,
-    };
+    return status;
 }
 
 function daemonFactsFromDoctorSnapshot(
     cachedDoctorSnapshot: ReturnType<typeof readCachedMachineDoctorSnapshot>,
-): DaemonDriftFacts | null {
+): ThisComputerDaemonFacts | null {
     if (!cachedDoctorSnapshot) {
         return null;
     }
     const daemonSnapshot = cachedDoctorSnapshot.snapshot.daemonStatus;
     const doctorBackgroundService = cachedDoctorSnapshot.snapshot.serviceHealth?.backgroundService;
     return {
-        relayUrl: daemonSnapshot?.server?.serverUrl ?? cachedDoctorSnapshot.snapshot.server.serverUrl ?? null,
-        alternateRelayUrls: [
+        daemonServerUrl: daemonSnapshot?.server?.serverUrl ?? cachedDoctorSnapshot.snapshot.server.serverUrl ?? null,
+        daemonAlternateRelayUrls: [
             daemonSnapshot?.server?.publicServerUrl ?? cachedDoctorSnapshot.snapshot.server.publicServerUrl ?? null,
         ],
-        accountId: daemonSnapshot?.auth?.accountId ?? cachedDoctorSnapshot.snapshot.accountId ?? null,
+        daemonAccountId: daemonSnapshot?.auth?.accountId ?? cachedDoctorSnapshot.snapshot.accountId ?? null,
         needsAuth: daemonSnapshot?.auth?.needsAuth,
         serviceInstalled: daemonSnapshot?.service?.installed ?? doctorBackgroundService?.installed,
-        running: daemonSnapshot?.service?.running ?? doctorBackgroundService?.running,
+        daemonRunning: daemonSnapshot?.service?.running ?? doctorBackgroundService?.running,
     };
 }
 
@@ -166,10 +139,16 @@ export function useRelayDriftBanner(): RelayDriftBanner | null {
     const [repairTaskId, setRepairTaskId] = React.useState<string | null>(null);
     const [isRepairStarting, setIsRepairStarting] = React.useState(false);
     const repairTaskSnapshot = useSystemTaskSnapshot(runner, repairTaskId);
+    const appAccount = useAppAccountIdentity();
+    const localDaemonStatus = localDaemonControl.status;
+    // The desktop's own read describes this computer and wins; the doctor cache answers only for an
+    // administered machine the desktop cannot read itself. The repair always runs on this computer,
+    // so it needs the local bridge, and — on the doctor path — that target to be this computer.
+    const localDaemonFacts = React.useMemo(() => daemonFactsFromLocalStatus(localDaemonStatus), [localDaemonStatus]);
     const isRepairUnavailable = runner.mode === 'unavailable'
         || localDaemonControl.isUnavailable
-        || executionTarget === null
-        || localDaemonControl.status?.machineId !== executionTarget.machine.id;
+        || (localDaemonFacts === null
+            && (executionTarget === null || localDaemonStatus?.machineId !== executionTarget.machine.id));
 
     const cachedDoctorSnapshot = React.useMemo(() => {
         if (!executionTarget) {
@@ -206,36 +185,60 @@ export function useRelayDriftBanner(): RelayDriftBanner | null {
 
         return appSameOriginRelayUrl;
     }, [activeServerSnapshot.activeLocalRelayUrl, activeServerSnapshot.serverUrl, cachedDoctorSnapshot]);
+    // R10: no facts from either source, no banner. Only this computer's own read is comparable with
+    // the signed-in account; the doctor cache describes another machine and never names one.
+    const connection = React.useMemo(() => {
+        const daemonFacts = localDaemonFacts
+            ?? (executionTarget ? daemonFactsFromDoctorSnapshot(cachedDoctorSnapshot) : null);
+        return resolveThisComputerConnection({
+            daemon: daemonFacts,
+            activeRelayUrl: activeServerSnapshot.serverUrl,
+            activeLocalRelayUrl,
+            appAccountId: localDaemonFacts ? appAccount.accountId : null,
+            appAccountLabel: appAccount.accountLabel,
+        });
+    }, [
+        activeLocalRelayUrl,
+        activeServerSnapshot.serverUrl,
+        appAccount.accountId,
+        appAccount.accountLabel,
+        cachedDoctorSnapshot,
+        executionTarget,
+        localDaemonFacts,
+    ]);
+
+    const repairBackgroundService = localDaemonControl.repairBackgroundService;
+    const canonicalRepairSnapshot = localDaemonControl.activeTaskSnapshot;
+    const visibleRepairTaskSnapshot = canonicalRepairSnapshot ?? repairTaskSnapshot;
     const handleStartRepair = React.useCallback(async () => {
-        if (isRepairUnavailable || isRepairStarting || (repairTaskSnapshot != null && repairTaskSnapshot.result == null)) {
+        if (isRepairUnavailable || isRepairStarting || (visibleRepairTaskSnapshot != null && visibleRepairTaskSnapshot.result == null)) {
             return;
         }
-        const currentTarget = resolveRelayExecutionTarget();
-        if (
-            !currentTarget
-            || localDaemonControl.status?.machineId !== currentTarget.machine.id
-        ) return;
+        if (!localDaemonFacts) {
+            const currentTarget = resolveRelayExecutionTarget();
+            if (
+                !currentTarget
+                || localDaemonControl.status?.machineId !== currentTarget.machine.id
+            ) return;
+        }
+        // R10 D1: switching this computer away from the account it is signed in to asks first,
+        // naming both accounts.
+        if (!(await confirmThisComputerAccountMove(connection))) return;
 
         setIsRepairStarting(true);
         try {
-            const taskId = await runner.start(buildRelayDriftRepairSystemTaskSpec({
-                activeRelayUrl: activeServerSnapshot.serverUrl,
-                activeWebappUrl,
-                activeLocalRelayUrl,
-            }));
-            setRepairTaskId(taskId);
+            await repairBackgroundService();
         } finally {
             setIsRepairStarting(false);
         }
     }, [
-        activeServerSnapshot.serverUrl,
-        activeLocalRelayUrl,
-        activeWebappUrl,
+        connection,
         isRepairUnavailable,
         isRepairStarting,
-        repairTaskSnapshot,
+        localDaemonFacts,
+        visibleRepairTaskSnapshot,
         resolveRelayExecutionTarget,
-        runner,
+        repairBackgroundService,
         localDaemonControl.status?.machineId,
     ]);
 
@@ -245,11 +248,13 @@ export function useRelayDriftBanner(): RelayDriftBanner | null {
         if (isRepairUnavailable || isRepairStarting || (repairTaskSnapshot != null && repairTaskSnapshot.result == null)) {
             return;
         }
-        const currentTarget = resolveRelayExecutionTarget();
-        if (
-            !currentTarget
-            || localDaemonControl.status?.machineId !== currentTarget.machine.id
-        ) return;
+        if (!localDaemonFacts) {
+            const currentTarget = resolveRelayExecutionTarget();
+            if (
+                !currentTarget
+                || localDaemonControl.status?.machineId !== currentTarget.machine.id
+            ) return;
+        }
 
         setIsRepairStarting(true);
         try {
@@ -258,115 +263,53 @@ export function useRelayDriftBanner(): RelayDriftBanner | null {
         } finally {
             setIsRepairStarting(false);
         }
-    }, [isRepairStarting, isRepairUnavailable, localDaemonControl.status?.machineId, repairTaskSnapshot, resolveRelayExecutionTarget, runner]);
-
-    // The repair task pairs this computer when its credentials are missing or stale, so its
-    // blocking token-only prompt is answered by the one approval owner, scoped to the active Home.
-    useSystemTaskAuthRequestApproval({
-        runner,
-        taskId: repairTaskId,
-        ...(activeServerSnapshot.serverUrl
-            ? {
-                approval: {
-                    expectedRelayUrl: activeServerSnapshot.serverUrl,
-                    ...(activeServerSnapshot.serverId ? { serverId: activeServerSnapshot.serverId } : {}),
-                },
-            }
-            : {}),
-    });
+    }, [isRepairStarting, isRepairUnavailable, localDaemonControl.status?.machineId, localDaemonFacts, repairTaskSnapshot, resolveRelayExecutionTarget, runner]);
 
     const handleCancelRepair = React.useCallback(() => {
-        if (!repairTaskId || !repairTaskSnapshot || repairTaskSnapshot.result) {
+        if (canonicalRepairSnapshot && canonicalRepairSnapshot.result == null) {
+            localDaemonControl.cancel();
             return;
         }
-        void runner.cancel(repairTaskId);
-    }, [repairTaskId, repairTaskSnapshot, runner]);
-
-    const localDaemonStatus = localDaemonControl.status;
+        if (repairTaskId && repairTaskSnapshot && repairTaskSnapshot.result == null) {
+            void runner.cancel(repairTaskId);
+        }
+    }, [canonicalRepairSnapshot, localDaemonControl, repairTaskId, repairTaskSnapshot, runner]);
 
     return React.useMemo(() => {
-        if (!executionTarget) return null;
-        // The desktop's live read of its own daemon decides when it has one, because it is both
-        // fresher than the Diagnosis-written cache and usually the only fact available; the cache
-        // answers for every other target. R10: no facts from either, no banner.
-        const daemonFacts = daemonFactsFromLocalStatus(localDaemonStatus, executionTarget.machine.id)
-            ?? daemonFactsFromDoctorSnapshot(cachedDoctorSnapshot);
-        if (!daemonFacts) return null;
-        const classification = classifyRelayDrift({
-            activeRelayUrl: activeServerSnapshot.serverUrl,
-            activeLocalRelayUrl,
-            daemonRelayUrl: daemonFacts.relayUrl,
-            daemonAlternateRelayUrls: daemonFacts.alternateRelayUrls,
-            daemonAccountId: daemonFacts.accountId,
-            daemonNeedsAuth: daemonFacts.needsAuth,
-            daemonServiceInstalled: daemonFacts.serviceInstalled,
-            daemonRunning: daemonFacts.running,
-        });
-
-        if (classification.status === 'aligned' || classification.repairAction == null) {
-            return null;
-        }
-
-        const daemonRelayUrl = daemonFacts.relayUrl;
-        const activeRelayLabel = toServerUrlDisplay(activeServerSnapshot.serverUrl);
-        const daemonRelayLabel = daemonRelayUrl ? toServerUrlDisplay(daemonRelayUrl) : null;
-
-        const description = classification.status === 'daemon_url_mismatch'
-            ? t('server.relayDrift.bannerDifferentRelayDescription', {
-                activeRelayUrl: activeRelayLabel,
-                daemonRelayUrl: daemonRelayLabel ?? t('server.relayDrift.statusUnknown'),
-            })
-            : classification.status === 'daemon_not_installed'
-                ? t('server.relayDrift.bannerNotInstalledDescription', { activeRelayUrl: activeRelayLabel })
-                : classification.status === 'daemon_not_running'
-                    ? t('server.relayDrift.bannerNotRunningDescription', { activeRelayUrl: activeRelayLabel })
-            : classification.status === 'daemon_needs_auth'
-                ? t('server.relayDrift.bannerNeedsAuthDescription', { activeRelayUrl: activeRelayLabel })
-                : t('server.relayDrift.bannerNotConfiguredDescription', { activeRelayUrl: activeRelayLabel });
+        if (!connection) return null;
+        const presentation = presentThisComputerConnection(connection);
+        if (!presentation) return null;
 
         return {
             kind: 'warning',
-            title: classification.status === 'daemon_url_mismatch'
-                ? t('server.relayDrift.bannerDifferentRelayTitle')
-                : classification.status === 'daemon_not_installed'
-                    ? t('server.relayDrift.bannerNotInstalledTitle')
-                    : classification.status === 'daemon_not_running'
-                        ? t('server.relayDrift.bannerNotRunningTitle')
-                : classification.status === 'daemon_needs_auth'
-                    ? t('server.relayDrift.bannerNeedsAuthTitle')
-                    : t('server.relayDrift.bannerNotConfiguredTitle'),
-            description,
-            actionLabel: classification.status === 'daemon_needs_auth'
-                ? t('common.authenticate')
-                : classification.status === 'daemon_not_running'
-                    ? t('sessionGettingStarted.title.startDaemon')
-                : t('server.relayDrift.repairAction'),
+            title: presentation.title,
+            description: presentation.description,
+            actionLabel: presentation.actionLabel,
             ...(isRepairUnavailable
                 ? {
                     actionDisabled: true,
                     actionHint: t('settings.systemTaskBridgeUnavailable'),
                 }
+                : localDaemonControl.lastErrorMessage && !isRepairStarting && !visibleRepairTaskSnapshot
+                    ? { actionHint: localDaemonControl.lastErrorMessage }
                 : {}),
-            onPress: classification.status === 'daemon_not_running'
+            onPress: connection.status === 'daemon_not_running'
                 ? async () => {
                     await startLocalBackgroundServiceTask('daemon.service.restart.v1');
                 }
                 : handleStartRepair,
             isRepairStarting,
-            repairTaskSnapshot,
+            repairTaskSnapshot: visibleRepairTaskSnapshot,
             onCancelRepair: handleCancelRepair,
         } satisfies RelayDriftBanner;
     }, [
-        activeServerSnapshot.serverUrl,
-        activeLocalRelayUrl,
-        cachedDoctorSnapshot,
-        executionTarget,
+        connection,
         handleCancelRepair,
         handleStartRepair,
         isRepairUnavailable,
         isRepairStarting,
-        localDaemonStatus,
-        repairTaskSnapshot,
+        localDaemonControl.lastErrorMessage,
+        visibleRepairTaskSnapshot,
         startLocalBackgroundServiceTask,
     ]);
 }

@@ -1,8 +1,7 @@
 import * as React from 'react';
-import { useIsFocused } from '@react-navigation/native';
+import { useIsFocused } from '@/components/appShell/workspace/destinationRoute';
 import { Platform } from 'react-native';
-import { Stack, useRouter } from 'expo-router';
-import { useUnistyles } from 'react-native-unistyles';
+import { Stack, useRouter } from '@/components/appShell/workspace/destinationRoute';
 
 import { useAppShellPluginUiProjection } from '@/components/appShell/plugins/AppShellPluginUiProjection';
 import { createPluginAppPageLocationOwner } from '@/components/appShell/plugins/pluginAppPageLocation';
@@ -14,8 +13,7 @@ import { RouteRemovalStepConsumer } from '@/utils/navigation/RouteRemovalStepCon
 import { ESCAPE_LAYER_PRIORITIES, useEscapeLayer } from '@/keyboard/escape';
 import { PluginSurfaceFallback } from '@/components/sessions/panes/PluginSurfaceFallback';
 import { PluginSurfaceFocusEligibilityProvider } from '@/components/ui/presentation/PluginSurfaceFocusEligibility';
-import { PaneLoadingFallback } from '@/components/ui/panels/PaneLoadingFallback';
-import { MachineAdministrationTargetSelector } from '@/components/settings/machines/MachineAdministrationTargetSelector';
+import { MachineAdministrationContextBar } from '@/components/settings/machines/MachineAdministrationContextBar';
 import { MACHINE_ADMINISTRATION_SELECTION_KEYS_V1 } from '@/sync/domains/machines/administration/selectionPreferences';
 import {
     useScopedPluginSettingsDaemonTargetBinding,
@@ -26,7 +24,7 @@ import {
     type ResolvedPluginSettingsPageDestination,
 } from '@/components/settings/catalog/runtime/pluginSettingsPageCatalog';
 import { getPreferredLanguage, t } from '@/text';
-import { buildPluginDetailRoute } from '@/components/settings/plugins/model/pluginDetailRoute';
+import { buildPluginDetailRoute } from '@/components/settings/plugins/model/pluginsSurfaceRoutes';
 
 export const PluginSettingsPageScreen = React.memo(function PluginSettingsPageScreen(props: Readonly<{
     pluginId: string | null;
@@ -39,7 +37,6 @@ export const PluginSettingsPageScreen = React.memo(function PluginSettingsPageSc
     subPath?: string | null;
 }>): React.ReactElement {
     const isFocused = useIsFocused();
-    const { theme } = useUnistyles();
     const router = useRouter();
     const appShell = useAppShellPluginUiProjection();
     // One administration-target owner for every plugin Settings surface. A
@@ -67,7 +64,7 @@ export const PluginSettingsPageScreen = React.memo(function PluginSettingsPageSc
         return pluginId
             ? {
                 label: t('settingsPlugins.managePlugin'),
-                onPress: () => { router.push(buildPluginDetailRoute(pluginId)); },
+                onPress: () => { router.push(buildPluginDetailRoute('settings', pluginId)); },
             }
             : undefined;
     }, [props.pluginId, router]);
@@ -149,7 +146,7 @@ export const PluginSettingsPageScreen = React.memo(function PluginSettingsPageSc
         return (
             <>
                 <Stack.Screen options={{}} />
-                <PaneLoadingFallback color={theme.colors.text.secondary} />
+                <PluginSurfaceFallback testID="plugin-settings-page-loading" state="loading" />
             </>
         );
     }
@@ -194,7 +191,8 @@ export const PluginSettingsPageScreen = React.memo(function PluginSettingsPageSc
               * screen. Name the machine this page's fields, secrets and
               * lifecycle operations address before the fields themselves.
               */}
-            <MachineAdministrationTargetSelector
+            <MachineAdministrationContextBar
+                label={t('settingsPlugins.administrationMachineTitle')}
                 selection={administration.selection}
                 testIDPrefix="settings.plugins.page.administration.target"
             />

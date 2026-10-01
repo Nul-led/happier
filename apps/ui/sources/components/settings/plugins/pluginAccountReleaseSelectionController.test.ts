@@ -70,7 +70,7 @@ function dependencies(input: Readonly<{
         )),
         createAppExactSource: () => Object.freeze({
             kind: 'appExact' as const,
-            readFile: async () => null,
+            fetch: async () => null,
         }),
         select: input.select ?? (async () => Object.freeze({
             kind: 'selected' as const,
@@ -270,12 +270,11 @@ describe('Plugin Account release selection controller', () => {
                     platform: 'ios',
                     digest: `sha256:${'c'.repeat(64)}`,
                 },
-                availabilityCursor: 7,
             },
             artifact: {
                 artifactGraph: {},
                 cacheIdentity: {},
-                accountHosted: { kind: 'target' as const },
+                accountHosted: {},
             },
         }) as unknown as Awaited<ReturnType<PluginAccountReleaseSelectionControllerDependencies['resolveAccountHostedTarget']>>);
         const controller = createPluginAccountReleaseSelectionController(dependencies({
@@ -301,17 +300,15 @@ describe('Plugin Account release selection controller', () => {
             kind: 'available',
             candidateTarget: {
                 release: facts.ref,
-                availabilityCursor: 7,
             },
             artifact: {
                 appExact: { kind: 'appExact' },
-                accountHosted: { kind: 'target' },
+                accountHosted: {},
             },
         });
         expect(resolveAccountHostedTarget).toHaveBeenCalledExactlyOnceWith({
             accountLifetime: active.lifetime,
             isCurrent: expect.any(Function),
-            availabilityCursor: 7,
             facts,
         });
     });
@@ -454,9 +451,9 @@ describe('Plugin Account release selection controller', () => {
         const removeHostedArtifact = vi.fn(async () => Object.freeze({ kind: 'removed' as const }));
         const removeCachedArtifact = vi.fn(async () => {});
         const slot = {
-            contributionId: 'tasks-ui', tier: 'reactNative' as const, platform: 'ios' as const,
+            contributionId: 'tasks-ui', artifactId: 'tasks-ui-artifact', tier: 'reactNative' as const, platform: 'ios' as const,
             artifactDigest: `sha256:${'c'.repeat(64)}` as const,
-            compatibility: { hostUiApiVersion: 1, reactVersion: '19', reactNativeVersion: '0.81', expoRuntimeVersion: '54', hermesVersion: '1' },
+            hostUiApiRange: '^1.0.0',
         };
         const reader = {
             readCurrentHostedArtifactAdministration: () => ({
@@ -465,7 +462,7 @@ describe('Plugin Account release selection controller', () => {
                 hostingCapability: { enabled: true, maxArtifactBytes: 1, maxAccountBytes: 1, maxAccountArtifacts: 1 },
                 intent: { pluginId, desiredVersion: targetVersion, enabled: true, offlineUiHosting: 'enabled' as const, writableCollections: [], revision: 'intent-current' },
                 release: { ref: { pluginId, version: targetVersion }, normalizedManifest: facts.normalizedManifest, uiSlots: [slot], packageAssetArchive: facts.packageAssetArchive },
-                uiArtifacts: [{ release: { pluginId, version: targetVersion }, contributionId: slot.contributionId, tier: slot.tier, platform: slot.platform }],
+                uiArtifacts: [{ release: { pluginId, version: targetVersion }, contributionId: slot.contributionId, artifactId: slot.artifactId, tier: slot.tier, platform: slot.platform }],
                 packageAssets: [],
             }),
         } as unknown as PluginAccountAvailabilityReader;
@@ -493,17 +490,18 @@ describe('Plugin Account release selection controller', () => {
         });
         expect(removeHostedArtifact).toHaveBeenCalledWith(expect.objectContaining({
             accountLifetime: active.lifetime,
-            target: { release: { pluginId, version: targetVersion }, contributionId: 'tasks-ui', tier: 'reactNative', platform: 'ios' },
+            target: {
+                release: { pluginId, version: targetVersion },
+                contributionId: 'tasks-ui',
+                artifactId: 'tasks-ui-artifact',
+                tier: 'reactNative',
+                platform: 'ios',
+            },
         }));
 
         await expect(controller.clearHostedArtifactCache({ pluginId, reader })).resolves.toEqual({ kind: 'updated' });
         expect(removeCachedArtifact).toHaveBeenCalledWith({
             accountScope: active.lifetime.scope,
-            pluginId,
-            releaseVersion: targetVersion,
-            contributionId: 'tasks-ui',
-            tier: 'reactNative',
-            platform: 'ios',
             artifactDigest: slot.artifactDigest,
         }, expect.any(Function));
     });

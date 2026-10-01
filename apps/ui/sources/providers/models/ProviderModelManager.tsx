@@ -21,7 +21,9 @@ import {
 import { useEventCallback } from '@/hooks/ui/useEventCallback';
 import { t } from '@/text';
 import { providerModelRowKey } from './modelRowKey';
+import { ProviderModelManagerPage, type ProviderModelManagerPageHost } from './ProviderModelManagerPage';
 import { presentProviderModelRow } from './presentProviderModelRow';
+import { providerModelConnectionTitle } from './providerModelConnectionTitle';
 
 type ProviderModelManagerRow = Readonly<{
     ref: Pick<DaemonProviderModelProjectionRowV1['ref'], 'modelId'>;
@@ -239,11 +241,6 @@ export function buildProviderModelVisibilityChanges(input: Readonly<{
     }));
 }
 
-function connectionTitle(group: ProviderModelManagerGroup): string {
-    return group.connectionRole === 'default' && group.connectionDisplayNameMode === 'automatic'
-        ? group.providerName
-        : `${group.providerName} · ${group.connectionName}`;
-}
 
 function modelVisibilityActionLabel(hidden: boolean): string {
     return hidden
@@ -314,7 +311,8 @@ export function buildProviderModelManagerSections(input: Readonly<{
                 modelId: row.ref.modelId,
                 name: row.descriptor.name,
                 description: row.descriptor.description,
-                contextLabel: connectionTitle(group),
+                // A connection's own list already names it; only the agent-wide list needs it per row.
+                contextLabel: input.scope.kind === 'agent' ? providerModelConnectionTitle(group) : undefined,
                 authorization: group.authorization,
                 compatibility: row.compatibility,
                 endpointHealth: row.endpointHealth,
@@ -338,7 +336,7 @@ export function buildProviderModelManagerSections(input: Readonly<{
                 rightAccessoryOutsidePressable: true,
                 rightAccessory: (
                     <ModelVisibilityAccessory
-                        label={`${presentation.label}, ${connectionTitle(group)}`}
+                        label={`${presentation.label}, ${providerModelConnectionTitle(group)}`}
                         visible={!hiddenForScope}
                         disabled={lockedByConnectionScope}
                         onVisibleChange={(visible) => input.onSetVisibility(ref, !visible)}
@@ -398,6 +396,11 @@ export function ProviderModelManager(props: Readonly<{
     onResetVisibility?: () => void;
     onRequestClose: () => void;
     headerActions?: React.ReactNode;
+    /**
+     * Host the list as one section of a page, inside the page's single scroll, instead of as a
+     * full-route list. The page still virtualizes: only the rows near the viewport mount.
+     */
+    page?: ProviderModelManagerPageHost;
     testID?: string;
 }>): React.ReactElement {
     const scopeIdentity = props.scope.kind === 'agent'
@@ -461,6 +464,32 @@ export function ProviderModelManager(props: Readonly<{
         onShowOnly,
         scope,
     ]);
+    if (props.page) {
+        return (
+            <ProviderModelManagerPage
+                host={props.page}
+                sections={sections}
+                modelCount={groups.reduce((count, group) => count + group.rows.length, nativeModels.length)}
+                actions={props.headerActions}
+                onShowAll={props.onShowAll}
+                onHideAll={props.onHideAll}
+                onResetVisibility={props.onResetVisibility}
+            />
+        );
+    }
+    return <ProviderModelManagerScreen {...props} sections={sections} />;
+}
+
+function ProviderModelManagerScreen(props: Readonly<{
+    sections: readonly SelectionListSection[];
+    onShowAll?: () => void;
+    onHideAll?: () => void;
+    onResetVisibility?: () => void;
+    onRequestClose: () => void;
+    headerActions?: React.ReactNode;
+    testID?: string;
+}>): React.ReactElement {
+    const { sections } = props;
     const rootStep = React.useMemo(() => ({
         id: 'models',
         inputPlaceholder: t('modelPickerOverlay.searchPlaceholder'),

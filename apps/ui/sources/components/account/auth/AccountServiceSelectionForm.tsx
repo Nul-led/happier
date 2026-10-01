@@ -9,7 +9,9 @@ import { WizardChoiceRow } from '@/components/onboarding/ui/WizardChoiceRow';
 import { Typography } from '@/constants/Typography';
 import { t } from '@/text';
 import type { SelectAccountServiceEndpointResult } from '@/sync/ops/accountDirectory/selectAccountServiceEndpoint';
-import { toServerUrlDisplay } from '@/sync/domains/server/url/serverUrlDisplay';
+import { formatAccountServiceHost } from '@/sync/domains/accountDirectory/accountDirectoryEndpoint';
+import { readAccountServiceDisplayName } from './accountServiceDisplayName';
+import { useAccountServiceSelection } from './useAccountServiceSelection';
 
 export type AccountServiceSelectionResult = SelectAccountServiceEndpointResult;
 
@@ -17,11 +19,6 @@ export type AccountServiceSelectionFormProps = Readonly<{
     currentEndpoint: AccountServiceEndpointV1 | null;
     onBack: () => void;
     onSelect: (url: string, options: Readonly<{ signal: AbortSignal }>) => Promise<AccountServiceSelectionResult>;
-}>;
-
-type ActiveSelectionAttempt = Readonly<{
-    url: string;
-    controller: AbortController;
 }>;
 
 const stylesheet = StyleSheet.create((theme) => ({
@@ -46,62 +43,37 @@ const stylesheet = StyleSheet.create((theme) => ({
     actions: { gap: 12 },
 }));
 
-function resultMessage(result: Exclude<AccountServiceSelectionResult['kind'], 'selected'>): string {
-    if (result === 'invalid') return t('welcome.signInServiceInvalidAddress');
-    if (result === 'unsupported') return t('welcome.signInServiceUnsupportedBody');
-    return t('welcome.signInServiceUnavailableTitle');
-}
-
+/** A choice row: the service's name, else the address that tells it apart (shown beneath too). */
 function endpointLabel(endpoint: AccountServiceEndpointV1): string {
-    if (endpoint.displayName) return endpoint.displayName;
-    return toServerUrlDisplay(endpoint.url) || endpoint.url;
+    return readAccountServiceDisplayName({
+        url: endpoint.url,
+        serverIdentityId: endpoint.serverIdentityId,
+        savedName: endpoint.displayName,
+    }) ?? formatAccountServiceHost(endpoint.url);
 }
 
 export const AccountServiceSelectionForm = React.memo(function AccountServiceSelectionForm(props: AccountServiceSelectionFormProps) {
     const { theme } = useUnistyles();
     const styles = stylesheet;
     const inputRef = React.useRef<React.ElementRef<typeof TextInput>>(null);
-    const activeAttemptRef = React.useRef<ActiveSelectionAttempt | null>(null);
     const [showUrlInput, setShowUrlInput] = React.useState(props.currentEndpoint == null);
     const [url, setUrl] = React.useState('');
-    const [error, setError] = React.useState<string | null>(null);
-
-    const cancelActiveAttempt = React.useCallback(() => {
-        activeAttemptRef.current?.controller.abort();
-        activeAttemptRef.current = null;
-    }, []);
-
-    React.useEffect(() => cancelActiveAttempt, [cancelActiveAttempt]);
+    const selection = useAccountServiceSelection(props.onSelect);
+    const error = selection.error;
 
     const select = React.useCallback(async (rawUrl: string) => {
-        const trimmed = rawUrl.trim();
-        if (!trimmed) {
-            setError(t('welcome.signInServiceInvalidAddress'));
-            inputRef.current?.focus();
-            return;
-        }
-        const activeAttempt = activeAttemptRef.current;
-        if (activeAttempt?.url === trimmed) return;
-        activeAttempt?.controller.abort();
-        const controller = new AbortController();
-        const nextAttempt: ActiveSelectionAttempt = { url: trimmed, controller };
-        activeAttemptRef.current = nextAttempt;
-        setError(null);
-        try {
-            const result = await props.onSelect(trimmed, { signal: controller.signal });
-            if (activeAttemptRef.current !== nextAttempt || controller.signal.aborted || result.kind === 'selected') return;
-            setError(resultMessage(result.kind));
+        const result = await selection.submit(rawUrl);
+        if (result?.kind === 'selected') return;
+        if (result || !rawUrl.trim()) {
             setShowUrlInput(true);
             inputRef.current?.focus();
-        } finally {
-            if (activeAttemptRef.current === nextAttempt) activeAttemptRef.current = null;
         }
-    }, [props.onSelect]);
+    }, [selection.submit]);
 
     const goBack = React.useCallback(() => {
-        cancelActiveAttempt();
+        selection.cancel();
         props.onBack();
-    }, [cancelActiveAttempt, props.onBack]);
+    }, [props.onBack, selection.cancel]);
 
     return (
         <View testID="account-service-selection-form" style={styles.root}>
@@ -120,8 +92,8 @@ export const AccountServiceSelectionForm = React.memo(function AccountServiceSel
                     testID="account-service-another-choice"
                     selected={showUrlInput}
                     icon="plus-circle"
-                    title={t('welcome.chooseSignInService')}
-                    subtitle={t('welcome.signInServiceUrlPrompt')}
+                    title={t('homeAdd.otherSignInService')}
+                    subtitle={t('homeAdd.otherSignInServiceSubtitle')}
                     onPress={() => {
                         setShowUrlInput(true);
                     }}
@@ -129,18 +101,18 @@ export const AccountServiceSelectionForm = React.memo(function AccountServiceSel
             </View>
             {showUrlInput ? (
                 <View style={styles.field}>
-                    <Text style={styles.label}>{t('welcome.signInServiceUrlPrompt')}</Text>
+                    <Text style={styles.label}>{t('homeAdd.signInServiceAddress')}</Text>
                     <TextInput
                         ref={inputRef}
                         testID="account-service-url-input"
-                        accessibilityLabel={t('welcome.signInServiceUrlPrompt')}
+                        accessibilityLabel={t('homeAdd.signInServiceAddress')}
                         style={styles.input}
                         placeholder={t('common.urlPlaceholder')}
                         placeholderTextColor={theme.colors.input.placeholder}
                         value={url}
                         onChangeText={(value) => {
                             setUrl(value);
-                            if (error) setError(null);
+                            if (error) selection.clearError();
                         }}
                         onSubmitEditing={() => {
                             void select(url);

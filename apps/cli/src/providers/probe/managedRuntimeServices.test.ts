@@ -22,6 +22,8 @@ import {
 
 import type { ResolvedManagedProviderRuntime } from '@/plugins/projection/registry/types';
 import type { ResolvedExecutablePluginRuntimeRegistry } from '@/plugins/runtime/resolveExecutablePluginRuntimeRegistry';
+import { createManagedPluginSourceCustody } from '@/plugins/runtime/lifecycle/contributions/runtimeIdentity.testkit';
+import { createPluginRuntimeOccurrenceId } from '@/plugins/runtime/runtimeSlots';
 import { resolveProviderConnectionForMachine } from '@/providers/registry';
 
 import {
@@ -131,6 +133,9 @@ describe('managed Provider catalog runtime composition', () => {
     const registry = {
       providersByContributionKey: new Map([[contributionKey, contribution]]),
       runtimeRegistryGeneration: 7,
+      providerActivationOccurrenceIdsByPluginId: new Map([
+        ['happier.provider.cliproxyapi', 'activation-7'],
+      ]),
     };
     const base = ProviderSettingsV1Schema.parse({
       ...DEFAULT_PROVIDER_SETTINGS_V1,
@@ -242,15 +247,15 @@ describe('managed Provider catalog runtime composition', () => {
     });
     const resolvedRuntime = Object.freeze({
       runtime: Object.freeze({ start }),
-      activationGeneration: 'activation-7',
-      immutableGenerationId: 'immutable-7',
+      activationOccurrenceId: 'activation-7',
+      sourceCustody: createManagedPluginSourceCustody('immutable-7'),
       isCurrent: () => true,
     }) satisfies ResolvedManagedProviderRuntime;
     const successorStart = vi.fn<ManagedProviderRuntime['start']>();
     const successorRuntime = Object.freeze({
       runtime: Object.freeze({ start: successorStart }),
-      activationGeneration: 'activation-8',
-      immutableGenerationId: 'immutable-8',
+      activationOccurrenceId: 'activation-8',
+      sourceCustody: createManagedPluginSourceCustody('immutable-8'),
       isCurrent: () => true,
     }) satisfies ResolvedManagedProviderRuntime;
     const acquireManagedProviderRuntime = vi.fn(async () => {
@@ -334,8 +339,8 @@ describe('managed Provider catalog runtime composition', () => {
         }),
         bootstrap: Object.freeze({
           identity: contribution.identity,
-          activationGeneration: resolvedRuntime.activationGeneration,
-          immutableGenerationId: resolvedRuntime.immutableGenerationId,
+          occurrenceId: createPluginRuntimeOccurrenceId(contribution.identity.pluginId),
+          sourceCustody: resolvedRuntime.sourceCustody,
           manifestAuthority: 'bundled_first_party',
           operationClaimId: 'managed-provider-bounded:catalog-test',
           requestAuth: null,
@@ -345,14 +350,21 @@ describe('managed Provider catalog runtime composition', () => {
     });
     // Boundary fixture exposes only the two registry capabilities this real
     // catalog operation consumes; every internal launch owner remains real.
+    let successorProviderOccurrenceId = 'activation-7';
     const runtimeRegistry = {
       generation: 7,
+      readPluginOccurrenceId: () => 'activation-7',
       acquireManagedProviderRuntime,
       createManagedProviderRuntimeInvocationServices,
     } as unknown as ResolvedExecutablePluginRuntimeRegistry;
     const successorRegistry = {
       generation: 8,
-      acquireManagedProviderRuntime: vi.fn(async () => successorRuntime),
+      readPluginOccurrenceId: () => successorProviderOccurrenceId,
+      acquireManagedProviderRuntime: vi.fn(async () => (
+        successorProviderOccurrenceId === 'activation-7'
+          ? resolvedRuntime
+          : successorRuntime
+      )),
       createManagedProviderRuntimeInvocationServices,
     } as unknown as ResolvedExecutablePluginRuntimeRegistry;
     const releaseRegistryLease = vi.fn(async () => undefined);
@@ -416,19 +428,17 @@ describe('managed Provider catalog runtime composition', () => {
     expect(releaseRegistryLease).toHaveBeenCalledTimes(1);
     expect(disposeService).toHaveBeenCalledTimes(1);
 
-    // Structural authorization was admitted from registry generation 7. A
-    // replacement that is already current before managed-runtime acquisition
-    // must not execute generation 8 under those generation-7 facts.
+    // An unrelated registry replacement keeps the Provider plugin occurrence
+    // current, so the admitted operation may continue through the new lease.
     returnSuccessorRegistry = true;
+    await expect(services.probe(identity)).resolves.toMatchObject({ status: 'success' });
+    successorProviderOccurrenceId = 'activation-8';
     await expect(services.probe(identity)).resolves.toMatchObject({
-      status: 'error',
-      error: { code: 'provider_authorization_changed' },
+      status: 'error', error: { code: 'provider_authorization_changed' },
     });
     returnSuccessorRegistry = false;
-    expect(successorRegistry.acquireManagedProviderRuntime).not.toHaveBeenCalled();
-    expect(createManagedProviderRuntimeInvocationServices).toHaveBeenCalledTimes(1);
-    expect(releaseRegistryLease).toHaveBeenCalledTimes(2);
-    expect(disposeService).toHaveBeenCalledTimes(1);
+    successorProviderOccurrenceId = 'activation-7';
+    expect(successorRegistry.acquireManagedProviderRuntime).toHaveBeenCalledTimes(2);
 
     switchRuntimeDuringStart = true;
     await expect(services.probe(identity)).resolves.toMatchObject({
@@ -436,28 +446,28 @@ describe('managed Provider catalog runtime composition', () => {
       error: { code: 'provider_authorization_changed' },
     });
     switchRuntimeDuringStart = false;
-    expect(start).toHaveBeenCalledTimes(2);
+    expect(start).toHaveBeenCalledTimes(3);
     expect(successorStart).not.toHaveBeenCalled();
     expect(acquireManagedProviderRuntime).toHaveBeenCalledTimes(4);
-    expect(createManagedProviderRuntimeInvocationServices).toHaveBeenCalledTimes(2);
-    expect(endpointAccessCleanup).toHaveBeenCalledTimes(1);
-    expect(invocationCleanup).toHaveBeenCalledTimes(2);
-    expect(releaseRegistryLease).toHaveBeenCalledTimes(3);
-    expect(disposeService).toHaveBeenCalledTimes(2);
+    expect(createManagedProviderRuntimeInvocationServices).toHaveBeenCalledTimes(3);
+    expect(endpointAccessCleanup).toHaveBeenCalledTimes(2);
+    expect(invocationCleanup).toHaveBeenCalledTimes(3);
+    expect(releaseRegistryLease).toHaveBeenCalledTimes(4);
+    expect(disposeService).toHaveBeenCalledTimes(3);
 
     invalidateAuthorizationDuringStart = true;
     await expect(services.probe(identity)).resolves.toMatchObject({
       status: 'error',
       error: { code: 'provider_authorization_changed' },
     });
-    expect(start).toHaveBeenCalledTimes(3);
+    expect(start).toHaveBeenCalledTimes(4);
     expect(successorStart).not.toHaveBeenCalled();
     expect(acquireManagedProviderRuntime).toHaveBeenCalledTimes(6);
-    expect(createManagedProviderRuntimeInvocationServices).toHaveBeenCalledTimes(3);
-    expect(endpointAccessCleanup).toHaveBeenCalledTimes(1);
-    expect(invocationCleanup).toHaveBeenCalledTimes(3);
-    expect(releaseRegistryLease).toHaveBeenCalledTimes(4);
-    expect(disposeService).toHaveBeenCalledTimes(3);
+    expect(createManagedProviderRuntimeInvocationServices).toHaveBeenCalledTimes(4);
+    expect(endpointAccessCleanup).toHaveBeenCalledTimes(2);
+    expect(invocationCleanup).toHaveBeenCalledTimes(4);
+    expect(releaseRegistryLease).toHaveBeenCalledTimes(5);
+    expect(disposeService).toHaveBeenCalledTimes(4);
     runtimeUnavailable = true;
     await expect(services.probe(identity)).resolves.toMatchObject({
       status: 'error',

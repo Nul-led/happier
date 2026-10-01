@@ -1,64 +1,61 @@
 import * as React from 'react';
-import { View } from 'react-native';
-import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
-import { SETTINGS_TEXT_INPUT_METRICS } from '@/components/ui/forms/settingsTextInputMetrics';
-import { Text, TextInput } from '@/components/ui/text/Text';
+import { FieldTextInput } from '@/components/ui/forms/FieldTextInput';
+import { Item } from '@/components/ui/lists/Item';
 import { t } from '@/text';
 
-const styles = StyleSheet.create((theme) => ({
-  fieldLabel: {
-    color: theme.colors.text.secondary,
-    fontSize: 14,
-    marginBottom: 8,
-  },
-  input: {
-    backgroundColor: theme.colors.input.background,
-    color: theme.colors.input.text,
-    borderRadius: 10,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    ...SETTINGS_TEXT_INPUT_METRICS,
-    marginBottom: 12,
-  },
-}));
-
-export const PromptOrganizationFields = React.memo(function PromptOrganizationFields(props: Readonly<{
-  folderName: string;
-  onChangeFolderName: (value: string) => void;
-  tags: string;
-  onChangeTags: (value: string) => void;
-  folderTestID: string;
-  tagsTestID: string;
+type FieldRowProps = Readonly<{
+  value: string;
+  onChange: (value: string) => void;
+  testID: string;
   editable: boolean;
-}>) {
-  const { theme } = useUnistyles();
+  /** Injected by `ItemGroup`. */
+  showDivider?: boolean;
+}>;
 
+/** The folder row of a prompt or skill editor: typing a new name creates the folder on save. */
+export function PromptFolderFieldRow(props: FieldRowProps) {
   return (
-    <View style={{ paddingHorizontal: 16, paddingBottom: 12 }}>
-      <Text style={styles.fieldLabel}>{t('promptLibrary.folderLabel')}</Text>
-      <TextInput
-        testID={props.folderTestID}
-        placeholder={t('promptLibrary.folderPlaceholder')}
-        placeholderTextColor={theme.colors.input.placeholder}
-        value={props.folderName}
-        onChangeText={props.onChangeFolderName}
-        style={styles.input}
-        editable={props.editable}
-      />
-
-      <Text style={styles.fieldLabel}>{t('promptLibrary.tagsLabel')}</Text>
-      <TextInput
-        testID={props.tagsTestID}
-        placeholder={t('promptLibrary.tagsPlaceholder')}
-        placeholderTextColor={theme.colors.input.placeholder}
-        value={props.tags}
-        onChangeText={props.onChangeTags}
-        style={[styles.input, { marginBottom: 0 }]}
-        editable={props.editable}
-        autoCapitalize="none"
-        autoCorrect={false}
-      />
-    </View>
+    <Item
+      title={t('promptLibrary.folderLabel')}
+      subtitle={t('promptLibrary.surface.folderDescription')}
+      accessoryLayout="adaptive"
+      showChevron={false}
+      showDivider={props.showDivider}
+      rightElement={(
+        <FieldTextInput
+          testID={props.testID}
+          value={props.value}
+          onChangeText={props.onChange}
+          accessibilityLabel={t('promptLibrary.folderLabel')}
+          placeholder={t('promptLibrary.surface.optionalPlaceholder')}
+          editable={props.editable}
+        />
+      )}
+    />
   );
-});
+}
+
+/** The tags row of a prompt or skill editor, comma-separated. */
+export function PromptTagsFieldRow(props: FieldRowProps) {
+  return (
+    <Item
+      title={t('promptLibrary.tagsLabel')}
+      subtitle={t('promptLibrary.surface.tagsDescription')}
+      accessoryLayout="adaptive"
+      showChevron={false}
+      showDivider={props.showDivider}
+      rightElement={(
+        <FieldTextInput
+          testID={props.testID}
+          value={props.value}
+          onChangeText={props.onChange}
+          accessibilityLabel={t('promptLibrary.tagsLabel')}
+          placeholder={t('promptLibrary.tagsPlaceholder')}
+          editable={props.editable}
+          autoCapitalize="none"
+        />
+      )}
+    />
+  );
+}

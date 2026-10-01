@@ -1,6 +1,10 @@
 import { AccountDirectoryErrorCodeV1Schema } from '@happier-dev/protocol';
 import { t } from '@/text';
-import type { AccountPostAuthFailureCode } from '@/sync/ops/accountDirectory/completeAccountServicePostAuth';
+import {
+    isCompletedAccountPostAuthResult,
+    type AccountPostAuthFailureCode,
+    type AccountPostAuthResult,
+} from '@/sync/ops/accountDirectory/completeAccountServicePostAuth';
 
 /** Failures the OAuth callback route computes before a post-auth continuation exists. */
 export type AccountServiceOAuthCallbackFailureCode =
@@ -134,6 +138,46 @@ export function describeAccountServiceFailure(code: AccountServiceFailureCode): 
             }
         default:
             return unreachable(code);
+    }
+}
+
+/**
+ * The one reason sentence for a post-auth result, shared by the continuation
+ * card and every surface that announces the same result (such as Settings'
+ * Home-approval live region), so a result never reads one way on the card and
+ * another way in its announcement. `signInToHome` is whether the surface offers
+ * direct Home sign-in as the recovery.
+ */
+export function describeAccountPostAuthResultReason(
+    result: AccountPostAuthResult,
+    context: Readonly<{ signInToHome: boolean; homeName: string }>,
+): string {
+    const { homeName, signInToHome } = context;
+    switch (result.kind) {
+        case 'approval_required':
+            return t('settingsAccount.accountServiceOAuth.approvalWait.waitingBody');
+        case 'account_connected':
+            return t('settingsAccount.accountServiceOAuth.focusedHomePreserved');
+        case 'explicit_target_not_linked':
+            return signInToHome
+                ? t('settingsAccount.accountServiceOAuth.notLinked.body', { homeName })
+                : t('settingsAccount.accountServiceOAuth.notLinked.scanBody', { homeName });
+        case 'account_connected_no_homes':
+            return t('settingsAccount.accountServiceOAuth.noHomes.body');
+        case 'home_material_required':
+            return t('welcome.accountKeyDescription', { service: homeName });
+        case 'failure':
+            if (result.recovery === 'reauthenticate_account') return t('settingsAccount.accountServiceDiscoveryUnavailableDescription');
+            if (result.recovery === 'use_home_auth') {
+                return signInToHome
+                    ? t('settingsAccount.accountServiceOAuth.notLinked.body', { homeName })
+                    : t('connect.scanExistingHomeQrBody');
+            }
+            return describeAccountServiceFailure(result.code).body;
+        default:
+            return isCompletedAccountPostAuthResult(result)
+                ? t('settingsAccount.accountServiceOAuth.success.body')
+                : t('settingsAccount.accountServiceOAuth.errors.homeEnrollment.body');
     }
 }
 

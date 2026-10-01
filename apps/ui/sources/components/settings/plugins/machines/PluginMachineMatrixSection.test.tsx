@@ -2,7 +2,6 @@ import * as React from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { renderScreen, standardCleanup } from '@/dev/testkit';
-import { act } from 'react-test-renderer';
 
 vi.mock('react-native', async () => (await import('@/dev/testkit/mocks/reactNative')).createReactNativeWebMock());
 vi.mock('react-native-unistyles', async () => (await import('@/dev/testkit/mocks/unistyles')).createUnistylesMock());
@@ -92,119 +91,60 @@ describe('PluginMachineMatrixSection', () => {
         };
     });
 
-    it('states Account desired release and hosted UI Artifact availability above machine-local truth', async () => {
-        fixture.materializationAdmission = {
-            ...(fixture.materializationAdmission as Record<string, unknown>),
-            intentReads: [{
-                pluginId: 'acme.plugin',
-                response: {
-                    availabilityCursor: 7,
-                    packageAssets: [],
-                    hostingCapability: {
-                        enabled: true,
-                        maxArtifactBytes: 1024,
-                        maxAccountBytes: 2048,
-                    },
-                    intent: {
-                        pluginId: 'acme.plugin',
-                        desiredVersion: '2.0.0',
-                        enabled: true,
-                        offlineUiHosting: 'enabled',
-                        writableCollections: [],
-                        revision: 'intent-1',
-                    },
-                    release: {
-                        ref: { pluginId: 'acme.plugin', version: '2.0.0' },
-                        archiveDigestSha256: `sha256:${'b'.repeat(64)}`,
-                        normalizedManifest: {
-                            schemaVersion: 2,
-                            id: 'acme.plugin',
-                            version: '2.0.0',
-                            displayName: 'Acme Plugin',
-                            engines: { happier: '^1.0.0' },
-                            runtime: { apiVersion: 1 },
-                            contributes: {},
-                        },
-                        collectionContracts: [],
-                        uiSlots: [{
-                            contributionId: 'panel',
-                            tier: 'hostedWeb',
-                            platform: 'web',
-                            artifactDigest: `sha256:${'a'.repeat(64)}`,
-                            compatibility: { hostUiApiVersion: '1.0.0' },
-                        }],
-                        packageAssetArchive: {
-                            archiveDigestSha256: `sha256:${'c'.repeat(64)}`,
-                            resources: [],
-                        },
-                    },
-                    uiArtifacts: [{
-                        release: { pluginId: 'acme.plugin', version: '2.0.0' },
-                        contributionId: 'panel',
-                        tier: 'hostedWeb',
-                        platform: 'web',
-                        artifactId: '00000000-0000-4000-8000-000000000001',
-                        artifactDigest: `sha256:${'a'.repeat(64)}`,
-                        compatibility: {
-                            hostAppVersion: '1.0.0',
-                            hostUiApiVersion: '1.0.0',
-                            reactVersion: '19.2.0',
-                            platform: 'web',
-                            channel: 'store',
-                            nativeCapabilities: [],
-                        },
-                    }],
-                },
-            }],
-        };
-        const { PluginMachineMatrixSection } = await import('./PluginMachineMatrixSection');
-        await renderScreen(<PluginMachineMatrixSection pluginId="acme.plugin" />);
-
-        expect(capturedItemProps.find((props) => props.testID === 'settings.plugins.machineMatrix.acme.plugin.account'))
-            .toMatchObject({
-                title: 'settingsPlugins.accountReleaseSelection.groupTitle',
-                subtitle: 'common.version 2.0.0 · settingsPlugins.accountReleaseSelection.hostedStatusReady',
-                detail: 'common.enabled',
-                mode: 'info',
-                showChevron: false,
-            });
-    });
-
     afterEach(() => {
         standardCleanup();
     });
 
-    it('states each machine\'s distinct truth for one plugin', async () => {
+    it('summarizes where the plugin is current and lists only the machines that need a look', async () => {
         const { PluginMachineMatrixSection } = await import('./PluginMachineMatrixSection');
         await renderScreen(<PluginMachineMatrixSection pluginId="acme.plugin" />);
 
-        const cells = capturedItemProps.filter((props) => (
-            String(props.testID ?? '').endsWith('.cell')
-        ));
-        expect(cells.map((props) => [props.title, props.detail])).toEqual([
-            ['machine-a', 'settingsPlugins.machineMatrix.state.installedCurrent'],
+        expect(capturedItemProps.find((props) => props.testID === 'settings.plugins.machineMatrix.summary'))
+            .toMatchObject({
+                title: 'settingsPlugins.surfaces.machinesCurrent(current=1,total=2)',
+                subtitle: 'machine-a',
+            });
+        const exceptions = capturedItemProps.filter((props) => props.testID === 'settings.plugins.machineMatrix.exception');
+        expect(exceptions.map((props) => [props.title, props.detail])).toEqual([
             ['machine-b', 'settingsPlugins.machineMatrix.state.staleOffline'],
         ]);
-        expect(cells.map((props) => props.accessibilityLabel)).toEqual([
-            'machine-a: settingsPlugins.machineMatrix.state.installedCurrent. Server One · common.version 1.0.0',
-            expect.stringContaining('machine-b: settingsPlugins.machineMatrix.state.staleOffline. Server One · common.version 1.0.0 · settingsPlugins.machineMatrix.lastObserved'),
-        ]);
+        expect(exceptions[0]?.accessibilityLabel).toEqual(expect.stringContaining(
+            'machine-b: settingsPlugins.machineMatrix.state.staleOffline. Server One · common.version 1.0.0 · settingsPlugins.machineMatrix.lastObserved',
+        ));
     });
 
-    it('renders no interactive matrix row, so a cell can never retarget administration', async () => {
+    it('does not repeat the Account release, which its own section owns', async () => {
+        const { PluginMachineMatrixSection } = await import('./PluginMachineMatrixSection');
+        await renderScreen(<PluginMachineMatrixSection pluginId="acme.plugin" />);
+        expect(capturedItemProps.some((props) => String(props.testID).endsWith('.account'))).toBe(false);
+    });
+
+    it('names a machine that left the Account generically, never by its raw id', async () => {
+        fixture.materializationAdmission = {
+            ...(fixture.materializationAdmission as object),
+            materializations: [materialization('machine-a'), materialization('machine-gone', { version: '0.9.0' })],
+        };
+        const { PluginMachineMatrixSection } = await import('./PluginMachineMatrixSection');
+        await renderScreen(<PluginMachineMatrixSection pluginId="acme.plugin" />);
+        const titles = capturedItemProps
+            .filter((props) => props.testID === 'settings.plugins.machineMatrix.exception')
+            .map((props) => props.title);
+        expect(titles).toContain('settingsPlugins.surfaces.machinesRetained');
+        expect(JSON.stringify(capturedItemProps.map((props) => [props.title, props.subtitle]))).not.toContain('machine-gone');
+    });
+
+    it('renders no interactive row, so a machine can never retarget administration', async () => {
         const { PluginMachineMatrixSection } = await import('./PluginMachineMatrixSection');
         await renderScreen(<PluginMachineMatrixSection pluginId="acme.plugin" />);
 
         expect(capturedItemProps.length).toBeGreaterThan(0);
         const interactive = capturedItemProps.filter((props) => (
-            props.testID !== 'settings.plugins.machineMatrix.disclosure' && (props.mode !== 'info'
-            || Object.entries(props).some(([, value]) => typeof value === 'function')
-            )
+            props.mode !== 'info' || Object.entries(props).some(([, value]) => typeof value === 'function')
         ));
         expect(interactive).toEqual([]);
     });
 
-    it('says the machine states are unknown rather than drawing an empty grid while Availability is unloaded', async () => {
+    it('says the machine states are unknown rather than drawing an empty summary while Availability is unloaded', async () => {
         fixture.materializationAdmission = {
             kind: 'unavailable',
             code: 'account_availability_not_loaded',
@@ -213,29 +153,7 @@ describe('PluginMachineMatrixSection', () => {
         await renderScreen(<PluginMachineMatrixSection pluginId="acme.plugin" />);
 
         expect(capturedItemProps.map((props) => props.title)).toEqual([
-            'settingsPlugins.machineMatrix.title',
             'settingsPlugins.machineMatrix.unavailable',
         ]);
-    });
-
-    it('starts healthy matrices collapsed and allows inspection', async () => {
-        fixture.snapshots = [{ ...(fixture.snapshots[0] as object), machines: [machine('machine-a', true)] }];
-        fixture.materializationAdmission = {
-            ...(fixture.materializationAdmission as object), materializations: [materialization('machine-a')],
-        };
-        const { PluginMachineMatrixSection } = await import('./PluginMachineMatrixSection');
-        await renderScreen(<PluginMachineMatrixSection />);
-        expect(capturedItemProps.some((props) => String(props.testID).endsWith('.cell'))).toBe(false);
-        const disclosure = capturedItemProps.find((props) => props.testID === 'settings.plugins.machineMatrix.disclosure');
-        expect(disclosure?.accessibilityState).toEqual({ expanded: false });
-        await act(async () => { (disclosure?.onPress as () => void)(); });
-        expect(capturedItemProps.some((props) => String(props.testID).endsWith('.cell'))).toBe(true);
-    });
-
-    it('opens automatically for existing stale machine attention', async () => {
-        const { PluginMachineMatrixSection } = await import('./PluginMachineMatrixSection');
-        await renderScreen(<PluginMachineMatrixSection />);
-        expect(capturedItemProps.find((props) => props.testID === 'settings.plugins.machineMatrix.disclosure')?.accessibilityState)
-            .toEqual({ expanded: true });
     });
 });

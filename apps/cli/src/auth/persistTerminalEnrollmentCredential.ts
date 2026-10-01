@@ -2,6 +2,7 @@ import tweetnacl from 'tweetnacl';
 
 import { ApiClient } from '@/api/api';
 import { ensureMachineRegistered } from '@/api/machine/ensureMachineRegistered';
+import { runWithServerHttpBaseUrl } from '@/api/client/serverHttpBaseUrl';
 import { initialMachineMetadata } from '@/daemon/machine/metadata';
 import {
   writeCredentialsDataKey,
@@ -40,14 +41,17 @@ export async function persistTerminalEnrollmentCredential(params: Readonly<{
 
 export async function registerTerminalEnrollmentMachine(
   credentials: StoredCredentials,
+  runtimeOrigin: string,
 ): Promise<string> {
-  const { machineId } = await ensureMachineIdForCredentials(credentials);
-  const api = await ApiClient.create(credentials);
-  const registered = await ensureMachineRegistered({
-    api,
-    machineId,
-    metadata: initialMachineMetadata,
-    caller: 'auth.wait',
+  return await runWithServerHttpBaseUrl(runtimeOrigin, async () => {
+    const { machineId } = await ensureMachineIdForCredentials(credentials);
+    const api = await ApiClient.create(credentials);
+    const registered = await ensureMachineRegistered({
+      api,
+      machineId,
+      metadata: initialMachineMetadata,
+      caller: 'auth.wait',
+    });
+    return registered.machineId;
   });
-  return registered.machineId;
 }

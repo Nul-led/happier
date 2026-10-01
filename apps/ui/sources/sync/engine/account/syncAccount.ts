@@ -22,7 +22,7 @@ import {
     type ServerProfile,
 } from '@/sync/domains/server/serverProfiles';
 import { getActiveServerSnapshot } from '@/sync/domains/server/serverRuntime';
-import { serverFetch } from '@/sync/http/client';
+import { serverFetch, type ServerFetch } from '@/sync/http/client';
 import { isExpoPushNotificationChannelEnabled, readServerEnabledBit } from '@happier-dev/protocol';
 import {
     clearLastRegisteredExpoPushToken,
@@ -340,13 +340,15 @@ export async function handleUpdateAccountSocketUpdate(params: {
 export async function fetchAndApplyProfile(params: {
     credentials: AuthCredentials;
     applyProfile: (profile: Profile) => void;
+    request?: ServerFetch;
     shouldContinue?: () => boolean;
 }): Promise<void> {
     const { credentials, applyProfile } = params;
     const shouldContinue = params.shouldContinue ?? (() => true);
     if (!shouldContinue()) return;
 
-    const response = await serverFetch('/v1/account/profile', {
+    const request = params.request ?? serverFetch;
+    const response = await request('/v1/account/profile', {
         headers: {
             'Authorization': `Bearer ${credentials.token}`,
             'Content-Type': 'application/json',

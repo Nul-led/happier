@@ -34,7 +34,7 @@ const metadata = {
     v: 1,
     updatedAt: 10,
     selection: {
-      agentTargetKey: 'backend:codex',
+      agentTargetKey: 'agent:happier.agent.codex/codex',
       providerConnectionId: 'pc_work',
       modelId: 'old-model',
     },
@@ -111,7 +111,7 @@ describe('setSessionModel', () => {
       status: 'restart_required',
       activeSelection: metadata.modelSelectionIntentV1.selection,
       requestedSelection: {
-        agentTargetKey: 'backend:codex',
+        agentTargetKey: 'agent:happier.agent.codex/codex',
         providerConnectionId: null,
         modelId: 'default',
       },
@@ -136,7 +136,7 @@ describe('setSessionModel', () => {
       request: {
         v: 1,
         selection: {
-          agentTargetKey: 'backend:codex',
+          agentTargetKey: 'agent:happier.agent.codex/codex',
           providerConnectionId: null,
           modelId: 'default',
         },
@@ -199,7 +199,7 @@ describe('setSessionModel', () => {
       status: 'apply_failed',
       activeSelection: metadata.modelSelectionIntentV1.selection,
       requestedSelection: {
-        agentTargetKey: 'backend:codex',
+        agentTargetKey: 'agent:happier.agent.codex/codex',
         providerConnectionId: null,
         modelId: 'next-model',
       },
@@ -254,7 +254,7 @@ describe('setSessionModel', () => {
         v: 1,
         updatedAt: 11,
         selection: {
-          agentTargetKey: 'backend:codex',
+          agentTargetKey: 'agent:happier.agent.codex/codex',
           providerConnectionId: 'pc_pending',
           modelId: 'pending-restart-model',
         },
@@ -267,12 +267,12 @@ describe('setSessionModel', () => {
       ok: false,
       status: 'restart_required',
       activeSelection: {
-        agentTargetKey: 'backend:codex',
+        agentTargetKey: 'agent:happier.agent.codex/codex',
         providerConnectionId: 'pc_active',
         modelId: 'active-model',
       },
       requestedSelection: {
-        agentTargetKey: 'backend:codex',
+        agentTargetKey: 'agent:happier.agent.codex/codex',
         providerConnectionId: 'pc_active',
         modelId: 'next-model',
       },
@@ -288,7 +288,7 @@ describe('setSessionModel', () => {
       request: {
         v: 1,
         selection: {
-          agentTargetKey: 'backend:codex',
+          agentTargetKey: 'agent:happier.agent.codex/codex',
           providerConnectionId: 'pc_active',
           modelId: 'next-model',
         },
@@ -329,7 +329,7 @@ describe('setSessionModel', () => {
             v: 1,
             updatedAt: 11,
             selection: {
-              agentTargetKey: 'backend:codex',
+              agentTargetKey: 'agent:happier.agent.codex/codex',
               providerConnectionId: 'pc_pending',
               modelId: 'pending-restart-model',
             },
@@ -350,7 +350,7 @@ describe('setSessionModel', () => {
         status: 'restart_required',
         activeSelection: null,
         requestedSelection: {
-          agentTargetKey: 'backend:codex',
+          agentTargetKey: 'agent:happier.agent.codex/codex',
           providerConnectionId: expectedProviderConnectionId,
           modelId: 'next-model',
         },
@@ -371,7 +371,7 @@ describe('setSessionModel', () => {
 
       expect(result).toMatchObject({
         [active ? 'requestedSelection' : 'selection']: {
-          agentTargetKey: 'backend:codex',
+          agentTargetKey: 'agent:happier.agent.codex/codex',
           providerConnectionId: expectedProviderConnectionId,
           modelId: 'next-model',
         },
@@ -463,7 +463,7 @@ describe('setSessionModel', () => {
         resourceId: 'resource-1',
         expectedResourceRevision: 7,
         deliveryMode: 'brokered',
-        agentTargetKey: 'backend:codex',
+        agentTargetKey: 'agent:happier.agent.codex/codex',
         modelId: 'team-model',
       },
     })).resolves.toMatchObject({
@@ -475,7 +475,7 @@ describe('setSessionModel', () => {
         ref: {
           source: 'team_resource', resourceId: 'resource-1', teamId: 'team-1',
           expectedResourceRevision: 7, deliveryMode: 'brokered',
-          agentTargetKey: 'backend:codex', modelId: 'team-model',
+          agentTargetKey: 'agent:happier.agent.codex/codex', modelId: 'team-model',
         },
       },
     });
@@ -499,7 +499,7 @@ describe('setSessionModel', () => {
         ref: {
           source: 'team_resource', resourceId: 'resource-1', teamId: 'team-1',
           expectedResourceRevision: 7, deliveryMode: 'brokered',
-          agentTargetKey: 'backend:codex', modelId: 'team-model',
+          agentTargetKey: 'agent:happier.agent.codex/codex', modelId: 'team-model',
         },
       },
     });
@@ -519,7 +519,7 @@ describe('setSessionModel', () => {
       teamCredentialModel: {
         kind: 'team_credential_provider_model', teamId: 'team-1', resourceId: 'resource-1',
         expectedResourceRevision: 7, deliveryMode: 'brokered',
-        agentTargetKey: 'backend:codex', modelId: 'team-model',
+        agentTargetKey: 'agent:happier.agent.codex/codex', modelId: 'team-model',
       },
       teamVisibilityGrantConsent: { teamId: 'team-1' },
     })).resolves.toMatchObject({
@@ -553,7 +553,7 @@ describe('setSessionModel', () => {
         resourceId: 'resource-1',
         expectedResourceRevision: 7,
         deliveryMode: 'brokered',
-        agentTargetKey: 'backend:codex',
+        agentTargetKey: 'agent:happier.agent.codex/codex',
         modelId: 'team-model',
       },
     })).resolves.toMatchObject({
@@ -601,7 +601,7 @@ describe('setSessionModel', () => {
       ok: true as const,
       status: 'applied' as const,
       activeSelection: {
-        agentTargetKey: 'backend:codex',
+        agentTargetKey: 'agent:happier.agent.codex/codex',
         providerConnectionId: 'pc_active',
         modelId: 'next-model',
       },
@@ -631,7 +631,7 @@ describe('setSessionModel', () => {
       request: {
         v: 1,
         selection: {
-          agentTargetKey: 'backend:codex',
+          agentTargetKey: 'agent:happier.agent.codex/codex',
           providerConnectionId: 'pc_active',
           modelId: 'next-model',
         },
@@ -783,7 +783,7 @@ describe('setSessionModel', () => {
       ok: true,
       status: 'intent_updated',
       selection: {
-        agentTargetKey: 'backend:codex',
+        agentTargetKey: 'agent:happier.agent.codex/codex',
         providerConnectionId: 'pc_explicit',
         modelId: 'next-model',
       },

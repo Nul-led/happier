@@ -3,44 +3,66 @@ import { View } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 import { RoundButton } from '@/components/ui/buttons/RoundButton';
-import { ItemGroup } from '@/components/ui/lists/ItemGroup';
-import { Text, TextInput } from '@/components/ui/text/Text';
+import { ConnectedServiceSetupFlowActions } from '../setup/ConnectedServiceSetupFlowBody';
+import { ConnectedAccountFormSection } from './ConnectedAccountFormSection';
+import { FieldTextInput } from '@/components/ui/forms/FieldTextInput';
+import { Text } from '@/components/ui/text/Text';
+import { SetupSteps } from '@/components/ui/setupBlocks/SetupSteps';
 import { t } from '@/text';
 import { parseOauthCallbackUrl } from '@/utils/auth/oauthCore';
+import { getClipboardStringTrimmedSafe } from '@/utils/ui/clipboard';
 import { openExternalUrl } from '@/utils/url/openExternalUrl';
 
-import {
-    connectedAccountFieldErrorId,
-    useConnectedAccountInvalidFieldFocus,
-} from './useConnectedAccountInvalidFieldFocus';
+import { useConnectedAccountInvalidFieldFocus } from './useConnectedAccountInvalidFieldFocus';
 import { useConnectedAccountDraftNavigationGuard } from './useConnectedAccountDraftNavigationGuard';
 
 const stylesheet = StyleSheet.create((theme) => ({
-    input: {
-        minHeight: 42,
-        borderRadius: 10,
-        borderWidth: 1,
-        borderColor: theme.colors.border.default,
-        backgroundColor: theme.colors.input.background,
-        color: theme.colors.input.text,
-        paddingHorizontal: 12,
-        paddingVertical: 10,
-        marginBottom: 12,
-    },
-    section: {
+    page: {
         paddingHorizontal: 16,
         paddingVertical: 12,
+        gap: 14,
+    },
+    embedded: {
+        gap: 14,
+    },
+    openBlock: {
+        gap: 6,
+    },
+    pasteBlock: {
+        flex: 1,
+        minWidth: 0,
+        gap: 6,
     },
     description: {
-        marginBottom: 8,
+        fontSize: 12.5,
+        lineHeight: 17,
+        color: theme.colors.text.secondary,
+    },
+    fieldRow: {
+        flexDirection: 'row',
+        alignItems: 'flex-start',
+        gap: 8,
+    },
+    field: {
+        flex: 1,
+        minWidth: 0,
+    },
+    shapeOk: {
+        fontSize: 12,
+        lineHeight: 16,
+        color: theme.colors.state.success.foreground,
     },
 }));
 
 type ConnectedAccountOAuthFormProps = Readonly<{
+    /** Inside the new-account draft row instead of as page sections. */
+    embedded?: boolean;
     authorizationUrl: string;
     callbackUrl: string;
     submitting: boolean;
     navigation?: unknown;
+    /** In a setup panel: Cancel (local) beside Connect. */
+    onCancel?: () => void;
     onSubmit(completion: Readonly<{
         code: string;
         callbackUrl: string;
@@ -48,28 +70,32 @@ type ConnectedAccountOAuthFormProps = Readonly<{
     }>): Promise<boolean | void> | boolean | void;
 }>;
 
+/**
+ * Signing in with a browser (lab `csvc` A3): three visible steps — open the provider's sign-in,
+ * approve, paste back what the provider shows (a code, or the address the browser lands on). The
+ * pasted answer is checked locally for its shape before anything is sent (G5); the daemon still
+ * validates it.
+ */
 function ConnectedAccountOAuthFormBody(props: ConnectedAccountOAuthFormProps) {
-    const { theme } = useUnistyles();
+    useUnistyles();
     const styles = stylesheet;
     const [callbackInput, setCallbackInput] = React.useState('');
     const [validationFailed, setValidationFailed] = React.useState(false);
     const [openFailed, setOpenFailed] = React.useState(false);
-    const callbackErrorId = connectedAccountFieldErrorId(
-        'connected-account-oauth',
-        'callback',
-    );
+    const [opened, setOpened] = React.useState(false);
     const callbackInvalidFieldIds = validationFailed ? ['callback'] : [];
     const registerInvalidFieldTarget = useConnectedAccountInvalidFieldFocus({
         invalidFieldIds: callbackInvalidFieldIds,
         announcement: t('connectedServices.oauthPaste.invalidConfig'),
     });
+    const parsed = React.useMemo(() => parseOauthCallbackUrl({
+        url: callbackInput,
+        redirectUri: props.callbackUrl,
+    }), [callbackInput, props.callbackUrl]);
+    const shapeOk = Boolean(parsed.code && parsed.state && !parsed.error);
 
     const submit = React.useCallback(async () => {
-        const parsed = parseOauthCallbackUrl({
-            url: callbackInput,
-            redirectUri: props.callbackUrl,
-        });
-        if (!parsed.code || !parsed.state || parsed.error) {
+        if (!shapeOk || !parsed.code || !parsed.state) {
             setValidationFailed(true);
             return false;
         }
@@ -79,7 +105,7 @@ function ConnectedAccountOAuthFormBody(props: ConnectedAccountOAuthFormProps) {
             state: parsed.state,
         });
         return accepted !== false;
-    }, [callbackInput, props]);
+    }, [parsed.code, parsed.state, props, shapeOk]);
     const discardDraft = React.useCallback(() => {
         setCallbackInput('');
         setValidationFailed(false);
@@ -96,93 +122,103 @@ function ConnectedAccountOAuthFormBody(props: ConnectedAccountOAuthFormProps) {
         try {
             if (!await openExternalUrl(props.authorizationUrl)) {
                 setOpenFailed(true);
+            } else {
+                setOpened(true);
             }
         } catch {
             setOpenFailed(true);
         }
     }, [props.authorizationUrl]);
+    const paste = React.useCallback(async () => {
+        const value = await getClipboardStringTrimmedSafe();
+        if (!value) return;
+        setCallbackInput(value);
+        setValidationFailed(false);
+    }, []);
 
-    return (
-        <>
-            <ItemGroup title={t('connectedServices.oauthPaste.openAuthorizationUrl')}>
-                <View style={styles.section}>
-                    <Text
-                        selectable
-                        style={[styles.description, { color: theme.colors.text.secondary }]}
-                    >
-                        {props.authorizationUrl}
-                    </Text>
-                    <RoundButton
-                        testID="connected-account-oauth:open"
-                        title={t('connectedServices.oauthPaste.openAuthorizationUrl')}
-                        disabled={props.submitting || !props.authorizationUrl}
-                        onPress={() => void openAuthorizationUrl()}
-                    />
-                    {openFailed ? (
-                        <Text
-                            testID="connected-account-oauth:open-error"
-                            accessibilityRole="alert"
-                            accessibilityLiveRegion="assertive"
-                            style={[styles.description, { color: theme.colors.text.secondary }]}
-                        >
-                            {t('connectedServices.oauthPaste.alerts.failedToOpenUrl')}
-                        </Text>
-                    ) : null}
-                </View>
-            </ItemGroup>
-            <ItemGroup
-                title={t('connectedServices.oauthPaste.pasteRedirectUrl')}
-                footer={validationFailed ? t('common.error') : undefined}
-            >
-                <View style={styles.section}>
-                    <Text
-                        style={[styles.description, { color: theme.colors.text.secondary }]}
-                    >
-                        {t('connectedServices.oauthPaste.pasteRedirectUrlPromptBody')}
-                    </Text>
-                    <TextInput
+    const field = (
+        <View style={styles.pasteBlock}>
+            <View style={styles.fieldRow}>
+                <View style={styles.field}>
+                    <FieldTextInput
                         testID="connected-account-oauth:callback"
                         ref={registerInvalidFieldTarget('callback')}
-                        nativeID="connected-account-oauth:callback"
                         accessibilityLabel={validationFailed
                             ? `${t('connectedServices.oauthPaste.pasteRedirectUrl')}: ${t('connectedServices.oauthPaste.invalidConfig')}`
                             : t('connectedServices.oauthPaste.pasteRedirectUrl')}
-                        accessibilityHint={validationFailed
-                            ? t('connectedServices.oauthPaste.invalidConfig')
-                            : t('connectedServices.oauthPaste.pasteRedirectUrlPromptBody')}
+                        error={validationFailed ? t('connectedServices.oauthPaste.invalidConfig') : null}
                         value={callbackInput}
                         onChangeText={(value) => {
                             setCallbackInput(value);
                             setValidationFailed(false);
                         }}
-                        placeholder={props.callbackUrl}
-                        placeholderTextColor={theme.colors.input.placeholder}
-                        autoCapitalize="none"
-                        autoCorrect={false}
+                        placeholder={t('connectedServicesSettings.oauthPastePlaceholder')}
                         editable={!props.submitting}
-                        style={styles.input}
-                    />
-                    {validationFailed ? (
-                        <Text
-                            testID={callbackErrorId}
-                            nativeID={callbackErrorId}
-                            accessibilityRole="alert"
-                            accessibilityLiveRegion="assertive"
-                            style={[styles.description, { color: theme.colors.text.secondary }]}
-                        >
-                            {t('connectedServices.oauthPaste.invalidConfig')}
-                        </Text>
-                    ) : null}
-                    <RoundButton
-                        testID="connected-account-oauth:submit"
-                        title={t('common.continue')}
-                        disabled={props.submitting || !callbackInput.trim()}
-                        loading={props.submitting}
-                        onPress={submit}
+                        monospace
                     />
                 </View>
-            </ItemGroup>
-        </>
+                <RoundButton
+                    testID="connected-account-oauth:paste"
+                    size="small"
+                    display="secondary"
+                    title={t('common.paste')}
+                    disabled={props.submitting}
+                    onPress={() => void paste()}
+                />
+            </View>
+            {shapeOk ? (
+                <Text testID="connected-account-oauth:callback.shape-ok" style={styles.shapeOk}>
+                    {t('connectedServicesSettings.oauthShapeOk')}
+                </Text>
+            ) : null}
+        </View>
+    );
+    const open = (
+        <View style={styles.openBlock}>
+            <RoundButton
+                testID="connected-account-oauth:open"
+                size="small"
+                display={opened ? 'secondary' : 'default'}
+                title={t('connectedServices.oauthPaste.openAuthorizationUrl')}
+                disabled={props.submitting || !props.authorizationUrl}
+                onPress={() => void openAuthorizationUrl()}
+            />
+            {openFailed ? (
+                <Text
+                    testID="connected-account-oauth:open-error"
+                    accessibilityRole="alert"
+                    accessibilityLiveRegion="assertive"
+                    style={styles.description}
+                >
+                    {t('connectedServices.oauthPaste.alerts.failedToOpenUrl')}
+                </Text>
+            ) : null}
+        </View>
+    );
+    const pasted = callbackInput.trim().length > 0;
+    return (
+        <ConnectedAccountFormSection embedded={props.embedded}>
+            <View style={props.embedded ? styles.embedded : styles.page}>
+                <SetupSteps
+                    testID="connected-account-oauth:steps"
+                    steps={[
+                        { key: 'open', state: opened ? 'done' : 'current', title: t('connectedServicesSettings.oauthStepOpen'), body: open },
+                        { key: 'approve', state: pasted ? 'done' : opened ? 'current' : 'upcoming', title: t('connectedServicesSettings.oauthStepApprove') },
+                        { key: 'paste', state: opened || pasted ? 'current' : 'upcoming', title: t('connectedServicesSettings.oauthStepPaste'), body: field },
+                    ]}
+                />
+                <ConnectedServiceSetupFlowActions
+                    onCancel={props.onCancel}
+                    primary={{
+                        testID: 'connected-account-oauth:submit',
+                        label: t('connectedServicesSettings.connect'),
+                        disabled: props.submitting || !callbackInput.trim(),
+                        loading: props.submitting,
+                        onPress: () => void submit(),
+                    }}
+                />
+            </View>
+        </ConnectedAccountFormSection>
     );
 }
 

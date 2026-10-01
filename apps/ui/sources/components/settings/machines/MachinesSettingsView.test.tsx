@@ -1,9 +1,8 @@
 import * as React from 'react';
-import renderer, { act } from 'react-test-renderer';
+import { act } from 'react-test-renderer';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { pressTestInstanceAsync, renderScreen } from '@/dev/testkit';
 import { installMachinesSettingsCommonModuleMocks } from './machinesSettingsTestHelpers';
-
 
 (
     globalThis as typeof globalThis & {
@@ -11,33 +10,32 @@ import { installMachinesSettingsCommonModuleMocks } from './machinesSettingsTest
     }
 ).IS_REACT_ACT_ENVIRONMENT = true;
 
-type MachinesSettingsViewModel = {
-    activeServerId: string;
-    allMachines: Array<{ id: string; metadata?: { displayName?: string; host?: string } }>;
-    hasMachines: boolean;
-    isLoadingMachines: boolean;
-    machineRows: Array<{ id: string; title: string; subtitle?: string; serverId?: string }>;
-    showMachinesGroupedByServer: boolean;
-    visibleMachineGroups: Array<{
-        serverId: string;
-        serverName: string;
-        status: 'idle';
-        machines: Array<{ id: string; metadata?: { displayName?: string; host?: string } }>;
-    }>;
-    relayDriftBanner: null | {
-        kind: 'warning';
-        title: string;
-        description: string;
-        actionLabel: string;
-    };
+type Group = {
+    serverId: string;
+    serverName: string;
+    status: 'idle' | 'loading' | 'signedOut' | 'error';
+    machines: Array<{ id: string; active: boolean; activeAt: number; metadata?: { displayName?: string; host?: string; platform?: string } }>;
 };
 
 const routerPushSpy = vi.fn();
-const tauriDesktopState = vi.hoisted(() => ({ value: false }));
-
+const routerReplaceSpy = vi.fn();
+const desktopState = vi.hoisted(() => ({ value: false }));
 const viewModelState = vi.hoisted(() => ({
-    value: null as unknown as MachinesSettingsViewModel,
+    value: null as unknown as {
+        activeServerId: string;
+        allMachines: Group['machines'];
+        hasMachines: boolean;
+        isLoadingMachines: boolean;
+        machineRows: unknown[];
+        showMachinesGroupedByServer: boolean;
+        visibleMachineGroups: Group[];
+    },
 }));
+const syncBoundary = vi.hoisted(() => ({ refreshMachines: vi.fn(async () => undefined) }));
+// The sync singleton is the transport boundary; the list only asks it to read the machines again.
+vi.mock('@/sync/sync', () => ({ sync: { refreshMachines: syncBoundary.refreshMachines } }));
+const poolFeatureState = vi.hoisted(() => ({ value: 'disabled' as 'disabled' | 'enabled' }));
+const relayDriftState = vi.hoisted(() => ({ value: null as null | { title: string; description: string } }));
 
 installMachinesSettingsCommonModuleMocks({
     reactNative: async () => {
@@ -53,246 +51,209 @@ installMachinesSettingsCommonModuleMocks({
     },
     router: async () => {
         const { createExpoRouterMock } = await import('@/dev/testkit/mocks/router');
-        const routerMock = createExpoRouterMock({
-            router: { push: routerPushSpy },
-        });
-        return routerMock.module;
-    },
-    text: async () => {
-        const { createTextModuleMock } = await import('@/dev/testkit/mocks/text');
-        return createTextModuleMock({ translate: (key) => key });
-    },
-    unistyles: async () => {
-        const { createUnistylesMock } = await import('@/dev/testkit/mocks/unistyles');
-        return createUnistylesMock({
-            theme: {
-                colors: {
-                    accent: { blue: 'blue', orange: 'orange' },
-                    textSecondary: 'gray',
-                    status: { connected: 'green', disconnected: 'red' },
-                },
-            },
-        });
+        return createExpoRouterMock({
+            router: { push: routerPushSpy, replace: routerReplaceSpy },
+            pathname: '/settings/machines',
+        }).module;
     },
 });
 
-vi.mock('@expo/vector-icons', () => ({
-    Ionicons: 'Ionicons',
-}));
-
-vi.mock('@/utils/platform/desktopHost', () => ({
-    isDesktopHost: () => tauriDesktopState.value,
-}));
-
+vi.mock('@expo/vector-icons', () => ({ Ionicons: 'Ionicons' }));
+vi.mock('@/utils/platform/desktopHost', () => ({ isDesktopHost: () => desktopState.value }));
+vi.mock('@/components/ui/icons/Icon', () => ({ Icon: 'Icon', ICON_SIZE: { xs: 12 } }));
 vi.mock('@/components/ui/lists/ItemList', () => ({
     ItemList: ({ children }: { children?: React.ReactNode }) => React.createElement('ItemList', null, children),
 }));
-
 vi.mock('@/components/ui/lists/ItemGroup', () => ({
-    ItemGroup: ({ children, title }: { children?: React.ReactNode; title?: React.ReactNode }) =>
-        React.createElement('Group', { title }, children),
+    ItemGroup: ({ children, title, description }: { children?: React.ReactNode; title?: React.ReactNode; description?: React.ReactNode }) =>
+        React.createElement('Group', { title, description }, children),
 }));
-
 vi.mock('@/components/ui/lists/Item', () => ({
     Item: (props: Record<string, unknown>) => React.createElement('Item', props),
 }));
-
-vi.mock('@/components/settings/server/RelayDriftActionCard', () => ({
-    RelayDriftActionCard: (props: any) => React.createElement('RelayDriftActionCard', props),
+vi.mock('@/components/ui/forms/SelectionTiles', () => ({
+    SelectionTiles: (props: Record<string, unknown>) => React.createElement('SelectionTiles', props),
 }));
-
-vi.mock('@/components/settings/machines/sections/ActiveSelectionMachinesSection', () => ({
-    ActiveSelectionMachinesSection: ({ visibleMachineGroups, allMachines, showMachinesGroupedByServer, machinesTitle }: any) => {
-        const groups = showMachinesGroupedByServer
-            ? visibleMachineGroups ?? []
-            : [{ serverId: 'srv-a', title: machinesTitle, machines: allMachines ?? [] }];
-
-        return React.createElement(
-            React.Fragment,
-            null,
-            groups.map((group: any) =>
-                React.createElement(
-                    'Group',
-                    {
-                        key: group.serverId,
-                        title: group.title,
-                    },
-                    (group.machines ?? []).map((machine: any) =>
-                        React.createElement('Item', {
-                            key: `${group.serverId}-${machine.id}`,
-                            title: machine.metadata?.displayName ?? machine.metadata?.host ?? machine.id,
-                        }),
-                    ),
-                ),
-            ),
-        );
-    },
+vi.mock('@/components/ui/forms/dropdown/DropdownMenu', () => ({
+    DropdownMenu: (props: Record<string, unknown>) => React.createElement('DropdownMenu', props),
 }));
-
+vi.mock('@/components/settings/shell/SettingsPageHeader', () => ({
+    SettingsPageHeader: (props: { actions?: React.ReactNode }) => React.createElement('SettingsPageHeader', props, props.actions),
+}));
+// Detected-CLI glyphs read the machine's capabilities over RPC; this screen only places them.
+vi.mock('@/components/sessions/new/components/MachineCliGlyphs', () => ({
+    MachineCliGlyphs: () => null,
+}));
+// The Home's pool feature decision and rows come from the network-backed projection owner.
+vi.mock('@/sync/engine/machines/useMachinePoolProjections', () => ({
+    useMachinePoolProjections: (groups: ReadonlyArray<{ serverId: string }>) => groups.map((group) => ({
+        serverId: group.serverId,
+        accountId: 'account-a',
+        featureStatus: poolFeatureState.value,
+        featureEnabled: poolFeatureState.value === 'enabled',
+        pools: [],
+        status: 'idle',
+        ready: true,
+    })),
+}));
 vi.mock('./machinesSettingsViewModel', () => ({
     useMachinesSettingsViewModel: () => viewModelState.value,
 }));
+vi.mock('@/components/settings/server/useRelayDriftBanner', () => ({
+    useRelayDriftBanner: () => relayDriftState.value,
+}));
+vi.mock('@/components/settings/server/RelayDriftActionCard', () => ({
+    RelayDriftActionCard: (props: Record<string, unknown>) => React.createElement('RelayDriftActionCard', props),
+}));
+vi.mock('@/components/ui/lists/AttentionBanner', () => ({
+    AttentionBanner: (props: Record<string, unknown>) => React.createElement('AttentionBanner', props),
+}));
+
+function machine(id: string, displayName: string, host: string) {
+    // `activeAt: 0` leaves presence to `active`, so a slow run cannot age the machine offline.
+    return { id, active: true, activeAt: 0, metadata: { displayName, host, platform: 'darwin' } };
+}
+
+function setMachines(groups: Group[], overrides: Partial<typeof viewModelState.value> = {}) {
+    const allMachines = groups.flatMap((group) => group.machines);
+    viewModelState.value = {
+        activeServerId: groups[0]?.serverId ?? 'srv-a',
+        allMachines,
+        hasMachines: allMachines.length > 0,
+        isLoadingMachines: false,
+        machineRows: [],
+        showMachinesGroupedByServer: groups.length > 1,
+        visibleMachineGroups: groups,
+        ...overrides,
+    };
+}
+
+async function renderPage() {
+    const { MachinesSettingsView } = await import('./MachinesSettingsView');
+    return (await renderScreen(React.createElement(MachinesSettingsView))).tree;
+}
+
+function addMenuItemIds(tree: Awaited<ReturnType<typeof renderPage>>): string[] {
+    const menu = tree.findByType('DropdownMenu' as never) as unknown as { props: { items: Array<{ id: string }> } };
+    return menu.props.items.map((item) => item.id);
+}
 
 describe('MachinesSettingsView', () => {
     beforeEach(() => {
         routerPushSpy.mockClear();
-        tauriDesktopState.value = false;
-        viewModelState.value = {
-            activeServerId: 'srv-a',
-            allMachines: [
-                {
-                    id: 'machine-a1',
-                    metadata: { displayName: 'Machine A1', host: 'a.local' },
-                },
-            ],
-            hasMachines: true,
-            isLoadingMachines: false,
-            machineRows: [
-                {
-                    id: 'machine-a1',
-                    title: 'Machine A1',
-                    subtitle: 'status.online',
-                    serverId: 'srv-a',
-                },
-            ],
-            showMachinesGroupedByServer: false,
-            visibleMachineGroups: [
-                {
-                    serverId: 'srv-a',
-                    serverName: 'Server A',
-                    status: 'idle',
-                    machines: [
-                        {
-                            id: 'machine-a1',
-                            metadata: { displayName: 'Machine A1', host: 'a.local' },
-                        },
-                    ],
-                },
-            ],
-            relayDriftBanner: null,
-        };
+        routerReplaceSpy.mockClear();
+        desktopState.value = false;
+        poolFeatureState.value = 'disabled';
+        relayDriftState.value = null;
+        setMachines([{ serverId: 'srv-a', serverName: 'Home A', status: 'idle', machines: [machine('machine-a1', 'Machine A1', 'a.local')] }]);
     });
 
-    it('keeps the Machines settings screen web-safe by hiding desktop-only setup actions', async () => {
-        const { MachinesSettingsView } = await import('./MachinesSettingsView');
-        let tree!: renderer.ReactTestRenderer;
-        tree = (await renderScreen(React.createElement(MachinesSettingsView))).tree;
+    it('lists the machines and opens a machine in the collection, scoped to its Home', async () => {
+        const tree = await renderPage();
 
-        const groups = tree.findAllByType('Group' as any);
-        expect(groups).toHaveLength(2);
-        expect(groups[0]?.props.title).toBe('settings.machines');
-        expect(groups[1]?.props.title).toBe('common.actions');
-
-        const firstGroupItems = groups[0]!.findAllByType('Item' as any);
-        expect(firstGroupItems.map((node: any) => node.props.title)).toContain('Machine A1');
-        expect(firstGroupItems.map((node: any) => node.props.title)).not.toContain('settings.machineSetupCurrentMachineTitle');
-        expect(firstGroupItems.map((node: any) => node.props.title)).not.toContain('setupOnboarding.setupNewMachineAction');
-
-        const actionItems = groups[1]!.findAllByType('Item' as any);
-        expect(actionItems.map((node: any) => node.props.title)).toContain('setupOnboarding.setupThisComputerTitle');
-        expect(actionItems.map((node: any) => node.props.title)).toContain('setupOnboarding.setupNewMachineAction');
-    });
-
-    it('shows desktop-only setup actions when running inside the Tauri desktop shell', async () => {
-        tauriDesktopState.value = true;
-
-        const { MachinesSettingsView } = await import('./MachinesSettingsView');
-        const tree = (await renderScreen(React.createElement(MachinesSettingsView))).tree;
-
-        const groups = tree.findAllByType('Group' as any);
-        expect(groups).toHaveLength(2);
-
-        const secondGroupItems = groups[1]!.findAllByType('Item' as any);
-        expect(secondGroupItems.map((node: any) => node.props.title)).toContain('settings.machineSetupCurrentMachineTitle');
-        expect(secondGroupItems.map((node: any) => node.props.title)).toContain('setupOnboarding.setupNewMachineAction');
-
-        const setupThisComputerItem = secondGroupItems.find((node: any) => node.props.title === 'settings.machineSetupCurrentMachineTitle');
-        expect(setupThisComputerItem).toBeTruthy();
+        const row = tree.findAll((node) => node.props?.testID === 'settings.machines.row.srv-a.machine-a1')[0]!;
+        expect(row.props.title).toBe('Machine A1');
+        expect(row.props.subtitle).toBe('settingsOverview.machineOnline · a.local · macOS');
         await act(async () => {
-            await pressTestInstanceAsync(setupThisComputerItem!);
+            await pressTestInstanceAsync(row);
+        });
+        expect(routerPushSpy).toHaveBeenCalledWith('/settings/machines/machine-a1?serverId=srv-a');
+        // No desktop-only row on the web.
+        expect(tree.findAll((node) => node.props?.testID === 'settings.machines.thisComputer')).toHaveLength(0);
+    });
+
+    it('offers this computer and SSH setup from the browser, and the SSH wizard alone from the desktop app', async () => {
+        const webTree = await renderPage();
+        expect(addMenuItemIds(webTree)).toEqual(['thisComputer', 'ssh']);
+
+        desktopState.value = true;
+        const desktopTree = await renderPage();
+        expect(addMenuItemIds(desktopTree)).toEqual(['ssh']);
+        const menu = desktopTree.findByType('DropdownMenu' as never) as unknown as { props: { onSelect: (id: string) => void } };
+        await act(async () => menu.props.onSelect('ssh'));
+        expect(routerPushSpy).toHaveBeenCalledWith('/setup/wizard?action=remote&step=remote_ssh_setup&scope=machine');
+    });
+
+    it('lists this computer in the desktop app and opens its page in the collection', async () => {
+        desktopState.value = true;
+        const tree = await renderPage();
+
+        const row = tree.findAll((node) => node.props?.testID === 'settings.machines.thisComputer')[0]!;
+        await act(async () => {
+            await pressTestInstanceAsync(row);
         });
         expect(routerPushSpy).toHaveBeenCalledWith('/settings/machines/this-computer');
-
-        routerPushSpy.mockClear();
-
-        const setupNewMachineItem = secondGroupItems.find((node: any) => node.props.title === 'setupOnboarding.setupNewMachineAction');
-        expect(setupNewMachineItem).toBeTruthy();
-        await act(async () => {
-            await pressTestInstanceAsync(setupNewMachineItem!);
-        });
-        expect(routerPushSpy).toHaveBeenCalledWith('/setup/wizard?action=remote&step=remote_ssh_setup&scope=machine');
     });
 
-    it('renders relay drift on web as a read-only notice instead of a repair action card', async () => {
-        viewModelState.value = {
-            ...viewModelState.value,
-            relayDriftBanner: {
-                kind: 'warning',
-                title: 'relay.banner.title',
-                description: 'relay.banner.description',
-                actionLabel: 'relay.banner.action',
-            },
+    it('shows the ways to add a machine when there are none, and offers a pool where the Home supports pools', async () => {
+        setMachines([{ serverId: 'srv-a', serverName: 'Home A', status: 'idle', machines: [] }]);
+        poolFeatureState.value = 'enabled';
+        const tree = await renderPage();
+
+        const tiles = tree.findByType('SelectionTiles' as never) as unknown as {
+            props: { options: Array<{ id: string }>; onPress: (id: string) => void };
         };
-
-        const { MachinesSettingsView } = await import('./MachinesSettingsView');
-        const tree = (await renderScreen(React.createElement(MachinesSettingsView))).tree;
-
-        const banners = tree.findAllByType('RelayDriftActionCard' as any);
-        expect(banners).toHaveLength(0);
-
-        const items = tree.findAllByType('Item' as any);
-        expect(items.find((node: any) => node.props.testID === 'settings.machines.relayDrift.webNotice')).toBeTruthy();
+        // The pool is added from its own section, so the tiles do not offer it twice.
+        expect(tiles.props.options.map((option) => option.id)).toEqual(['thisComputer', 'ssh']);
+        expect(addMenuItemIds(tree)).toEqual(['thisComputer', 'ssh', 'pool']);
+        const menu = tree.findByType('DropdownMenu' as never) as unknown as { props: { onSelect: (id: string) => void } };
+        await act(async () => menu.props.onSelect('pool'));
+        expect(routerPushSpy).toHaveBeenCalledWith('/settings/machines/pools/new?serverId=srv-a');
     });
 
-    it('shows a single setup button when the user has no machines yet', async () => {
-        viewModelState.value = {
-            activeServerId: 'srv-a',
-            allMachines: [],
-            hasMachines: false,
-            isLoadingMachines: false,
-            machineRows: [],
-            showMachinesGroupedByServer: false,
-            visibleMachineGroups: [],
-            relayDriftBanner: null,
-        };
+    it('holds a loading row while the first machine list loads', async () => {
+        setMachines([{ serverId: 'srv-a', serverName: 'Home A', status: 'loading', machines: [] }], { isLoadingMachines: true });
+        const tree = await renderPage();
 
-        const { MachinesSettingsView } = await import('./MachinesSettingsView');
-        let tree!: renderer.ReactTestRenderer;
-        tree = (await renderScreen(React.createElement(MachinesSettingsView))).tree;
-
-        const groups = tree.findAllByType('Group' as any);
-        const firstGroupItems = groups[0]!.findAllByType('Item' as any);
-
-        expect(firstGroupItems.map((node: any) => node.props.title)).toContain('setupOnboarding.setupNewMachineAction');
-        expect(firstGroupItems[0]?.props.showChevron).toBe(true);
-
-        const setupButton = firstGroupItems.find((node: any) => node.props.title === 'setupOnboarding.setupNewMachineAction');
-        expect(setupButton).toBeTruthy();
-        await act(async () => {
-            await pressTestInstanceAsync(setupButton!);
-        });
-        expect(routerPushSpy).toHaveBeenCalledWith('/setup/wizard?action=remote&step=remote_ssh_setup&scope=machine');
+        const titles = tree.findAllByType('Item' as never).map((node) => (node as unknown as { props: { title: string } }).props.title);
+        expect(titles).toEqual(['common.loading']);
+        expect(tree.findAllByType('SelectionTiles' as never)).toHaveLength(0);
     });
 
-    it('shows a loading-state row when machines are still bootstrapping', async () => {
-        viewModelState.value = {
-            activeServerId: 'srv-a',
-            allMachines: [],
-            hasMachines: false,
-            isLoadingMachines: true,
-            machineRows: [],
-            showMachinesGroupedByServer: false,
-            visibleMachineGroups: [],
-            relayDriftBanner: null,
+    it('ends in a named failure with Retry, not the add tiles, when the Home cannot list its machines', async () => {
+        setMachines([{ serverId: 'srv-a', serverName: 'Home A', status: 'error', machines: [] }]);
+        const tree = await renderPage();
+
+        expect(tree.findAllByType('SelectionTiles' as never)).toHaveLength(0);
+        const titles = tree.findAllByType('Item' as never).map((node) => (node as unknown as { props: { title: string } }).props.title);
+        expect(titles).not.toContain('common.loading');
+        const failure = tree.find((node) => node.props?.testID === 'settings.machines.unreadable') as unknown as {
+            props: { title: string; rightElement: { props: { testID: string; onPress: () => void } } };
         };
+        expect(failure.props.title).toContain('settingsMachines.unreadableTitle');
+        const retry = failure.props.rightElement;
+        expect(retry.props.testID).toBe('settings.machines.unreadable.retry');
+        await act(async () => retry.props.onPress());
+        expect(syncBoundary.refreshMachines).toHaveBeenCalledTimes(1);
+    });
 
-        const { MachinesSettingsView } = await import('./MachinesSettingsView');
-        const tree = (await renderScreen(React.createElement(MachinesSettingsView))).tree;
+    it('groups machines by Home when several Homes are shown, keeping a Home that has none', async () => {
+        setMachines([
+            { serverId: 'srv-a', serverName: 'Home A', status: 'idle', machines: [machine('machine-a1', 'Machine A1', 'a.local')] },
+            { serverId: 'srv-b', serverName: 'Home B', status: 'signedOut', machines: [] },
+        ]);
+        const tree = await renderPage();
 
-        const groups = tree.findAllByType('Group' as any);
-        const firstGroupItems = groups[0]!.findAllByType('Item' as any);
+        const groups = tree.findAllByType('Group' as never).map((node) => (node as unknown as { props: { title: string; description?: string } }).props);
+        expect(groups.map((group) => group.title)).toEqual(['Home A', 'Home B']);
+        expect(groups[1]?.description).toBe('settingsMachines.count · server.signedOut');
+    });
+});
 
-        expect(firstGroupItems.map((node: any) => node.props.title)).toContain('common.loading');
-        expect(firstGroupItems[0]?.props.showChevron).toBe(false);
+describe('MachinesRelayDriftBanner', () => {
+    beforeEach(() => {
+        desktopState.value = false;
+        relayDriftState.value = { title: 'Drift', description: 'This computer serves another Home.' };
+    });
+
+    it('says so on the web, where it cannot repair, and offers the repair in the desktop app', async () => {
+        const { MachinesRelayDriftBanner } = await import('./MachinesRelayDriftBanner');
+        const web = (await renderScreen(React.createElement(MachinesRelayDriftBanner))).tree;
+        expect(web.findAll((node) => node.props?.testID === 'settings.machines.relayDrift.webNotice')).not.toHaveLength(0);
+        expect(web.findAllByType('RelayDriftActionCard' as never)).toHaveLength(0);
+
+        desktopState.value = true;
+        const desktop = (await renderScreen(React.createElement(MachinesRelayDriftBanner))).tree;
+        expect(desktop.findAllByType('RelayDriftActionCard' as never)).toHaveLength(1);
     });
 });

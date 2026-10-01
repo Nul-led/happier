@@ -76,6 +76,8 @@ const authority = {
   payload: {
     v: 1 as const, grantId: 'grant-1', aud: 'happier-provider-broker-route-v1' as const,
     issuedAt: 1, expiresAt: 2, teamId: 'team-1', resourceId: 'resource-1',
+    brokerPlacementFingerprint: 'c'.repeat(64),
+    initiatorTokenEpoch: 0,
     sourceRevision: 'catalog:3',
     initiator: { accountId: 'account-1', machineId: 'worker-1', endpointId: 'a'.repeat(64) },
     target: { custodianAccountId: 'account-2', machineId: 'broker-1', endpointId: 'b'.repeat(64) },
@@ -300,7 +302,7 @@ describe('Session Team credential Provider binding', () => {
     const retire = vi.fn(async () => { closeOrder.push('retire'); });
     const close = vi.fn(async () => undefined);
     const brokerOpened = { ok: true as const, authority,
-      target: { custodianAccountId: 'account-2', brokerMachineId: 'broker-1', endpointId: 'b'.repeat(64), endpointRevision: 1 } };
+      target: { custodianAccountId: 'account-2', brokerMachineId: 'broker-1', endpointId: 'b'.repeat(64), endpointRevision: 1, endpoint: { endpointId: 'b'.repeat(64) } } };
     const openBroker = vi.fn(async () => brokerOpened);
     const openTunnel = vi.fn(async () => ({
       localPort: 43123,
@@ -370,7 +372,7 @@ describe('Session Team credential Provider binding', () => {
     const current = { ...row, selection: { ...row.selection, expectedResourceRevision: 8 } };
     const readCatalog = vi.fn(async () => [current]);
     const openBroker = vi.fn(async () => ({ ok: true as const, authority,
-      target: { custodianAccountId: 'account-2', brokerMachineId: 'broker-1', endpointId: 'b'.repeat(64), endpointRevision: 1 } }));
+      target: { custodianAccountId: 'account-2', brokerMachineId: 'broker-1', endpointId: 'b'.repeat(64), endpointRevision: 1, endpoint: { endpointId: 'b'.repeat(64) } } }));
     const adapter: ProviderAdapter = {
       v: 1, adapterVersion: 1,
       prepare: vi.fn(prepareSpawnEnv),
@@ -416,7 +418,7 @@ describe('Session Team credential Provider binding', () => {
       lease: lease(adapter), materializationBaseDir: '/tmp/happier-team-broker-test',
       signal: new AbortController().signal, readCatalog,
       openBroker: async () => ({ ok: true, authority,
-        target: { custodianAccountId: 'account-2', brokerMachineId: 'broker-1', endpointId: 'b'.repeat(64), endpointRevision: 1 } }),
+        target: { custodianAccountId: 'account-2', brokerMachineId: 'broker-1', endpointId: 'b'.repeat(64), endpointRevision: 1, endpoint: { endpointId: 'b'.repeat(64) } } }),
       openTunnel: async () => ({ localPort: 43123, localCapability: 'c'.repeat(64), observedPath: 'direct', retire: async () => undefined, close: async () => undefined }),
     })).rejects.toThrow('team_credential_provider_selection_changed');
     expect(adapter.materialize).not.toHaveBeenCalled();
@@ -439,6 +441,7 @@ describe('Session Team credential Provider binding', () => {
         brokerMachineId: 'broker-1',
         endpointId: 'b'.repeat(64),
         endpointRevision: 1,
+        endpoint: { endpointId: 'b'.repeat(64) },
       },
     };
     const adapter: ProviderAdapter = {
@@ -503,7 +506,7 @@ describe('Session Team credential Provider binding', () => {
       lease: lease(adapter), materializationBaseDir: '/tmp/happier-team-broker-test',
       signal: new AbortController().signal, readCatalog,
       openBroker: async () => ({ ok: true, authority,
-        target: { custodianAccountId: 'account-2', brokerMachineId: 'broker-1', endpointId: 'b'.repeat(64), endpointRevision: 1 } }),
+        target: { custodianAccountId: 'account-2', brokerMachineId: 'broker-1', endpointId: 'b'.repeat(64), endpointRevision: 1, endpoint: { endpointId: 'b'.repeat(64) } } }),
       openTunnel: async () => ({ localPort: 43123, localCapability: 'c'.repeat(64), observedPath: 'direct', retire: async () => undefined, close }),
     })).rejects.toThrow('selection_changed');
     expect(adapter.materialize).not.toHaveBeenCalled();
@@ -519,6 +522,7 @@ describe('Session Team credential Provider binding', () => {
       target: {
         custodianAccountId: 'account-2', brokerMachineId: 'broker-1', endpointId: 'b'.repeat(64),
         endpointRevision: 1,
+        endpoint: { endpointId: 'b'.repeat(64) },
       } }));
     const refreshedOpen = vi.fn();
     const adapter: ProviderAdapter = {
@@ -580,7 +584,7 @@ describe('Session Team credential Provider binding', () => {
       },
     };
     const openBroker = vi.fn(async () => ({ ok: true as const, authority: runAuthority,
-      target: { custodianAccountId: 'account-2', brokerMachineId: 'broker-1', endpointId: 'b'.repeat(64), endpointRevision: 1 } }));
+      target: { custodianAccountId: 'account-2', brokerMachineId: 'broker-1', endpointId: 'b'.repeat(64), endpointRevision: 1, endpoint: { endpointId: 'b'.repeat(64) } } }));
     const adapter: ProviderAdapter = {
       v: 1, adapterVersion: 1,
       prepare: vi.fn(prepareSpawnEnv),
@@ -639,7 +643,7 @@ describe('Session Team credential Provider binding', () => {
       lease: lease(adapter), materializationBaseDir: '/tmp/happier-team-broker-test',
       signal: new AbortController().signal,
       openBroker: async () => ({ ok: true, authority,
-        target: { custodianAccountId: 'account-2', brokerMachineId: 'broker-1', endpointId: 'b'.repeat(64), endpointRevision: 1 } }),
+        target: { custodianAccountId: 'account-2', brokerMachineId: 'broker-1', endpointId: 'b'.repeat(64), endpointRevision: 1, endpoint: { endpointId: 'b'.repeat(64) } } }),
       openTunnel: async () => ({ localPort: 43123, localCapability: 'c'.repeat(64), observedPath: 'relay', retire: async () => undefined, close }),
     });
 
@@ -678,7 +682,7 @@ describe('Session Team credential Provider binding', () => {
       lease: lease(adapter), materializationBaseDir: '/tmp/happier-team-broker-test',
       signal: new AbortController().signal,
       openBroker: async () => ({ ok: true, authority,
-        target: { custodianAccountId: 'account-2', brokerMachineId: 'substituted-broker', endpointId: 'b'.repeat(64), endpointRevision: 1 } }),
+        target: { custodianAccountId: 'account-2', brokerMachineId: 'substituted-broker', endpointId: 'b'.repeat(64), endpointRevision: 1, endpoint: { endpointId: 'b'.repeat(64) } } }),
       openTunnel: openTunnel as never,
     })).rejects.toThrow('team_credential_provider_broker_machine_changed');
     expect(openTunnel).not.toHaveBeenCalled();
@@ -718,7 +722,7 @@ describe('Session Team credential Provider binding', () => {
       openBroker: async () => ({
         ok: true,
         authority: { ...authority, payload: { ...authority.payload, ...payloadPatch } },
-        target: { custodianAccountId: 'account-2', brokerMachineId: 'broker-1', endpointId: 'b'.repeat(64), endpointRevision: 1 },
+        target: { custodianAccountId: 'account-2', brokerMachineId: 'broker-1', endpointId: 'b'.repeat(64), endpointRevision: 1, endpoint: { endpointId: 'b'.repeat(64) } },
       }),
       openTunnel: openTunnel as never,
     })).rejects.toThrow(reason);
@@ -752,7 +756,7 @@ describe('Session Team credential Provider binding', () => {
       openBroker: async () => {
         controller.abort(new Error('cancelled-after-broker-open'));
         return { ok: true, authority,
-          target: { custodianAccountId: 'account-2', brokerMachineId: 'broker-1', endpointId: 'b'.repeat(64), endpointRevision: 1 } };
+          target: { custodianAccountId: 'account-2', brokerMachineId: 'broker-1', endpointId: 'b'.repeat(64), endpointRevision: 1, endpoint: { endpointId: 'b'.repeat(64) } } };
       },
       openTunnel: openTunnel as never,
     })).rejects.toThrow('cancelled-after-broker-open');
@@ -814,7 +818,7 @@ describe('Session Team credential Provider binding', () => {
       lease: lease(adapter), materializationBaseDir: '/tmp/happier-team-broker-test',
       signal: new AbortController().signal,
       openBroker: async () => ({ ok: true, authority,
-        target: { custodianAccountId: 'account-2', brokerMachineId: 'broker-1', endpointId: 'b'.repeat(64), endpointRevision: 1 } }),
+        target: { custodianAccountId: 'account-2', brokerMachineId: 'broker-1', endpointId: 'b'.repeat(64), endpointRevision: 1, endpoint: { endpointId: 'b'.repeat(64) } } }),
       openTunnel: async () => ({ localPort: 43123, localCapability: 'c'.repeat(64), observedPath: 'direct', retire: async () => undefined, close }),
     })).rejects.toThrow('Agent provider binding materialization failed');
     expect(close).toHaveBeenCalledOnce();

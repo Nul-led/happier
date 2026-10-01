@@ -31,6 +31,7 @@ import {
   createRelayRuntimeUninstallTaskKind,
   SystemTaskExecutionError,
   type DaemonServiceStatusSnapshot,
+  readLocalCliUpdateFact,
   type DaemonServiceTaskParams,
   type RelayRuntimeStatusSnapshot,
   type RelayRuntimeTaskParams,
@@ -60,6 +61,10 @@ import {
 } from './ssh/daemonSshTunnelSystemTasks';
 import { createLiveRemoteSshBootstrapTaskKind, createLiveRemoteSshManageHostTaskKind } from './ssh/liveRemoteSshBootstrap';
 import { createSystemTasksRunner } from './systemTasksRunner';
+import { CLI_UPDATE_SYSTEM_TASK_KIND, createCliUpdateRemoteTaskKind } from './kinds/cliUpdateRemote';
+import { readCliUpdateFactsForThisCli } from '@/cli/runtime/update/cliUpdateFacts';
+import { projectPath } from '@/projectPath';
+import { configuration } from '@/configuration';
 import { readDaemonStatusSnapshot } from '@/daemon/statusSnapshot';
 import { commandExistsInPath } from '@/daemon/service/commandExistsInPath';
 import { resolveDaemonServiceCliRuntimeFromEnv } from '@/daemon/service/cli';
@@ -87,6 +92,8 @@ async function readLiveDaemonServiceStatusSnapshot(_params: DaemonServiceTaskPar
     daemonComparableKey: status.server.comparableKey ?? null,
     daemonAccountId: status.auth.accountId ?? null,
     daemonMachineRegistered: typeof status.auth.machineRegistered === 'boolean' ? status.auth.machineRegistered : null,
+    daemonAccountLabel: status.auth.accountLabel ?? null,
+    cliUpdate: readLocalCliUpdateFact({ releaseRing: configuration.publicReleaseRing }),
   };
 }
 
@@ -319,6 +326,14 @@ function createLiveSystemTasksRunnerAdapter(params: Readonly<{
         },
       },
       [DISCOVER_CONFIGURED_SSH_HOSTS_SYSTEM_TASK_KIND]: createDiscoverConfiguredSshHostsSystemTaskKind(),
+      // Remote CLI update (plan R13 f): advertised by `tool.systemTasks` only when this machine can run it.
+      [CLI_UPDATE_SYSTEM_TASK_KIND]: createCliUpdateRemoteTaskKind({
+        readFacts: readCliUpdateFactsForThisCli,
+        publicReleaseRing: configuration.publicReleaseRing,
+        script: process.argv[1] ?? process.execPath,
+        cwd: projectPath(),
+        logsDir: configuration.logsDir,
+      }),
       'remote.ssh.bootstrapMachine.v1': createLiveRemoteSshBootstrapTaskKind(),
       'remote.ssh.manageHost.v1': createLiveRemoteSshManageHostTaskKind(),
       'daemon.service.status.v1': createDaemonServiceStatusTaskKind({

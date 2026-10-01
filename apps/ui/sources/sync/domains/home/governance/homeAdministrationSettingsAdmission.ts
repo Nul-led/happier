@@ -15,7 +15,7 @@ import { resolveHomeAdministrationAdmission } from './homeAdministrationAdmissio
  * of this Home" instead of the far less useful "this Home is unavailable".
  */
 export type HomeAdministrationHomeObservation = Readonly<{
-    scope: 'resolving' | 'unknown_home' | 'signed_out' | 'bound';
+    scope: 'resolving' | 'unknown_home' | 'unavailable' | 'signed_out' | 'bound';
     /** The last projection this Home returned, retained through refresh and failure. */
     projection: HomeGovernanceProjectionV1 | null;
     error: ScopedSnapshotError | null;
@@ -79,6 +79,8 @@ function resolveHomeEntry(
             return { serverId, state: 'unresolved', reason: 'signed_out' };
         case 'resolving':
             return { serverId, state: 'unresolved', reason: 'loading' };
+        case 'unavailable':
+            return { serverId, state: 'unresolved', reason: 'unreachable' };
         case 'bound':
             break;
     }

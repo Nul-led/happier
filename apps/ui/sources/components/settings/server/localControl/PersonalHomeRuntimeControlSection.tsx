@@ -23,6 +23,7 @@ import { isLoopbackServerUrl } from '@/sync/domains/server/url/serverUrlClassifi
 import type { SystemTaskPromptEnvelope } from '@/components/systemTasks/prompts/readLatestSystemTaskPrompt';
 import type { CustomModalInjectedProps } from '@/modal';
 import { createDeferredOnce } from '@/modal/async/createDeferredOnce';
+import { PoliteAccessibilityStatus } from '@/components/ui/accessibility/PoliteAccessibilityStatus';
 
 export type PersonalHomeRelocationDestination = Readonly<{
     id: string;
@@ -168,6 +169,13 @@ type PersonalHomeDetailRow = Readonly<{
     value: string;
 }>;
 
+function formatIdentityComparison(value: string | null): string {
+    if (value === 'match') return t('personalHome.settings.identityComparisonMatch');
+    if (value === 'mismatch') return t('personalHome.settings.identityComparisonMismatch');
+    if (value === 'unknown') return t('personalHome.settings.identityComparisonUnknown');
+    return t('personalHome.settings.notAvailable');
+}
+
 const PersonalHomeDetailRows = React.memo(function PersonalHomeDetailRows(props: Readonly<{
     testID: string;
     title: string;
@@ -196,6 +204,108 @@ const PersonalHomeDetailRows = React.memo(function PersonalHomeDetailRows(props:
         </View> : null}
     </>;
 });
+
+type EraseBackupRecovery = Readonly<{
+    path: string;
+    /** Why the erase stopped after the backup: it is of another Home, or that could not be confirmed. */
+    reason: 'mismatch' | 'unknown';
+}>;
+
+type PersonalHomeLastOperation = NonNullable<ReturnType<typeof useLocalRelayRuntimeControl>['lastOperation']>;
+type PersonalHomeEraseResult = Extract<PersonalHomeLastOperation, { operation: 'erase' }>['erase'];
+type PersonalHomeRestoreResult = Extract<PersonalHomeLastOperation, { operation: 'restore' }>['restore'];
+
+function resolveEraseBlockedReason(reason: EraseBackupRecovery['reason']): string {
+    return reason === 'mismatch'
+        ? t('personalHome.settings.eraseBlockedBackupMismatch')
+        : t('personalHome.settings.eraseBlockedIdentityUnknown');
+}
+
+function resolveEraseResultTitle(erase: PersonalHomeEraseResult): string {
+    if (erase.outcome === 'partial') return t('personalHome.settings.erasePartialTitle');
+    if (erase.outcome === 'completed_with_cleanup_attention') return t('personalHome.settings.eraseInspectionAttention');
+    return t('personalHome.settings.eraseResultTitle');
+}
+
+/** Safe outcome sentences: counts and runtime state only, never paths or daemon prose. */
+function resolveEraseResultSentences(erase: PersonalHomeEraseResult): string[] {
+    return [
+        t('personalHome.settings.eraseOutcomeSummary', {
+            removed: erase.removedPaths.length,
+            remaining: erase.remainingOwnedPaths.length + erase.remainingUnknownPaths.length,
+        }),
+        erase.stoppedRunningHome
+            ? t('personalHome.settings.eraseStoppedHome')
+            : t('personalHome.settings.eraseHomeAlreadyStopped'),
+    ];
+}
+
+function resolveEraseResultDetailRows(erase: PersonalHomeEraseResult): PersonalHomeDetailRow[] {
+    const remainingPaths = [...erase.remainingOwnedPaths, ...erase.remainingUnknownPaths];
+    return [
+        ...(remainingPaths.length > 0
+            ? [{ title: t('personalHome.settings.eraseRemainingPaths'), value: remainingPaths.join('\n') }]
+            : []),
+        ...(erase.error ? [{ title: tLoose('common.error'), value: erase.error }] : []),
+        ...(erase.inspectionError
+            ? [{ title: t('personalHome.settings.eraseVerificationDetail'), value: erase.inspectionError }]
+            : []),
+    ];
+}
+
+function resolveRestoreOutcome(restore: PersonalHomeRestoreResult): string {
+    if (restore.outcome === 'recovery_required') return t('personalHome.settings.restoreOutcomeRecoveryRequired');
+    if (restore.outcome === 'rolled_back') return t('personalHome.settings.restoreOutcomeRolledBack');
+    return t('personalHome.settings.restoreOutcomeRestored');
+}
+
+/**
+ * One announcement for the newest data-operation outcome on this surface: an
+ * erase that stopped after its backup, an erase result, or a restore result.
+ * Each new outcome gets a new transition, so an identical repeat is spoken again.
+ */
+function useOperationOutcomeAnnouncement(
+    eraseBackupRecovery: EraseBackupRecovery | null,
+    lastOperation: PersonalHomeLastOperation | null,
+): Readonly<{ text: string; transitionKey: string }> {
+    const operationOutcome = lastOperation?.operation === 'erase' || lastOperation?.operation === 'restore'
+        ? lastOperation : null;
+    const [revision, setRevision] = React.useState(() => ({
+        eraseBackupRecovery,
+        lastOperation,
+        outcome: eraseBackupRecovery ?? operationOutcome,
+        count: 0,
+    }));
+    let current = revision;
+    if (revision.eraseBackupRecovery !== eraseBackupRecovery || revision.lastOperation !== lastOperation) {
+        // Whichever source changed most recently owns the announcement. Keep the
+        // blocked-erase backup visible, but never let it mask a later restore.
+        current = {
+            eraseBackupRecovery,
+            lastOperation,
+            outcome: revision.lastOperation !== lastOperation ? operationOutcome : eraseBackupRecovery,
+            count: revision.count + 1,
+        };
+    }
+    if (current !== revision) setRevision(current);
+
+    const outcome = current.outcome;
+
+    if (!outcome) return { text: '', transitionKey: `idle:${current.count}` };
+    if (!('operation' in outcome)) {
+        return {
+            text: [t('personalHome.settings.eraseNotPerformed'), resolveEraseBlockedReason(outcome.reason)].join('. '),
+            transitionKey: `erase_blocked:${current.count}`,
+        };
+    }
+    if (outcome.operation === 'restore') {
+        return { text: resolveRestoreOutcome(outcome.restore), transitionKey: `restore:${current.count}` };
+    }
+    return {
+        text: [resolveEraseResultTitle(outcome.erase), ...resolveEraseResultSentences(outcome.erase)].join('. '),
+        transitionKey: `erase:${current.count}`,
+    };
+}
 
 function resolveRuntimeStatusSubtitle(control: ReturnType<typeof useLocalRelayRuntimeControl>): string {
     if (control.isUnavailable) return t('settings.systemTaskBridgeUnavailable');
@@ -241,6 +351,7 @@ const PersonalHomeRuntimeControlSectionContent = React.memo(function PersonalHom
     props: PersonalHomeRuntimeControlSectionProps & Readonly<{ controller: ReturnType<typeof useLocalRelayRuntimeControl> }>,
 ) {
     const control = props.controller;
+    const [eraseBackupRecovery, setEraseBackupRecovery] = React.useState<EraseBackupRecovery | null>(null);
     const personalHomeCanonicalServerUrl = control.status?.purpose?.kind === 'personal-home'
         ? control.status.purpose.canonicalServerUrl
         : null;
@@ -328,6 +439,9 @@ const PersonalHomeRuntimeControlSectionContent = React.memo(function PersonalHom
             ],
         );
         if (eraseChoice === 'cancel') return;
+        // Every real attempt supersedes an earlier stopped-after-backup notice, so
+        // it can never mask (on screen or to a screen reader) this attempt's result.
+        setEraseBackupRecovery(null);
         if (eraseChoice === 'backup_first') {
             const requestedOutputPath = (await props.operations?.selectBackupExportDestination?.())?.trim() || null;
             if (!requestedOutputPath) return;
@@ -351,20 +465,17 @@ const PersonalHomeRuntimeControlSectionContent = React.memo(function PersonalHom
             const verified = await control.verifyPersonalHomeBackup({ archivePath: created.path });
             if (!verified) return;
             if (verified.identityMatchesCurrentHome !== 'match' || !verified.homeServerIdentityId) {
-                await Modal.alert(
-                    tLoose('common.error'),
-                    t('personalHome.settings.identityComparisonUnavailable'),
-                );
+                setEraseBackupRecovery({
+                    path: created.path,
+                    reason: verified.identityMatchesCurrentHome === 'mismatch' ? 'mismatch' : 'unknown',
+                });
                 return;
             }
             verifiedBackupHomeServerIdentityId = verified.homeServerIdentityId;
             verifiedBackupPath = created.path;
             const reboundStatus = await control.readStatus();
             if (reboundStatus?.purpose?.kind !== 'personal-home') {
-                await Modal.alert(
-                    tLoose('common.error'),
-                    t('personalHome.settings.identityComparisonUnavailable'),
-                );
+                setEraseBackupRecovery({ path: created.path, reason: 'unknown' });
                 return;
             }
         }
@@ -375,10 +486,7 @@ const PersonalHomeRuntimeControlSectionContent = React.memo(function PersonalHom
         }
         if (verifiedBackupHomeServerIdentityId !== null
             && inspectionOutcome.inspection.homeServerIdentityId !== verifiedBackupHomeServerIdentityId) {
-            await Modal.alert(
-                tLoose('common.error'),
-                t('personalHome.settings.identityComparisonUnavailable'),
-            );
+            if (verifiedBackupPath !== null) setEraseBackupRecovery({ path: verifiedBackupPath, reason: 'mismatch' });
             return;
         }
         if (verifiedBackupPath !== null
@@ -476,6 +584,11 @@ const PersonalHomeRuntimeControlSectionContent = React.memo(function PersonalHom
     const [operationDetailsOpen, setOperationDetailsOpen] = React.useState(false);
 
     const disabled = control.isBusy || control.isUnavailable || control.status?.purpose?.kind !== 'personal-home';
+    const operationsUnavailableReason = !disabled || control.isBusy
+        ? null
+        : control.isUnavailable
+            ? t('settings.systemTaskBridgeUnavailable')
+            : t('settings.localRelayRuntime.statusChecking');
     const terminalRelocationRecovery = control.operationSnapshot?.result?.ok
         ? readPersonalHomeRelocationRecovery(control.operationSnapshot.result.data)
         : null;
@@ -512,6 +625,8 @@ const PersonalHomeRuntimeControlSectionContent = React.memo(function PersonalHom
     const restoreResult = control.lastOperation?.operation === 'restore' ? control.lastOperation.restore : null;
     const restoreRecoveryBackup = restoreResult?.recoveryArchive ?? null;
     const eraseResult = control.lastOperation?.operation === 'erase' ? control.lastOperation.erase : null;
+    const eraseResultDetailRows = eraseResult ? resolveEraseResultDetailRows(eraseResult) : [];
+    const operationAnnouncement = useOperationOutcomeAnnouncement(eraseBackupRecovery, control.lastOperation);
     const operations = props.operations;
     const relocationItems = React.useMemo<readonly DropdownMenuItem[]>(() => (
         operations?.relocation?.destinations.map((destination) => ({
@@ -548,7 +663,7 @@ const PersonalHomeRuntimeControlSectionContent = React.memo(function PersonalHom
         && isLoopbackServerUrl(control.status?.relayUrl ?? personalHomeCanonicalServerUrl);
 
     return <>
-        <ItemGroup title={t('personalHome.settings.summaryTitle')} footer={t('personalHome.settings.footer')}>
+        <ItemGroup title={t('personalHome.settings.summaryTitle')} description={t('personalHome.settings.footer')}>
             <Item testID="settings.localRelayRuntime.status" title={t('personalHome.settings.statusTitle')} subtitle={resolveRuntimeStatusSubtitle(control)} showChevron={false} mode="info" />
             <Item testID="settings.personalHomeRuntime.home" title={t('personalHome.settings.homeTitle')} subtitle={homeLabel} showChevron={false} mode="info" />
             {control.inspection ? <PersonalHomeDetailRows
@@ -573,7 +688,15 @@ const PersonalHomeRuntimeControlSectionContent = React.memo(function PersonalHom
             <Item testID="settings.personalHomeRuntime.masterSecret" title={t('personalHome.settings.masterSecretTitle')} subtitle={control.inspection?.masterSecretPresent ? t('personalHome.settings.masterSecretPresent') : t('personalHome.settings.masterSecretUnavailable')} showChevron={false} mode="info" />
             <Item testID="settings.personalHomeRuntime.inspect" title={t('personalHome.settings.inspectAction')} onPress={() => void control.refreshInspection()} disabled={disabled} />
         </ItemGroup>
-        <ItemGroup title={t('personalHome.settings.actionsTitle')} footer={t('personalHome.settings.backupDisclosureBody')}>
+        <ItemGroup title={t('personalHome.settings.actionsTitle')} description={t('personalHome.settings.backupDisclosureBody')}>
+            {operationsUnavailableReason ? <Item
+                testID="settings.personalHomeRuntime.operationsUnavailable"
+                title={t('personalHome.settings.notAvailable')}
+                subtitle={operationsUnavailableReason}
+                subtitleLines={0}
+                showChevron={false}
+                mode="info"
+            /> : null}
             <Item testID="settings.personalHomeRuntime.backup" title={t('personalHome.settings.backupAction')} subtitle={t('personalHome.settings.backupSubtitle')} onPress={() => void backup()} disabled={disabled} />
             {operations?.selectBackupExportDestination ? <Item testID="settings.personalHomeRuntime.exportBackup" title={t('personalHome.settings.exportBackupAction')} subtitle={t('personalHome.settings.exportBackupSubtitle')} onPress={() => void runExternalOperation(exportBackup)} disabled={disabled} /> : null}
             {operations?.selectBackupArchive ? <Item testID="settings.personalHomeRuntime.verifyBackup" title={t('personalHome.settings.verifyAction')} subtitle={t('personalHome.settings.verifySubtitle')} onPress={() => void runExternalOperation(verify)} disabled={disabled} /> : null}
@@ -637,20 +760,25 @@ const PersonalHomeRuntimeControlSectionContent = React.memo(function PersonalHom
                     { title: t('personalHome.settings.restoreBackupSize'), value: formatBytes(control.lastVerification.archiveBytes) },
                     { testID: 'settings.personalHomeRuntime.verifyResultIdentity', title: t('personalHome.settings.identityTitle'), value: control.lastVerification.homeServerIdentityId ?? t('personalHome.settings.identityUnavailable') },
                     { title: t('personalHome.settings.restoreCompatibility'), value: `${control.lastVerification.format} v${control.lastVerification.version}` },
-                    { title: t('personalHome.settings.identityComparison'), value: control.lastVerification.identityMatchesCurrentHome ?? t('personalHome.settings.notAvailable') },
+                    { testID: 'settings.personalHomeRuntime.verifyResultIdentityComparison', title: t('personalHome.settings.identityComparison'), value: formatIdentityComparison(control.lastVerification.identityMatchesCurrentHome) },
                 ]}
             /> : null}
-            {restoreResult ? <Item testID="settings.personalHomeRuntime.restoreResult" title={t('personalHome.settings.restoreResultTitle')} subtitle={[(restoreResult.outcome === 'recovery_required' ? t('personalHome.settings.restoreOutcomeRecoveryRequired') : restoreResult.outcome === 'rolled_back' ? t('personalHome.settings.restoreOutcomeRolledBack') : t('personalHome.settings.restoreOutcomeRestored')), restoreResult.error].filter(Boolean).join('\n')} showChevron={false} mode="info" /> : null}
+            {restoreResult ? <Item testID="settings.personalHomeRuntime.restoreResult" title={t('personalHome.settings.restoreResultTitle')} subtitle={resolveRestoreOutcome(restoreResult)} showChevron={false} mode="info" /> : null}
+            {restoreResult?.error ? <PersonalHomeDetailRows
+                testID="settings.personalHomeRuntime.restoreResultDetails"
+                title={`${t('personalHome.settings.restoreResultTitle')} · ${t('common.details')}`}
+                rows={[{ title: tLoose('common.error'), value: restoreResult.error }]}
+            /> : null}
             {restoreRecoveryBackup ? <Item
                 testID="settings.personalHomeRuntime.restoreRecoveryBackup"
-                title={t('personalHome.settings.backupVerified')}
-                subtitle={`${formatTimestamp(restoreRecoveryBackup.createdAt)} · ${formatBytes(restoreRecoveryBackup.bytes)} · ${t('personalHome.settings.backupVerified')}`}
+                title={t('personalHome.settings.restorePreviousDataTitle')}
+                subtitle={`${formatTimestamp(restoreRecoveryBackup.createdAt)} · ${formatBytes(restoreRecoveryBackup.bytes)}`}
                 showChevron={false}
                 mode="info"
             /> : null}
             {restoreRecoveryBackup ? <PersonalHomeDetailRows
                 testID="settings.personalHomeRuntime.restoreRecoveryBackupDetails"
-                title={`${t('personalHome.settings.restoreRecoveryWarningTitle')} · ${t('common.details')}`}
+                title={`${t('personalHome.settings.restorePreviousDataTitle')} · ${t('common.details')}`}
                 rows={[
                     { testID: 'settings.personalHomeRuntime.restoreRecoveryBackupPath', title: t('personalHome.settings.restoreBackupTitle'), value: restoreRecoveryBackup.path },
                     { title: t('personalHome.settings.restoreBackupDate'), value: formatTimestamp(restoreRecoveryBackup.createdAt) },
@@ -666,7 +794,7 @@ const PersonalHomeRuntimeControlSectionContent = React.memo(function PersonalHom
             /> : null}
         </ItemGroup>
         {control.operationSnapshot ? <View>
-            {control.operationSnapshot.status === 'failed' ? <Text testID="system-task-a11y-failure" accessibilityLiveRegion="assertive">{control.operationSnapshot.latestMessage}</Text> : control.operationSnapshot.result ? null : <Text testID="system-task-a11y-progress" accessibilityLiveRegion="polite">{control.operationSnapshot.latestMessage}</Text>}
+            {control.operationSnapshot.status === 'failed' ? <Text testID="system-task-a11y-failure" accessibilityLiveRegion="assertive">{t('personalHome.settings.operationFailed')}</Text> : control.operationSnapshot.result ? null : <Text testID="system-task-a11y-progress" accessibilityLiveRegion="polite">{control.operationSnapshot.latestMessage}</Text>}
             <Item
                 testID="settings.personalHomeRuntime.operationSummary"
                 title={t('personalHome.settings.progressTitle')}
@@ -697,7 +825,7 @@ const PersonalHomeRuntimeControlSectionContent = React.memo(function PersonalHom
             {control.inspection?.restoreRecovery.status === 'ambiguous' ? <Item testID="settings.personalHomeRuntime.restoreRecoveryWarning" title={t('personalHome.settings.restoreRecoveryWarningTitle')} subtitle={t('personalHome.settings.restoreRecoveryWarningBody')} showChevron={false} mode="info" /> : null}
             {control.inspection?.restoreRecovery.status === 'finalization_available' ? <Item testID="settings.personalHomeRuntime.restoreRecoveryWarning" title={t('personalHome.settings.restoreCleanupWarningTitle')} subtitle={t('personalHome.settings.restoreCleanupWarningBody')} showChevron={false} mode="info" /> : null}
         </ItemGroup>
-        <ItemGroup title={t('personalHome.settings.advancedTitle')} footer={t('personalHome.settings.advancedFooter')}>
+        <ItemGroup title={t('personalHome.settings.advancedTitle')} description={t('personalHome.settings.advancedFooter')}>
             {control.status?.version ? <Item title={t('settings.localRelayRuntime.versionTitle')} subtitle={control.status.version} showChevron={false} mode="info" /> : null}
             <Item testID="settings.localRelayRuntime.installOrUpdate" title={t('personalHome.settings.installOrUpdateAction')} onPress={() => void control.installOrUpdate()} disabled={control.isBusy || control.isUnavailable} />
             <Item testID="settings.localRelayRuntime.start" title={t('personalHome.settings.startAction')} onPress={() => void control.startRelay()} disabled={!canStart} />
@@ -715,26 +843,53 @@ const PersonalHomeRuntimeControlSectionContent = React.memo(function PersonalHom
             {operations?.removeProfile ? <Item testID="settings.personalHomeRuntime.removeProfile" title={t('personalHome.settings.removeProfileAction')} subtitle={t('personalHome.settings.removeProfileSubtitle')} onPress={() => void operations.removeProfile?.()} destructive /> : null}
             {operations?.uninstallRuntime ? <Item testID="settings.personalHomeRuntime.uninstallRuntime" title={t('personalHome.settings.uninstallRuntimeAction')} subtitle={t('personalHome.settings.uninstallRuntimeSubtitle')} onPress={() => void runExternalOperation(operations.uninstallRuntime!)} /> : null}
         </ItemGroup>
-        <ItemGroup title={t('personalHome.settings.deleteHomeDataTitle')} footer={t('personalHome.settings.removeSectionFooter')}>
+        <PoliteAccessibilityStatus
+            announcement={operationAnnouncement.text}
+            statusTestID="settings.personalHomeRuntime.eraseAccessibilityStatus"
+            transitionKey={operationAnnouncement.transitionKey}
+        />
+        <ItemGroup title={t('personalHome.settings.deleteHomeDataTitle')} description={t('personalHome.settings.removeSectionFooter')}>
+            {eraseBackupRecovery ? <>
+                <Item
+                    testID="settings.personalHomeRuntime.eraseBackupRecovery"
+                    title={t('personalHome.settings.eraseNotPerformed')}
+                    subtitle={resolveEraseBlockedReason(eraseBackupRecovery.reason)}
+                    subtitleLines={0}
+                    showChevron={false}
+                    mode="info"
+                />
+                <Item
+                    testID="settings.personalHomeRuntime.eraseBackupRecoveryPath"
+                    title={t('personalHome.settings.restoreBackupTitle')}
+                    subtitle={eraseBackupRecovery.path}
+                    subtitleLines={0}
+                    showChevron={false}
+                    mode="info"
+                />
+                {operations?.revealBackupOutput ? <Item
+                    testID="settings.personalHomeRuntime.eraseBackupRecoveryReveal"
+                    title={t('personalHome.settings.backupRevealAction')}
+                    onPress={() => void runExternalOperation(() => operations.revealBackupOutput!(eraseBackupRecovery.path))}
+                /> : null}
+                <Item
+                    testID="settings.personalHomeRuntime.eraseBackupRecoveryRefresh"
+                    title={t('personalHome.settings.inspectAction')}
+                    onPress={() => void control.refreshInspection()}
+                    disabled={control.isBusy || control.isUnavailable}
+                />
+            </> : null}
             <Item testID="settings.personalHomeRuntime.eraseData" title={t('personalHome.settings.eraseDataAction')} subtitle={t('personalHome.settings.eraseDataSubtitle')} onPress={() => void runExternalOperation(erase)} disabled={disabled} destructive />
             {eraseResult ? <Item
                 testID="settings.personalHomeRuntime.eraseResult"
-                title={eraseResult.outcome === 'partial'
-                    ? t('personalHome.settings.eraseRemainingPaths')
-                    : eraseResult.outcome === 'completed_with_cleanup_attention'
-                        ? t('personalHome.settings.eraseInspectionAttention')
-                    : t('personalHome.settings.eraseResultTitle')}
-                subtitle={[
-                    `${eraseResult.removedPaths.length} ${t('personalHome.settings.pathsRemoved')}`,
-                    eraseResult.stoppedRunningHome ? t('personalHome.settings.eraseStoppedHome') : t('personalHome.settings.eraseHomeAlreadyStopped'),
-                    ...([...eraseResult.remainingOwnedPaths, ...eraseResult.remainingUnknownPaths].length > 0
-                        ? [`${t('personalHome.settings.eraseRemainingPaths')}: ${[...eraseResult.remainingOwnedPaths, ...eraseResult.remainingUnknownPaths].join(', ')}`]
-                        : []),
-                    ...(eraseResult.error ? [eraseResult.error] : []),
-                    ...(eraseResult.inspectionError ? [eraseResult.inspectionError] : []),
-                ].join('\n')}
+                title={resolveEraseResultTitle(eraseResult)}
+                subtitle={resolveEraseResultSentences(eraseResult).join('\n')}
                 showChevron={false}
                 mode="info"
+            /> : null}
+            {eraseResult && eraseResultDetailRows.length > 0 ? <PersonalHomeDetailRows
+                testID="settings.personalHomeRuntime.eraseResultDetails"
+                title={`${resolveEraseResultTitle(eraseResult)} · ${t('common.details')}`}
+                rows={eraseResultDetailRows}
             /> : null}
         </ItemGroup>
     </>;

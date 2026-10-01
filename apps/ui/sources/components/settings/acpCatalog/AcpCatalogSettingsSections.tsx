@@ -1,23 +1,25 @@
 import * as React from 'react';
-import { useRouter } from 'expo-router';
-import { useUnistyles } from 'react-native-unistyles';
+import { useRouter } from '@/components/appShell/workspace/destinationRoute';
 
 import { Item } from '@/components/ui/lists/Item';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
 import { Modal } from '@/modal';
 import { t } from '@/text';
-import { deleteAcpBackendDefinitionV1 } from '@/sync/domains/acpCatalog/acpCatalogCrud';
-import { normalizeAcpCatalogSettingsV1 } from '@/sync/domains/acpCatalog/normalizeAcpCatalogSettingsV1';
+import { applyAcpBackendDeleteV1, normalizeAcpCatalogSettingsV1 } from '@happier-dev/protocol';
 import { useSettingMutable } from '@/sync/domains/state/storage';
+import { createCustomAcpAgentSettingsRoute } from '@/agents/catalog/agentSettingsRoutes';
+import { CustomAcpAgentMark } from './CustomAcpAgentMark';
 import { Icon } from '@/components/ui/icons/Icon';
 
-function formatBackendSubtitle(command: string, args: readonly string[]): string {
+export function formatAcpBackendCommand(command: string, args: readonly string[]): string {
     return [command, ...args].filter(Boolean).join(' ');
 }
 
-export const AcpCatalogSettingsSections = React.memo(function AcpCatalogSettingsSections() {
-    const { theme } = useUnistyles();
-    const router = useRouter();
+/**
+ * The custom ACP backends the Account defines, sorted for display, plus their confirmed delete.
+ * One owner for every list of custom ACP agents (this section and the Agents collection).
+ */
+export function useAcpCatalogBackends() {
     const [settingsRaw, setSettings] = useSettingMutable('acpCatalogSettingsV1');
     const settings = React.useMemo(() => normalizeAcpCatalogSettingsV1(settingsRaw), [settingsRaw]);
 
@@ -26,7 +28,7 @@ export const AcpCatalogSettingsSections = React.memo(function AcpCatalogSettings
         [settings.backends],
     );
 
-    const handleDeleteBackend = React.useCallback(async (backendId: string) => {
+    const deleteBackend = React.useCallback(async (backendId: string) => {
         const backend = settings.backends.find((entry) => entry.id === backendId) ?? null;
         if (!backend) return;
         const confirmed = await Modal.confirm(
@@ -35,16 +37,24 @@ export const AcpCatalogSettingsSections = React.memo(function AcpCatalogSettings
             { destructive: true, cancelText: t('common.cancel'), confirmText: t('common.delete') },
         );
         if (!confirmed) return;
-        setSettings(deleteAcpBackendDefinitionV1(settings, backendId));
+        const result = applyAcpBackendDeleteV1({ settings, backendId });
+        if (result.ok) setSettings(result.settings);
     }, [setSettings, settings]);
+
+    return { backends, deleteBackend } as const;
+}
+
+export const AcpCatalogSettingsSections = React.memo(function AcpCatalogSettingsSections() {
+    const router = useRouter();
+    const { backends, deleteBackend: handleDeleteBackend } = useAcpCatalogBackends();
 
     const addBackendItem = (
         <Item
             testID="settings.acpCatalog.addBackend"
+            icon={<Icon name="plus" />}
             title={t('settings.acpCatalogAddBackend')}
             subtitle={t('settings.acpCatalogAddBackendSubtitle')}
-            icon={<Icon name="plus-circle" size={29} color={theme.colors.state.success.foreground} />}
-            onPress={() => router.push('/(app)/settings/acp-backend')}
+            onPress={() => router.push(createCustomAcpAgentSettingsRoute(null) as never)}
         />
     );
 
@@ -52,16 +62,16 @@ export const AcpCatalogSettingsSections = React.memo(function AcpCatalogSettings
         <>
             <ItemGroup
                 title={t('settings.acpCatalogBackends')}
-                footer={backends.length > 0 ? t('settings.acpCatalogBackendsFooter') : undefined}
+                description={backends.length > 0 ? t('settings.acpCatalogBackendsFooter') : undefined}
             >
                 {backends.map((backend) => (
                     <Item
                         key={backend.id}
                         testID={`settings.acpCatalog.backend.${backend.id}`}
                         title={backend.title || backend.name}
-                        subtitle={formatBackendSubtitle(backend.command, backend.args)}
-                        icon={<Icon name="hard-drives" size={29} color={theme.colors.accent.indigo} />}
-                        onPress={() => router.push({ pathname: '/(app)/settings/acp-backend', params: { backendId: backend.id } } as any)}
+                        subtitle={formatAcpBackendCommand(backend.command, backend.args)}
+                        icon={<CustomAcpAgentMark />}
+                        onPress={() => router.push(createCustomAcpAgentSettingsRoute(backend.id) as never)}
                         onLongPress={() => { void handleDeleteBackend(backend.id); }}
                     />
                 ))}

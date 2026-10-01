@@ -79,6 +79,16 @@ const PROTOCOL_FAMILY_TO_SETTINGS_FAMILY: Partial<Record<ActionIdFamilyV1, Actio
     scm_diff_summary: 'scm',
 };
 
+/** The coarse settings family a protocol family is shown under; unlisted families fold into `general`. */
+export function resolveActionIdFamilySettingsFamily(family: ActionIdFamilyV1): ActionSettingsFamily {
+    return PROTOCOL_FAMILY_TO_SETTINGS_FAMILY[family] ?? 'general';
+}
+
+/** The user-facing name of one protocol Action family (API token grants choose these). */
+export function actionIdFamilyTitleKey(family: ActionIdFamilyV1): `actionFamilies.${ActionIdFamilyV1}` {
+    return `actionFamilies.${family}`;
+}
+
 function buildActionIdFamilyIndex(): ReadonlyMap<ActionId, ActionSettingsFamily> {
     const index = new Map<ActionId, ActionSettingsFamily>();
     for (const [protocolFamily, actionIds] of Object.entries(ACTION_ID_FAMILIES_V1)) {

@@ -1,6 +1,6 @@
 import * as React from 'react';
 import { act } from 'react-test-renderer';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { collectRenderedTestIds, renderScreen, standardCleanup } from '@/dev/testkit';
 import { TEAMS_ACCOUNT_CHANGE_ENTITY_ID_V1 } from '@happier-dev/protocol';
@@ -16,11 +16,14 @@ const directoryBinding = vi.hoisted(() => ({
 }));
 const directoryGroupsBinding = vi.hoisted(() => ({
     rows: [] as Array<Record<string, unknown>>,
+    status: 'ready' as 'ready' | 'loading',
     enabled: null as boolean | null,
     accountChange: null as Readonly<{ serverId: string; entityId: string }> | null,
 }));
 const nativeGroupsBinding = vi.hoisted(() => ({
     rows: [] as Array<Readonly<{ id: string; name: string; memberCount: number }>>,
+    error: null as { kind: 'unreachable'; retryable: boolean; code: null } | null,
+    reload: vi.fn(),
 }));
 const useTeamGroupMock = vi.hoisted(() => vi.fn());
 const canMutateMock = vi.hoisted(() => ({ current: true }));
@@ -39,8 +42,12 @@ const capabilitiesMock = vi.hoisted(() => ({
 const announceMock = vi.hoisted(() => vi.fn());
 const refreshSourceMock = vi.hoisted(() => vi.fn());
 const appStateListeners = vi.hoisted(() => new Set<(state: string) => void>());
+const scrollToIndexMock = vi.hoisted(() => vi.fn());
+const focusedItems = vi.hoisted(() => [] as string[]);
+const routeParams = vi.hoisted(() => ({ current: {} as Record<string, string> }));
+const virtualWindow = vi.hoisted(() => ({ enabled: false }));
 
-vi.mock('expo-router', () => ({ useRouter: () => ({ back: routerBackMock }) }));
+vi.mock('expo-router', () => ({ useRouter: () => ({ back: routerBackMock }), useLocalSearchParams: () => routeParams.current }));
 vi.mock('react-native', async (importOriginal) => {
     const actual = await importOriginal<typeof import('react-native')>();
     return {
@@ -60,19 +67,44 @@ vi.mock('@/modal', async () => {
 });
 vi.mock('@/components/ui/feedback/ActivitySpinner', () => ({ ActivitySpinner: 'ActivitySpinner' }));
 vi.mock('@/components/ui/forms/SearchHeader', () => ({ SearchHeader: 'SearchHeader' }));
-vi.mock('@/components/ui/lists/Item', () => ({ Item: 'Item' }));
+// Rows render their right-hand control, as the real row does; page fields are text inputs.
+vi.mock('@/components/ui/lists/Item', async () => {
+    const React = await import('react');
+    return { Item: (props: { testID?: string; rightElement?: unknown; pressableRef?: React.Ref<{ focus: () => void }> }) => {
+        React.useLayoutEffect(() => {
+            const target = { focus: () => { if (props.testID) focusedItems.push(props.testID); } };
+            if (typeof props.pressableRef === 'function') props.pressableRef(target);
+            else if (props.pressableRef) props.pressableRef.current = target;
+            return () => {
+                if (typeof props.pressableRef === 'function') props.pressableRef(null);
+                else if (props.pressableRef) props.pressableRef.current = null;
+            };
+        }, [props.pressableRef, props.testID]);
+        return React.createElement('Item', props, props.rightElement as never);
+    } };
+});
+vi.mock('@/components/ui/forms/FieldTextInput', () => ({ FieldTextInput: 'TextInput' }));
 vi.mock('@/components/ui/lists/ItemGroup', () => ({ ItemGroup: 'ItemGroup' }));
 vi.mock('@/components/ui/accessibility/announceAccessibilityMessage', () => ({
     announceAccessibilityMessage: announceMock,
 }));
 vi.mock('@/utils/url/openExternalUrl', () => ({ openExternalUrl: openExternalUrlMock }));
 vi.mock('@/components/ui/lists/virtualized', () => ({
-    VirtualizedList: (props: Readonly<Record<string, any>>) => React.createElement(
-        'VirtualizedList',
-        props,
-        props.ListHeaderComponent,
-        ...(props.data ?? []).map((item: unknown, index: number) => props.renderItem({ item, index })),
-    ),
+    VirtualizedList: React.forwardRef((props: Readonly<{
+        data: readonly { key: string; element: React.ReactElement }[];
+        renderItem: (info: { item: { key: string; element: React.ReactElement }; index: number }) => React.ReactNode;
+        ListHeaderComponent: React.ReactNode;
+    }>, ref) => {
+        const [visibleIndex, setVisibleIndex] = React.useState(0);
+        React.useImperativeHandle(ref, () => ({ scrollToIndex: (params: { index: number }) => {
+            scrollToIndexMock(params);
+            if (virtualWindow.enabled) setVisibleIndex(params.index);
+        } }), []);
+        return React.createElement('VirtualizedList', props, props.ListHeaderComponent,
+            ...props.data.flatMap((item, index) => virtualWindow.enabled && index !== visibleIndex
+                ? []
+                : [React.createElement(React.Fragment, { key: item.key }, props.renderItem({ item, index }))]));
+    }),
 }));
 // The generated bundled-plugin inventory is an unrelated build boundary and
 // is intentionally absent from synchronized source-only test targets.
@@ -100,7 +132,7 @@ vi.mock('@/sync/domains/plugins/availability/reader', () => ({
     projectPluginAccountAvailabilityMaterializationIdentity: vi.fn(),
 }));
 vi.mock('@/hooks/teams/useTeamGroups', () => ({
-    useTeamGroups: () => ({ rows: nativeGroupsBinding.rows, hasMore: false, status: 'idle', loadMore: vi.fn() }),
+    useTeamGroups: () => ({ ...nativeGroupsBinding, isCurrent: !nativeGroupsBinding.error, hasMore: false, status: nativeGroupsBinding.error ? 'error' : 'ready', loadMore: vi.fn() }),
     useTeamGroup: useTeamGroupMock,
 }));
 vi.mock('@/hooks/teams/useTeamPagedList', () => ({
@@ -110,13 +142,15 @@ vi.mock('@/hooks/teams/useTeamPagedList', () => ({
     }>) => {
         directoryGroupsBinding.enabled = params.enabled;
         directoryGroupsBinding.accountChange = params.accountChange ?? null;
-        return { rows: directoryGroupsBinding.rows, hasMore: false, status: 'idle', error: null, reload: directoryGroupsReloadMock, loadMore: vi.fn() };
+        return { rows: directoryGroupsBinding.rows, hasMore: false, status: directoryGroupsBinding.status, error: null, reload: directoryGroupsReloadMock, loadMore: vi.fn() };
     },
 }));
-vi.mock('./DirectoryPeopleList', () => ({
+vi.mock('./DirectoryPeopleList', async (importOriginal) => ({
+    ...await importOriginal<typeof import('./DirectoryPeopleList')>(),
     useDirectoryPeopleList: () => ({ rows: [], hasMore: false, status: 'ready', error: null, reload: vi.fn(), loadMore: vi.fn() }),
 }));
-vi.mock('./identityAdministrationClient', () => ({
+vi.mock('./identityAdministrationClient', async (importOriginal) => ({
+    ...await importOriginal<typeof import('./identityAdministrationClient')>(),
     createIdentityAdministrationClient: () => ({
         execute: executeIdentityActionMock,
         executeDirectory: vi.fn(),
@@ -176,6 +210,7 @@ vi.mock('@/text', async () => {
 });
 
 import { DirectorySourceDetailScreen } from './DirectorySourceDetailScreen';
+import { DIRECTORY_SOURCE_SETTINGS } from './directorySettings';
 
 beforeEach(() => {
     standardCleanup();
@@ -183,9 +218,12 @@ beforeEach(() => {
     modalConfirmMock.mockResolvedValue(true);
     directoryBinding.state = { kind: 'loading' };
     directoryGroupsBinding.rows = [];
+    directoryGroupsBinding.status = 'ready';
     directoryGroupsBinding.enabled = null;
     directoryGroupsBinding.accountChange = null;
     nativeGroupsBinding.rows = [];
+    nativeGroupsBinding.error = null;
+    nativeGroupsBinding.reload.mockReset();
     useTeamGroupMock.mockReset();
     canMutateMock.current = true;
     runActionMock.mockReset();
@@ -219,10 +257,81 @@ beforeEach(() => {
     announceMock.mockReset();
     refreshSourceMock.mockReset();
     appStateListeners.clear();
+    scrollToIndexMock.mockClear();
+    focusedItems.length = 0;
+    routeParams.current = {};
+    virtualWindow.enabled = false;
     capabilitiesMock.current = { manageAuthentication: true, manageGroups: true };
 });
 
+afterEach(() => {
+    standardCleanup();
+    vi.useRealTimers();
+});
+
 describe('DirectorySourceDetailScreen', () => {
+    it.each([
+        ['remove', 'source-remove', 'team-directory-source-remove'],
+        ['searchGroups', 'groups-search', 'directory-groups-search'],
+    ] as const)('reveals the virtual %s search anchor after its source loads', async (setting, rowKey, controlId) => {
+        const anchor = DIRECTORY_SOURCE_SETTINGS.settings[setting].anchor;
+        routeParams.current = { setting: anchor };
+        virtualWindow.enabled = true;
+        const screen = await renderScreen(<DirectorySourceDetailScreen serverId="home-1" teamId="team-1" sourceId="source-1" />);
+        expect(screen.findByTestId(controlId)).toBeNull();
+        expect(scrollToIndexMock).not.toHaveBeenCalled();
+
+        await act(async () => {
+            directoryBinding.state = {
+                kind: 'ready', refreshing: false, stale: false, failure: null,
+                item: {
+                    v: 1, id: 'source-1', teamId: 'team-1', kind: 'workos_directory', displayName: 'Example directory',
+                    state: 'active', allowedActions: ['teams.directory.sources.remove'], error: null,
+                    sync: { mode: 'events_and_full', attempt: 'succeeded', freshness: 'fresh', lastAttemptAt: null, lastSuccessAt: null, lastFullReconcileAt: null, nextScheduledAt: null },
+                },
+            };
+            directoryGroupsBinding.rows = Array.from({ length: 30 }, (_, index) => ({
+                id: `external-group-${index}`, displayName: `External Group ${index}`,
+                memberCount: 0, boundAccountCount: 0, unboundPeopleCount: 0, mapping: { state: 'unbound' },
+            }));
+            directoryBinding.publish();
+        });
+
+        const list = screen.findByTestId('directory-source-detail-virtualized-list');
+        const index = list?.props.data.findIndex((row: { key: string }) => row.key === rowKey);
+        expect(index).toBeGreaterThan(0);
+        expect(scrollToIndexMock).toHaveBeenCalledWith(expect.objectContaining({ index }));
+        expect(screen.findByTestId(controlId)).not.toBeNull();
+        expect(screen.findByTestId(`setting-reveal.${anchor}`)).not.toBeNull();
+
+        scrollToIndexMock.mockClear();
+        await act(async () => {
+            directoryGroupsBinding.rows = [...directoryGroupsBinding.rows, { id: 'new-group', displayName: 'New Group', memberCount: 0, boundAccountCount: 0, unboundPeopleCount: 0, mapping: { state: 'unbound' } }];
+            directoryBinding.publish();
+        });
+        expect(scrollToIndexMock).not.toHaveBeenCalled();
+    });
+
+    it('explains a denied Group search target without loading or exposing Group data', async () => {
+        vi.useFakeTimers();
+        routeParams.current = { setting: DIRECTORY_SOURCE_SETTINGS.settings.searchGroups.anchor };
+        capabilitiesMock.current = { manageAuthentication: true, manageGroups: false };
+        directoryBinding.state = {
+            kind: 'ready', refreshing: false, stale: false, failure: null,
+            item: {
+                v: 1, id: 'source-1', teamId: 'team-1', kind: 'workos_directory', displayName: 'Example directory',
+                state: 'active', allowedActions: [], error: null,
+                sync: { mode: 'events_and_full', attempt: 'succeeded', freshness: 'fresh', lastAttemptAt: null, lastSuccessAt: null, lastFullReconcileAt: null, nextScheduledAt: null },
+            },
+        };
+        const screen = await renderScreen(<DirectorySourceDetailScreen serverId="home-1" teamId="team-1" sourceId="source-1" />);
+        await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+        expect(screen.findByTestId('directory-groups-forbidden')).not.toBeNull();
+        expect(screen.findByTestId(`setting-reveal.${DIRECTORY_SOURCE_SETTINGS.sectionRefs.groups.id}`)).not.toBeNull();
+        expect(screen.findByTestId('directory-groups-search')).toBeNull();
+        expect(directoryGroupsBinding.enabled).toBe(false);
+    });
+
     it('renders a bound directory Group with the canonical Team Group display name', async () => {
         directoryBinding.state = {
             kind: 'ready', refreshing: false, stale: false, failure: null,
@@ -234,7 +343,7 @@ describe('DirectorySourceDetailScreen', () => {
         };
         directoryGroupsBinding.rows = [{
             id: 'external-group-1', sourceId: 'source-1', externalGroupId: 'external-1', displayName: 'External engineering',
-            memberCount: 4, mapping: { state: 'bound', bindingId: 'binding-1', teamGroupId: 'team-group-opaque-id' },
+            memberCount: 4, boundAccountCount: 4, unboundPeopleCount: 0, mapping: { state: 'bound', bindingId: 'binding-1', teamGroupId: 'team-group-opaque-id' },
         }];
         nativeGroupsBinding.rows = [{ id: 'team-group-opaque-id', name: 'Platform Engineering', memberCount: 4 }];
 
@@ -257,6 +366,8 @@ describe('DirectorySourceDetailScreen', () => {
             id: `external-group-${index}`,
             displayName: `External Group ${index}`,
             memberCount: index,
+            boundAccountCount: index,
+            unboundPeopleCount: 0,
             mapping: { state: 'bound', teamGroupId: `team-group-${index}` },
         }));
         nativeGroupsBinding.rows = Array.from({ length: 50 }, (_, index) => ({
@@ -283,7 +394,7 @@ describe('DirectorySourceDetailScreen', () => {
             },
         };
         directoryGroupsBinding.rows = [{
-            id: 'external-group-1', displayName: 'Engineering', memberCount: 4, mapping: { state: 'unbound' },
+            id: 'external-group-1', displayName: 'Engineering', memberCount: 4, boundAccountCount: 4, unboundPeopleCount: 0, mapping: { state: 'unbound' },
         }];
         const screen = await renderScreen(<DirectorySourceDetailScreen serverId="home-1" teamId="team-1" sourceId="source-1" />);
 
@@ -292,9 +403,10 @@ describe('DirectorySourceDetailScreen', () => {
         expect(screen.findByTestId('directory-group:external-group-1')?.props.disabled).toBe(true);
     });
 
-    it('blocks source and mapping mutations while its authoritative projection refreshes', async () => {
+    it.each(['source', 'groups'])('blocks mapping mutations while its authoritative %s projection refreshes', async (reader) => {
+        directoryGroupsBinding.status = reader === 'groups' ? 'loading' : 'ready';
         directoryBinding.state = {
-            kind: 'ready', refreshing: true, stale: false, failure: null,
+            kind: 'ready', refreshing: reader === 'source', stale: false, failure: null,
             item: {
                 v: 1, id: 'source-1', teamId: 'team-1', kind: 'workos_directory', displayName: 'Example directory',
                 state: 'active', allowedActions: ['teams.directory.sources.sync', 'teams.directory.sources.remove'], error: null,
@@ -302,12 +414,12 @@ describe('DirectorySourceDetailScreen', () => {
             },
         };
         directoryGroupsBinding.rows = [{
-            id: 'external-group-1', displayName: 'Engineering', memberCount: 4, mapping: { state: 'unbound' },
+            id: 'external-group-1', displayName: 'Engineering', memberCount: 4, boundAccountCount: 4, unboundPeopleCount: 0, mapping: { state: 'unbound' },
         }];
         const screen = await renderScreen(<DirectorySourceDetailScreen serverId="home-1" teamId="team-1" sourceId="source-1" />);
 
-        expect(screen.findByTestId('team-directory-source-sync')?.props.disabled).toBe(true);
-        expect(screen.findByTestId('team-directory-source-remove')?.props.disabled).toBe(true);
+        expect(screen.findByTestId('team-directory-source-sync')?.props.disabled).toBe(reader === 'source');
+        expect(screen.findByTestId('team-directory-source-remove')?.props.disabled).toBe(reader === 'source');
         expect(screen.findByTestId('directory-group:external-group-1')?.props.disabled).toBe(true);
     });
 
@@ -366,11 +478,15 @@ describe('DirectorySourceDetailScreen', () => {
     });
 
     it('keeps the Team shell notices when the viewer may not manage this directory', async () => {
+        vi.useFakeTimers();
+        routeParams.current = { setting: DIRECTORY_SOURCE_SETTINGS.settings.searchGroups.anchor };
         capabilitiesMock.current = { manageAuthentication: false, manageGroups: false };
         const screen = await renderScreen(<DirectorySourceDetailScreen serverId="home-1" teamId="team-1" sourceId="source-1" />);
+        await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
 
         expect(screen.findByTestId('team-shell-header')).not.toBeNull();
         expect(screen.findByTestId('team-directory-source-forbidden')).not.toBeNull();
+        expect(screen.findByTestId(`setting-reveal.${DIRECTORY_SOURCE_SETTINGS.sectionRefs.actions.id}`)).not.toBeNull();
     });
 
     it('keeps source administration available without exposing Group mappings to an authentication-only manager', async () => {
@@ -596,7 +712,7 @@ describe('DirectorySourceDetailScreen', () => {
         };
         directoryGroupsBinding.rows = [{
             id: 'external-group-1', sourceId: 'source-1', externalGroupId: 'external-1', displayName: 'Engineering',
-            memberCount: 4, mapping: { state: 'unbound' },
+            memberCount: 4, boundAccountCount: 4, unboundPeopleCount: 0, mapping: { state: 'unbound' },
         }];
         let finishMapping: (() => void | Promise<void>) | undefined;
         let failMapping: ((code: string) => void) | undefined;
@@ -658,7 +774,7 @@ describe('DirectorySourceDetailScreen', () => {
         };
         directoryGroupsBinding.rows = [{
             id: 'external-group-1', sourceId: 'source-1', externalGroupId: 'external-1', displayName: 'External engineering',
-            memberCount: 12, mapping: { state: 'bound', bindingId: 'binding-1', teamGroupId: 'team-group-opaque-id' },
+            memberCount: 12, boundAccountCount: 8, unboundPeopleCount: 4, mapping: { state: 'bound', bindingId: 'binding-1', teamGroupId: 'team-group-opaque-id' },
         }];
         nativeGroupsBinding.rows = [{ id: 'team-group-opaque-id', name: 'Platform Engineering', memberCount: 4 }];
         // Declining keeps this test on the confirmation contract: what the
@@ -671,7 +787,7 @@ describe('DirectorySourceDetailScreen', () => {
 
         expect(modalConfirmMock).toHaveBeenCalledWith(
             'identityAdministration.chooseGroup',
-            'External engineering\nidentityAdministration.mappedTo: Platform Engineering\nteams.groups.memberCount(count=12)',
+            'External engineering\nidentityAdministration.mappedTo: Platform Engineering\nteams.authentication.directory.people.boundAccountCount(count=8)\nteams.authentication.directory.people.unboundPeopleCount(count=4)',
             expect.any(Object),
         );
 
@@ -680,7 +796,7 @@ describe('DirectorySourceDetailScreen', () => {
 
         expect(modalConfirmMock).toHaveBeenCalledWith(
             'identityAdministration.removeMapping',
-            'External engineering\nidentityAdministration.mappedTo: Platform Engineering\nteams.groups.memberCount(count=12)',
+            'External engineering\nidentityAdministration.mappedTo: Platform Engineering\nteams.authentication.directory.people.boundAccountCount(count=8)\nteams.authentication.directory.people.unboundPeopleCount(count=4)',
             expect.objectContaining({ destructive: true }),
         );
     });
@@ -698,6 +814,8 @@ describe('DirectorySourceDetailScreen', () => {
             id: `external-group-${index}`,
             displayName: `External Group ${index}`,
             memberCount: index,
+            boundAccountCount: index,
+            unboundPeopleCount: 0,
             mapping: { state: 'unbound' },
         }));
         nativeGroupsBinding.rows = [{ id: 'team-group-1', name: 'Platform Engineering', memberCount: 4 }];
@@ -706,13 +824,19 @@ describe('DirectorySourceDetailScreen', () => {
         await screen.pressByTestIdAsync('directory-group:external-group-0');
 
         const order = collectRenderedTestIds(screen.tree.toJSON());
-        expect(order.indexOf('directory-group:external-group-11'))
+        expect(order.indexOf('directory-group:external-group-0'))
             .toBeLessThan(order.indexOf('directory-group-map-create'));
         expect(order.indexOf('directory-group-map-create'))
-            .toBeLessThan(order.indexOf('directory-group:external-group-12'));
+            .toBeLessThan(order.indexOf('directory-group:external-group-1'));
+        expect(screen.findByTestId('directory-group:external-group-0')?.props.accessibilityExpanded).toBe(true);
+        expect(focusedItems).toContain('directory-group-map-create');
+        expect(scrollToIndexMock).toHaveBeenCalledWith(expect.objectContaining({ index: expect.any(Number), animated: false }));
+        await act(async () => { screen.findByTestId('directory-group-map-create')?.props.onKeyDown({ key: 'Escape' }); });
+        expect(screen.findByTestId('directory-group-map-create')).toBeNull();
+        expect(focusedItems.at(-1)).toBe('directory-group:external-group-0');
     });
 
-    it('lets the expanded existing-group chooser collapse instead of rendering an inert row', async () => {
+    it('shows existing Groups directly without an inert map-existing action', async () => {
         directoryBinding.state = {
             kind: 'ready', refreshing: false, stale: false, failure: null,
             item: {
@@ -722,14 +846,37 @@ describe('DirectorySourceDetailScreen', () => {
             },
         };
         directoryGroupsBinding.rows = [{
-            id: 'external-group-1', displayName: 'Engineering', memberCount: 4, mapping: { state: 'unbound' },
+            id: 'external-group-1', displayName: 'Engineering', memberCount: 4, boundAccountCount: 4, unboundPeopleCount: 0, mapping: { state: 'unbound' },
         }];
+        nativeGroupsBinding.rows = [{ id: 'team-group-1', name: 'Platform Engineering', memberCount: 4 }];
         const screen = await renderScreen(<DirectorySourceDetailScreen serverId="home-1" teamId="team-1" sourceId="source-1" />);
 
         await screen.pressByTestIdAsync('directory-group:external-group-1');
-        expect(screen.findByTestId('directory-group-map-existing')?.props.onPress).toEqual(expect.any(Function));
-
-        await screen.pressByTestIdAsync('directory-group-map-existing');
         expect(screen.findByTestId('directory-group-map-existing')).toBeNull();
+        expect(screen.findByTestId('directory-group-native-target:team-group-1')).not.toBeNull();
+
+        await screen.pressByTestIdAsync('directory-group-chooser-cancel');
+        expect(screen.findByTestId('directory-group-chooser-cancel')).toBeNull();
+    });
+
+    it('shows a failed Team Group chooser read and retries the native Group reader', async () => {
+        directoryBinding.state = {
+            kind: 'ready', refreshing: false, stale: false, failure: null,
+            item: {
+                v: 1, id: 'source-1', teamId: 'team-1', kind: 'workos_directory', displayName: 'Example directory',
+                state: 'active', allowedActions: [], error: null,
+                sync: { mode: 'events_and_full', attempt: 'succeeded', freshness: 'fresh', lastAttemptAt: null, lastSuccessAt: null, lastFullReconcileAt: null, nextScheduledAt: null },
+            },
+        };
+        directoryGroupsBinding.rows = [{ id: 'external-group-1', displayName: 'Engineering', memberCount: 0, boundAccountCount: 0, unboundPeopleCount: 0, mapping: { state: 'unbound' } }];
+        nativeGroupsBinding.error = { kind: 'unreachable', retryable: true, code: null };
+        nativeGroupsBinding.rows = [{ id: 'retained-group', name: 'Retained Group', memberCount: 4 }];
+        const screen = await renderScreen(<DirectorySourceDetailScreen serverId="home-1" teamId="team-1" sourceId="source-1" />);
+        await screen.pressByTestIdAsync('directory-group:external-group-1');
+        expect(screen.findByTestId('directory-native-groups-error')).not.toBeNull();
+        expect(screen.findByTestId('directory-native-groups-empty')).toBeNull();
+        expect(screen.findByTestId('directory-group-native-target:retained-group')?.props.disabled).toBe(true);
+        await screen.pressByTestIdAsync('directory-native-groups-retry');
+        expect(nativeGroupsBinding.reload).toHaveBeenCalledOnce();
     });
 });

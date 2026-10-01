@@ -1,9 +1,11 @@
 import * as React from 'react';
 import { act } from 'react-test-renderer';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { TeamIdentityConnectionV1 } from '@happier-dev/protocol/teams';
 
 import {
     collectRenderedTestIds,
+    createDeferred,
     createHomeGovernanceHarness,
     decideApprovalAsInbox,
     homeAccountPickerRowFixture,
@@ -22,7 +24,7 @@ import { installSettingsViewCommonModuleMocks } from '../settingsViewTestHelpers
 /**
  * The last mile of a deferred Team journey.
  *
- * An explicit UI-approval requirement turns a Team mutation into a durable
+ * An explicit UI-approval requirement turns a Team Action into a durable
  * approval request instead of an immediate answer. These cases are about what
  * the *initiating surface* then owes the person: that the wait is visible and
  * the control is withheld rather than silently doing nothing, and that when the
@@ -33,7 +35,7 @@ import { installSettingsViewCommonModuleMocks } from '../settingsViewTestHelpers
  * Every deferred case runs the real approval lifecycle: the Team operation
  * reaches the shared Action front door, which persists an open approval in the
  * Home's stateful Artifact store; the Inbox then decides it through the generic
- * executor, whose replay is the one Home mutation; and the mounted surface
+ * executor, whose replay is the one Home operation; and the mounted surface
  * learns the outcome only through the real `useApprovalArtifact` and
  * `useActionApprovalContinuation`. Only the network, the credential store and
  * genuine platform boundaries are replaced.
@@ -50,6 +52,23 @@ import { installSettingsViewCommonModuleMocks } from '../settingsViewTestHelpers
 const routerReplace = vi.hoisted(() => vi.fn());
 const routerPush = vi.hoisted(() => vi.fn());
 const routerBack = vi.hoisted(() => vi.fn());
+const routeParams = vi.hoisted(() => ({ current: {} as Record<string, string> }));
+const focusEffects = vi.hoisted(() => new Set<() => void | (() => void)>());
+
+vi.mock('@react-navigation/native', async () => {
+    const { createReactNavigationNativeMock } = await import('@/dev/testkit/mocks/reactNavigation');
+    const ReactModule = await import('react');
+    return {
+        ...createReactNavigationNativeMock(),
+        useFocusEffect: (effect: () => void | (() => void)) => {
+            ReactModule.useEffect(() => {
+                focusEffects.add(effect);
+                const cleanup = effect();
+                return () => { focusEffects.delete(effect); cleanup?.(); };
+            }, [effect]);
+        },
+    };
+});
 
 /**
  * Invitation creation is live-only custody: its invocation, not an Artifact,
@@ -77,7 +96,7 @@ installSettingsViewCommonModuleMocks({
     router: async () => ({
         useRouter: () => ({ push: routerPush, replace: routerReplace, back: routerBack }),
         useNavigation: () => ({ setOptions: vi.fn() }),
-        useLocalSearchParams: () => ({}),
+        useLocalSearchParams: () => routeParams.current,
     }),
     // The real client store: the approval writer publishes the settled
     // Artifact into it and the mounted continuation reads it back, so a stub
@@ -244,6 +263,8 @@ beforeEach(async () => {
     routerReplace.mockReset();
     routerPush.mockReset();
     routerBack.mockReset();
+    routeParams.current = {};
+    focusEffects.clear();
     setClipboardStringSafeMock.mockClear();
     deferrals.createTeamInvitation = null;
     deferrals.calls = { createTeamInvitation: 0 };
@@ -252,6 +273,160 @@ beforeEach(async () => {
 
 afterEach(() => {
     standardCleanup();
+});
+
+describe('deferred Team identity reads', () => {
+    it.each(['approve', 'reject'] as const)('settles a configured list confirmation in the mounted loader after %s', async (decision) => {
+        const serverId = await addTeamHome({ manageAuthentication: true });
+        await harness.requireUiApproval(serverId, 'teams.identity.connections.list');
+        const listPath = '/v1/teams/identity/connections/list';
+        harness.answer(serverId, listPath, {
+            body: {
+                items: [], eligibleProviders: [], memberSignInUrl: null,
+                admissionModeApplicability: { v: 1, modes: {
+                    invite_only: { status: 'available' },
+                    provisioned: { status: 'unavailable', reason: 'directory_source_required' },
+                    jit: { status: 'unavailable', reason: 'team_connection_required' },
+                } },
+            },
+        });
+        harness.answer(serverId, '/v1/identity/github-apps/list', { body: { registrations: [], installations: [] } });
+        const { TeamAuthenticationSettingsScreen } = await import('./identity/TeamAuthenticationSettingsScreen');
+        const screen = await renderScreen(<TeamAuthenticationSettingsScreen serverId={serverId} teamId="team-1" />);
+        const artifactId = await waitForOpenApproval(serverId, 'teams.identity.connections.list');
+        await waitForTestId(screen, 'team-approval');
+        expect(harness.requestsFor(listPath)).toHaveLength(0);
+
+        await expect(decideApprovalAsInbox(serverId, artifactId, decision)).resolves.toMatchObject({ ok: true });
+
+        await waitForTestId(screen, decision === 'approve' ? 'team-authentication-empty' : 'team-authentication-unavailable');
+        expect(harness.requestsFor(listPath)).toHaveLength(decision === 'approve' ? 1 : 0);
+        if (decision === 'reject') expect(screen.findByTestId('team-authentication-unavailable')?.props.onPress).toEqual(expect.any(Function));
+        expect(harness.artifacts(serverId).list()).toHaveLength(1);
+    });
+});
+
+describe('WorkOS Portal return', () => {
+    const listPath = '/v1/teams/identity/connections/list';
+    const reconcilePath = '/v1/teams/identity/workos/reconcile';
+    function workosConnection(overrides: Partial<TeamIdentityConnectionV1> = {}): TeamIdentityConnectionV1 {
+        return {
+            v: 1, id: 'workos-connection', teamId: 'team-1',
+            provider: { id: 'workos-provider', kind: 'workos_sso', displayName: 'Acme SSO' },
+            externalReference: { v: 1, kind: 'workos_sso', organizationId: 'org_exact', connectionId: 'conn_exact' },
+            settings: { v: 1, kind: 'workos_sso' }, enabled: true, firstEnabledAt: 1,
+            revision: 2, state: 'connected',
+            allowedActions: ['teams.identity.workos.adminPortalLink.create', 'teams.identity.workos.reconcile'],
+            lastObservation: { v: 1, kind: 'workos_sso', presentation: null },
+            lastSuccessfulTest: null, createdAt: 1, updatedAt: 1,
+            ...overrides,
+        };
+    }
+    function listAnswer(connection: TeamIdentityConnectionV1) {
+        return { body: {
+            items: [connection], eligibleProviders: [], memberSignInUrl: null,
+            admissionModeApplicability: { v: 1, modes: {
+                invite_only: { status: 'available' },
+                provisioned: { status: 'unavailable', reason: 'directory_source_required' },
+                jit: { status: 'available' },
+            } },
+        } };
+    }
+    async function renderConnectionRoute(serverId: string, returnedFromPortal = false) {
+        routeParams.current = {
+            serverId, teamId: 'team-1', connectionId: 'workos-connection',
+            ...(returnedFromPortal ? { purpose: 'workos_admin_portal' } : {}),
+        };
+        const { default: IdentityConnectionDetailRoute } = await import('@/app/(app)/settings/teams/[serverId]/[teamId]/authentication/[connectionId]');
+        return await renderScreen(<IdentityConnectionDetailRoute />);
+    }
+    async function refocusRoute() {
+        await act(async () => {
+            for (const effect of focusEffects) effect();
+        });
+    }
+
+    it.each([true, false])('reconciles connected state only for explicit Portal return (%s)', async (returnedFromPortal) => {
+        const serverId = await addTeamHome({ manageAuthentication: true });
+        const current = workosConnection();
+        harness.answer(serverId, listPath, listAnswer(current));
+        const reconcileAnswer = createDeferred<void>();
+        const missing = workosConnection({ state: 'needs_attention', revision: 3 });
+        harness.answer(serverId, reconcilePath, {
+            body: { outcome: 'needs_attention', connection: missing },
+            respondAfter: reconcileAnswer.promise,
+        });
+        const screen = await renderConnectionRoute(serverId, returnedFromPortal);
+        await waitForTestId(screen, 'team-identity-workos-reconcile');
+        if (returnedFromPortal) {
+            await vi.waitFor(() => expect(harness.requestsFor(reconcilePath)).toHaveLength(1));
+            harness.answer(serverId, listPath, listAnswer(missing));
+            await act(async () => reconcileAnswer.resolve());
+            const { t } = await import('@/text');
+            await vi.waitFor(() => expect(screen.getTextContent()).toContain(t('teams.authentication.status.needsAttention')));
+            expect(harness.requestsFor(reconcilePath)[0]?.input).toMatchObject({ teamId: 'team-1', connectionId: 'workos-connection', expectedRevision: 2 });
+        } else {
+            await refocusRoute();
+            await vi.waitFor(() => expect(harness.requestsFor(listPath)).toHaveLength(2));
+            expect(harness.requestsFor(reconcilePath)).toHaveLength(0);
+        }
+    });
+
+    it('checks unfinished setup on a fresh ordinary route', async () => {
+        const serverId = await addTeamHome({ manageAuthentication: true });
+        const connection = workosConnection({ state: 'setting_up', enabled: false, firstEnabledAt: null });
+        harness.answer(serverId, listPath, listAnswer(connection));
+        harness.answer(serverId, reconcilePath, { body: { outcome: 'connected', connection } });
+        await renderConnectionRoute(serverId);
+        await vi.waitFor(() => expect(harness.requestsFor(reconcilePath)).toHaveLength(1));
+        expect(harness.requestsFor(reconcilePath)[0]?.input).toMatchObject({
+            teamId: 'team-1', connectionId: connection.id, expectedRevision: 2,
+        });
+    });
+
+    it('checks setup against the refreshed revision when the route regains focus', async () => {
+        const serverId = await addTeamHome({ manageAuthentication: true });
+        const initial = workosConnection({ state: 'setting_up', allowedActions: ['teams.identity.workos.adminPortalLink.create'] });
+        harness.answer(serverId, listPath, listAnswer(initial));
+        const screen = await renderConnectionRoute(serverId);
+        await waitForTestId(screen, 'team-identity-workos-sso');
+        expect(harness.requestsFor(reconcilePath)).toHaveLength(0);
+        const refreshed = workosConnection({ state: 'setting_up', revision: 3 });
+        harness.answer(serverId, listPath, listAnswer(refreshed));
+        harness.answer(serverId, reconcilePath, { body: { outcome: 'connected', connection: refreshed } });
+        await refocusRoute();
+        await vi.waitFor(() => expect(harness.requestsFor(reconcilePath)).toHaveLength(1));
+        expect(harness.requestsFor(reconcilePath)[0]?.input).toMatchObject({ expectedRevision: 3 });
+    });
+
+    it('reconciles the original tab after opening the Portal and returning to the foreground', async () => {
+        const serverId = await addTeamHome({ manageAuthentication: true });
+        const connection = workosConnection({ state: 'needs_attention' });
+        harness.answer(serverId, listPath, listAnswer(connection));
+        harness.answer(serverId, reconcilePath, { body: { outcome: 'connected', connection } });
+        harness.answer(serverId, '/v1/teams/identity/workos/admin-portal-link/create', { body: { url: 'https://setup.workos.test/portal' } });
+        const { AppState } = await import('react-native');
+        const { createReactNativeAppStateEmitter } = await import('@/dev/testkit/mocks/reactNative');
+        const appState = createReactNativeAppStateEmitter();
+        const restoreAppState = appState.install(AppState);
+        const openBrowser = vi.fn();
+        vi.stubGlobal('open', openBrowser);
+        try {
+            const { Modal } = await import('@/modal');
+            vi.mocked(Modal.confirm).mockResolvedValueOnce(true);
+            const screen = await renderConnectionRoute(serverId);
+            await vi.waitFor(() => expect(harness.requestsFor(reconcilePath)).toHaveLength(1));
+            await vi.waitFor(() => expect(screen.tree.findAllByTestId('team-identity-workos-sso')
+                .some((node) => node.props.disabled === false)).toBe(true));
+            await screen.pressByTestIdAsync('team-identity-workos-sso');
+            expect(openBrowser).toHaveBeenCalledWith('https://setup.workos.test/portal', '_blank', 'noopener,noreferrer');
+            await act(async () => { appState.emit('background'); appState.emit('active'); });
+            await vi.waitFor(() => expect(harness.requestsFor(reconcilePath)).toHaveLength(2));
+        } finally {
+            restoreAppState();
+            vi.unstubAllGlobals();
+        }
+    });
 });
 
 describe('deferred Group creation', () => {
@@ -483,7 +658,7 @@ describe('deferred Team creation', () => {
             teamsEnabled: true,
         });
         await harness.selectHomes([serverId]);
-        harness.answer(serverId, ELIGIBILITY_PATH, { body: { teamsEnabled: true, createTeam: true } });
+        harness.answer(serverId, ELIGIBILITY_PATH, { body: { teamsEnabled: true, createTeam: true, createTeamForChosenAccount: false } });
         return serverId;
     }
 
@@ -547,6 +722,11 @@ describe('deferred Team creation', () => {
 
         const artifactId = await waitForOpenApproval(serverId, 'teams.logo.set');
         await waitForTestId(screen, 'teams-create-approval');
+        expect(screen.findByTestId('teams-create-submit')?.props.disabled).toBe(true);
+        // A retained press callback must also refuse redispatch while the
+        // publication waits for a person, not merely look disabled.
+        await act(async () => { screen.findByTestId('teams-create-submit')?.props.onPress(); });
+        expect(harness.artifacts(serverId).list()).toHaveLength(1);
         const { t } = await import('@/text');
         expect(screen.getTextContent()).not.toContain(t('teams.logo.failed'));
         expect(routerReplace).not.toHaveBeenCalled();
@@ -562,6 +742,50 @@ describe('deferred Team creation', () => {
         // One Team, one upload intent: the approval finishes the publication
         // that was deferred rather than starting another one.
         expect(harness.requestsFor(TEAM_CREATE_PATH)).toHaveLength(1);
+        expect(harness.requestsFor(TEAM_LOGO_SET_PATH)).toHaveLength(1);
+    });
+});
+
+describe('deferred Team logo replacement', () => {
+    it.each(['approve', 'reject'] as const)('settles the picked image truthfully after %s', async (decision) => {
+        const serverId = await addTeamHome({ manageSettings: true });
+        await harness.requireUiApproval(serverId, 'teams.logo.set');
+        const published = teamSummaryFixture({
+            capabilities: teamCapabilitiesFixture({ manageSettings: true }),
+            logo: { path: 'public/teams/team-1/logo/approved.png', url: 'https://home-a.example/public/teams/team-1/logo/approved.png', width: 32, height: 32, thumbhash: 'logo-hash' },
+        });
+        harness.answer(serverId, TEAM_LOGO_SET_PATH, { body: published });
+        const bytes = new Uint8Array([137, 80, 78, 71]);
+        pickImages.mockResolvedValue([{
+            kind: 'web', file: { type: 'image/png', arrayBuffer: async () => bytes.buffer },
+        }]);
+        const { TeamSettingsScreen } = await import('./TeamSettingsScreen');
+        const screen = await renderScreen(<TeamSettingsScreen serverId={serverId} teamId="team-1" />);
+        await waitForTestId(screen, 'team-settings-logo-set');
+        await screen.pressByTestIdAsync('team-settings-logo-set');
+        await screen.pressByTestIdAsync('team-settings-logo-use');
+
+        const artifactId = await waitForOpenApproval(serverId, 'teams.logo.set');
+        await waitForTestId(screen, 'team-approval');
+        const { t } = await import('@/text');
+        expect(screen.getTextContent()).not.toContain(t('teams.logo.failed'));
+        expect(screen.findByTestId('team-settings-logo-use')?.props.disabled).toBe(true);
+        expect(harness.requestsFor(TEAM_LOGO_SET_PATH)).toHaveLength(0);
+
+        harness.answer(serverId, TEAM_GET_PATH, { body: published });
+        await expect(decideApprovalAsInbox(serverId, artifactId, decision)).resolves.toMatchObject({ ok: true });
+        if (decision === 'reject') {
+            await vi.waitFor(() => expect(screen.getTextContent()).toContain(t('teams.errors.forbidden')));
+            expect(screen.findByTestId('team-settings-logo-use')?.props.disabled).toBe(false);
+            expect(harness.requestsFor(TEAM_LOGO_SET_PATH)).toHaveLength(0);
+            await screen.pressByTestIdAsync('team-settings-logo-use');
+            await vi.waitFor(() => expect(harness.artifacts(serverId).list()).toHaveLength(2));
+            expect(pickImages).toHaveBeenCalledTimes(1);
+            return;
+        }
+        await waitForTestId(screen, 'team-settings-logo-remove');
+        expect(collectRenderedTestIds(screen.tree.toJSON())).not.toContain('team-settings-logo-use');
+        expect(screen.getTextContent()).not.toContain(t('teams.logo.failed'));
         expect(harness.requestsFor(TEAM_LOGO_SET_PATH)).toHaveLength(1);
     });
 });

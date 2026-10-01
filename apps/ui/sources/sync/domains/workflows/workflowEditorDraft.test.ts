@@ -2,27 +2,8 @@ import { describe, expect, it } from 'vitest';
 
 import { WorkflowDefinitionV1Schema, type WorkflowBlock, type WorkflowStep } from '@happier-dev/protocol/workflows/workflowV1';
 
-import {
-  collectWorkflowBlockIds,
-  createWorkflowBlock,
-  createWorkflowEditorDraft,
-  findWorkflowBlock,
-  findWorkflowBlockListRef,
-  insertWorkflowBlock,
-  moveWorkflowBlock,
-  removeWorkflowBlock,
-  resolveSelectionAfterRemoval,
-  setWorkflowDefaultField,
-  setWorkflowFinalOutput,
-  setWorkflowStepExecutionField,
-  setWorkflowStepText,
-  setWorkflowStepTimeout,
-  toggleWorkflowBlockCollapsed,
-  updateWorkflowBlock,
-  walkWorkflowBlocks,
-  EMPTY_WORKFLOW_EDITOR_VIEW_STATE,
-  type WorkflowEditorDraft,
-} from './workflowEditorDraft';
+import { createWorkflowEditorDraft, resolveSelectionAfterRemoval, toggleWorkflowBlockCollapsed, EMPTY_WORKFLOW_EDITOR_VIEW_STATE, type WorkflowEditorDraft } from './workflowEditorDraft';
+import { collectWorkflowBlockIds, createWorkflowBlock, findWorkflowBlock, findWorkflowBlockListRef, insertWorkflowBlock, moveWorkflowBlock, resolvePreviousResultInputForInsertion, removeWorkflowBlock, setWorkflowDefaultField, setWorkflowFinalOutput, setWorkflowStepExecutionField, setWorkflowStepText, setWorkflowStepTimeout, updateWorkflowBlock, walkWorkflowBlocks } from '@happier-dev/protocol/workflows/workflowDefinitionEditV1';
 
 function step(id: string, text = `${id} prompt`): WorkflowStep {
   return { kind: 'step', id, document: { text, references: [], attachments: [] }, input: [], result: { kind: 'text' } };
@@ -210,6 +191,49 @@ describe('workflow structural editing', () => {
     });
     const result = removeWorkflowBlock(draft, 'b');
     expect(result.draft.finalOutput?.producer.blockId).toBe('a');
+  });
+
+  it('relocating the selected final-output producer keeps the selection, in and back out', () => {
+    const loop = createWorkflowBlock('loop', new Set<string>());
+    const draft = setWorkflowFinalOutput(draftWith([loop, step('after')]), {
+      kind: 'result',
+      producer: { blockId: 'after', scope: { kind: 'current' } },
+      path: [],
+    });
+
+    const nested = moveWorkflowBlock(draft, 'after', 'in');
+    expect(findWorkflowBlockListRef(nested, 'after')).toEqual({ kind: 'loopBody', loopId: loop.id });
+    expect(nested.finalOutput?.producer.blockId).toBe('after');
+
+    const lifted = moveWorkflowBlock(nested, 'after', 'out');
+    expect(lifted.blocks.map((block) => block.id)).toEqual([loop.id, 'after']);
+    expect(lifted.finalOutput?.producer.blockId).toBe('after');
+  });
+});
+
+describe('previous-result default at the insertion point', () => {
+  it('names the step immediately before the insertion point in the same scope', () => {
+    const draft = draftWith([step('analyze'), step('implement')]);
+    expect(resolvePreviousResultInputForInsertion(draft, { list: { kind: 'root' }, afterBlockId: 'analyze' }))
+      .toEqual({ kind: 'result', producer: { blockId: 'analyze', scope: { kind: 'current' } }, path: [] });
+    expect(resolvePreviousResultInputForInsertion(draft, { list: { kind: 'root' } }))
+      .toEqual({ kind: 'result', producer: { blockId: 'implement', scope: { kind: 'current' } }, path: [] });
+  });
+
+  it('resolves inside the nested scope the insertion actually targets', () => {
+    const loop = createWorkflowBlock('loop', new Set<string>());
+    if (loop.kind !== 'loop') throw new Error('unreachable');
+    const bodyStepId = loop.body[0]!.id;
+    const draft = draftWith([step('outer'), loop]);
+    expect(resolvePreviousResultInputForInsertion(draft, { list: { kind: 'loopBody', loopId: loop.id } }))
+      .toEqual({ kind: 'result', producer: { blockId: bodyStepId, scope: { kind: 'current' } }, path: [] });
+  });
+
+  it('supplies no default when the previous block is not one unambiguous producer', () => {
+    const parallel = createWorkflowBlock('parallel', new Set<string>());
+    const draft = draftWith([parallel]);
+    expect(resolvePreviousResultInputForInsertion(draft, { list: { kind: 'root' } })).toBeNull();
+    expect(resolvePreviousResultInputForInsertion(draftWith([]), { list: { kind: 'root' } })).toBeNull();
   });
 });
 

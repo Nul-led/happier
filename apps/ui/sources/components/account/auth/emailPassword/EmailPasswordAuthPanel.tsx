@@ -27,6 +27,7 @@ import {
 import { t, tLoose } from '@/text';
 
 import { PasswordField } from './PasswordField';
+import type { EmailPasswordAuthenticationCompletion } from './completeEmailPasswordAuthentication';
 import {
     createEmailPasswordDraft,
     describeEmailPasswordFailure,
@@ -61,8 +62,18 @@ export type EmailPasswordAuthPanelProps = Readonly<{
     admission?: NativeAccountAdmissionV1;
     invitationEmailVerificationRequired?: boolean;
     initialEmail?: string;
+    /**
+     * Create the Account for account-service sign-in (the mail landing of an account-service
+     * creation): the service answers with its Directory credential instead of a Home one.
+     */
+    credentialTarget?: 'account_directory';
+    /**
+     * `email` when the Home says it can mail a reset link now (its sign-in action's fact). Without
+     * it the forgotten-password view offers only the recovery key, never a link that cannot arrive.
+     */
+    passwordReset?: 'email';
     signal?: AbortSignal;
-    onAuthenticated: (outcome: EmailPasswordAuthOutcome) => void | Promise<void>;
+    onAuthenticated: (outcome: EmailPasswordAuthOutcome) => void | EmailPasswordAuthenticationCompletion | Promise<void | EmailPasswordAuthenticationCompletion>;
     /** Leaves this controller for the surrounding auth-entry surface. */
     onBack?: () => void;
 }>;
@@ -267,6 +278,7 @@ export const EmailPasswordAuthPanel = React.memo(function EmailPasswordAuthPanel
             password: validated.password,
             accountMode,
             admission: props.admission,
+            ...(props.credentialTarget ? { credentialTarget: props.credentialTarget } : {}),
             ...(props.signal ? { signal: props.signal } : {}),
             isCurrent,
         });
@@ -460,16 +472,20 @@ export const EmailPasswordAuthPanel = React.memo(function EmailPasswordAuthPanel
             <WelcomeActionAdmissionContext.Provider value={actionAdmission}>
             <View style={styles.root}>
                 <Text style={styles.title}>{t('settingsAccount.nativePassword.forgotTitle')}</Text>
-                <Text style={styles.hint}>{t('settingsAccount.nativePassword.forgotExplanation')}</Text>
-                {emailField('email', submitResetRequest)}
-                {formProblem}
-                {progressNotice}
-                <WelcomeActionCard
-                    testID="email-password-request-reset"
-                    title={t('settingsAccount.nativePassword.emailResetInstructions')}
-                    iconName="envelope"
-                    onPress={submitResetRequest}
-                />
+                {props.passwordReset === 'email' ? (
+                    <>
+                        <Text style={styles.hint}>{t('settingsAccount.nativePassword.forgotExplanation')}</Text>
+                        {emailField('email', submitResetRequest)}
+                        {formProblem}
+                        {progressNotice}
+                        <WelcomeActionCard
+                            testID="email-password-request-reset"
+                            title={t('settingsAccount.nativePassword.emailResetInstructions')}
+                            iconName="envelope"
+                            onPress={submitResetRequest}
+                        />
+                    </>
+                ) : null}
                 <WelcomeActionCard
                     testID="email-password-use-recovery-key"
                     title={t('settingsAccount.nativePassword.useRecoveryKey')}

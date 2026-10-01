@@ -4,6 +4,15 @@ import { createProviderErrorV1, ProviderErrorCodeV1Schema } from '@happier-dev/p
 import { presentProviderError, presentProviderRecoveryAction } from './errorPresentation';
 
 describe('provider error presentation', () => {
+    it.each([
+        ['model_not_granted', 'session.pendingMessages.admissionRejected.modelNotGranted', 'settingsProviders.errors.actions.chooseModel', 'choose_model'],
+        ['permission_mode_not_granted', 'session.pendingMessages.admissionRejected.permissionModeNotGranted', 'settingsProviders.errors.actions.reviewAccountGrant', 'review_account_grant'],
+    ] as const)('presents %s as a grant refusal rather than a Provider outage', (code, titleKey, descriptionKey, action) => {
+        expect(presentProviderError(createProviderErrorV1(code))).toMatchObject({
+            titleKey, descriptionKey, action, severity: 'warning',
+        });
+    });
+
     it('maps stable provider errors to actionable translation keys', () => {
         expect(presentProviderError('provider_secret_missing')).toEqual(expect.objectContaining({
             titleKey: 'settingsProviders.errors.secretMissingTitle',
@@ -65,6 +74,19 @@ describe('provider error presentation', () => {
         }));
         expect(presentation.titleKey).not.toBe('settingsProviders.errors.unreachableTitle');
         expect(presentation.descriptionKey).not.toBe('settingsProviders.errors.unreachableDescription');
+    });
+
+    it.each([
+        ['machine_offline', 'newSession.machineOfflineInlineTitle', 'newSession.machineOfflineInlineBody', 'retry'],
+        ['agent_unavailable', 'newSession.daemonRpcUnavailableTitle', 'newSession.actionMethodUnavailable', 'review_connection'],
+        ['agent_timeout', 'newSession.sessionTimeout', 'externalSessions.browseAgentTimedOut', 'retry'],
+        ['agent_error', 'externalSessions.operationStatusFailed', 'externalSessions.browseAgentFailed', 'review_connection'],
+    ] as const)('presents %s with distinct transport guidance', (code, titleKey, descriptionKey, action) => {
+        expect(presentProviderError(createProviderErrorV1(code))).toEqual(expect.objectContaining({
+            titleKey,
+            descriptionKey,
+            action,
+        }));
     });
 
     it('presents an unknown mutation outcome as review-only rather than replayable', () => {

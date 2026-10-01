@@ -113,7 +113,6 @@ export const ActionSettingsToolExposureControl = React.memo(function ActionSetti
                 onSelect={(itemId) => props.onChange(itemId as ActionSettingsToolExposureControlValue)}
                 itemTrigger={{
                     title: props.surfaceTitle,
-                    icon: <Icon name="wrench" size={29} color={theme.colors.text.secondary} />,
                     subtitle: disabled
                         ? t('settingsActions.toolExposure.disabledSubtitle')
                         : t('settingsActions.toolExposure.subtitle'),

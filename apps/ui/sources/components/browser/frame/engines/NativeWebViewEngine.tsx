@@ -241,8 +241,11 @@ export function NativeWebViewEngine(props: Readonly<{
     // Teardown runs in the layout phase so the bridge owner can send its one
     // terminal message through this exact WebView before React clears the
     // native ref and the delivery primitive is returned.
+    const automationRef = React.useRef(props.automation);
+    automationRef.current = props.automation;
+    const automationActionsKey = JSON.stringify(props.automation?.supportedActions ?? []);
     React.useLayoutEffect(() => {
-        const automation = props.automation;
+        const automation = automationRef.current;
         if (!automation || props.javaScriptEnabled === false) return;
         if (automation.supportedActions.length === 0) return;
 
@@ -286,7 +289,11 @@ export function NativeWebViewEngine(props: Readonly<{
                 reasonCode: 'owner_disconnected',
             });
         };
-    }, [props.automation, props.javaScriptEnabled]);
+    }, [bridgeDocument, props.javaScriptEnabled,
+        props.automation?.browserSessionId, props.automation?.viewId, props.automation?.navigationGeneration,
+        props.automation?.collectorId, props.automation?.nonce, props.automation?.capabilityVersion,
+        props.automation?.adapterKind, props.automation?.sourceOrigin, props.automation?.controlService,
+        props.automation?.nowMs, automationActionsKey]);
 
     // EU-8: the host->frame push direction on native. The WebView has no
     // `contentWindow`, so the delivery primitive is the SAME injected

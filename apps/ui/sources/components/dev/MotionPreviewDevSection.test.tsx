@@ -1,6 +1,6 @@
 import * as React from 'react';
 import { act } from 'react-test-renderer';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { pressTestInstance, renderScreen, standardCleanup } from '@/dev/testkit';
 
@@ -40,6 +40,9 @@ vi.mock('@/modal', () => modalMock.module);
 vi.mock('@/components/ui/motion', async () => {
     return {
         SlideTransitionSwitch: ({ children }: { children?: React.ReactNode }) => children ?? null,
+        SoftSlideTransitionFrame: (props: { children?: React.ReactNode; preset?: string; testID?: string }) => (
+            React.createElement('SoftSlideTransitionFrame', { preset: props.preset, testID: props.testID }, props.children)
+        ),
     };
 });
 
@@ -67,6 +70,12 @@ function resetMocks() {
 }
 
 describe('MotionPreviewDevSection', () => {
+    // The dev section pulls the list, modal and motion graph; warm that cold import
+    // once so each case measures behaviour rather than module transform time.
+    beforeAll(async () => {
+        await loadMotionPreviewModule();
+    }, 180_000);
+
     beforeEach(() => {
         resetMocks();
     });
@@ -140,5 +149,32 @@ describe('MotionPreviewDevSection', () => {
             pressTestInstance(backButton, 'carousel back');
         });
         expect(modalScreen.findByTestId('dev-motion-preview-carousel-title')?.props.children).toBe('Card 1');
+    });
+
+    it('previews the step transition in both the signature and the routine preset', async () => {
+        const mod = await loadMotionPreviewModule();
+        expect(mod).not.toBeNull();
+        if (!mod) return;
+
+        const screen = await renderScreen(<mod.MotionPreviewDevSection />);
+        pressTestInstance(screen.findByTestId('dev-motion-preview-slide-variants'), 'open preview');
+        const ModalBody = (modalMock.spies.show.mock.calls[0]?.[0] as Readonly<{
+            component?: React.ComponentType<{ onClose: () => void }>;
+        }> | undefined)?.component;
+        expect(ModalBody).toBeTruthy();
+        if (!ModalBody) return;
+
+        const modalScreen = await renderScreen(<ModalBody onClose={() => {}} />);
+        expect(modalScreen.findByTestId('dev-motion-preview-step-frame')?.props.preset).toBe('signature');
+
+        act(() => {
+            pressTestInstance(modalScreen.findByTestId('dev-motion-preview-step-preset'), 'step preset');
+        });
+        expect(modalScreen.findByTestId('dev-motion-preview-step-frame')?.props.preset).toBe('routine');
+
+        act(() => {
+            pressTestInstance(modalScreen.findByTestId('dev-motion-preview-step-continue'), 'step continue');
+        });
+        expect(modalScreen.findByTestId('dev-motion-preview-step-title')?.props.children).toBe('Step 2');
     });
 });

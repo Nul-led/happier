@@ -2,9 +2,10 @@ import * as React from 'react';
 import type { AccountSecurityGetResponseV1 } from '@happier-dev/protocol';
 
 import { useAuth } from '@/auth/context/AuthContext';
-import { useActiveServerSnapshot } from '@/hooks/server/useActiveServerSnapshot';
-import { useProfile } from '@/sync/domains/state/storage';
-import { captureActiveServerAccountScopeCurrentness } from '@/sync/domains/scope/activeServerAccountScope';
+import {
+    captureActiveServerAccountScopeCurrentness,
+    getActiveServerAccountScope,
+} from '@/sync/domains/scope/activeServerAccountScope';
 
 import { createAccountSecurityActionClient } from './accountSecurityActionClient';
 import {
@@ -50,10 +51,19 @@ export function useScopedAccountSecurityProjection(scopeKey: string | null) {
  * another. `Account.encryptionMode` here is the authority for "End-to-end encrypted"; key presence is not.
  */
 export function useAccountSecurityProjection(): AccountSecurityProjectionState {
+    return useAccountSecurityProjectionReader().state;
+}
+
+/**
+ * The same read, for a surface that also changes a projected fact (the CLI and daemon approvals
+ * switch on the API Tokens page) and publishes the stored value the server returned.
+ */
+export function useAccountSecurityProjectionReader() {
     const auth = useAuth();
-    const profile = useProfile();
-    const activeServer = useActiveServerSnapshot();
-    const scopeKey = auth.credentials ? accountSecurityProjectionScopeKey(activeServer.serverId, profile.id) : null;
+    const activeScope = auth.credentials ? getActiveServerAccountScope() : null;
+    const scopeKey = activeScope
+        ? accountSecurityProjectionScopeKey(activeScope.serverId, activeScope.accountId)
+        : null;
     const { state, publishProjection } = useScopedAccountSecurityProjection(scopeKey);
 
     React.useEffect(() => {
@@ -76,5 +86,5 @@ export function useAccountSecurityProjection(): AccountSecurityProjectionState {
         };
     }, [publishProjection, scopeKey]);
 
-    return state;
+    return { state, publishProjection };
 }

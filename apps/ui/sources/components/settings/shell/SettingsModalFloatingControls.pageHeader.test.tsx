@@ -1,0 +1,105 @@
+import * as React from 'react';
+import { afterEach, expect, it, vi } from 'vitest';
+
+import { renderScreen } from '@/dev/testkit';
+import { PageHeader } from '@/components/ui/layout/PageHeader';
+import { DestinationInstanceHost } from '@/components/appShell/workspace/DestinationInstanceHost';
+
+const routeState = vi.hoisted(() => ({ pathname: '/settings/appearance/themes' }));
+
+vi.mock('react-native-unistyles', async () => (await import('@/dev/testkit/mocks/unistyles')).createUnistylesMock());
+vi.mock('@expo/vector-icons', async () => (await import('@/dev/testkit/mocks/icons')).createExpoVectorIconsMock());
+vi.mock('@react-navigation/native', async () => (await import('@/dev/testkit/mocks/reactNavigation')).createReactNavigationNativeMock());
+vi.mock('expo-router', async () => {
+    const { createExpoRouterMock } = await import('@/dev/testkit/mocks/router');
+    return createExpoRouterMock({ pathname: () => routeState.pathname }).module;
+});
+
+import { SettingsFloatingControlsHost } from './SettingsModalFloatingControls';
+
+type Screen = Awaited<ReturnType<typeof renderScreen>>;
+let screen: Screen | null = null;
+
+afterEach(async () => {
+    await screen?.unmount();
+    screen = null;
+    routeState.pathname = '/settings/appearance/themes';
+});
+
+function backControls(): readonly unknown[] {
+    return screen?.findAllHostsByTestId('settings-modal-back') ?? [];
+}
+
+function headerHoldsBack(headerTestID: string): boolean {
+    const header = screen?.findByTestId(headerTestID);
+    return (header?.findAll((node) => node.props?.testID === 'settings-modal-back').length ?? 0) > 0;
+}
+
+it('puts the back control on the page header title line instead of floating it over the page', async () => {
+    screen = await renderScreen(
+        <SettingsFloatingControlsHost enabled>
+            <PageHeader testID="page-header" title="Themes" />
+        </SettingsFloatingControlsHost>,
+    );
+
+    expect(backControls()).toHaveLength(1);
+    expect(headerHoldsBack('page-header')).toBe(true);
+});
+
+it('only lets the focused hosted page claim inline Back chrome', async () => {
+    screen = await renderScreen(<>
+        {[true, false].map((focused, index) => <DestinationInstanceHost key={index}
+            tabId={`settings-${index}`} ref={{ kind: 'settings', params: { pageId: 'appearance/themes' } }}
+            pathname="/settings/appearance/themes" focused={focused} visible
+            navigation={{ push: () => {}, replace: () => {}, back: () => {} }}>
+            <SettingsFloatingControlsHost enabled>
+                <PageHeader testID={`header-${index}`} title="Themes" />
+            </SettingsFloatingControlsHost>
+        </DestinationInstanceHost>)}
+    </>);
+    expect(headerHoldsBack('header-0')).toBe(true);
+    expect(headerHoldsBack('header-1')).toBe(false);
+});
+
+it('keeps a back control on a sub-page that has no page header yet', async () => {
+    screen = await renderScreen(
+        <SettingsFloatingControlsHost enabled>
+            <></>
+        </SettingsFloatingControlsHost>,
+    );
+
+    expect(backControls()).toHaveLength(1);
+});
+
+it('shows no back control on a page reached from the rail', async () => {
+    routeState.pathname = '/settings/appearance';
+    screen = await renderScreen(
+        <SettingsFloatingControlsHost enabled>
+            <PageHeader testID="page-header" title="Appearance" />
+        </SettingsFloatingControlsHost>,
+    );
+
+    expect(backControls()).toHaveLength(0);
+});
+
+it('in a detail beside its list, gives back only to pages below the list item, on their title line', async () => {
+    const renderAt = async (pathname: string) => {
+        routeState.pathname = pathname;
+        await screen?.unmount();
+        screen = await renderScreen(
+            <SettingsFloatingControlsHost enabled>
+                <SettingsFloatingControlsHost enabled collectionRootPathname="/settings/providers">
+                    <PageHeader testID="detail-header" title="Detail" />
+                </SettingsFloatingControlsHost>
+            </SettingsFloatingControlsHost>,
+        );
+    };
+
+    // The list is beside this detail, so nothing leads back to it (and nothing floats over the list).
+    await renderAt('/settings/providers/connection-1');
+    expect(backControls()).toHaveLength(0);
+
+    await renderAt('/settings/providers/connection-1/models');
+    expect(backControls()).toHaveLength(1);
+    expect(headerHoldsBack('detail-header')).toBe(true);
+});

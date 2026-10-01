@@ -1,8 +1,6 @@
 import * as React from 'react';
 import type { TeamCredentialActivityKindV1 } from '@happier-dev/protocol/teams';
-import { useUnistyles } from 'react-native-unistyles';
 
-import { Icon } from '@/components/ui/icons/Icon';
 import { Item } from '@/components/ui/lists/Item';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
 import { useTeamCredentialActivity } from '@/hooks/teams/useTeamCredentialResources';
@@ -45,7 +43,6 @@ const CredentialActivity = React.memo(function CredentialActivity(props: Readonl
     context: TeamSectionContext;
     resourceId: string;
 }>) {
-    const { theme } = useUnistyles();
     const { context, resourceId } = props;
     const view = useTeamCredentialResourceView({ context, resourceId });
     // The Home admits the administrative history only to a viewer who
@@ -60,7 +57,7 @@ const CredentialActivity = React.memo(function CredentialActivity(props: Readonl
 
     if (!view.featureEnabled || (view.resolved && view.resource === null)) {
         return (
-            <ItemGroup footer={view.featureEnabled
+            <ItemGroup description={view.featureEnabled
                 ? t('teams.credentials.detail.notFound')
                 : t('teams.credentials.unavailable')}>
                 <Item
@@ -74,7 +71,7 @@ const CredentialActivity = React.memo(function CredentialActivity(props: Readonl
 
     if (view.resolved && !managesResources) {
         return (
-            <ItemGroup footer={t('teams.credentials.forbidden')}>
+            <ItemGroup description={t('teams.credentials.forbidden')}>
                 <Item
                     testID="team-credential-activity-forbidden"
                     title={t('homeGovernance.forbiddenTitle')}
@@ -87,11 +84,10 @@ const CredentialActivity = React.memo(function CredentialActivity(props: Readonl
     if (view.resource === null) {
         if (view.error) {
             return (
-                <ItemGroup footer={t('teams.unavailable.offline')}>
+                <ItemGroup description={t('teams.unavailable.offline')}>
                     <Item
                         testID="team-credential-activity-resource-retry"
                         title={t('teams.unavailable.retry')}
-                        icon={<Icon name="arrow-clockwise" size={29} color={theme.colors.text.secondary} />}
                         onPress={() => void view.reload()}
                         showChevron={false}
                     />
@@ -124,7 +120,7 @@ const CredentialActivity = React.memo(function CredentialActivity(props: Readonl
             ) : null}
 
             {activity.rows.length === 0 && activity.status === 'ready' ? (
-                <ItemGroup footer={t('teams.credentials.activity.empty')}>
+                <ItemGroup description={t('teams.credentials.activity.empty')}>
                     <Item
                         testID="team-credential-activity-empty"
                         title={t('teams.credentials.activity.title')}
@@ -156,11 +152,10 @@ const CredentialActivity = React.memo(function CredentialActivity(props: Readonl
 
             {/* Pages already read stay on screen through a failure. */}
             {activity.error ? (
-                <ItemGroup footer={t('teams.unavailable.offline')}>
+                <ItemGroup description={t('teams.unavailable.offline')}>
                     <Item
                         testID="team-credential-activity-retry"
                         title={t('teams.unavailable.retry')}
-                        icon={<Icon name="arrow-clockwise" size={29} color={theme.colors.text.secondary} />}
                         // A failed continuation retains its exact cursor and
                         // rows; retry that page rather than resetting the
                         // administrative history to page one.
@@ -184,11 +179,10 @@ const CredentialActivity = React.memo(function CredentialActivity(props: Readonl
             ) : null}
 
             {view.error ? (
-                <ItemGroup footer={t('teams.unavailable.offline')}>
+                <ItemGroup description={t('teams.unavailable.offline')}>
                     <Item
                         testID="team-credential-activity-resource-retry"
                         title={t('teams.unavailable.retry')}
-                        icon={<Icon name="arrow-clockwise" size={29} color={theme.colors.text.secondary} />}
                         onPress={() => void view.reload()}
                         showChevron={false}
                     />
@@ -208,6 +202,7 @@ export const TeamCredentialActivityScreen = React.memo(function TeamCredentialAc
             serverId={props.serverId}
             teamId={props.teamId}
             title={t('teams.credentials.activity.title')}
+            description={t('teams.pages.credentialActivity')}
         >
             {(context) => <CredentialActivity context={context} resourceId={props.resourceId} />}
         </TeamSection>

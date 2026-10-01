@@ -29,6 +29,7 @@ import {
   type AccountSettingsPersistedObject,
   type AccountSettingsStoredContentEnvelope,
   type AccountSettingsV2UpdateResponse,
+  type LegacyAuthoringMemorySettingsKey,
 } from '@happier-dev/protocol';
 
 import {
@@ -265,16 +266,28 @@ type AccountSettingsMutationCallback = (
   | Readonly<Record<string, unknown>>
   | Promise<Readonly<Record<string, unknown>>>;
 
-export type UpdateAccountSettingsV2WithRetryParams = UpdateAccountSettingsV2WithRetryCommonParams & Readonly<{
+export type UpdateAccountSettingsV2WithRetryParams = UpdateAccountSettingsV2WithRetryCommonParams & (Readonly<{
   mutation: AccountSettingMutationV1;
   mutate?: never;
-}>;
+  prepareMutation?: never;
+}> | Readonly<{
+  /** Replay-safe domain intent: prepare sparse operations against each winning raw document. */
+  prepareMutation: NonNullable<UpdateAccountSettingsV2OnceAgainstLatestParams['prepareMutation']>;
+  mutation?: never;
+  mutate?: never;
+}>);
 
-export type UpdateAccountSettingsV2OnceAgainstLatestParams = UpdateAccountSettingsV2WithRetryCommonParams & Readonly<{
+export type UpdateAccountSettingsV2OnceAgainstLatestParams = UpdateAccountSettingsV2WithRetryCommonParams & (Readonly<{
   /** Evaluated exactly once against the fetched Account Settings version. */
   mutate: AccountSettingsMutationCallback;
   mutation?: never;
-}>;
+  prepareMutation?: never;
+}> | Readonly<{
+  /** Prepare an explicit sparse operation once, after dependent resources are retained. */
+  prepareMutation: (raw: Readonly<Record<string, unknown>>) => AccountSettingMutationV1 | Promise<AccountSettingMutationV1>;
+  mutate?: never;
+  mutation?: never;
+}>);
 
 export type UpdateAccountSettingsV2OnceParams = UpdateAccountSettingsV2WithRetryCommonParams & Readonly<{
   /**
@@ -283,6 +296,8 @@ export type UpdateAccountSettingsV2OnceParams = UpdateAccountSettingsV2WithRetry
    * document after this version has gone stale.
    */
   expectedVersion: number;
+  /** Destination-first 0.2 import only; never a general unknown-key mutation. */
+  retireLegacyAuthoringMemoryKey?: LegacyAuthoringMemorySettingsKey;
   mutate: AccountSettingsMutationCallback;
 }>;
 
@@ -443,21 +458,12 @@ function resolveAccountSettingsV2UpdateDeps(params: Readonly<{
   });
 }
 
-async function prepareAccountSettingsV2Mutation(params: Readonly<{
+async function openAccountSettingsV2RawBaseline(params: Readonly<{
   credentials: StoredCredentials;
   content: AccountSettingsStoredContentEnvelope | null;
-  application:
-    | Readonly<{ kind: 'immutable'; mutation: AccountSettingMutationV1 }>
-    | Readonly<{ kind: 'callback'; mutate: AccountSettingsMutationCallback }>;
   deps: ResolvedAccountSettingsV2UpdateDeps;
   signal?: AbortSignal;
-}>): Promise<Readonly<{
-  didChange: boolean;
-  content: AccountSettingsStoredContentEnvelope | null;
-  raw: AccountSettingsPersistedObject;
-  envelopeKind: 'plain' | 'encrypted';
-  settings: AccountSettings;
-}>> {
+}>) {
   let accountMode: 'plain' | 'e2ee';
   try {
     accountMode = await params.deps.resolveAccountEncryptionMode();
@@ -474,15 +480,53 @@ async function prepareAccountSettingsV2Mutation(params: Readonly<{
     emptyEnvelopeKind,
   });
   if (parsed.envelopeKind === 'plain') {
-    assertAccountEncryptionModeAllowedByEffectiveClientRequirement(
-      'plain',
-      accountSettingsParse(parsed.raw),
-    );
+    assertAccountEncryptionModeAllowedByEffectiveClientRequirement('plain', accountSettingsParse(parsed.raw));
   }
   params.signal?.throwIfAborted();
+  return parsed;
+}
+
+/** Exact raw source observation for the destination-first three-key 0.2 importer. */
+export async function readAccountSettingsV2RawForLegacyAuthoringMemoryImport(params: Readonly<{
+  credentials: StoredCredentials;
+  deps?: AccountSettingsUpdateV2Deps;
+  signal?: AbortSignal;
+}>): Promise<Readonly<{ raw: AccountSettingsPersistedObject; version: number }>> {
+  const deps = resolveAccountSettingsV2UpdateDeps(params);
+  const fetched = await deps.fetchSettings();
+  const parsed = await openAccountSettingsV2RawBaseline({ ...params, deps, content: fetched.content });
+  return { raw: parsed.raw, version: fetched.version };
+}
+
+async function prepareAccountSettingsV2Mutation(params: Readonly<{
+  credentials: StoredCredentials;
+  content: AccountSettingsStoredContentEnvelope | null;
+  application:
+    | Readonly<{ kind: 'immutable'; mutation: AccountSettingMutationV1 }>
+    | Readonly<{ kind: 'prepared_immutable'; prepareMutation: NonNullable<UpdateAccountSettingsV2OnceAgainstLatestParams['prepareMutation']> }>
+    | Readonly<{ kind: 'callback'; mutate: AccountSettingsMutationCallback }>;
+  deps: ResolvedAccountSettingsV2UpdateDeps;
+  signal?: AbortSignal;
+  retireLegacyAuthoringMemoryKey?: LegacyAuthoringMemorySettingsKey;
+}>): Promise<Readonly<{
+  didChange: boolean;
+  content: AccountSettingsStoredContentEnvelope | null;
+  raw: AccountSettingsPersistedObject;
+  envelopeKind: 'plain' | 'encrypted';
+  settings: AccountSettings;
+  /** The exact sparse operation submitted; readback must never re-enter its preparation. */
+  mutation: AccountSettingMutationV1 | null;
+}>> {
+  const parsed = await openAccountSettingsV2RawBaseline(params);
   let mergedRaw: AccountSettingsPersistedObject;
-  if (params.application.kind === 'immutable') {
-    const applied = applyAccountSettingMutationV1(parsed.raw, params.application.mutation);
+  let mutation: AccountSettingMutationV1 | null = null;
+  if (params.retireLegacyAuthoringMemoryKey) {
+    // Retirement is an exact deletion, never a general Settings normalization.
+    mergedRaw = { ...parsed.raw };
+    delete mergedRaw[params.retireLegacyAuthoringMemoryKey];
+  } else if (params.application.kind === 'immutable' || params.application.kind === 'prepared_immutable') {
+    mutation = params.application.kind === 'immutable' ? params.application.mutation : await params.application.prepareMutation(parsed.raw);
+    const applied = applyAccountSettingMutationV1(parsed.raw, mutation);
     if (applied.status === 'invalid') {
       throw new AccountSettingMutationInvalidError(applied.reason);
     }
@@ -494,7 +538,7 @@ async function prepareAccountSettingsV2Mutation(params: Readonly<{
     });
   }
   params.signal?.throwIfAborted();
-  const nextRaw = normalizeSettingsSecretsForEnvelope({
+  const nextRaw = params.retireLegacyAuthoringMemoryKey ? mergedRaw : normalizeSettingsSecretsForEnvelope({
     raw: mergedRaw,
     envelopeKind: parsed.envelopeKind,
     credentials: params.credentials,
@@ -513,6 +557,7 @@ async function prepareAccountSettingsV2Mutation(params: Readonly<{
       raw: nextRaw,
       envelopeKind: parsed.envelopeKind,
       settings,
+      mutation,
     });
   }
 
@@ -532,6 +577,7 @@ async function prepareAccountSettingsV2Mutation(params: Readonly<{
     raw: nextRaw,
     envelopeKind: parsed.envelopeKind,
     settings,
+    mutation,
   });
 }
 
@@ -604,21 +650,9 @@ function unavailableResultForBoundaryError(error: unknown): AccountSettingsMutat
   return Object.freeze({ status: 'unavailable', retryable, ...(reason ? { reason } : {}) });
 }
 
-function matchesPreparedMutation(params: Readonly<{
-  rereadRaw: AccountSettingsPersistedObject;
-  expectedRaw: AccountSettingsPersistedObject;
-  mutation: AccountSettingMutationV1;
-}>): boolean {
-  return params.mutation.operations.every((operation) => operation.op === 'reset'
-    ? !hasOwnRecordKey(params.rereadRaw, operation.key)
-    : hasOwnRecordKey(params.rereadRaw, operation.key)
-      && isDeepStrictEqual(params.rereadRaw[operation.key], params.expectedRaw[operation.key]));
-}
-
 async function settleSubmittedImmutableWrite(params: Readonly<{
   credentials: StoredCredentials;
   deps: ResolvedAccountSettingsV2UpdateDeps;
-  prepared: Awaited<ReturnType<typeof prepareAccountSettingsV2Mutation>>;
   mutation: AccountSettingMutationV1;
   lastKnownVersion: number;
   shouldCommit?: () => boolean;
@@ -638,11 +672,7 @@ async function settleSubmittedImmutableWrite(params: Readonly<{
     if (params.shouldCommit?.() !== false) {
       await params.deps.writeCacheSnapshot(reread.content, reread.version);
     }
-    const isSatisfied = matchesPreparedMutation({
-      rereadRaw: parsed.raw,
-      expectedRaw: params.prepared.raw,
-      mutation: params.mutation,
-    });
+    const isSatisfied = applyAccountSettingMutationV1(parsed.raw, params.mutation).status === 'unchanged';
     if (isSatisfied) {
       return Object.freeze({
         status: 'satisfied' as const,
@@ -661,7 +691,9 @@ export async function updateAccountSettingsV2WithRetry(
 ): Promise<AccountSettingsMutationResult> {
   if (!maySubmitAccountSettingsMutation(params)) return cancelledBeforeSubmission();
   if (params.shouldCommit?.() === false) return cancelledBeforeSubmission();
-  const application = { kind: 'immutable' as const, mutation: params.mutation };
+  const application = params.prepareMutation
+    ? { kind: 'prepared_immutable' as const, prepareMutation: params.prepareMutation }
+    : { kind: 'immutable' as const, mutation: params.mutation };
   const maxAttempts = 3;
   const deps = resolveAccountSettingsV2UpdateDeps(params);
   let fetched: Awaited<ReturnType<typeof deps.fetchSettings>>;
@@ -724,8 +756,9 @@ export async function updateAccountSettingsV2WithRetry(
       return await settleSubmittedImmutableWrite({
         credentials: params.credentials,
         deps,
-        prepared,
-        mutation: application.mutation,
+        // Both retrying applications prepare explicit sparse mutations; only the separate
+        // one-shot callback application can return null here.
+        mutation: prepared.mutation!,
         lastKnownVersion: version,
         ...(params.shouldCommit ? { shouldCommit: params.shouldCommit } : {}),
       });
@@ -759,7 +792,9 @@ export async function updateAccountSettingsV2WithRetry(
  * callback code behind their back.
  */
 async function updateAccountSettingsV2OnceInternal(
-  params: UpdateAccountSettingsV2OnceAgainstLatestParams & Readonly<{ expectedVersion?: number }>,
+  params: UpdateAccountSettingsV2OnceAgainstLatestParams & Readonly<{
+    expectedVersion?: number; retireLegacyAuthoringMemoryKey?: LegacyAuthoringMemorySettingsKey;
+  }>,
 ): Promise<UpdateAccountSettingsV2OnceResult> {
   if (!maySubmitAccountSettingsMutation(params)) return cancelledBeforeSubmission();
   const deps = resolveAccountSettingsV2UpdateDeps(params);
@@ -780,9 +815,12 @@ async function updateAccountSettingsV2OnceInternal(
     prepared = await prepareAccountSettingsV2Mutation({
       content: fetched.content,
       credentials: params.credentials,
-      application: { kind: 'callback', mutate: params.mutate },
+      application: params.prepareMutation
+        ? { kind: 'prepared_immutable', prepareMutation: params.prepareMutation }
+        : { kind: 'callback', mutate: params.mutate },
       deps,
       ...(params.signal ? { signal: params.signal } : {}),
+      ...(params.retireLegacyAuthoringMemoryKey ? { retireLegacyAuthoringMemoryKey: params.retireLegacyAuthoringMemoryKey } : {}),
     });
   } catch (error) {
     if (!maySubmitAccountSettingsMutation(params)) return cancelledBeforeSubmission();

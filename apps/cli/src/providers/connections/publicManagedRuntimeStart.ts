@@ -30,6 +30,7 @@ export type PublicManagedProviderRuntimeStartOperation = NonNullable<
 
 export type ManagedProviderExplicitStartCustodyRequest =
   Parameters<PublicManagedProviderRuntimeStartOperation>[0] & Readonly<{
+    retirementGroup?: import('@/plugins/runtime/resolveExecutablePluginRuntimeRegistry').ManagedProviderExplicitStartJoinInput['retirementGroup'];
     operationClaim: Extract<
       ManagedProviderRuntimeOperationClaim,
       { kind: 'providerBroker' }
@@ -49,6 +50,7 @@ export type ManagedProviderExplicitStartCustody = Readonly<{
   retireExternalApiKey(input: Readonly<{
     identity: ManagedProviderExplicitStartCustodyRequest['identity'];
     externalApiKeyId: string;
+    operationId: string;
   }>): Promise<boolean>;
   revalidateRetainedClaims(signal?: AbortSignal): Promise<number>;
   retireAll(): Promise<number>;
@@ -80,6 +82,7 @@ function createManagedProviderExplicitStartOperation(input: Readonly<{
   happyHomeDir: string;
   controller?: PluginReloadController;
   operationClaim?: ManagedProviderExplicitStartCustodyRequest['operationClaim'];
+  retirementGroup?: ManagedProviderExplicitStartCustodyRequest['retirementGroup'];
   revalidateRetainedCurrentness?: (signal?: AbortSignal) => Promise<boolean>;
   signal?: AbortSignal;
 }>): (request: Parameters<PublicManagedProviderRuntimeStartOperation>[0]) =>
@@ -99,7 +102,7 @@ function createManagedProviderExplicitStartOperation(input: Readonly<{
     const requestAuthorizationIsCurrent = async (): Promise<boolean> => {
       try {
         return request.isAuthorizationCurrent() === true
-          && await request.revalidateAuthorization() === true
+          && await request.revalidateAuthorization(input.signal) === true
           && request.isAuthorizationCurrent() === true;
       } catch {
         return false;
@@ -141,6 +144,7 @@ function createManagedProviderExplicitStartOperation(input: Readonly<{
         });
       }
       const joined = await runManagedProviderExplicitStart({
+        ...(input.retirementGroup ? { retirementGroup: input.retirementGroup } : {}),
         identity: request.identity,
         purposeBindings: request.purposeBindings,
         machineId: input.machineId,
@@ -184,7 +188,7 @@ function createManagedProviderExplicitStartOperation(input: Readonly<{
               connectedAccounts: invocationServices.connectedAccounts,
               custody: invocationServices,
               isAuthorizationCurrent: request.isAuthorizationCurrent,
-              revalidateAuthorization: request.revalidateAuthorization,
+              revalidateAuthorization: () => request.revalidateAuthorization(signal),
               signal,
               launchResourceScope,
             });
@@ -200,7 +204,13 @@ function createManagedProviderExplicitStartOperation(input: Readonly<{
             }
             try {
               addRuntimeDisposable(request.identity.pluginId, Object.freeze({
-                dispose: cleanup,
+                dispose: input.retirementGroup
+                  ? async () => { await registry.retireManagedProviderExplicitStart?.({
+                      identity: request.identity,
+                      machineId: input.machineId,
+                      operationClaim: input.operationClaim,
+                    }); }
+                  : cleanup,
               }));
             } catch (error) {
               await Promise.resolve(cleanup()).catch(() => undefined);
@@ -322,6 +332,7 @@ export function createManagedProviderExplicitStartCustody(input: Readonly<{
       const start = createManagedProviderExplicitStartOperation({
         ...input,
         operationClaim: request.operationClaim,
+        ...(request.retirementGroup ? { retirementGroup: request.retirementGroup } : {}),
         ...(request.revalidateRetainedCurrentness
           ? {
               revalidateRetainedCurrentness:
@@ -333,7 +344,7 @@ export function createManagedProviderExplicitStartCustody(input: Readonly<{
       try {
         const projection = await start(request);
         const retainedCurrent = request.revalidateRetainedCurrentness
-          ? await request.revalidateRetainedCurrentness(request.signal).catch(() => false)
+          ? await request.revalidateRetainedCurrentness(request.signal)
           : true;
         if (!request.signal.aborted && !retainedCurrent) {
           if (!await retire(request)) {
@@ -347,11 +358,12 @@ export function createManagedProviderExplicitStartCustody(input: Readonly<{
       }
     },
     retire,
-    async retireExternalApiKey({ identity, externalApiKeyId }) {
+    async retireExternalApiKey({ identity, externalApiKeyId, operationId }) {
       return await withRegistry(
         async (registry) => await registry.retireManagedProviderExternalApiKey?.({
           identity,
           externalApiKeyId,
+          operationId,
         }) ?? false,
         false,
       );

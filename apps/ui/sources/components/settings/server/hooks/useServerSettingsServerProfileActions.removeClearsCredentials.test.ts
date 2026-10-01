@@ -75,12 +75,15 @@ async function renderHook<T>(useValue: () => T): Promise<T> {
     return current;
 }
 
-afterEach(() => {
+afterEach(async () => {
     vi.unstubAllGlobals();
     pendingTerminalConnectMock.current = null;
     credentialLifecycleSpies.present.mockClear();
     vi.clearAllMocks();
-    vi.resetModules();
+    vi.restoreAllMocks();
+    // Reset profile runtime caches instead of reloading the whole module graph
+    // per test (each reload retained ~0.8GB and exhausted the default heap).
+    (await import('@/sync/domains/server/serverProfiles')).resetServerProfilesRuntimeForTests();
 });
 
 describe('useServerSettingsServerProfileActions (remove server)', () => {
@@ -268,6 +271,42 @@ describe('useServerSettingsServerProfileActions (remove server)', () => {
         expect(modalSpies.confirm).not.toHaveBeenCalled();
         expect(onSwitchServerById).toHaveBeenCalledWith('server-signed-out', 'tab');
         expect(onAfterSignedOutSwitch).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not route a Home whose credential store cannot be read to sign-in', async () => {
+        process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = randomScope();
+        const localStorageHandle = installLocalStorageMock();
+        const profiles = await import('@/sync/domains/server/serverProfiles');
+        const profile = await profiles.upsertServerProfile({
+            serverUrl: 'https://unreadable.example.test',
+            name: 'Unreadable',
+        });
+        const { TokenStorage } = await import('@/auth/storage/tokenStorage');
+        // Secure-storage boundary: an unreadable store reads as absent unless
+        // the caller asks for the failure to surface, as the real owner does.
+        vi.spyOn(TokenStorage, 'getCredentialsForServerUrl').mockImplementation(async (_serverUrl, options) => {
+            if (options?.storageReadFailure === 'surface') throw new Error('secure_storage_unavailable');
+            return null;
+        });
+        const onSwitchServerById = vi.fn(async () => 'switched' as const);
+        const onAfterSignedOutSwitch = vi.fn();
+
+        const { useServerSettingsServerProfileActions } = await import('./useServerSettingsServerProfileActions');
+        const actions = await renderHook(() =>
+            useServerSettingsServerProfileActions({
+                authStatusByServerId: {},
+                selectionScope: 'tab',
+                onSwitchServerById,
+                onAfterSignedOutSwitch,
+                setRevision: vi.fn() as any,
+            }),
+        );
+
+        await actions.onSwitchServer(profile);
+
+        expect(onSwitchServerById).toHaveBeenCalledWith(profiles.resolveServerProfileScopeId(profile), 'tab');
+        expect(onAfterSignedOutSwitch).not.toHaveBeenCalled();
+        localStorageHandle.restore();
     });
 
     it('does not retarget pending terminal state when custody blocks the server switch', async () => {

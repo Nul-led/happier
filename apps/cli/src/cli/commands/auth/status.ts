@@ -1,6 +1,8 @@
 import os from 'node:os';
 
+import { formatRelayAccountIdentity } from '@/auth/formatRelayAccountIdentity';
 import { resolveActiveServerAuthReadiness } from '@/auth/resolveActiveServerAuthReadiness';
+import { readAccountIdFromToken } from '@/cloud/decodeJwtPayload';
 import { configuration } from '@/configuration';
 import { checkIfDaemonRunningAndCleanupStaleState } from '@/daemon/controlClient';
 import { printJsonEnvelope, wantsJson } from '@/cli/output/jsonEnvelope';
@@ -72,10 +74,12 @@ export async function handleAuthStatus(argv: string[] = [], signal?: AbortSignal
       kind: 'auth_status',
       data: {
         authenticated: true,
+        accountId: readAccountIdFromToken(credentials.token),
         credentialState: readiness.credentialState,
         encryption: { type: credentials.encryption?.type ?? 'none' },
         machineRegistered,
         machineRegistrationState: readiness.machineRegistrationState,
+        accountLabel: readiness.accountLabel,
         ...(machineRegistered ? { machineId: machineId ?? '' } : {}),
         host: os.hostname(),
         happyHomeDir: configuration.happyHomeDir,
@@ -85,7 +89,11 @@ export async function handleAuthStatus(argv: string[] = [], signal?: AbortSignal
     return;
   }
 
-  console.log(ok('Authenticated'));
+  console.log(ok(`Signed in to ${formatRelayAccountIdentity({
+    serverUrl: configuration.publicServerUrl || configuration.serverUrl,
+    accountLabel: readiness.accountLabel,
+    accountId: readAccountIdFromToken(credentials.token),
+  })}`));
 
   if (machineRegistered) {
     console.log(ok('Machine registered'));

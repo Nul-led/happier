@@ -228,7 +228,8 @@ describe('PluginInstallationReviewDialog', () => {
         expect(screen.findByTestId('settings.plugins.installReview.evidence')).toBeTruthy();
         expect(screen.findByTestId('settings.plugins.installReview.requestInterceptors')).toBeTruthy();
         expect(screen.findByTestId('settings.plugins.installReview.rawCredentials')).toBeTruthy();
-        expect(screen.findByTestId('settings.plugins.installReview.compatibility')).toBeTruthy();
+        expect(JSON.stringify(screen.tree.toJSON()))
+            .toContain('settingsPlugins.installReviewSections.runtimeApi');
         expect(JSON.stringify(screen.tree.toJSON())).not.toMatch(/certif/i);
         await screen.pressByTestIdAsync('settings.plugins.installReview.evidenceToggle');
         expect(screen.findByTestId('settings.plugins.installReview.optional.workspace')?.props.value).toBe(true);
@@ -262,7 +263,6 @@ describe('PluginInstallationReviewDialog', () => {
             'requiredAccess',
             'requestInterceptors',
             'rawCredentials',
-            'compatibility',
         ];
         for (const sectionId of sectionIds) {
             const section = screen.findByTestId(`settings.plugins.installReview.${sectionId}`);
@@ -278,6 +278,62 @@ describe('PluginInstallationReviewDialog', () => {
             .map((node) => node.props.testID)
             .filter((testID) => sectionIds.some((sectionId) => testID === `settings.plugins.installReview.${sectionId}`));
         expect(orderedFacts).toEqual(sectionIds.map((sectionId) => `settings.plugins.installReview.${sectionId}`));
+    });
+
+    it('shows only the declared authority categories that expanded during an update', async () => {
+        const { PluginInstallationReviewDialog } = await import('./PluginInstallationReviewDialog');
+        const screen = await renderScreen(
+            <PluginInstallationReviewDialog
+                review={createPluginInstallationReviewFixture({
+                    requiredHostAccess: [{
+                        id: 'network',
+                        capability: 'network',
+                        reason: 'Connect to the review service',
+                        authorizationClass: 'cooperativeDisclosure',
+                        normalizedScope: { origin: 'https://review.example.test' },
+                    }],
+                })}
+                reason="authorityExpansion"
+                currentVersion="1.0.0"
+                authorityExpansion={['requiredHostAccess']}
+                target={{ machine: 'Build box', server: 'Server B' }}
+                onResolve={vi.fn()}
+                onClose={vi.fn()}
+            />,
+        );
+
+        expect(screen.findByTestId('settings.plugins.installReview.requiredAccess')).toBeTruthy();
+        expect(screen.findByTestId('settings.plugins.installReview.trustedCode')).toBeNull();
+        expect(screen.findByTestId('settings.plugins.installReview.executableCode')).toBeNull();
+        expect(screen.findByTestId('settings.plugins.installReview.requestInterceptors')).toBeNull();
+        expect(screen.findByTestId('settings.plugins.installReview.rawCredentials')).toBeNull();
+    });
+
+    it('leaves unchanged optional grants untouched in an authority-delta decision', async () => {
+        const { PluginInstallationReviewDialog } = await import('./PluginInstallationReviewDialog');
+        const onResolve = vi.fn();
+        const screen = await renderScreen(
+            <PluginInstallationReviewDialog
+                review={createPluginInstallationReviewFixture({
+                    optionalHostAccess: [{
+                        id: 'workspace',
+                        capability: 'Workspace files',
+                        reason: 'Read the selected workspace.',
+                        authorizationClass: 'hostResourceSelection',
+                        normalizedScope: { kind: 'workspace' },
+                    }],
+                })}
+                reason="authorityExpansion"
+                currentVersion="1.0.0"
+                authorityExpansion={['selectedOptionalHostAccess']}
+                target={{ machine: 'Build box', server: 'Server B' }}
+                onResolve={onResolve}
+                onClose={vi.fn()}
+            />,
+        );
+
+        await screen.pressByTestIdAsync('settings.plugins.installReview.confirm');
+        expect(onResolve).toHaveBeenCalledWith({ approved: true, optionalSelections: [] });
     });
 
     it('shows trusted-code, scope, and credential facts without hardcoded English review vocabulary', async () => {
@@ -320,6 +376,7 @@ describe('PluginInstallationReviewDialog', () => {
             />,
         );
 
+        await screen.pressByTestIdAsync('settings.plugins.installReview.evidenceToggle');
         const rendered = JSON.stringify(screen.tree.toJSON());
         expect(rendered).toContain('settingsPlugins.installReviewSections.trustedCodeDisclosure');
         expect(rendered).toContain('settingsPlugins.installReviewSections.scope');
@@ -334,7 +391,7 @@ describe('PluginInstallationReviewDialog', () => {
         expect(rendered).toContain('settingsPlugins.installReviewSections.credentialAccess');
         expect(rendered).toContain('ACME_TOKEN');
         expect(rendered).toContain('settingsPlugins.installReviewSections.runtimeApi');
-        expect(rendered).toContain('settingsPlugins.updatePolicy.reviewEveryUpdate');
+        expect(rendered).not.toContain('settingsPlugins.updatePolicy.');
         expect(rendered).not.toMatch(/\b(?:declared, unverified|retrieved, unverified|unreviewed|development|runtime API)\b/i);
     });
 

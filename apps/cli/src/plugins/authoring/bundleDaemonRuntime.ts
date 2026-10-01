@@ -22,8 +22,10 @@ import {
   resolvePluginAuthorTypeScriptConfigBoundary,
 } from './typescriptConfigBoundary';
 import { evaluatePluginAuthorRuntimeStagingSource } from './runtimeStagingSource';
+import { projectPackedSessionRunnerModulePath } from './projectPackedSessionRunnerModulePath';
+export { projectPackedSessionRunnerModulePath } from './projectPackedSessionRunnerModulePath';
 
-const PACKED_ESM_EXTENSIONS = new Set(['.js', '.mjs']);
+export const GENERATED_PLUGIN_MANIFEST_RELATIVE_PATH = '.happier-plugin/plugin.json';
 
 /**
  * esbuild labels every bundled module with a `// <path>` header rendered relative to the
@@ -141,78 +143,25 @@ export function rewriteEsbuildModulePathLabels(
     .join('\n');
 }
 
-// esbuild exposes no public hook for its ESM dynamic-require fallback. This
-// exact compiler release is therefore part of the generated-output contract.
-const ESBUILD_DYNAMIC_REQUIRE_HELPER_SOURCE_VERSION = '0.27.2';
-const ESBUILD_DYNAMIC_REQUIRE_ERROR = "throw Error('Dynamic require of \"' + x + '\" is not supported');";
-const ESBUILD_DYNAMIC_REQUIRE_HELPER_DECLARATION_PREFIX =
-  /(?:^|\n)var ([A-Za-z_$][\w$]*) = \/\* @__PURE__ \*\/ \(\(x\) => typeof require !== "undefined" \? require : typeof Proxy !== "undefined" \? new Proxy\(x, \{/gu;
-
-function expectedEsbuildDynamicRequireHelper(helperName: string): string {
-  return [
-    `var ${helperName} = /* @__PURE__ */ ((x) => typeof require !== "undefined" ? require : typeof Proxy !== "undefined" ? new Proxy(x, {`,
-    '  get: (a, b) => (typeof require !== "undefined" ? require : a)[b]',
-    '}) : x)(function(x) {',
-    '  if (typeof require !== "undefined") return require.apply(this, arguments);',
-    `  ${ESBUILD_DYNAMIC_REQUIRE_ERROR}`,
-    '});',
-  ].join('\n');
-}
-
-function rewriteEsbuildDynamicRequireHelper(output: string): string {
-  const candidates = [...output.matchAll(ESBUILD_DYNAMIC_REQUIRE_HELPER_DECLARATION_PREFIX)];
-  if (candidates.length === 0) {
-    return output;
-  }
-  if (candidates.length > 1) {
-    throw new Error('Bundled plugin runtime emitted more than one esbuild dynamic-require helper');
-  }
-
-  const candidate = candidates[0];
-  const candidateIndex = candidate.index;
-  const helperName = candidate[1];
-  if (candidateIndex === undefined || helperName === undefined) {
-    throw new Error('Bundled plugin runtime emitted an unrecognized esbuild dynamic-require helper');
-  }
-  const declarationStart = candidate[0].startsWith('\n') ? candidateIndex + 1 : candidateIndex;
-  const helperSource = expectedEsbuildDynamicRequireHelper(helperName);
-  if (!output.startsWith(helperSource, declarationStart)) {
-    throw new Error('Bundled plugin runtime emitted an unrecognized esbuild dynamic-require helper');
-  }
-
-  let factoryName = `${helperName}Factory`;
-  for (let suffix = 2; output.includes(factoryName); suffix++) {
-    factoryName = `${helperName}Factory${suffix}`;
-  }
-  const replacement = [
-    `import { createRequire as ${factoryName} } from "node:module";`,
-    `var ${helperName} = /* @__PURE__ */ ${factoryName}(import.meta.url);`,
-  ].join('\n');
-  return `${output.slice(0, declarationStart)}${replacement}${output.slice(declarationStart + helperSource.length)}`;
-}
-
-export function projectPackedSessionRunnerModulePath(params: Readonly<{
-  daemonEntrypoint: string;
-  locatorModule: string;
-}>): string {
-  const daemonPath = params.daemonEntrypoint.replaceAll('\\', '/').replace(/^\.\//u, '');
-  const daemonExtension = posix.extname(daemonPath).toLowerCase();
-  if (!PACKED_ESM_EXTENSIONS.has(daemonExtension)) {
-    throw new Error('Code-defined plugin daemon entrypoint must use .js or .mjs for ESM packing');
-  }
-  const locatorPath = params.locatorModule.replace(/^\.\//u, '');
-  const locatorExtension = posix.extname(locatorPath).toLowerCase();
-  const outputExtension = locatorExtension || daemonExtension;
-  if (!PACKED_ESM_EXTENSIONS.has(outputExtension) || outputExtension !== daemonExtension) {
-    throw new Error(
-      `Session runner module '${params.locatorModule}' must use the packed daemon extension '${daemonExtension}'`,
-    );
-  }
-  return posix.join(
-    posix.dirname(daemonPath),
-    locatorExtension ? locatorPath : `${locatorPath}${daemonExtension}`,
-  );
-}
+// The banner supplies one lexical resolver per emitted file. Injection gives
+// esbuild an unbound require reference so its name hygiene reserves that global
+// name even when every author reference is locally bound. The unused export is
+// tree-shaken; static CommonJS requires still follow esbuild's normal bundling.
+const BUNDLED_PLUGIN_DAEMON_ESM_REQUIRE_BANNER = 'const require = (await import("node:module")).createRequire(import.meta.url);';
+const BUNDLED_PLUGIN_DAEMON_REQUIRE_INJECTION = '<happier-daemon-require>';
+const bundledPluginDaemonRequirePlugin: EsbuildPlugin = {
+  name: 'happier-daemon-require',
+  setup(build) {
+    build.onResolve({ filter: /^<happier-daemon-require>$/ }, () => ({
+      path: 'require',
+      namespace: BUNDLED_PLUGIN_DAEMON_REQUIRE_INJECTION,
+    }));
+    build.onLoad({ filter: /.*/, namespace: BUNDLED_PLUGIN_DAEMON_REQUIRE_INJECTION }, () => ({
+      contents: 'export const __happierReservedRequire = require;',
+      loader: 'js',
+    }));
+  },
+};
 
 function isRelativeOrAbsoluteImportSpecifier(specifier: string): boolean {
   return specifier === '.'
@@ -237,6 +186,45 @@ function getFirstPartyWorkspacePackageName(specifier: string): string | null {
     return null;
   }
   return `${scope}/${packageSegment}`;
+}
+
+function resolveFirstPartyPackagedWorkspaceExternals(params: Readonly<{
+  sourceRoot: string;
+  canonicalWorkspacePackageRoots: Readonly<Record<string, string>> | undefined;
+  externalPackages: readonly string[] | undefined;
+}>): readonly string[] {
+  if (!params.externalPackages || params.externalPackages.length === 0) return [];
+  if (!params.canonicalWorkspacePackageRoots) {
+    throw new Error('First-party packaged workspace externals require the canonical packaged CLI workspace closure');
+  }
+
+  let sourcePackageName: string | undefined;
+  try {
+    const packageJson = JSON.parse(readFileSync(join(params.sourceRoot, 'package.json'), 'utf8')) as {
+      name?: unknown;
+    };
+    sourcePackageName = typeof packageJson.name === 'string' ? packageJson.name : undefined;
+  } catch {
+    // The ordinary package validation below remains authoritative. This read is
+    // only needed to reject an external that would recurse into the plugin itself.
+  }
+
+  const packageNames = [...new Set(params.externalPackages)];
+  for (const packageName of packageNames) {
+    if (getFirstPartyWorkspacePackageName(packageName) !== packageName) {
+      throw new Error(`Invalid first-party packaged workspace external '${packageName}'`);
+    }
+    if (!Object.hasOwn(params.canonicalWorkspacePackageRoots, packageName)) {
+      throw new Error(
+        `First-party packaged workspace external '${packageName}' is not in the canonical packaged CLI workspace closure`,
+      );
+    }
+    if (packageName === sourcePackageName) {
+      throw new Error(`First-party plugin package '${packageName}' cannot externalize itself`);
+    }
+  }
+
+  return Object.freeze(packageNames.flatMap((packageName) => [packageName, `${packageName}/*`]));
 }
 
 function resolveAncestorNodeModulesRoots(roots: readonly string[]): string[] {
@@ -265,6 +253,7 @@ type CanonicalWorkspaceImportResolver = Readonly<{
 async function createCanonicalWorkspaceImportResolver(
   canonicalWorkspacePackageRoots: Readonly<Record<string, string>> | undefined,
   stagedRoot: string,
+  externalPackageNames: readonly string[] = [],
 ): Promise<CanonicalWorkspaceImportResolver | undefined> {
   if (!canonicalWorkspacePackageRoots) return undefined;
 
@@ -315,10 +304,13 @@ async function createCanonicalWorkspaceImportResolver(
     throw error;
   }
 
-  const aliases = Object.freeze(Object.fromEntries(canonicalPackages.map(({
-    aliasPackageName,
-    packageName,
-  }) => [packageName, aliasPackageName])));
+  const externalPackages = new Set(externalPackageNames);
+  const aliases = Object.freeze(Object.fromEntries(canonicalPackages
+    .filter(({ packageName }) => !externalPackages.has(packageName))
+    .map(({
+      aliasPackageName,
+      packageName,
+    }) => [packageName, aliasPackageName])));
   const nodePaths = resolveAncestorNodeModulesRoots([
     stagedRoot,
     ...canonicalPackages.map(({ physicalRoot }) => physicalRoot),
@@ -570,7 +562,8 @@ function resolvePluginAuthorBundlerRuntime(params: Readonly<{
           if (
             packageJson.name !== 'esbuild'
             || packageJson.main !== 'lib/main.js'
-            || packageJson.version !== ESBUILD_DYNAMIC_REQUIRE_HELPER_SOURCE_VERSION
+            || typeof packageJson.version !== 'string'
+            || semver.valid(packageJson.version) === null
           ) {
             continue;
           }
@@ -663,24 +656,46 @@ export async function bundlePluginDaemonRuntime(
   const runtimeSource = await evaluatePluginAuthorRuntimeStagingSource({
     locator: projectRoot,
     rootPath: projectRoot,
-    immutableGenerationId: 'plugin-author-build',
   });
   const daemonEntrypoint = runtimeSource.evaluated.manifest.entrypoints?.daemon;
-  if (!daemonEntrypoint) {
-    throw new Error('Plugin build requires entrypoints.daemon');
+  const staged = daemonEntrypoint
+    ? await stagePluginDaemonRuntime({
+        sourceRootPath: projectRoot,
+        sourceEntryPath: runtimeSource.evaluated.entry.entryPath,
+        stagedRootPath: projectRoot,
+        daemonEntrypoint,
+        sessionRunnerFactories: runtimeSource.sessionRunnerFactories,
+      }, {
+        ...(deps.build ? { build: deps.build } : {}),
+      })
+    : { outputRelativePaths: [] as readonly string[] };
+  const generatedManifestPath = join(projectRoot, GENERATED_PLUGIN_MANIFEST_RELATIVE_PATH);
+  const generatedManifestDirectory = dirname(generatedManifestPath);
+  await mkdir(generatedManifestDirectory, { recursive: true });
+  const physicalManifestDirectory = await realpath(generatedManifestDirectory);
+  if (!isPathInsideRoot(projectRoot, physicalManifestDirectory)) {
+    throw new Error('Plugin generated manifest directory escaped its physical project root');
   }
-  const staged = await stagePluginDaemonRuntime({
-    sourceRootPath: projectRoot,
-    sourceEntryPath: runtimeSource.evaluated.entry.entryPath,
-    stagedRootPath: projectRoot,
-    daemonEntrypoint,
-    sessionRunnerFactories: runtimeSource.sessionRunnerFactories,
-  }, {
-    ...(deps.build ? { build: deps.build } : {}),
-  });
+  let generatedManifest = false;
+  try {
+    const manifestStat = await lstat(generatedManifestPath);
+    if (manifestStat.isSymbolicLink() || !manifestStat.isFile()) {
+      throw new Error('Plugin manifest path must be a regular file');
+    }
+  } catch (cause) {
+    if ((cause as NodeJS.ErrnoException).code !== 'ENOENT') throw cause;
+    await writeFile(generatedManifestPath, runtimeSource.evaluated.canonicalManifestJson, {
+      encoding: 'utf8',
+      flag: 'wx',
+    });
+    generatedManifest = true;
+  }
   await writePluginDaemonOutputManifest({
     projectRoot,
-    outputRelativePaths: staged.outputRelativePaths,
+    outputRelativePaths: [
+      ...staged.outputRelativePaths,
+      ...(generatedManifest ? [GENERATED_PLUGIN_MANIFEST_RELATIVE_PATH] : []),
+    ],
   });
 }
 
@@ -701,11 +716,17 @@ export async function stagePluginDaemonRuntime(
     daemonEntrypoint: string;
     sessionRunnerFactories?: readonly ValidatedAgentSessionRunnerFactoryFactV1[];
     /**
-     * Immutable bundled artifacts resolve first-party workspace imports from
-     * the host's declared workspace closure, independent of mutable nested
-     * development dependency copies. Ordinary author builds omit this map.
+     * First-party packaged runtimes resolve workspace imports from the host's
+     * declared package closure, independent of mutable nested development
+     * dependency copies. Ordinary author builds omit this map.
      */
     canonicalWorkspacePackageRoots?: Readonly<Record<string, string>>;
+    /**
+     * Private first-party publication may resolve these exact workspace packages
+     * from the packaged CLI closure. Ordinary/public author packs omit this and
+     * remain self-contained.
+     */
+    firstPartyPackagedWorkspaceExternals?: readonly string[];
   }>,
   deps: Readonly<{ build?: typeof EsbuildBuild }> = {},
 ): Promise<StagedPluginDaemonRuntime> {
@@ -829,9 +850,15 @@ export async function stagePluginDaemonRuntime(
   }
 
   const build = deps.build ?? loadPluginAuthorBundlerBuild();
+  const firstPartyPackagedWorkspaceExternals = resolveFirstPartyPackagedWorkspaceExternals({
+    sourceRoot,
+    canonicalWorkspacePackageRoots: params.canonicalWorkspacePackageRoots,
+    externalPackages: params.firstPartyPackagedWorkspaceExternals,
+  });
   const canonicalWorkspaceImportResolver = await createCanonicalWorkspaceImportResolver(
     params.canonicalWorkspacePackageRoots,
     stagedRoot,
+    firstPartyPackagedWorkspaceExternals.filter((specifier) => !specifier.endsWith('/*')),
   );
   const portableRoot = resolvePortableModulePathRoot(
     sourceRoot,
@@ -866,10 +893,19 @@ export async function stagePluginDaemonRuntime(
       bundle: true,
       preserveSymlinks: true,
       format: 'esm',
+      banner: { js: BUNDLED_PLUGIN_DAEMON_ESM_REQUIRE_BANNER },
+      inject: [BUNDLED_PLUGIN_DAEMON_REQUIRE_INJECTION],
+      plugins: [
+        bundledPluginDaemonRequirePlugin,
+        ...(canonicalWorkspaceImportResolver ? [canonicalWorkspaceImportResolver.plugin] : []),
+      ],
       splitting: sessionRunnerEntries.size > 0,
       platform: 'node',
       target: 'node20',
       packages: 'bundle',
+      ...(firstPartyPackagedWorkspaceExternals.length > 0
+        ? { external: [...firstPartyPackagedWorkspaceExternals] }
+        : {}),
       entryNames: '[dir]/[name]',
       chunkNames: `${posix.dirname(daemonRelativePath)}/.happier-chunks/[name]-[hash]`,
       outExtension: { '.js': daemonExtension },
@@ -880,18 +916,21 @@ export async function stagePluginDaemonRuntime(
       ...(canonicalWorkspaceImportResolver
         ? {
           alias: canonicalWorkspaceImportResolver.aliases,
-          plugins: [canonicalWorkspaceImportResolver.plugin],
           nodePaths: canonicalWorkspaceImportResolver.nodePaths,
         }
         : {}),
     });
+    if (!buildResult.metafile) {
+      throw new Error('Plugin daemon runtime build did not return its requested metafile');
+    }
+    const metafile = buildResult.metafile;
     await validateContainedPackSourceImports({
       sourceRoot,
       resolutionRoot: buildWorkingDirectory,
-      metafile: buildResult.metafile,
+      metafile,
     });
 
-    const emittedOutputs = Object.keys(buildResult.metafile.outputs).map((outputKey) => {
+    const emittedOutputs = Object.keys(metafile.outputs).map((outputKey) => {
       const absoluteOutputPath = resolve(buildWorkingDirectory, outputKey);
       if (!isPathInsideRoot(stagedRoot, absoluteOutputPath)) {
         throw new Error(`Staged plugin daemon runtime output escaped its package root: '${outputKey}'`);
@@ -900,7 +939,7 @@ export async function stagePluginDaemonRuntime(
     });
 
     const portableLabelsByInputKey = new Map(
-      Object.keys(buildResult.metafile.inputs)
+      Object.keys(metafile.inputs)
         .map((inputKey) => [
           inputKey,
           portableModulePathLabel(inputKey, { buildWorkingDirectory, portableRoot }),
@@ -912,7 +951,7 @@ export async function stagePluginDaemonRuntime(
       const emittedPath = absoluteOutputPath;
       const emittedSource = await readFile(emittedPath, 'utf8');
       const rewrittenSource = rewriteEsbuildModulePathLabels(
-        rewriteEsbuildDynamicRequireHelper(emittedSource),
+        emittedSource,
         portableLabelsByInputKey,
       );
       if (rewrittenSource !== emittedSource) {

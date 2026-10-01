@@ -104,20 +104,15 @@ vi.mock('@expo/vector-icons', () => ({
     Ionicons: 'Ionicons',
 }));
 
-vi.mock('@react-navigation/native', () => ({
-    useFocusEffect: (_cb: () => void) => {},
-}));
+vi.mock('@react-navigation/native', async () => {
+    const { createReactNavigationNativeMock } = await import('@/dev/testkit/mocks/reactNavigation');
+    return createReactNavigationNativeMock();
+});
 
 vi.mock('expo-constants', () => ({
     default: { expoConfig: { version: '0.0.0-test' } },
 }));
 
-vi.mock('@/constants/Typography', () => ({
-    Typography: {
-        default: () => ({}),
-        mono: () => ({}),
-    },
-}));
 
 vi.mock('@/components/ui/lists/ItemList', () => ({
     ItemList: ({ children }: any) => React.createElement('ItemList', null, children),
@@ -166,7 +161,8 @@ vi.mock('@/hooks/ui/useHappyAction', () => ({
     useHappyAction: (fn: any) => [false, fn],
 }));
 
-vi.mock('@/sync/domains/profiles/profile', () => ({
+vi.mock('@/sync/domains/profiles/profile', async (importOriginal) => ({
+    ...await importOriginal<typeof import('@/sync/domains/profiles/profile')>(),
     getDisplayName: () => 'Test User',
     getAvatarUrl: () => null,
     getBio: () => '',
@@ -178,15 +174,6 @@ vi.mock('@/components/ui/avatar/Avatar', () => ({
 
 vi.mock('@/components/sessions/new/components/MachineCliGlyphs', () => ({
     MachineCliGlyphs: 'MachineCliGlyphs',
-}));
-
-vi.mock('@/agents/catalog/catalog', () => ({
-    AGENT_IDS: ['codex', 'claude', 'gemini'],
-    DEFAULT_AGENT_ID: 'agent_default',
-    getAgentCore: () => ({ uiConnectedService: { serviceId: 'anthropic', labelKey: 'agentInput.agent.claude', connectRoute: null } }),
-    getAgentIconSource: () => null,
-    getAgentIconTintColor: () => null,
-    resolveAgentIdFromConnectedServiceId: () => null,
 }));
 
 vi.mock('@/components/settings/supportUsBehavior', () => ({
@@ -213,7 +200,8 @@ vi.mock('@/hooks/server/useFeatureDecision', () => ({
     useFeatureDecision: () => null,
 }));
 
-vi.mock('@/sync/domains/server/serverProfiles', () => ({
+vi.mock('@/sync/domains/server/serverProfiles', async (importOriginal) => ({
+    ...await importOriginal<typeof import('@/sync/domains/server/serverProfiles')>(),
     getActiveServerSnapshot: () => ({ serverId: 'server-1', serverUrl: 'https://local.example.test', generation: 0 }),
     listServerProfiles: () => [],
     subscribeActiveServer: (listener: any) => {
@@ -237,62 +225,92 @@ describe('SettingsView (runs entry)', () => {
 
     it('includes a Runs entry that routes to /runs when execution runs are enabled', async () => {
         const screen = await renderSettingsViewUnderTest();
-        expect(screen.findRowByTitle('runs.title')).toBeTruthy();
+        // Category sections arrive in deferred stages after the first paint.
+        await vi.waitFor(() => expect(screen.findRowByTitle('runs.title')).toBeTruthy());
 
         await screen.pressRowByTitle('runs.title');
 
-        expect(routerPushSpy).toHaveBeenCalledWith('/runs');
+        // Web defers catalog navigation past the press (deferOnWeb).
+
+        await vi.waitFor(() => expect(routerPushSpy).toHaveBeenCalledWith('/runs'));
     });
 
     it('includes a Transcript entry that routes to /settings/session/transcript', async () => {
         const screen = await renderSettingsViewUnderTest();
-        expect(screen.findRowByTitle('settings.transcript')).toBeTruthy();
+        // Category sections arrive in deferred stages after the first paint.
+        await vi.waitFor(() => expect(screen.findRowByTitle('settings.transcript')).toBeTruthy());
 
         await screen.pressRowByTitle('settings.transcript');
 
-        expect(routerPushSpy).toHaveBeenCalledWith('/settings/session/transcript');
+        // Web defers catalog navigation past the press (deferOnWeb).
+
+        await vi.waitFor(() => expect(routerPushSpy).toHaveBeenCalledWith('/settings/session/transcript'));
     });
 
-    it('keeps the automations entry discoverable when only local feature flags are off and routes to Features', async () => {
+    it('keeps the run settings entry discoverable when only local feature flags are off and routes to Features', async () => {
         automationsSupportState.enabled = false;
         automationsSupportState.discoverable = true;
         automationsSupportState.blockedBy = 'local_policy';
 
         const screen = await renderSettingsViewUnderTest();
-        const automationsItem = screen.findRowByTitle('settings.automations');
-        expect(automationsItem).toBeTruthy();
-        expect(automationsItem?.props?.subtitle).toBe('settingsFeatures.expAutomationsSubtitle');
+        await vi.waitFor(() => expect(screen.findRowByTitle('workflows.destination.runSettingsPage.title')).toBeTruthy());
+        const runSettingsItem = screen.findRowByTitle('workflows.destination.runSettingsPage.title');
+        expect(runSettingsItem?.props?.subtitle).toBe('settingsFeatures.expAutomationsSubtitle');
 
-        await screen.pressRowByTitle('settings.automations');
+        await screen.pressRowByTitle('workflows.destination.runSettingsPage.title');
 
-        expect(routerPushSpy).toHaveBeenCalledWith('/settings/features');
+        // Web defers catalog navigation past the press (deferOnWeb).
+
+        await vi.waitFor(() => expect(routerPushSpy).toHaveBeenCalledWith('/settings/features'));
+    });
+
+    it('opens Workflows run settings from Settings (FIN 04 §3.5)', async () => {
+        automationsSupportState.enabled = true;
+        automationsSupportState.discoverable = true;
+        automationsSupportState.blockedBy = null;
+
+        const screen = await renderSettingsViewUnderTest();
+        await vi.waitFor(() => expect(screen.findRowByTitle('workflows.destination.runSettingsPage.title')).toBeTruthy());
+
+        await screen.pressRowByTitle('workflows.destination.runSettingsPage.title');
+
+        await vi.waitFor(() => expect(routerPushSpy).toHaveBeenCalledWith('/workflows/settings'));
     });
 
     it('includes a Permissions entry that routes to /settings/session/permissions', async () => {
         const screen = await renderSettingsViewUnderTest();
-        expect(screen.findRowByTitle('settings.permissions')).toBeTruthy();
+        // Category sections arrive in deferred stages after the first paint.
+        await vi.waitFor(() => expect(screen.findRowByTitle('settings.permissions')).toBeTruthy());
 
         await screen.pressRowByTitle('settings.permissions');
 
-        expect(routerPushSpy).toHaveBeenCalledWith('/settings/session/permissions');
+        // Web defers catalog navigation past the press (deferOnWeb).
+
+        await vi.waitFor(() => expect(routerPushSpy).toHaveBeenCalledWith('/settings/session/permissions'));
     });
 
     it('includes a Subagents entry that routes to /settings/sub-agent', async () => {
         const screen = await renderSettingsViewUnderTest();
-        expect(screen.findRowByTitle('subAgentGuidance.settings.groupTitle')).toBeTruthy();
+        // Category sections arrive in deferred stages after the first paint.
+        await vi.waitFor(() => expect(screen.findRowByTitle('subAgentGuidance.settings.groupTitle')).toBeTruthy());
 
         await screen.pressRowByTitle('subAgentGuidance.settings.groupTitle');
 
-        expect(routerPushSpy).toHaveBeenCalledWith('/settings/sub-agent');
+        // Web defers catalog navigation past the press (deferOnWeb).
+
+        await vi.waitFor(() => expect(routerPushSpy).toHaveBeenCalledWith('/settings/sub-agent'));
     });
 
     it('includes an Actions entry that routes to /settings/actions', async () => {
         const screen = await renderSettingsViewUnderTest();
-        expect(screen.findRowByTitle('common.actions')).toBeTruthy();
+        // Category sections arrive in deferred stages after the first paint.
+        await vi.waitFor(() => expect(screen.findRowByTitle('common.actions')).toBeTruthy());
 
         await screen.pressRowByTitle('common.actions');
 
-        expect(routerPushSpy).toHaveBeenCalledWith('/settings/actions');
+        // Web defers catalog navigation past the press (deferOnWeb).
+
+        await vi.waitFor(() => expect(routerPushSpy).toHaveBeenCalledWith('/settings/actions'));
     });
 
     it("omits the What's New entry when changelog UI is disabled by build policy", async () => {
@@ -330,8 +348,12 @@ describe('SettingsView (runs entry)', () => {
             ['execution.runs', 'voice', 'scm.writeOperations', 'memory.search'].includes(featureId);
         const screen = await renderSettingsViewUnderTest();
 
-        expect(screen.findRowByTitle('settings.voiceAssistant')).toBeTruthy();
-        expect(screen.findRowByTitle('settings.filesSourceControl')).toBeTruthy();
-        expect(screen.findRowByTitle('settings.memorySearch')).toBeTruthy();
+        // Category sections arrive in deferred stages after the first paint.
+
+        await vi.waitFor(() => expect(screen.findRowByTitle('settings.voiceAssistant')).toBeTruthy());
+        // Category sections arrive in deferred stages after the first paint.
+        await vi.waitFor(() => expect(screen.findRowByTitle('settings.filesSourceControl')).toBeTruthy());
+        // Category sections arrive in deferred stages after the first paint.
+        await vi.waitFor(() => expect(screen.findRowByTitle('settings.memorySearch')).toBeTruthy());
     });
 });

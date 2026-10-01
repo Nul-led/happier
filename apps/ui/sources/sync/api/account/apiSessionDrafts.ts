@@ -1,5 +1,4 @@
 import {
-    SESSION_DRAFT_ROUTE_LIST,
     SESSION_DRAFT_ROUTE_MUTATE,
     SESSION_DRAFT_ROUTE_READ,
     SESSION_DRAFT_V2_ROUTE_LIST,
@@ -59,13 +58,11 @@ async function postJson(params: Readonly<{
 /**
  * One transport over both route epochs.
  *
- * A V1-addressed draft is shared with a Session and keeps its released V1
- * route, upgrading to V2 only when this Home proves the V1 epoch is gone. There
- * is deliberately no write in the other direction: 0.3 is a one-way upgrade, so
- * a Home without the V2 draft epoch is not a supported peer and the local draft
- * settles unsupported instead of being re-posted in a predecessor shape.
- * Reading stays unaffected — a draft a 0.2 client wrote is a closed V1 payload
- * the V2 payload union already admits.
+ * V2 is the primary read epoch for every address: its response union admits
+ * the closed V1 payload produced by 0.2 and it can read V2-only rows without a
+ * V1 409 probe. A V1 fallback is retained only when a V2 endpoint is absent
+ * on an older Home. Writes retain their content-based epoch selection and
+ * never coerce a V2 payload into V1.
  */
 export function createApiSessionDraftsTransport(params: Readonly<{
     /** Exact Home/Account request captured by the canonical scoped-request owner. */
@@ -76,21 +73,24 @@ export function createApiSessionDraftsTransport(params: Readonly<{
     );
     return {
         read: async (address: SessionDraftAddressV2) => {
-            const epoch = epochOf(address);
-            const request = epoch === 'v1'
-                ? SessionDraftReadRequestV1Schema.parse({ address })
-                : SessionDraftReadRequestV2Schema.parse({ address });
+            const v2Request = SessionDraftReadRequestV2Schema.parse({ address });
             let raw: unknown;
             try {
                 raw = await postJson({
-                request: params.request,
-                path: epoch === 'v1' ? SESSION_DRAFT_ROUTE_READ : SESSION_DRAFT_V2_ROUTE_READ,
-                body: request,
-                epoch,
+                    request: params.request,
+                    path: SESSION_DRAFT_V2_ROUTE_READ,
+                    body: v2Request,
+                    epoch: 'v2',
                 });
             } catch (error) {
-                if (epoch !== 'v1' || !isSessionDraftEpochUnavailableError(error)) throw error;
-                raw = await postJson({ request: params.request, path: SESSION_DRAFT_V2_ROUTE_READ, body: request, epoch: 'v2' });
+                if (!isSessionDraftEpochUnavailableError(error) || !isSessionDraftAddressV1(address)) throw error;
+                const v1Request = SessionDraftReadRequestV1Schema.parse({ address });
+                raw = await postJson({
+                    request: params.request,
+                    path: SESSION_DRAFT_ROUTE_READ,
+                    body: v1Request,
+                    epoch: 'v1',
+                });
             }
             const parsed = SessionDraftReadResponseV2Schema.safeParse(raw);
             if (!parsed.success) throw new Error('Invalid session draft response');
@@ -98,13 +98,7 @@ export function createApiSessionDraftsTransport(params: Readonly<{
         },
         list: async (request) => {
             const body = SessionDraftListRequestV2Schema.parse(request);
-            let raw: unknown;
-            try {
-                raw = await postJson({ request: params.request, path: SESSION_DRAFT_V2_ROUTE_LIST, body, epoch: 'v2' });
-            } catch (error) {
-                if (request.addressKinds || !isSessionDraftEpochUnavailableError(error)) throw error;
-                raw = await postJson({ request: params.request, path: SESSION_DRAFT_ROUTE_LIST, body, epoch: 'v1' });
-            }
+            const raw = await postJson({ request: params.request, path: SESSION_DRAFT_V2_ROUTE_LIST, body, epoch: 'v2' });
             const parsed = SessionDraftListResponseV2Schema.safeParse(raw);
             if (!parsed.success) throw new Error('Invalid session draft response');
             return parsed.data;
@@ -117,10 +111,10 @@ export function createApiSessionDraftsTransport(params: Readonly<{
             let raw: unknown;
             try {
                 raw = await postJson({
-                request: params.request,
-                path: epoch === 'v1' ? SESSION_DRAFT_ROUTE_MUTATE : SESSION_DRAFT_V2_ROUTE_MUTATE,
-                body,
-                epoch,
+                    request: params.request,
+                    path: epoch === 'v1' ? SESSION_DRAFT_ROUTE_MUTATE : SESSION_DRAFT_V2_ROUTE_MUTATE,
+                    body,
+                    epoch,
                 });
             } catch (error) {
                 if (epoch !== 'v1' || !isSessionDraftEpochUnavailableError(error)) throw error;

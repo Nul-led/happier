@@ -141,6 +141,13 @@ export function installSettingsViewCommonModuleMocks(
         return createStorageModuleStub({});
     });
 
+    // The attention section reads the Agents machine's detection cache and the connected-account
+    // projection; `overview/HubAttentionSection.test.tsx` covers it against those
+    // boundaries. The Settings home suites here cover the page's other sections.
+    vi.mock('@/components/hub/HubAttentionSection', () => ({
+        HubAttentionSection: () => null,
+    }));
+
     vi.mock('@/hooks/auth/useScannedAuthUrlProcessor', () => ({
         useScannedAuthUrlProcessor: (processorOptions: { allowedUrlKind: 'account' | 'terminal' }) => ({
             processAuthUrl: async (url: string) => {

@@ -21,6 +21,7 @@ const credentials: AuthCredentials = { token: 't', secret: 's' };
 
 function mockServerConfig() {
   vi.doMock('@/sync/domains/server/serverRuntime', () => ({
+    getActiveServerHomeCarrier: () => null,
     getActiveServerSnapshot: () => ({
       serverId: 'test',
       serverUrl: 'https://api.example.test',
@@ -164,6 +165,20 @@ describe('apiAccountEncryptionMode', () => {
     await expect(fetchAccountEncryptionMode(credentials)).rejects.not.toMatchObject({
       code: 'account-encryption-recovery-required',
     });
+  });
+
+  it('answers the last read mode synchronously, and nothing before a read', async () => {
+    mockServerConfig();
+    const serverFetch = vi.fn(async () => new Response(JSON.stringify({ mode: 'plain', updatedAt: 42 }), { status: 200 }));
+    vi.doMock('@/sync/http/client', () => ({ serverFetch }));
+
+    const { fetchAccountEncryptionMode, getCachedAccountEncryptionMode } = await import('./apiAccountEncryptionMode');
+
+    expect(getCachedAccountEncryptionMode(credentials)).toBeNull();
+    await fetchAccountEncryptionMode(credentials);
+    expect(getCachedAccountEncryptionMode(credentials)).toBe('plain');
+    // A synchronous read never asks the server.
+    expect(serverFetch).toHaveBeenCalledTimes(1);
   });
 
   it('coalesces concurrent account-mode GETs for the same server and credentials', async () => {

@@ -180,6 +180,20 @@ describe('linkCliHomeToAccountService production adapter', () => {
     expect(closeRuntimeMock).toHaveBeenCalledOnce();
   });
 
+  it('names the selected sign-in service when this CLI is not signed in to it', async () => {
+    readCredentialMock.mockResolvedValueOnce(null as never);
+
+    await expect(linkCliHomeToAccountService({
+      homeServerIdentityId: descriptor.homeServerIdentityId,
+      relink: false,
+    })).resolves.toEqual({
+      kind: 'unavailable',
+      reason: 'account_service_credentials_unavailable',
+      selectedEndpoint: 'https://accounts.example.test',
+    });
+    expect(fetchServerFeaturesSnapshotMock).not.toHaveBeenCalled();
+  });
+
   it('fails closed before credential or network use when the selected Account Service changed after confirmation', async () => {
     readSelectionMock.mockResolvedValueOnce({
       endpoint: 'https://other-accounts.example.test',

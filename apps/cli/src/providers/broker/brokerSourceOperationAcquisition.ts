@@ -7,8 +7,8 @@ type AcquiredBrokerSourceOperation = Readonly<{
   projection: NonNullable<Awaited<ReturnType<ManagedProviderExplicitStartCustody['acquire']>>>;
   /** The last decided answer, without re-reading anything. */
   isAuthorizationCurrent(): boolean;
-  /** Re-decide this operation's own authority; false means it has ended. */
-  revalidateAuthorization(): Promise<boolean>;
+  /** Re-read authority; a cancelled read returns false without changing the last answer. */
+  revalidateAuthorization(signal?: AbortSignal): Promise<boolean>;
   /** End the operation's custody claim. Idempotent and never double-retires. */
   retire(): Promise<void>;
 }>;
@@ -31,9 +31,11 @@ type AcquiredBrokerSourceOperation = Readonly<{
  * closing the first stream would otherwise leave the retained operation
  * permanently non-current and every later stream would be refused against a
  * process that is still held. Custody already bounds the per-caller join with
- * this signal, so it is passed for that and nothing else.
+ * this signal. Reads still use their caller's cancellation, but a cancelled
+ * read is not a decision that the shared operation's authority has ended.
  */
 export async function acquireBrokerSourceOperation(input: Readonly<{
+  retirementGroup?: ManagedProviderExplicitStartCustodyRequest['retirementGroup'];
   custody: ManagedProviderExplicitStartCustody;
   identity: ManagedProviderExplicitStartCustodyRequest['identity'];
   contributionKey: string;
@@ -41,16 +43,34 @@ export async function acquireBrokerSourceOperation(input: Readonly<{
   operationClaim: ManagedProviderExplicitStartCustodyRequest['operationClaim'];
   purposeBindings: ManagedProviderExplicitStartCustodyRequest['purposeBindings'];
   /** This operation's own authority: resource, source and consumer liveness. */
-  isSourceCurrent(signal?: AbortSignal): Promise<boolean>;
+  isSourceCurrent(signal: AbortSignal): Promise<boolean>;
   /** Present only where the retained claim can be revalidated in the background. */
   revalidateOperationAuthorization?: (signal?: AbortSignal) => Promise<boolean>;
   callerSignal: AbortSignal;
 }>): Promise<AcquiredBrokerSourceOperation | null> {
   let authorizationCurrent = true;
+  // Asserted so TypeScript does not narrow this closure-written local to 'current'.
+  let lastSourceRead = 'current' as 'current' | 'stale' | 'unknown';
   const isAuthorizationCurrent = (): boolean => authorizationCurrent;
-  const revalidateAuthorization = async (): Promise<boolean> => {
-    authorizationCurrent = authorizationCurrent
-      && await input.isSourceCurrent().catch(() => false);
+  const revalidateAuthorization = async (
+    signal: AbortSignal = input.callerSignal,
+  ): Promise<boolean> => {
+    if (signal.aborted || !authorizationCurrent) return false;
+    let current: boolean;
+    try {
+      current = await input.isSourceCurrent(signal);
+    } catch {
+      // A failed authority read denies this caller's effect but does not prove
+      // that the shared operation has ended. Retained custody is rechecked by
+      // the background owner, which preserves it on the same uncertainty.
+      lastSourceRead = 'unknown';
+      return false;
+    }
+    // Cancellation leaves the last authority answer intact. In particular the
+    // first caller's cached answer is retained by the shared custody owner.
+    if (signal.aborted) return false;
+    lastSourceRead = current ? 'current' : 'stale';
+    authorizationCurrent = authorizationCurrent && current;
     return authorizationCurrent;
   };
   let retired = false;
@@ -74,6 +94,7 @@ export async function acquireBrokerSourceOperation(input: Readonly<{
   };
   const revalidateOperationAuthorization = input.revalidateOperationAuthorization;
   const projection = await input.custody.acquire({
+    ...(input.retirementGroup ? { retirementGroup: input.retirementGroup } : {}),
     contributionKey: input.contributionKey,
     identity: input.identity,
     request: {
@@ -85,18 +106,20 @@ export async function acquireBrokerSourceOperation(input: Readonly<{
     revalidateAuthorization,
     ...(revalidateOperationAuthorization
       ? {
-          revalidateRetainedCurrentness: async (signal?: AbortSignal) => (
-            await input.isSourceCurrent(signal).catch(() => false)
-            && await revalidateOperationAuthorization(signal)
+          revalidateRetainedCurrentness: async (signal: AbortSignal = input.callerSignal) => (
+            await input.isSourceCurrent(signal)
+              && await revalidateOperationAuthorization(signal)
           ),
         }
       : {}),
     operationClaim: input.operationClaim,
     signal: input.callerSignal,
   });
-  if (!projection || !await revalidateAuthorization()) {
+  if (!projection || input.callerSignal.aborted || !await revalidateAuthorization()) {
     if (projection) {
-      await retire().catch(() => undefined);
+      if (!input.callerSignal.aborted && lastSourceRead !== 'unknown') {
+        await retire().catch(() => undefined);
+      }
       await Promise.resolve(projection.cleanup()).catch(() => undefined);
     }
     return null;

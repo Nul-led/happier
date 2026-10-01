@@ -1,10 +1,11 @@
 import * as React from 'react';
-import { useRouter } from 'expo-router';
-import { useUnistyles } from 'react-native-unistyles';
+import { useRouter } from '@/components/appShell/workspace/destinationRoute';
 
-import { Icon } from '@/components/ui/icons/Icon';
+import { AttentionBanner } from '@/components/ui/lists/AttentionBanner';
 import { Item } from '@/components/ui/lists/Item';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
+import { SectionButtonRow } from '@/components/ui/lists/SectionButtonRow';
+import { RoundButton } from '@/components/ui/buttons/RoundButton';
 import { Modal } from '@/modal';
 import { isTeamActionApprovalPendingError } from '@/sync/ops/teams/teamActionClient';
 import {
@@ -41,7 +42,7 @@ import {
     sessionUsePolicyLabel,
     sourceKindLabel,
 } from './teamCredentialPresentation';
-import { useAppUpdateStatus } from '@/updates/useAppUpdateStatus';
+import { UPDATES_ROUTE } from '@/components/updates/updatesRoute';
 import {
     recoveryDestinationIsNavigable,
     teamCredentialRecoveryLabel,
@@ -50,6 +51,7 @@ import {
 } from './teamCredentialPresentation';
 import { useTeamCredentialResourceView } from './useTeamCredentialResourceView';
 import { useTeamCredentialExternalApiAvailability } from './useTeamCredentialExternalApiAvailability';
+import { Icon } from '@/components/ui/icons/Icon';
 
 function directMaterialStateLabel(state: NonNullable<ReturnType<typeof useTeamCredentialResourceView>['catalogResource']>['directMaterialState']): string {
     switch (state) {
@@ -78,36 +80,25 @@ const CredentialRecoveryRow = React.memo(function CredentialRecoveryRow(props: R
     onAppUpdate: () => void;
     onChooseAnotherResource: () => void;
 }>) {
-    const { theme } = useUnistyles();
     const navigable = recoveryDestinationIsNavigable(props.recovery.destination);
     const label = teamCredentialRecoveryLabel(props.recovery);
     const isRetry = props.recovery.destination === 'retry';
+    // The resource cannot be used as it is: say so above its details, with the one recovery it has.
     return (
-        <ItemGroup>
-            <Item
-                testID={isRetry ? props.retryTestID : 'team-credential-recovery'}
-                title={label}
-                icon={<Icon
-                    name={props.recovery.destination === 'app_update'
-                        ? 'download'
-                        : props.recovery.destination === 'source_owner_handoff'
-                            || props.recovery.destination === 'choose_another_resource'
-                            ? 'warning'
-                            : 'arrow-clockwise'}
-                    size={29}
-                    color={theme.colors.text.secondary}
-                />}
-                disabled={!navigable}
-                onPress={() => {
-                    if (!navigable) return;
+        <AttentionBanner
+            testID="team-credential-recovery-notice"
+            title={label}
+            action={navigable ? {
+                label: isRetry ? t('teams.unavailable.retry') : label,
+                testID: isRetry ? props.retryTestID : 'team-credential-recovery',
+                onPress: () => {
                     if (isRetry) props.onRetry();
                     else if (props.recovery.destination === 'app_update') props.onAppUpdate();
                     else if (props.recovery.destination === 'choose_another_resource') props.onChooseAnotherResource();
                     else props.onOpenResourceSettings();
-                }}
-                showChevron={false}
-            />
-        </ItemGroup>
+                },
+            } : null}
+        />
     );
 });
 
@@ -123,11 +114,9 @@ const CredentialDetail = React.memo(function CredentialDetail(props: Readonly<{
     context: TeamSectionContext;
     resourceId: string;
 }>) {
-    const { theme } = useUnistyles();
     const router = useRouter();
     const { context, resourceId } = props;
     const view = useTeamCredentialResourceView({ context, resourceId });
-    const appUpdate = useAppUpdateStatus();
     const externalApiAvailability = useTeamCredentialExternalApiAvailability(context.scope.serverId);
     const [mutating, setMutating] = React.useState(false);
     // An unresolved approval already carries this screen's last write, so every
@@ -153,7 +142,7 @@ const CredentialDetail = React.memo(function CredentialDetail(props: Readonly<{
 
     if (!view.featureEnabled) {
         return (
-            <ItemGroup footer={t('teams.credentials.unavailable')}>
+            <ItemGroup description={t('teams.credentials.unavailable')}>
                 <Item
                     testID="team-credential-unavailable"
                     title={t('teams.credentials.title')}
@@ -173,7 +162,7 @@ const CredentialDetail = React.memo(function CredentialDetail(props: Readonly<{
         });
         return (
             <>
-                <ItemGroup title={resource.displayName} footer={`${context.team.name} · ${context.homeName}`}>
+                <ItemGroup title={resource.displayName} description={`${context.team.name} · ${context.homeName}`}>
                     <Item
                         testID="team-credential-recipient-source"
                         title={t('teams.credentials.detail.sourceLabel')}
@@ -187,9 +176,6 @@ const CredentialDetail = React.memo(function CredentialDetail(props: Readonly<{
                             const mode = recipientDeliveryMode(resource);
                             return mode ? deliveryModeLabel(mode) : undefined;
                         })()}
-                        icon={resource.readiness.kind === 'available' ? undefined : (
-                            <Icon name="warning" size={29} color={theme.colors.state.warning.foreground} />
-                        )}
                         showChevron={false}
                     />
                     {resource.sessionUsePolicy ? (
@@ -212,9 +198,18 @@ const CredentialDetail = React.memo(function CredentialDetail(props: Readonly<{
                 <ItemGroup>
                     <Item
                         testID="team-credential-recipient-open-usage"
+                        icon={<Icon name="chart-bar" />}
                         title={t('teams.credentials.detail.usage')}
                         onPress={() => router.push(teamCredentialUsagePath(context.address, resourceId))}
                     />
+                    {resource.mayBroker && externalApiAvailability.available ? (
+                        <Item
+                            testID="team-credential-open-external-api"
+                            icon={<Icon name="globe" />}
+                            title={t('teams.credentials.externalApi.title')}
+                            onPress={() => router.push(teamCredentialExternalApiPath(context.address, resourceId))}
+                        />
+                    ) : null}
                 </ItemGroup>
                 {recipientRecovery === null ? null : (
                     <CredentialRecoveryRow
@@ -222,7 +217,7 @@ const CredentialDetail = React.memo(function CredentialDetail(props: Readonly<{
                         retryTestID="team-credential-recipient-retry"
                         onRetry={() => void view.reload()}
                         onOpenResourceSettings={() => router.push(teamCredentialEditPath(context.address, resourceId))}
-                        onAppUpdate={() => void appUpdate.runPrimaryAction()}
+                        onAppUpdate={() => router.push(UPDATES_ROUTE)}
                         onChooseAnotherResource={() => router.push(teamCredentialsPath(context.address))}
                     />
                 )}
@@ -234,7 +229,7 @@ const CredentialDetail = React.memo(function CredentialDetail(props: Readonly<{
         // Until the Home has answered, absence proves nothing; afterwards it is
         // the answer, and the retry belongs to whichever of the two it is.
         return view.resolved ? (
-            <ItemGroup footer={t('teams.credentials.detail.notFound')}>
+            <ItemGroup description={t('teams.credentials.detail.notFound')}>
                 <Item
                     testID="team-credential-not-found"
                     title={t('teams.errors.notFound')}
@@ -242,11 +237,10 @@ const CredentialDetail = React.memo(function CredentialDetail(props: Readonly<{
                 />
             </ItemGroup>
         ) : view.error ? (
-            <ItemGroup footer={t('teams.unavailable.offline')}>
+            <ItemGroup description={t('teams.unavailable.offline')}>
                 <Item
                     testID="team-credential-retry"
                     title={t('teams.unavailable.retry')}
-                    icon={<Icon name="arrow-clockwise" size={29} color={theme.colors.text.secondary} />}
                     onPress={() => void view.reload()}
                     showChevron={false}
                 />
@@ -289,7 +283,7 @@ const CredentialDetail = React.memo(function CredentialDetail(props: Readonly<{
 
     return (
         <>
-            <ItemGroup title={resource.displayName} footer={notice ?? custodian ?? undefined}>
+            <ItemGroup title={resource.displayName} description={notice ?? custodian ?? undefined}>
                 <Item
                     testID="team-credential-source"
                     title={t('teams.credentials.detail.sourceLabel')}
@@ -300,11 +294,6 @@ const CredentialDetail = React.memo(function CredentialDetail(props: Readonly<{
                     testID="team-credential-state"
                     title={resourceStateLabel(state)}
                     subtitle={delivery ?? undefined}
-                    // State is never colour alone: the label carries it, and the
-                    // icon only repeats what the text already says.
-                    icon={state === 'available' ? undefined : (
-                        <Icon name="warning" size={29} color={theme.colors.state.warning.foreground} />
-                    )}
                     showChevron={false}
                 />
                 {capabilities.managePolicy ? <Item
@@ -389,13 +378,13 @@ const CredentialDetail = React.memo(function CredentialDetail(props: Readonly<{
                     retryTestID="team-credential-admin-retry"
                     onRetry={() => void view.reload()}
                     onOpenResourceSettings={() => router.push(teamCredentialEditPath(context.address, resourceId))}
-                    onAppUpdate={() => void appUpdate.runPrimaryAction()}
+                    onAppUpdate={() => router.push(UPDATES_ROUTE)}
                     onChooseAnotherResource={() => router.push(teamCredentialsPath(context.address))}
                 />
             ) : null}
 
             {capabilities.refreshDirectMaterial ? (
-                <ItemGroup footer={t('teams.credentials.directReadiness.automatic')}>
+                <ItemGroup description={t('teams.credentials.directReadiness.automatic')}>
                     <Item
                         testID="team-credential-preparation-refresh"
                         title={t('teams.credentials.directReadiness.check')}
@@ -449,6 +438,7 @@ const CredentialDetail = React.memo(function CredentialDetail(props: Readonly<{
                 {capabilities.manageAudience ? (
                     <Item
                         testID="team-credential-open-access"
+                        icon={<Icon name="users" />}
                         title={t('teams.credentials.detail.access')}
                         detail={audienceSummary(resource)}
                         onPress={() => router.push(teamCredentialAccessPath(context.address, resourceId))}
@@ -457,6 +447,7 @@ const CredentialDetail = React.memo(function CredentialDetail(props: Readonly<{
                 {capabilities.managePolicy ? (
                     <Item
                         testID="team-credential-open-request-policy"
+                        icon={<Icon name="shield-check" />}
                         title={t('teams.credentials.requestPolicy.title')}
                         detail={requestPolicySummary(resource)}
                         onPress={() => router.push(teamCredentialRequestPolicyPath(context.address, resourceId))}
@@ -465,6 +456,7 @@ const CredentialDetail = React.memo(function CredentialDetail(props: Readonly<{
                 {capabilities.manageAudience || capabilities.managePolicy || capabilities.manageLimits ? (
                     <Item
                         testID="team-credential-open-activity"
+                        icon={<Icon name="clock-counter-clockwise" />}
                         title={t('teams.credentials.detail.activity')}
                         onPress={() => router.push(teamCredentialActivityPath(context.address, resourceId))}
                     />
@@ -472,12 +464,14 @@ const CredentialDetail = React.memo(function CredentialDetail(props: Readonly<{
                 {capabilities.manageLimits ? (
                     <Item
                         testID="team-credential-open-limits"
+                        icon={<Icon name="speedometer" />}
                         title={t('teams.credentials.detail.limits')}
                         onPress={() => router.push(teamCredentialLimitsPath(context.address, resourceId))}
                     />
                 ) : null}
                 <Item
                     testID="team-credential-open-usage"
+                    icon={<Icon name="chart-bar" />}
                     title={t('teams.credentials.detail.usage')}
                     onPress={() => router.push(teamCredentialUsagePath(context.address, resourceId))}
                 />
@@ -487,6 +481,7 @@ const CredentialDetail = React.memo(function CredentialDetail(props: Readonly<{
                 ) ? (
                     <Item
                         testID="team-credential-open-external-api"
+                        icon={<Icon name="globe" />}
                         title={t('teams.credentials.externalApi.title')}
                         detail={externalApiAvailability.available
                             ? t('teams.credentials.state.available')
@@ -499,13 +494,14 @@ const CredentialDetail = React.memo(function CredentialDetail(props: Readonly<{
                 {context.canMutate && (capabilities.updateBrokerPlacement || capabilities.narrowDisclosure || capabilities.managePolicy) ? (
                     <Item
                         testID="team-credential-open-edit"
+                        icon={<Icon name="pencil-simple" />}
                         title={t('teams.credentials.detail.edit')}
                         onPress={() => router.push(teamCredentialEditPath(context.address, resourceId))}
                     />
                 ) : null}
             </ItemGroup>
 
-            {((resource.enabled && capabilities.disable) || (!resource.enabled && capabilities.enable) || capabilities.delete) ? (
+            {((resource.enabled && capabilities.disable) || (!resource.enabled && capabilities.enable)) ? (
                 <ItemGroup>
                     {((resource.enabled && capabilities.disable) || (!resource.enabled && capabilities.enable)) ? <Item
                         testID="team-credential-toggle-enabled"
@@ -564,67 +560,75 @@ const CredentialDetail = React.memo(function CredentialDetail(props: Readonly<{
                         }}
                         showChevron={false}
                     /> : null}
-                    {capabilities.delete ? <Item
-                        testID="team-credential-delete"
-                        title={t('teams.credentials.delete.action')}
-                        destructive
-                        disabled={busy}
-                        onPress={async () => {
-                            const requestedTargetKey = targetKey;
-                            // The consequence is named before the mutation, and
-                            // the copy claims only what deletion can do: future
-                            // use stops, already delivered material does not.
-                            const confirmed = await Modal.confirm(
-                                t('teams.credentials.delete.title', { name: resource.displayName }),
-                                t('teams.credentials.delete.body'),
-                                { confirmText: t('teams.credentials.delete.action'), destructive: true },
-                            );
-                            if (!confirmed) return;
-                            if (currentTargetKey.current !== requestedTargetKey) return;
-                            setMutating(true);
-                            setNotice(null);
-                            try {
-                                const outcome = await deleteTeamCredentialResource({
-                                    scope: context.scope,
-                                    address: context.address,
-                                    resourceId,
-                                    expectedRevision: resource.revision,
-                                    confirmedByPresentUser: true,
-                                    handlers: {
-                                        // The resource this screen is about no
-                                        // longer exists once the approval runs,
-                                        // so staying here would render a
-                                        // not-found page over a completed
-                                        // action. Leave exactly as an immediate
-                                        // delete leaves.
-                                        onApprovalSucceeded: () => {
-                                            if (currentTargetKey.current !== requestedTargetKey) return;
+                </ItemGroup>
+            ) : null}
+            {capabilities.delete ? (
+                // Deleting closes this page, so it ends it as a quiet button row, not a red row in a sheet.
+                <ItemGroup surface="none">
+                    <SectionButtonRow>
+                        <RoundButton
+                            testID="team-credential-delete"
+                            size="small"
+                            display="destructive"
+                            title={t('teams.credentials.delete.action')}
+                            loading={busy}
+                            disabled={busy}
+                                onPress={async () => {
+                                    const requestedTargetKey = targetKey;
+                                    // The consequence is named before the mutation, and
+                                    // the copy claims only what deletion can do: future
+                                    // use stops, already delivered material does not.
+                                    const confirmed = await Modal.confirm(
+                                        t('teams.credentials.delete.title', { name: resource.displayName }),
+                                        t('teams.credentials.delete.body'),
+                                        { confirmText: t('teams.credentials.delete.action'), destructive: true },
+                                    );
+                                    if (!confirmed) return;
+                                    if (currentTargetKey.current !== requestedTargetKey) return;
+                                    setMutating(true);
+                                    setNotice(null);
+                                    try {
+                                        const outcome = await deleteTeamCredentialResource({
+                                            scope: context.scope,
+                                            address: context.address,
+                                            resourceId,
+                                            expectedRevision: resource.revision,
+                                            confirmedByPresentUser: true,
+                                            handlers: {
+                                                // The resource this screen is about no
+                                                // longer exists once the approval runs,
+                                                // so staying here would render a
+                                                // not-found page over a completed
+                                                // action. Leave exactly as an immediate
+                                                // delete leaves.
+                                                onApprovalSucceeded: () => {
+                                                    if (currentTargetKey.current !== requestedTargetKey) return;
+                                                    router.replace(teamCredentialsPath(context.address));
+                                                },
+                                                onApprovalFailed: (code) => {
+                                                    if (currentTargetKey.current !== requestedTargetKey) return;
+                                                    setNotice(credentialApprovalFailureMessage(code));
+                                                },
+                                            },
+                                        });
+                                        if (currentTargetKey.current !== requestedTargetKey) return;
+                                        if (outcome.kind === 'succeeded') {
                                             router.replace(teamCredentialsPath(context.address));
-                                        },
-                                        onApprovalFailed: (code) => {
-                                            if (currentTargetKey.current !== requestedTargetKey) return;
-                                            setNotice(credentialApprovalFailureMessage(code));
-                                        },
-                                    },
-                                });
-                                if (currentTargetKey.current !== requestedTargetKey) return;
-                                if (outcome.kind === 'succeeded') {
-                                    router.replace(teamCredentialsPath(context.address));
-                                    return;
-                                }
-                                // The Home named this refusal; the screen shows
-                                // the recovery that refusal actually implies.
-                                setNotice(credentialFailureMessage(outcome.failure));
-                            } catch (cause) {
-                                if (currentTargetKey.current !== requestedTargetKey) return;
-                                if (isTeamActionApprovalPendingError(cause)) context.requestApproval(cause.registration);
-                                else setNotice(t('teams.errors.generic'));
-                            } finally {
-                                if (currentTargetKey.current === requestedTargetKey) setMutating(false);
-                            }
-                        }}
-                        showChevron={false}
-                    /> : null}
+                                            return;
+                                        }
+                                        // The Home named this refusal; the screen shows
+                                        // the recovery that refusal actually implies.
+                                        setNotice(credentialFailureMessage(outcome.failure));
+                                    } catch (cause) {
+                                        if (currentTargetKey.current !== requestedTargetKey) return;
+                                        if (isTeamActionApprovalPendingError(cause)) context.requestApproval(cause.registration);
+                                        else setNotice(t('teams.errors.generic'));
+                                    } finally {
+                                        if (currentTargetKey.current === requestedTargetKey) setMutating(false);
+                                    }
+                                }}
+                            />
+                    </SectionButtonRow>
                 </ItemGroup>
             ) : null}
         </>
@@ -637,7 +641,7 @@ export const TeamCredentialDetailScreen = React.memo(function TeamCredentialDeta
     resourceId: string;
 }>) {
     return (
-        <TeamSection serverId={props.serverId} teamId={props.teamId} title={t('teams.credentials.title')}>
+        <TeamSection serverId={props.serverId} teamId={props.teamId} title={t('teams.credentials.title')} description={t('teams.pages.credentialDetail')}>
             {(context) => <CredentialDetail context={context} resourceId={props.resourceId} />}
         </TeamSection>
     );

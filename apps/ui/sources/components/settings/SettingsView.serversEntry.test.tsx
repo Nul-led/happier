@@ -133,12 +133,6 @@ vi.mock('expo-constants', () => ({
     default: { expoConfig: { version: '0.0.0-test' } },
 }));
 
-vi.mock('@/constants/Typography', () => ({
-    Typography: {
-        default: () => ({}),
-        mono: () => ({}),
-    },
-}));
 
 vi.mock('@/components/ui/lists/ItemList', () => ({
     ItemList: createPassthroughNode('ItemList'),
@@ -217,15 +211,6 @@ vi.mock('@/components/sessions/new/components/MachineCliGlyphs', () => ({
     MachineCliGlyphs: 'MachineCliGlyphs',
 }));
 
-vi.mock('@/agents/catalog/catalog', () => ({
-    AGENT_IDS: ['codex', 'claude', 'gemini'],
-    DEFAULT_AGENT_ID: 'agent_default',
-    getAgentCore: () => ({ uiConnectedService: { serviceId: 'anthropic', labelKey: 'agentInput.agent.claude', connectRoute: null } }),
-    getAgentIconSource: () => null,
-    getAgentIconTintColor: () => null,
-    resolveAgentIdFromConnectedServiceId: () => null,
-}));
-
 vi.mock('@/components/settings/supportUsBehavior', () => ({
     resolveSupportUsAction: () => 'github',
 }));
@@ -246,7 +231,8 @@ vi.mock('@/hooks/server/useFeatureDecision', () => ({
     useFeatureDecision: () => null,
 }));
 
-vi.mock('@/sync/domains/server/serverProfiles', () => ({
+vi.mock('@/sync/domains/server/serverProfiles', async (importOriginal) => ({
+    ...await importOriginal<typeof import('@/sync/domains/server/serverProfiles')>(),
     getActiveServerSnapshot: () => ({ serverId: 'server-1', serverUrl: 'https://local.example.test', generation: 0 }),
     listServerProfiles: () => [],
     subscribeActiveServer: (listener: any) => {
@@ -275,7 +261,7 @@ afterEach(() => {
 });
 
 describe('SettingsView', () => {
-    it('includes a first-class Relays entry that routes to /server', async () => {
+    it('includes a first-class Homes entry that opens inside the settings layout', async () => {
         const screen = await renderSettledSettingsView();
 
         expect(screen.findRowByTitle('settings.servers')).toBeTruthy();
@@ -284,7 +270,7 @@ describe('SettingsView', () => {
             screen.pressRowByTitle('settings.servers');
         });
 
-        expect(shared.routerPushSpy).toHaveBeenCalledWith('/server');
+        expect(shared.routerPushSpy).toHaveBeenCalledWith('/settings/server');
     });
 
     it('includes a System Status entry that routes to /settings/system-status', async () => {

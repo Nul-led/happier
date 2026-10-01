@@ -14,6 +14,7 @@ import {
 } from './teamJoinTarget';
 import { TeamAuthEntrySurface } from '@/components/teams/entry/TeamAuthEntrySurface';
 import type { TeamAuthEntrySelection } from '@/components/teams/entry/TeamAuthEntrySurface';
+import { UnauthenticatedSplitShell } from '@/components/onboarding/unauthShell';
 import { projectTeamAuthSelection } from '@/components/teams/entry/teamAuthAction';
 import { teamSignInReturnPath } from '@/components/teams/entry/teamSignInHome';
 import { HomeAuthenticationFlow } from '@/components/account/auth/HomeAuthenticationFlow';
@@ -23,18 +24,40 @@ import { useServerCredentialAccountScopeResolution } from '@/sync/domains/scope/
 import { resolveServerProfileScopeIdForIdentifier } from '@/sync/domains/server/serverProfiles';
 import { teamDetailPath } from '@/components/settings/teams/teamsRoutes';
 import { SurfaceStateCard } from '@/components/ui/surfaces/SurfaceStateCard';
+import { HomeCredentialUnreadableCard } from '@/components/sessions/access/UnboundSessionHomeScopeCard';
 import { resolveTeamJoinPresentation } from './teamJoinOutcome';
 import { safeRouterBack } from '@/utils/navigation/safeRouterBack';
 
 function TeamJoinTerminalState(props: React.PropsWithChildren) {
     return (
         <View
+            accessibilityRole="text"
             accessibilityLiveRegion="polite"
             aria-live="polite"
             role="status"
         >
             {props.children}
         </View>
+    );
+}
+
+function TeamJoinStateShell(props: Readonly<{
+    children: React.ReactNode;
+    stepId: string;
+    onBack: () => void;
+}>) {
+    return (
+        <UnauthenticatedSplitShell
+            testID="team-join-shell"
+            stepId={props.stepId}
+            isWelcomeStep={false}
+            allowMobileBrandHero={false}
+            onOpenRelayCustomFlow={() => {}}
+            onBrandHeroGetStarted={() => {}}
+            onBack={props.onBack}
+        >
+            {props.children}
+        </UnauthenticatedSplitShell>
     );
 }
 
@@ -141,14 +164,16 @@ export const TeamJoinScreen = React.memo(function TeamJoinScreen(props: Readonly
 
     if ((!tokenParse.success || !targetBindingValid) && !props.postAuthContinuation) {
         return (
-            <TeamJoinTerminalState>
-                <ItemList>
-                    <ItemGroup footer={t('teams.join.askForNew')}>
-                        <Item testID="team-join-invalid" title={t('teams.join.invalidTitle')} showChevron={false} />
-                        <Item testID="team-join-back" title={t('common.back')} onPress={exit} />
-                    </ItemGroup>
-                </ItemList>
-            </TeamJoinTerminalState>
+            <TeamJoinStateShell stepId="invalid" onBack={exit}>
+                <TeamJoinTerminalState>
+                    <ItemList>
+                        <ItemGroup footer={t('teams.join.askForNew')}>
+                            <Item testID="team-join-invalid" title={t('teams.join.invalidTitle')} showChevron={false} />
+                            <Item testID="team-join-back" title={t('common.back')} onPress={exit} />
+                        </ItemGroup>
+                    </ItemList>
+                </TeamJoinTerminalState>
+            </TeamJoinStateShell>
         );
     }
 
@@ -160,21 +185,22 @@ export const TeamJoinScreen = React.memo(function TeamJoinScreen(props: Readonly
     // the person completes it, so reopening this link afterwards continues here.
     if (target.kind === 'unresolved' || target.kind === 'ambiguous') {
         return (
-            <TeamJoinTerminalState>
-              <ItemList>
-                <ItemGroup footer={t('teams.join.unresolvedHomeBody')}>
-                    <Item
-                        testID={target.kind === 'ambiguous'
-                            ? 'team-join-ambiguous-home'
-                            : 'team-join-unresolved-home'}
-                        title={t('teams.join.unresolvedHomeTitle')}
-                        subtitle={t('teams.join.askForNew')}
-                        showChevron={false}
-                    />
-                    <Item testID="team-join-back" title={t('common.back')} onPress={exit} />
-                </ItemGroup>
-              </ItemList>
-            </TeamJoinTerminalState>
+            <TeamJoinStateShell stepId={`target-${target.kind}`} onBack={exit}>
+                <TeamJoinTerminalState>
+                    <ItemList>
+                        <ItemGroup footer={t('teams.join.unresolvedHomeBody')}>
+                            <Item
+                                testID={target.kind === 'ambiguous'
+                                    ? 'team-join-ambiguous-home'
+                                    : 'team-join-unresolved-home'}
+                                title={t('teams.join.unresolvedHomeTitle')}
+                                showChevron={false}
+                            />
+                            <Item testID="team-join-back" title={t('common.back')} onPress={exit} />
+                        </ItemGroup>
+                    </ItemList>
+                </TeamJoinTerminalState>
+            </TeamJoinStateShell>
         );
     }
 
@@ -183,76 +209,104 @@ export const TeamJoinScreen = React.memo(function TeamJoinScreen(props: Readonly
     // until that acquisition has proven the descriptor's stable identity.
     if (target.kind === 'acquiring') {
         return (
-            <SurfaceStateCard
-                testID="team-join-acquiring-home"
-                kind="loading"
-                title={t('common.loading')}
-                accessibilitySemantics="status"
-            />
+            <TeamJoinStateShell stepId="acquiring" onBack={exit}>
+                <SurfaceStateCard
+                    testID="team-join-acquiring-home"
+                    kind="loading"
+                    title={t('common.loading')}
+                    accessibilitySemantics="status"
+                />
+            </TeamJoinStateShell>
         );
     }
 
     if (target.kind === 'acquisition_failed') {
         return (
-            <TeamJoinTerminalState>
-              <ItemList>
-                <ItemGroup footer={t('server.notificationAddServerHint')}>
-                    <Item
-                        testID="team-join-unreachable-home"
-                        title={t('teams.join.unknownHomeTitle')}
-                        showChevron={false}
-                    />
-                    <Item testID="team-join-retry-home" title={t('common.retry')} onPress={target.retry} />
-                    <Item
-                        testID="team-join-add-home"
-                        title={t('server.addServerTitle')}
-                        onPress={() => router.push('/server')}
-                    />
-                    <Item testID="team-join-back" title={t('common.back')} onPress={exit} />
-                </ItemGroup>
-              </ItemList>
-            </TeamJoinTerminalState>
+            <TeamJoinStateShell stepId="acquisition-failed" onBack={exit}>
+                <TeamJoinTerminalState>
+                    <ItemList>
+                        <ItemGroup footer={t('server.notificationAddServerHint')}>
+                            <Item
+                                testID="team-join-unreachable-home"
+                                title={t('teams.join.unknownHomeTitle')}
+                                showChevron={false}
+                            />
+                            <Item testID="team-join-retry-home" title={t('common.retry')} onPress={target.retry} />
+                            <Item
+                                testID="team-join-add-home"
+                                title={t('server.addServerTitle')}
+                                onPress={() => router.push('/server')}
+                            />
+                            <Item testID="team-join-back" title={t('common.back')} onPress={exit} />
+                        </ItemGroup>
+                    </ItemList>
+                </TeamJoinTerminalState>
+            </TeamJoinStateShell>
         );
     }
 
     if (target.kind === 'unknown_home') {
         return (
-            <TeamJoinTerminalState>
-              <ItemList>
-                <ItemGroup footer={t('server.notificationAddServerHint')}>
-                    <Item
-                        testID="team-join-unknown-home"
-                        title={t('teams.join.unknownHomeTitle')}
-                        showChevron={false}
-                    />
-                    <Item
-                        testID="team-join-add-home"
-                        title={t('server.addServerTitle')}
-                        onPress={() => router.push('/server')}
-                    />
-                    <Item testID="team-join-back" title={t('common.back')} onPress={exit} />
-                </ItemGroup>
-              </ItemList>
-            </TeamJoinTerminalState>
+            <TeamJoinStateShell stepId="unknown-home" onBack={exit}>
+                <TeamJoinTerminalState>
+                    <ItemList>
+                        <ItemGroup footer={t('server.notificationAddServerHint')}>
+                            <Item
+                                testID="team-join-unknown-home"
+                                title={t('teams.join.unknownHomeTitle')}
+                                showChevron={false}
+                            />
+                            <Item
+                                testID="team-join-add-home"
+                                title={t('server.addServerTitle')}
+                                onPress={() => router.push('/server')}
+                            />
+                            <Item testID="team-join-back" title={t('common.back')} onPress={exit} />
+                        </ItemGroup>
+                    </ItemList>
+                </TeamJoinTerminalState>
+            </TeamJoinStateShell>
         );
     }
 
     if (scopeResolution.kind === 'unknown_home') {
         return (
-            <TeamJoinTerminalState>
-              <ItemList>
-                <ItemGroup footer={t('server.notificationAddServerHint')}>
-                    <Item testID="team-join-unknown-home" title={t('teams.join.unknownHomeTitle')} showChevron={false} />
-                    <Item testID="team-join-add-home" title={t('server.addServerTitle')} onPress={() => router.push('/server')} />
-                    <Item testID="team-join-back" title={t('common.back')} onPress={exit} />
-                </ItemGroup>
-              </ItemList>
-            </TeamJoinTerminalState>
+            <TeamJoinStateShell stepId="scope-unknown-home" onBack={exit}>
+                <TeamJoinTerminalState>
+                    <ItemList>
+                        <ItemGroup footer={t('server.notificationAddServerHint')}>
+                            <Item testID="team-join-unknown-home" title={t('teams.join.unknownHomeTitle')} showChevron={false} />
+                            <Item testID="team-join-add-home" title={t('server.addServerTitle')} onPress={() => router.push('/server')} />
+                            <Item testID="team-join-back" title={t('common.back')} onPress={exit} />
+                        </ItemGroup>
+                    </ItemList>
+                </TeamJoinTerminalState>
+            </TeamJoinStateShell>
+        );
+    }
+
+    // This device could not read its saved credential for the Home. Whether an
+    // Account is saved here is unknown, so offering sign-in could replace a
+    // credential that still exists; the invitation stays valid for later.
+    if (scopeResolution.kind === 'unavailable' && target.kind === 'resolved') {
+        return (
+            <TeamJoinStateShell stepId="credential-unavailable" onBack={exit}>
+                <HomeCredentialUnreadableCard
+                    serverId={target.serverId}
+                    testID="team-join-home-unavailable"
+                    reason={t('homeGovernance.credentialUnreadableInviteBody')}
+                    secondaryAction={{ label: t('common.back'), onPress: exit }}
+                />
+            </TeamJoinStateShell>
         );
     }
 
     if (scopeResolution.kind === 'resolving') {
-        return <SurfaceStateCard testID="team-join-resolving-account" kind="loading" title={t('common.loading')} accessibilitySemantics="status" />;
+        return (
+            <TeamJoinStateShell stepId="resolving-account" onBack={exit}>
+                <SurfaceStateCard testID="team-join-resolving-account" kind="loading" title={t('common.loading')} accessibilitySemantics="status" />
+            </TeamJoinStateShell>
+        );
     }
 
     // Membership is already committed; only reaching its Home is left. A device
@@ -262,38 +316,44 @@ export const TeamJoinScreen = React.memo(function TeamJoinScreen(props: Readonly
         const destinationState = destination.state;
         return destinationState.kind === 'focusing'
             ? (
-                <SurfaceStateCard
-                    testID="team-join-destination-home"
-                    kind="loading"
-                    title={t('common.loading')}
-                    accessibilitySemantics="status"
-                />
+                <TeamJoinStateShell stepId="destination-focusing" onBack={exit}>
+                    <SurfaceStateCard
+                        testID="team-join-destination-home"
+                        kind="loading"
+                        title={t('common.loading')}
+                        accessibilitySemantics="status"
+                    />
+                </TeamJoinStateShell>
             )
             : (
-                <SurfaceStateCard
-                    testID="team-join-destination-home"
-                    kind="unavailable"
-                    title={t('teams.join.offlineTitle')}
-                    reason={t('settingsAccount.nativePassword.serverUnavailable')}
-                    action={{ label: t('common.retry'), onPress: destinationState.retry }}
-                    secondaryAction={{ label: t('common.back'), onPress: exit }}
-                    accessibilitySemantics="alert"
-                />
+                <TeamJoinStateShell stepId="destination-unavailable" onBack={exit}>
+                    <SurfaceStateCard
+                        testID="team-join-destination-home"
+                        kind="unavailable"
+                        title={t('teams.join.offlineTitle')}
+                        reason={t('settingsAccount.nativePassword.serverUnavailable')}
+                        action={{ label: t('common.retry'), onPress: destinationState.retry }}
+                        secondaryAction={{ label: t('common.back'), onPress: exit }}
+                        accessibilitySemantics="alert"
+                    />
+                </TeamJoinStateShell>
             );
     }
 
     if (completedAdmission) {
         return (
-            <SurfaceStateCard
-                testID="team-auth-entry-admission-complete"
-                kind="empty"
-                title={resolveTeamJoinPresentation(completedAdmission).title}
-                action={{
-                    label: t('teams.join.openTeam', { team: completedAdmission.teamName }),
-                    onPress: () => openTeamOnExactHome(target.serverId, completedAdmission.teamId),
-                }}
-                accessibilitySemantics="status"
-            />
+            <TeamJoinStateShell stepId="admission-complete" onBack={exit}>
+                <SurfaceStateCard
+                    testID="team-auth-entry-admission-complete"
+                    kind="empty"
+                    title={resolveTeamJoinPresentation(completedAdmission).title}
+                    action={{
+                        label: t('teams.join.openTeam', { team: completedAdmission.teamName }),
+                        onPress: () => openTeamOnExactHome(target.serverId, completedAdmission.teamId),
+                    }}
+                    accessibilitySemantics="status"
+                />
+            </TeamJoinStateShell>
         );
     }
 
@@ -303,14 +363,16 @@ export const TeamJoinScreen = React.memo(function TeamJoinScreen(props: Readonly
         : null;
     if (props.postAuthContinuation && !matchingScope) {
         return (
-            <SurfaceStateCard
-                testID="team-join-post-auth-account-unavailable"
-                kind="unavailable"
-                title={t('teams.join.inactiveTitle')}
-                reason={t('teams.join.askForNew')}
-                action={{ label: t('common.back'), onPress: exit }}
-                accessibilitySemantics="status"
-            />
+            <TeamJoinStateShell stepId="post-auth-account-unavailable" onBack={exit}>
+                <SurfaceStateCard
+                    testID="team-join-post-auth-account-unavailable"
+                    kind="unavailable"
+                    title={t('teams.join.inactiveTitle')}
+                    reason={t('teams.join.askForNew')}
+                    action={{ label: t('common.back'), onPress: exit }}
+                    accessibilitySemantics="status"
+                />
+            </TeamJoinStateShell>
         );
     }
     if (selection && selected && !matchingScope && tokenParse.success) {
@@ -329,7 +391,12 @@ export const TeamJoinScreen = React.memo(function TeamJoinScreen(props: Readonly
                 target={target.target}
                 actions={[selected]}
                 returnTo={returnTo}
-                teamAdmission={{ teamId: selection.teamId, invitationToken: tokenParse.data, origin: selection.action.origin }}
+                teamAdmission={{
+                    teamId: selection.teamId,
+                    invitationToken: tokenParse.data,
+                    origin: selection.action.origin,
+                    accountSelection: recoveringIdentity ? 'another' : 'current',
+                }}
                 nativeAdmission={{ kind: 'team_invitation', token: tokenParse.data }}
                 invitationEmailVerificationRequired={selection.invitationEmailVerificationRequired === true}
                 onAuthenticated={(authenticatedHome) => {

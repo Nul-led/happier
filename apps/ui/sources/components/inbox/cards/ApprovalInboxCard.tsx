@@ -102,7 +102,7 @@ export const ApprovalInboxCard = React.memo((props: Readonly<{
   }, [actionIdRaw]);
 
   const sessionTitle = session && (!serverId || context?.mayShowDecryptedContent === true)
-    ? getSessionName(session)
+    ? getSessionName(session, serverId)
     : null;
   const scopedEndpoint = serverId
     ? readApprovalSessionEndpointLabels({ session, machine, machineId })

@@ -18,7 +18,7 @@ export function showMachineHelp(): void {
       '--install-relay-runtime is an advanced generic runtime option; it never creates or converts a Personal Home.',
       'Use --json to stream protocol event/result JSON lines.',
       'In interactive terminals, SSH host trust, SSH password, and pairing approval prompts are surfaced inline.',
-      'Use --yes to auto-accept setup prompts in non-interactive runs.',
+      'Use --yes to accept setup prompts in non-interactive runs: it trusts a first-use SSH host (never a changed host key), approves pairing, and replaces conflicting background services on the remote host. Add --service-mode none to leave those services untouched.',
     ],
   }));
 }

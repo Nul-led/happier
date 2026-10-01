@@ -1,4 +1,5 @@
 import React from 'react';
+import { act } from 'react-test-renderer';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { RPC_METHODS } from '@happier-dev/protocol/rpc';
 
@@ -184,6 +185,103 @@ describe('global Voice post-End permission custody', () => {
         routerPush.mockResolvedValue(undefined);
     });
 
+    it('shows a stopped pending-approval row with a resume action instead of an empty group', async () => {
+        const session = { ...createPendingPostEndSession(), active: false, presence: 0 };
+        const screen = await renderScreen(
+            <InboxSessionAttentionGroupCard
+                identityDisplay="none"
+                connected={false}
+                session={session}
+                serverId="server-a"
+                permissionRequests={[{
+                    id: REQUEST_ID,
+                    tool: 'Bash',
+                    kind: 'permission',
+                    arguments: { command: 'git status' },
+                    createdAt: NOW_MS - 10,
+                }]}
+                userActionRequests={[]}
+            />,
+        );
+        expect(screen.findByTestId(`inbox.session_attention.${SESSION_ID}`)).not.toBeNull();
+        expect(screen.findByTestId('inbox.session_attention.stopped')).not.toBeNull();
+        expect(screen.findByTestId('inbox.session_attention.resume')).not.toBeNull();
+        await screen.pressByTestIdAsync('inbox.session_attention.resume');
+        expect(screen.findByTestId('inbox.session_attention.resume_error')).not.toBeNull();
+    });
+
+    it('draws Resume through the canonical operation control with a keyboard-only focus ring', async () => {
+        const { createThemeFixture } = await import('@/dev/testkit/fixtures/themeFixtures');
+        const focusColor = createThemeFixture().colors.border.focus;
+        const session = { ...createPendingPostEndSession(), active: false, presence: 0 };
+        const screen = await renderScreen(
+            <InboxSessionAttentionGroupCard
+                identityDisplay="none"
+                connected={false}
+                session={session}
+                serverId="server-a"
+                permissionRequests={[{
+                    id: REQUEST_ID,
+                    tool: 'Bash',
+                    kind: 'permission',
+                    arguments: { command: 'git status' },
+                    createdAt: NOW_MS - 10,
+                }]}
+                userActionRequests={[]}
+            />,
+        );
+        const resume = () => screen.findByTestId('inbox.session_attention.resume')!;
+        const flatten = (style: unknown): Record<string, unknown> => (Array.isArray(style)
+            ? style.reduce((acc: Record<string, unknown>, next) => ({ ...acc, ...flatten(next) }), {})
+            : ((style as Record<string, unknown> | null | undefined) ?? {}));
+        const pillBorder = () => {
+            const frames = resume().findAll((node) => String(node.type) === 'Animated.View');
+            expect(frames).toHaveLength(1);
+            return flatten(frames[0]!.props.style).borderColor;
+        };
+        // The browser's `:focus-visible` verdict: a click leaves focus that does not match it, Tab does.
+        const focusedElement = (focusVisible: boolean) => ({
+            matches: (selector: string) => selector === ':focus-visible' && focusVisible,
+        });
+
+        expect(resume().props.accessibilityLabel).toBe('session.pendingActivation.actions.resume');
+        expect(resume().props.accessibilityState).toMatchObject({ busy: false, disabled: false });
+        expect(pillBorder()).not.toBe(focusColor);
+
+        await act(async () => {
+            resume().props.onFocus?.({ target: focusedElement(false) });
+        });
+        expect(pillBorder()).not.toBe(focusColor);
+
+        await act(async () => {
+            resume().props.onBlur?.({});
+            resume().props.onFocus?.({ target: focusedElement(true) });
+        });
+        expect(pillBorder()).toBe(focusColor);
+    });
+
+    it('opens a stopped secondary-Home session before resuming with Home-scoped settings', async () => {
+        const session = { ...createPendingPostEndSession(), active: false, presence: 0, serverId: 'server-b' };
+        const screen = await renderScreen(
+            <InboxSessionAttentionGroupCard
+                identityDisplay="none"
+                connected={false}
+                session={session}
+                serverId="server-b"
+                permissionRequests={[{
+                    id: REQUEST_ID,
+                    tool: 'Bash',
+                    kind: 'permission',
+                    arguments: { command: 'git status' },
+                    createdAt: NOW_MS - 10,
+                }]}
+                userActionRequests={[]}
+            />,
+        );
+        await screen.pressByTestIdAsync('inbox.session_attention.resume');
+        expect(routerPush).toHaveBeenCalledWith(`/session/${SESSION_ID}?serverId=server-b`);
+    });
+
     it.each([
         {
             decision: 'approve',
@@ -286,6 +384,10 @@ describe('global Voice post-End permission custody', () => {
             />,
         );
 
+        const { SessionTranscriptSourceProvider } = await import('@/components/sessions/transcript/source/SessionTranscriptSourceContext');
+        expect(screen.findAllByType(SessionTranscriptSourceProvider).map((root) => root.props.source)).toEqual([
+            expect.objectContaining({ kind: 'app', sessionId: SESSION_ID, serverId: 'server-b' }),
+        ]);
         await screen.pressByTestIdAsync('permission-footer.allow');
 
         expect(permissionRpc).toHaveBeenCalledWith(expect.objectContaining({

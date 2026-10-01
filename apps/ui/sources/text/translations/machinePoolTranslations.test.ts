@@ -20,7 +20,11 @@ describe('machinePoolTranslations', () => {
                 ? []
                 : [`${code}: Machine Pool translation shape differs from English`];
         });
-        const untranslated = Object.values(auditTranslations({ en, locales }))
+        // Audit at the mounted path (`machinePools.*`) so the shared cognate allowlist keys apply.
+        const untranslated = Object.values(auditTranslations({
+            en: { machinePools: en },
+            locales: locales.map(({ code, root }) => ({ code, root: { machinePools: root } })),
+        }))
             .flatMap((report) => report.untranslatedStrings)
             .map((entry) => `${entry.locale}: ${entry.key} = ${JSON.stringify(entry.value)}`);
 
@@ -64,10 +68,10 @@ describe('machinePoolTranslations', () => {
     });
 
     it('explains the future-only effect of member and tier edits beside those controls', () => {
-        expect(machinePoolTranslations.en.placementChangeNotice).toMatch(/future session placement/i);
-        expect(machinePoolTranslations.en.placementChangeNotice).toMatch(/future broker opens/i);
-        expect(machinePoolTranslations.en.placementChangeNotice).toMatch(/already-open broker/i);
-        expect(machinePoolTranslations.en.placementChangeNotice).toMatch(/pinned/i);
+        // Edits affect only what starts after saving; what is already open keeps its machine. The broker
+        // detail (a connection stays on the machine chosen when it opened) is `connectionSemantics`'.
+        expect(machinePoolTranslations.en.placementChangeNotice).toMatch(/after you save/i);
+        expect(machinePoolTranslations.en.placementChangeNotice).toMatch(/open sessions stay/i);
     });
 
     it('explains Pool broker selection at connection time', () => {

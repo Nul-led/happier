@@ -18,6 +18,8 @@ import { clearBrowserRuntimeControlRegistryForTests } from '@/sync/domains/brows
 import type { BrowserAutomationControlService } from '@/sync/domains/browser/automation';
 import { createDefaultRuntimeActionExecutor } from '@/sync/ops/actions/defaultRuntimeActionExecutor';
 import { BrowserSurfaceHost } from './BrowserSurfaceHost';
+import { apiSocket } from '@/sync/api/session/apiSocket';
+import { uiBrowserAutomationDispatchMethod } from '@happier-dev/protocol';
 
 vi.mock('@/hooks/server/useFeatureDecision', () => ({
     useFeatureDecision: () => ({ state: 'enabled' }),
@@ -90,11 +92,12 @@ function openViewState(input: Readonly<{
 const browserSessionId = 'browser_session_automation';
 const viewId = 'view_automation';
 
-function renderHost(automationEnabled: boolean) {
+function renderHost(automationEnabled: boolean, machineId?: string) {
     return renderScreen(
         <BrowserSurfaceHost
             browserSessionId={browserSessionId}
             platform="web"
+            pluginBrowserActionContext={machineId ? { machineId } : undefined}
             initialBrowserState={openViewState({
                 browserSessionId,
                 viewId,
@@ -120,6 +123,21 @@ function renderHost(automationEnabled: boolean) {
 describe('BrowserSurfaceHost in-app automation control service wiring', () => {
     afterEach(() => {
         clearBrowserRuntimeControlRegistryForTests();
+        vi.restoreAllMocks();
+    });
+
+    it('mounts the exact machine reverse room and executes through the mounted controller until unmount', async () => {
+        // Machine RPC registration is the network boundary; the installer/handler/controller stay real.
+        const registration = vi.spyOn(apiSocket, 'registerMachineScopedRpcHandler');
+        const screen = await renderHost(true, 'machine_1');
+        await flushHookEffects();
+        const call = registration.mock.calls.find(([, method]) => method === uiBrowserAutomationDispatchMethod({ browserSessionId, viewId }));
+        expect(call).toBeTruthy();
+        const handler = call![2];
+        const request = { v: 1, actionId: 'browser.automation.cancelActive', input: { browserSessionId, viewId }, authority: 'present_user' };
+        expect(await handler(request)).toMatchObject({ outcome: 'no_active', canceledCount: 0 });
+        await screen.unmount();
+        expect(await handler(request)).toMatchObject({ errorCode: 'runtime_action_disabled' });
     });
 
     it('constructs an in-app control service and threads it into the shell when browser.automation is enabled', async () => {
@@ -154,7 +172,7 @@ describe('BrowserSurfaceHost in-app automation control service wiring', () => {
             result = await execute({
                 actionId: 'browser.automation.cancelActive',
                 input: { browserSessionId, viewId },
-                context: {},
+                context: { authority: 'present_user' },
             });
         });
         await flushHookEffects();
@@ -176,7 +194,7 @@ describe('BrowserSurfaceHost in-app automation control service wiring', () => {
             result = await execute({
                 actionId: 'browser.automation.cancelActive',
                 input: { browserSessionId, viewId },
-                context: {},
+                context: { authority: 'present_user' },
             });
         });
         await flushHookEffects();

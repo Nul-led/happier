@@ -3,7 +3,7 @@ import { chmod, mkdir, open, readFile, rename, stat, unlink, writeFile } from 'n
 import { createHash } from 'node:crypto';
 import { dirname, join } from 'node:path';
 
-import { decodeJwtPayload } from '@/cloud/decodeJwtPayload';
+import { readAccountIdFromToken } from '@/cloud/decodeJwtPayload';
 import { configuration } from '@/configuration';
 
 export type AccountSettingsCacheV1 = Readonly<{
@@ -55,8 +55,7 @@ function resolveAccountSettingsCacheAccountScope(token: string | null | undefine
   const normalizedToken = String(token ?? '').trim();
   if (!normalizedToken) return null;
 
-  const payload = decodeJwtPayload(normalizedToken);
-  const sub = typeof payload?.sub === 'string' ? payload.sub.trim() : '';
+  const sub = readAccountIdFromToken(normalizedToken);
   if (sub) return `sub-${hashCacheScopePart(sub)}`;
 
   return `token-${hashCacheScopePart(normalizedToken)}`;

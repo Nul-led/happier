@@ -6,10 +6,11 @@ import {
   buildQualifiedPluginContributionKey,
   createPluginContributionIdentity,
 } from '@happier-dev/protocol';
+import type { PluginRuntimeOccurrenceId } from '@/plugins/runtime/runtimeSlots';
 
 export type PromptAssetContributionOwner = Readonly<{
   pluginId: string;
-  generationId: string;
+  occurrenceId: PluginRuntimeOccurrenceId;
   definition: PluginPromptAssetContributionV1;
 }>;
 
@@ -76,7 +77,7 @@ function compareContributions(
  * Canonical prompt-plan handoff for manifest prompt assets.
  *
  * Resource bytes and availability decisions stay with their existing owners:
- * callers must bind `readResourceText` to the SVC11 current-generation resource
+ * callers must bind `readResourceText` to the SVC11 current-occurrence resource
  * lease and `evaluateAvailability` to WS2's shared policy evaluator. This
  * function owns only qualification, target filtering, deterministic ordering,
  * and injection scope.
@@ -89,14 +90,14 @@ export async function resolvePromptAssetContributionBlocks(params: Readonly<{
     pluginId: string;
     resourcePluginId: string;
     resourceLocalId: string;
-    generationId: string;
+    occurrenceId: PluginRuntimeOccurrenceId;
     promptAssetLocalId: string;
   }>): Promise<string>;
   evaluateAvailability?: (
     availability: PromptAssetAvailability,
     context: Readonly<{
       pluginId: string;
-      generationId: string;
+      occurrenceId: PluginRuntimeOccurrenceId;
       promptAssetLocalId: string;
       agent: QualifiedReference;
     }>,
@@ -147,7 +148,7 @@ export async function resolvePromptAssetContributionBlocks(params: Readonly<{
       }
       const decision = params.evaluateAvailability(availability, {
         pluginId: contribution.pluginId,
-        generationId: contribution.generationId,
+        occurrenceId: contribution.occurrenceId,
         promptAssetLocalId: contribution.definition.id,
         agent: params.agent,
       });
@@ -165,7 +166,7 @@ export async function resolvePromptAssetContributionBlocks(params: Readonly<{
       pluginId: contribution.pluginId,
       resourcePluginId: resource.pluginId,
       resourceLocalId: resource.localId,
-      generationId: contribution.generationId,
+      occurrenceId: contribution.occurrenceId,
       promptAssetLocalId: contribution.definition.id,
     });
     if (!text.trim()) {

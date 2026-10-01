@@ -8,6 +8,7 @@ export type HomeEnrollmentPresentationPhase =
     | 'retryable_error'
     | 'expired'
     | 'invalid_request'
+    | 'update_required'
     | 'succeeded'
     | 'partial_commit';
 
@@ -20,12 +21,21 @@ export type HomeEnrollmentPresentationModel = Readonly<{
         | 'connect.homeAddedPreservedFocusBody'
         | 'connect.homeEnrollmentPartialCommitBody'
         | 'connect.homeEnrollmentRetryBody'
+        | 'connect.pairingAlreadyRequestedBody'
+        | 'connect.pairingRejectedBody'
         | 'connect.pairingQrExpired'
+        | 'connect.requesterDeviceAddedBody'
+        | 'connect.requesterDeviceQrExpiredBody'
+        | 'connect.requesterDeviceRequestInvalidBody'
+        | 'connect.requesterDeviceRetryBody'
+        | 'connect.requesterDeviceWrongHomeBody'
         | 'connect.scanComputerQrInstructions'
         | 'connect.scanComputerQrUnavailableBody'
         | 'connect.securingCredentials'
         | 'connect.showRequesterQrInstructions'
+        | 'connect.unsupportedEnrollmentResponseBody'
         | 'connect.updateRequiredBody'
+        | 'connect.wrongHomeBody'
         | 'errors.operationFailed';
     contextualFacts: 'none' | 'target' | 'target_and_expiry' | 'target_and_requester';
     recoveryAction: 'none' | 'automatic_retry' | 'retry' | 'create_new_qr';
@@ -36,7 +46,7 @@ export type HomeEnrollmentPresentationModel = Readonly<{
 type HomeEnrollmentPresentationSource =
     | Readonly<{
         kind: 'trusted_home_display';
-        phase: 'generating' | 'ready' | 'adding' | 'retryable_error' | 'expired' | 'invalid_request' | 'succeeded';
+        phase: 'generating' | 'ready' | 'adding' | 'retryable_error' | 'expired' | 'invalid_request' | 'update_required' | 'succeeded';
     }>
     | Readonly<{
         kind: 'requester_display';
@@ -46,7 +56,18 @@ type HomeEnrollmentPresentationSource =
     | Readonly<{
         kind: 'scanner';
         phase: 'idle' | 'requesting' | 'securing';
-        result?: 'succeeded' | 'partial_commit' | 'retryable_error' | 'expired' | 'invalid_request';
+        direction?: 'trusted_home_displays' | 'requester_displays';
+        result?:
+            | 'succeeded'
+            | 'partial_commit'
+            | 'retryable_error'
+            | 'expired'
+            | 'invalid_request'
+            | 'already_requested'
+            | 'rejected'
+            | 'wrong_target'
+            | 'malformed_response'
+            | 'update_required';
     }>;
 
 const TERMINAL_SCANNER_PRESENTATIONS: Readonly<Record<
@@ -93,6 +114,63 @@ const TERMINAL_SCANNER_PRESENTATIONS: Readonly<Record<
         liveRegion: 'assertive',
         activity: false,
     },
+    already_requested: {
+        phase: 'invalid_request',
+        primaryTranslationKey: 'connect.pairingAlreadyRequestedBody',
+        contextualFacts: 'target',
+        recoveryAction: 'retry',
+        liveRegion: 'assertive',
+        activity: false,
+    },
+    rejected: {
+        phase: 'invalid_request',
+        primaryTranslationKey: 'connect.pairingRejectedBody',
+        contextualFacts: 'target',
+        recoveryAction: 'retry',
+        liveRegion: 'assertive',
+        activity: false,
+    },
+    wrong_target: {
+        phase: 'invalid_request',
+        primaryTranslationKey: 'connect.wrongHomeBody',
+        contextualFacts: 'target',
+        recoveryAction: 'retry',
+        liveRegion: 'assertive',
+        activity: false,
+    },
+    malformed_response: {
+        phase: 'invalid_request',
+        primaryTranslationKey: 'connect.unsupportedEnrollmentResponseBody',
+        contextualFacts: 'target',
+        recoveryAction: 'retry',
+        liveRegion: 'assertive',
+        activity: false,
+    },
+    update_required: {
+        phase: 'update_required',
+        primaryTranslationKey: 'connect.updateRequiredBody',
+        contextualFacts: 'target',
+        recoveryAction: 'none',
+        liveRegion: 'assertive',
+        activity: false,
+    },
+};
+
+/**
+ * On the reverse direction the scanner is the approving, already-enrolled
+ * device, so joiner/restore guidance is false for it. Results not listed here
+ * (update_required) are direction-neutral; the approver never publishes the
+ * joiner-only results (partial_commit, already_requested, rejected, ...).
+ */
+const APPROVER_SCANNER_TRANSLATION_KEYS: Readonly<Partial<Record<
+    NonNullable<Extract<HomeEnrollmentPresentationSource, { kind: 'scanner' }>['result']>,
+    HomeEnrollmentPresentationModel['primaryTranslationKey']
+>>> = {
+    succeeded: 'connect.requesterDeviceAddedBody',
+    retryable_error: 'connect.requesterDeviceRetryBody',
+    wrong_target: 'connect.requesterDeviceWrongHomeBody',
+    expired: 'connect.requesterDeviceQrExpiredBody',
+    invalid_request: 'connect.requesterDeviceRequestInvalidBody',
 };
 
 /**
@@ -103,6 +181,15 @@ export function resolveHomeEnrollmentPresentation(
     source: HomeEnrollmentPresentationSource,
 ): HomeEnrollmentPresentationModel {
     if (source.kind === 'scanner') {
+        if (source.direction === 'requester_displays' && source.result) {
+            const approverTranslationKey = APPROVER_SCANNER_TRANSLATION_KEYS[source.result];
+            if (approverTranslationKey) {
+                return {
+                    ...TERMINAL_SCANNER_PRESENTATIONS[source.result],
+                    primaryTranslationKey: approverTranslationKey,
+                };
+            }
+        }
         if (source.result) return TERMINAL_SCANNER_PRESENTATIONS[source.result];
         if (source.phase === 'idle') {
             return {
@@ -157,18 +244,18 @@ export function resolveHomeEnrollmentPresentation(
         if (source.phase === 'expired') {
             return {
                 phase: 'expired', primaryTranslationKey: 'connect.pairingQrExpired', contextualFacts: 'target',
-                recoveryAction: 'retry', liveRegion: 'assertive', activity: false,
+                recoveryAction: 'create_new_qr', liveRegion: 'assertive', activity: false,
             };
         }
         if (source.phase === 'invalid') {
             return {
                 phase: 'invalid_request', primaryTranslationKey: 'connect.scanComputerQrUnavailableBody', contextualFacts: 'target',
-                recoveryAction: 'retry', liveRegion: 'assertive', activity: false,
+                recoveryAction: 'create_new_qr', liveRegion: 'assertive', activity: false,
             };
         }
         if (source.phase === 'update_required') {
             return {
-                phase: 'invalid_request', primaryTranslationKey: 'connect.updateRequiredBody', contextualFacts: 'target',
+                phase: 'update_required', primaryTranslationKey: 'connect.updateRequiredBody', contextualFacts: 'target',
                 recoveryAction: 'none', liveRegion: 'assertive', activity: false,
             };
         }
@@ -212,6 +299,12 @@ export function resolveHomeEnrollmentPresentation(
             recoveryAction: 'create_new_qr', liveRegion: 'assertive', activity: false,
         };
     }
+    if (source.phase === 'update_required') {
+        return {
+            phase: 'update_required', primaryTranslationKey: 'connect.updateRequiredBody', contextualFacts: 'none',
+            recoveryAction: 'none', liveRegion: 'assertive', activity: false,
+        };
+    }
     return {
         phase: 'succeeded', primaryTranslationKey: 'common.success', contextualFacts: 'target_and_requester',
         recoveryAction: 'none', liveRegion: 'polite', activity: false,
@@ -228,4 +321,15 @@ export function formatHomeEnrollmentTargetLabel(descriptor: HomeConnectionDescri
 
 export function formatEnrollmentExpiry(expiresAtMs: number): string {
     return new Date(expiresAtMs).toLocaleString();
+}
+
+/**
+ * Time left on a live invite as `m:ss` ("New code in 4:32"). Rounds up, so the last second of a
+ * working code reads 0:01 rather than 0:00; an expired invite reads 0:00.
+ */
+export function formatPairingCountdown(expiresAtMs: number, nowMs: number): string {
+    const totalSeconds = Math.max(0, Math.ceil((expiresAtMs - nowMs) / 1000));
+    const minutes = Math.floor(totalSeconds / 60);
+    const seconds = totalSeconds % 60;
+    return `${minutes}:${String(seconds).padStart(2, '0')}`;
 }

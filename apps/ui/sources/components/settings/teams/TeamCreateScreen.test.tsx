@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
     collectRenderedTestIds,
     createHomeGovernanceHarness,
+    flushHookEffects,
     homeGovernanceProjectionFixture,
     homeAccountPickerRowFixture,
     installHomeGovernanceBoundaries,
@@ -21,6 +22,12 @@ import { installSettingsViewCommonModuleMocks } from '../settingsViewTestHelpers
 
 const routerReplace = vi.hoisted(() => vi.fn());
 const pickImages = vi.hoisted(() => vi.fn());
+const departureChoice = vi.hoisted(() => ({ discard: false }));
+
+vi.mock('@react-navigation/native', async () => {
+    const { createReactNavigationNativeMock } = await import('@/dev/testkit/mocks/reactNavigation');
+    return createReactNavigationNativeMock();
+});
 
 installSettingsViewCommonModuleMocks({
     router: async () => ({
@@ -28,6 +35,14 @@ installSettingsViewCommonModuleMocks({
         useNavigation: () => ({ setOptions: vi.fn() }),
         useLocalSearchParams: () => ({}),
     }),
+    modal: async () => {
+        const { createModalModuleMock } = await import('@/dev/testkit/mocks/modal');
+        return createModalModuleMock({ spies: {
+            alert: (_title, _message, buttons) => {
+                buttons?.find((button) => button.style === (departureChoice.discard ? 'destructive' : 'cancel'))?.onPress?.();
+            },
+        } }).module;
+    },
 });
 
 vi.mock('@/utils/files/nativePickImages', () => ({ nativePickImages: pickImages }));
@@ -75,6 +90,7 @@ beforeEach(async () => {
     await harness.selectHomes([]);
     routerReplace.mockReset();
     pickImages.mockReset();
+    departureChoice.discard = false;
 });
 
 afterEach(() => {
@@ -82,6 +98,104 @@ afterEach(() => {
 });
 
 describe('TeamCreateScreen', () => {
+    it('UX preserves a dirty creation draft on navigation until discard is chosen', async () => {
+        const home = await harness.addHome({ name: 'Home A', serverUrl: 'https://home-a.example', accountId: 'member-a', teamsEnabled: true });
+        await harness.selectHomes([home]);
+        harness.answer(home, ELIGIBILITY_PATH, { body: { teamsEnabled: true, createTeam: true, createTeamForChosenAccount: false } });
+        const screen = await renderCreate();
+        await vi.waitFor(() => expect(screen.findByTestId('teams-create-name')).not.toBeNull());
+        act(() => screen.changeTextByTestId('teams-create-name', 'Unfinished'));
+        const { runGuardedNavigation } = await import('@/utils/navigation/runGuardedNavigation');
+        const leave = vi.fn();
+        let departed: boolean | undefined;
+        await act(async () => { departed = await runGuardedNavigation(leave); });
+        expect(departed).toBe(false);
+        expect(leave).not.toHaveBeenCalled();
+        expect(screen.findByTestId('teams-create-name')?.props.value).toBe('Unfinished');
+        departureChoice.discard = true;
+        await act(async () => { departed = await runGuardedNavigation(leave); });
+        expect(departed).toBe(true);
+        expect(leave).toHaveBeenCalledOnce();
+        expect(harness.requestsFor(TEAM_CREATE_PATH)).toHaveLength(0);
+    });
+
+    it('UX explains an invalid description without dropping text and recovers when corrected', async () => {
+        const home = await harness.addHome({ name: 'Home A', serverUrl: 'https://home-a.example', accountId: 'member-a', teamsEnabled: true });
+        await harness.selectHomes([home]);
+        harness.answer(home, ELIGIBILITY_PATH, { body: { teamsEnabled: true, createTeam: true, createTeamForChosenAccount: false } });
+        const screen = await renderCreate();
+        await vi.waitFor(() => expect(screen.findByTestId('teams-create-name')).not.toBeNull());
+        const invalid = 'x'.repeat(501);
+        act(() => {
+            screen.changeTextByTestId('teams-create-name', 'Platform');
+            screen.changeTextByTestId('teams-create-description', invalid);
+        });
+        expect(screen.findByTestId('teams-create-submit')?.props.disabled).toBe(true);
+        expect(screen.getTextContent()).toContain('teams.errors.invalidDescription');
+        expect(screen.findByTestId('teams-create-description')?.props.value).toBe(invalid);
+        act(() => screen.changeTextByTestId('teams-create-description', 'Shared work'));
+        expect(screen.findByTestId('teams-create-submit')?.props.disabled).toBe(false);
+        expect(screen.getTextContent()).not.toContain('teams.errors.invalidDescription');
+        expect(harness.requestsFor(TEAM_CREATE_PATH)).toHaveLength(0);
+    });
+
+    it('UX exposes pending owner search and retries its failure without losing Team fields', async () => {
+        const home = await harness.addHome({ name: 'Home A', serverUrl: 'https://home-a.example', accountId: 'admin-a', teamsEnabled: true });
+        harness.answer(home, GOVERNANCE_PATH, { body: homeGovernanceProjectionFixture() });
+        let releaseSearch = (): void => {};
+        const respondAfter = new Promise<void>((resolve) => { releaseSearch = resolve; });
+        harness.answer(home, HOME_ACCOUNT_SEARCH_PATH, { status: 503, body: { error: 'unavailable' }, respondAfter });
+        const screen = await renderCreate(home);
+        await vi.waitFor(() => expect(screen.findByTestId('teams-create-owner-search')).not.toBeNull());
+        act(() => {
+            screen.changeTextByTestId('teams-create-name', 'Platform');
+            screen.changeTextByTestId('teams-create-owner-search', 'Grace');
+        });
+        await vi.waitFor(() => expect(screen.findByTestId('teams-create-owner-loading')).not.toBeNull());
+        await act(async () => releaseSearch());
+        await vi.waitFor(() => expect(screen.findByTestId('teams-create-owner-retry')).not.toBeNull(), { timeout: 5000 });
+        expect(screen.findByTestId('teams-create-submit')?.props.disabled).toBe(true);
+        harness.answer(home, HOME_ACCOUNT_SEARCH_PATH, { body: { accounts: [homeAccountPickerRowFixture('owner-grace', 'Grace')] } });
+        await screen.pressByTestIdAsync('teams-create-owner-retry');
+        await vi.waitFor(() => expect(screen.findByTestId('teams-create-owner:owner-grace')).not.toBeNull());
+        await screen.pressByTestIdAsync('teams-create-owner:owner-grace');
+        expect(screen.findByTestId('teams-create-name')?.props.value).toBe('Platform');
+        expect(screen.findByTestId('teams-create-submit')?.props.disabled).toBe(false);
+    });
+
+    it('UX distinguishes no owner matches from an authoritative search refusal', async () => {
+        const home = await harness.addHome({ name: 'Home A', serverUrl: 'https://home-a.example', accountId: 'admin-a', teamsEnabled: true });
+        harness.answer(home, GOVERNANCE_PATH, { body: homeGovernanceProjectionFixture() });
+        harness.answer(home, HOME_ACCOUNT_SEARCH_PATH, { body: { accounts: [] } });
+        const screen = await renderCreate(home);
+        await vi.waitFor(() => expect(screen.findByTestId('teams-create-owner-search')).not.toBeNull());
+        act(() => screen.changeTextByTestId('teams-create-owner-search', 'Nobody'));
+        await vi.waitFor(() => expect(screen.findByTestId('teams-create-owner-empty')).not.toBeNull());
+        harness.answer(home, HOME_ACCOUNT_SEARCH_PATH, { status: 403, body: { error: 'forbidden' } });
+        act(() => screen.changeTextByTestId('teams-create-owner-search', 'Elsewhere'));
+        await vi.waitFor(() => expect(screen.findByTestId('teams-create-owner-unavailable')).not.toBeNull());
+        expect(screen.findByTestId('teams-create-owner-empty')).toBeNull();
+        expect(screen.findByTestId('teams-create-owner-retry')).toBeNull();
+    });
+
+    it('UX keeps the current owner-search answer when an earlier query is refused late', async () => {
+        const home = await harness.addHome({ name: 'Home A', serverUrl: 'https://home-a.example', accountId: 'admin-a', teamsEnabled: true });
+        harness.answer(home, GOVERNANCE_PATH, { body: homeGovernanceProjectionFixture() });
+        let releaseOldQuery = (): void => {};
+        const respondAfter = new Promise<void>((resolve) => { releaseOldQuery = resolve; });
+        harness.answer(home, HOME_ACCOUNT_SEARCH_PATH, { status: 403, body: { error: 'forbidden' }, respondAfter });
+        const screen = await renderCreate(home);
+        await vi.waitFor(() => expect(screen.findByTestId('teams-create-owner-search')).not.toBeNull());
+        act(() => screen.changeTextByTestId('teams-create-owner-search', 'Old'));
+        await vi.waitFor(() => expect(harness.requestsFor(HOME_ACCOUNT_SEARCH_PATH)).toHaveLength(1));
+        harness.answer(home, HOME_ACCOUNT_SEARCH_PATH, { body: { accounts: [homeAccountPickerRowFixture('owner-grace', 'Grace')] } });
+        act(() => screen.changeTextByTestId('teams-create-owner-search', 'Grace'));
+        await vi.waitFor(() => expect(screen.findByTestId('teams-create-owner:owner-grace')).not.toBeNull());
+        await act(async () => { releaseOldQuery(); await flushHookEffects(); });
+        expect(screen.findByTestId('teams-create-owner:owner-grace')).not.toBeNull();
+        expect(screen.findByTestId('teams-create-owner-unavailable')).toBeNull();
+    });
+
     it('starts only one Team creation when activated twice before the busy state renders', async () => {
         let releaseCreate = (): void => {};
         const respondAfter = new Promise<void>((resolve) => { releaseCreate = resolve; });
@@ -92,7 +206,7 @@ describe('TeamCreateScreen', () => {
             teamsEnabled: true,
         });
         await harness.selectHomes([home]);
-        harness.answer(home, ELIGIBILITY_PATH, { body: { teamsEnabled: true, createTeam: true } });
+        harness.answer(home, ELIGIBILITY_PATH, { body: { teamsEnabled: true, createTeam: true, createTeamForChosenAccount: false } });
         harness.answer(home, TEAM_CREATE_PATH, {
             body: teamSummaryFixture({ id: 'server-team-id', name: 'Platform' }),
             respondAfter,
@@ -118,7 +232,7 @@ describe('TeamCreateScreen', () => {
             teamsEnabled: true,
         });
         await harness.selectHomes([home]);
-        harness.answer(home, ELIGIBILITY_PATH, { body: { teamsEnabled: true, createTeam: true } });
+        harness.answer(home, ELIGIBILITY_PATH, { body: { teamsEnabled: true, createTeam: true, createTeamForChosenAccount: false } });
 
         const screen = await renderCreate();
         await vi.waitFor(() => {
@@ -149,6 +263,179 @@ describe('TeamCreateScreen', () => {
         expect(screen.findByTestId('teams-create-submit')?.props.disabled).toBe(true);
     });
 
+    it('reaches the Home Administration form when the entry names the Home by its device profile id', async () => {
+        // A Home that published its portable identity is scoped by that identity,
+        // not by the device-local profile id. The entry must still settle.
+        const home = await harness.addHome({
+            name: 'Identity Home',
+            // Its own address: an earlier case's Home A must not share transport state with it.
+            serverUrl: 'https://identity-home.example',
+            serverIdentityId: 'srv_identity_home',
+            accountId: 'admin-a',
+            teamsEnabled: true,
+            // Addressed explicitly, not as the focused Home.
+            active: false,
+        });
+        expect(home).not.toBe('srv_identity_home');
+        harness.answer(home, GOVERNANCE_PATH, { body: homeGovernanceProjectionFixture() });
+
+        const screen = await renderCreate(home);
+        await vi.waitFor(() => {
+            expect(collectRenderedTestIds(screen.tree.toJSON())).toContain('teams-create-owner-search');
+        });
+        expect(collectRenderedTestIds(screen.tree.toJSON())).not.toContain('teams-create-loading');
+    });
+
+    it('explains an ownerless Home instead of calling the administrator unauthorized', async () => {
+        const home = await harness.addHome({
+            name: 'Home A',
+            serverUrl: 'https://home-a.example',
+            accountId: 'admin-a',
+            teamsEnabled: true,
+        });
+        harness.answer(home, GOVERNANCE_PATH, {
+            status: 409,
+            body: { error: 'home_governance_setup_required' },
+        });
+
+        const screen = await renderCreate(home);
+        await vi.waitFor(() => {
+            expect(collectRenderedTestIds(screen.tree.toJSON())).toContain('teams-create-setup-required');
+        });
+        expect(screen.getTextContent()).toContain('homeGovernance.setupRequiredTitle');
+        expect(screen.getTextContent()).not.toContain('homeGovernance.forbiddenTitle');
+
+        // Refresh asks the Home again; an owner assigned meanwhile opens the form.
+        harness.answer(home, GOVERNANCE_PATH, { body: homeGovernanceProjectionFixture() });
+        await screen.pressByTestIdAsync('teams-create-setup-required-action');
+        await vi.waitFor(() => {
+            expect(collectRenderedTestIds(screen.tree.toJSON())).toContain('teams-create-owner-search');
+        });
+    });
+
+    it('does not claim creation is administered when the Home never said whether it offers Teams', async () => {
+        const home = await harness.addHome({
+            name: 'Home A',
+            serverUrl: 'https://home-a.example',
+            accountId: 'member-a',
+        });
+        // The Home never answers whether it offers Teams at all.
+        const never = new Promise<void>(() => {});
+        harness.answer(home, '/v1/features', { body: {}, respondAfter: never });
+        harness.answer(home, '/v1/features/authenticated', { body: {}, respondAfter: never });
+        await harness.selectHomes([home]);
+
+        const screen = await renderCreate();
+        await vi.waitFor(() => {
+            expect(collectRenderedTestIds(screen.tree.toJSON())).toContain('teams-create-unavailable');
+        });
+        expect(screen.getTextContent()).toContain('teams.unavailable.offline');
+        expect(collectRenderedTestIds(screen.tree.toJSON())).not.toContain('teams-create-managed-only');
+    });
+
+    it('says a Home has Teams turned off rather than that creation is administered', async () => {
+        const home = await harness.addHome({
+            name: 'Home A',
+            serverUrl: 'https://home-a.example',
+            accountId: 'member-a',
+            teamsEnabled: true,
+        });
+        await harness.selectHomes([home]);
+        harness.answer(home, ELIGIBILITY_PATH, { body: { teamsEnabled: false, createTeam: false, createTeamForChosenAccount: false } });
+
+        const screen = await renderCreate();
+        await vi.waitFor(() => {
+            expect(collectRenderedTestIds(screen.tree.toJSON())).toContain('teams-create-unavailable');
+        });
+        expect(screen.getTextContent()).toContain('teams.unavailable.disabled');
+        expect(collectRenderedTestIds(screen.tree.toJSON())).not.toContain('teams-create-managed-only');
+    });
+
+    it('says creation is administered only when the Home answered so', async () => {
+        const home = await harness.addHome({
+            name: 'Home A',
+            serverUrl: 'https://home-a.example',
+            accountId: 'member-a',
+            teamsEnabled: true,
+        });
+        await harness.selectHomes([home]);
+        harness.answer(home, ELIGIBILITY_PATH, { body: { teamsEnabled: true, createTeam: false, createTeamForChosenAccount: false } });
+
+        const screen = await renderCreate();
+        await vi.waitFor(() => {
+            expect(collectRenderedTestIds(screen.tree.toJSON())).toContain('teams-create-managed-only');
+        });
+    });
+
+    it('asks an administrator for the first owner when this Home creates Teams for a chosen Account', async () => {
+        const home = await harness.addHome({
+            name: 'Home A',
+            serverUrl: 'https://home-a.example',
+            accountId: 'admin-a',
+            teamsEnabled: true,
+        });
+        await harness.selectHomes([home]);
+        harness.answer(home, ELIGIBILITY_PATH, {
+            body: { teamsEnabled: true, createTeam: true, createTeamForChosenAccount: true },
+        });
+        harness.answer(home, HOME_ACCOUNT_SEARCH_PATH, {
+            body: { accounts: [homeAccountPickerRowFixture('owner-grace', 'Grace')] },
+        });
+        harness.answer(home, TEAM_CREATE_PATH, { body: teamSummaryFixture({ id: 'server-team-id', name: 'Platform' }) });
+
+        const screen = await renderCreate();
+        await vi.waitFor(() => {
+            expect(collectRenderedTestIds(screen.tree.toJSON())).toContain('teams-create-owner-search');
+        });
+        act(() => screen.changeTextByTestId('teams-create-name', 'Platform'));
+        // Without a chosen owner the Home would refuse the Team, so the form cannot submit.
+        expect(screen.findByTestId('teams-create-submit')?.props.disabled).toBe(true);
+
+        act(() => screen.changeTextByTestId('teams-create-owner-search', 'Grace'));
+        await vi.waitFor(() => {
+            expect(collectRenderedTestIds(screen.tree.toJSON())).toContain('teams-create-owner:owner-grace');
+        });
+        await screen.pressByTestIdAsync('teams-create-owner:owner-grace');
+        await screen.pressByTestIdAsync('teams-create-submit');
+
+        await vi.waitFor(() => expect(harness.requestsFor(TEAM_CREATE_PATH)).toHaveLength(1));
+        expect(harness.requestsFor(TEAM_CREATE_PATH)[0]?.input).toMatchObject({ initialOwnerAccountId: 'owner-grace' });
+        // The minimum eligibility answer decides this; the administrative projection is not read.
+        expect(harness.requestsFor(GOVERNANCE_PATH)).toHaveLength(0);
+    });
+
+    it('explains a creation refused for want of a first owner instead of calling the name invalid', async () => {
+        const home = await harness.addHome({
+            name: 'Home A',
+            serverUrl: 'https://home-a.example',
+            accountId: 'admin-a',
+            teamsEnabled: true,
+        });
+        await harness.selectHomes([home]);
+        harness.answer(home, ELIGIBILITY_PATH, {
+            body: { teamsEnabled: true, createTeam: true, createTeamForChosenAccount: false },
+        });
+        harness.answer(home, TEAM_CREATE_PATH, { status: 400, body: { error: 'invalid_team_input' } });
+
+        const screen = await renderCreate();
+        await vi.waitFor(() => expect(collectRenderedTestIds(screen.tree.toJSON())).toContain('teams-create-submit'));
+        act(() => screen.changeTextByTestId('teams-create-name', 'Platform'));
+        // The Home's policy changed after it last answered.
+        harness.answer(home, ELIGIBILITY_PATH, {
+            body: { teamsEnabled: true, createTeam: true, createTeamForChosenAccount: true },
+        });
+        await screen.pressByTestIdAsync('teams-create-submit');
+
+        await vi.waitFor(() => {
+            expect(screen.getTextContent()).toContain('teams.create.initialOwnerRequired');
+        });
+        expect(screen.getTextContent()).not.toContain('teams.errors.invalidName');
+        // The Home is asked again, and its current answer brings the owner picker.
+        await vi.waitFor(() => {
+            expect(collectRenderedTestIds(screen.tree.toJSON())).toContain('teams-create-owner-search');
+        });
+    });
+
     it('exposes Home and initial-owner choices as labeled radio groups with checked state', async () => {
         const home = await harness.addHome({
             name: 'Home A',
@@ -166,18 +453,11 @@ describe('TeamCreateScreen', () => {
             expect(collectRenderedTestIds(screen.tree.toJSON())).toContain('teams-create-owner-search');
         });
 
-        const selectedHome = screen.findByTestId(`teams-create-home:${home}`);
-        expect([selectedHome?.props.accessibilityRole, selectedHome?.props.role]).toContain('radio');
-        expect(selectedHome?.props.accessibilityState).toMatchObject({ checked: true });
-
-        let homeGroup = selectedHome?.parent ?? null;
-        while (homeGroup
-            && homeGroup.props.accessibilityRole !== 'radiogroup'
-            && homeGroup.props.role !== 'radiogroup') {
-            homeGroup = homeGroup.parent;
-        }
-        expect(homeGroup).not.toBeNull();
-        expect(homeGroup?.props.accessibilityLabel ?? homeGroup?.props['aria-label']).toBe('teams.homeLabel');
+        // A single eligible Home is named on the header meta line (craft critique 9.3), not a
+        // one-option radio group; several Homes remain a labeled radio group.
+        expect(collectRenderedTestIds(screen.tree.toJSON())).toContain(`teams-create-home:${home}`);
+        expect(screen.tree.root.findAll((node) => node.props.testID === `teams-create-home:${home}`
+            && (node.props.accessibilityRole === 'radio' || node.props.role === 'radio'))).toHaveLength(0);
 
         act(() => screen.changeTextByTestId('teams-create-owner-search', 'Grace'));
         await vi.waitFor(() => {
@@ -210,7 +490,7 @@ describe('TeamCreateScreen', () => {
             teamsEnabled: true,
         });
         await harness.selectHomes([home]);
-        harness.answer(home, ELIGIBILITY_PATH, { body: { teamsEnabled: true, createTeam: true } });
+        harness.answer(home, ELIGIBILITY_PATH, { body: { teamsEnabled: true, createTeam: true, createTeamForChosenAccount: false } });
 
         const screen = await renderCreate();
         await vi.waitFor(() => {
@@ -240,7 +520,7 @@ describe('TeamCreateScreen', () => {
             teamsEnabled: true,
         });
         await harness.selectHomes([home]);
-        harness.answer(home, ELIGIBILITY_PATH, { body: { teamsEnabled: true, createTeam: true } });
+        harness.answer(home, ELIGIBILITY_PATH, { body: { teamsEnabled: true, createTeam: true, createTeamForChosenAccount: false } });
         const created = teamSummaryFixture({
             id: 'server-team-id',
             name: 'Platform',
@@ -284,7 +564,7 @@ describe('TeamCreateScreen', () => {
             teamsEnabled: true,
         });
         await harness.selectHomes([home]);
-        harness.answer(home, ELIGIBILITY_PATH, { body: { teamsEnabled: true, createTeam: true } });
+        harness.answer(home, ELIGIBILITY_PATH, { body: { teamsEnabled: true, createTeam: true, createTeamForChosenAccount: false } });
         const created = teamSummaryFixture({ id: 'server-team-id', name: 'Platform' });
         harness.answer(home, TEAM_CREATE_PATH, { body: created });
         harness.answer(home, TEAM_LOGO_SET_PATH, { status: 503, body: { error: 'unavailable' } });
@@ -331,8 +611,8 @@ describe('TeamCreateScreen', () => {
             teamsEnabled: true,
         });
         await harness.selectHomes([homeA, homeB]);
-        harness.answer(homeA, ELIGIBILITY_PATH, { body: { teamsEnabled: true, createTeam: true } });
-        harness.answer(homeB, ELIGIBILITY_PATH, { body: { teamsEnabled: true, createTeam: true } });
+        harness.answer(homeA, ELIGIBILITY_PATH, { body: { teamsEnabled: true, createTeam: true, createTeamForChosenAccount: false } });
+        harness.answer(homeB, ELIGIBILITY_PATH, { body: { teamsEnabled: true, createTeam: true, createTeamForChosenAccount: false } });
 
         let releaseCreateResponse = (): void => {};
         const createResponseGate = new Promise<void>((resolve) => {
@@ -364,7 +644,9 @@ describe('TeamCreateScreen', () => {
         const staleHomeBPress = screen.findByTestId(`teams-create-home:${homeB}`)?.props.onPress;
         screen.pressByTestId('teams-create-submit');
         await vi.waitFor(() => expect(harness.requestsFor(TEAM_CREATE_PATH)).toHaveLength(1));
-        expect(screen.findByTestId(`teams-create-home:${homeB}`)?.props.disabled).toBe(true);
+        // The submit's busy render commits on React's schedule, not with the request; wait for it
+        // before firing the stale press so the race is the one this test names.
+        await vi.waitFor(() => expect(screen.findByTestId(`teams-create-home:${homeB}`)?.props.disabled).toBe(true));
         act(() => staleHomeBPress?.());
         act(() => releaseCreateResponse());
 

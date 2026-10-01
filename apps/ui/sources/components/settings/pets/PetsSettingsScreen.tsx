@@ -1,5 +1,4 @@
 import * as React from 'react';
-import { useUnistyles } from 'react-native-unistyles';
 import {
     DaemonPetDiscoverResponseV1Schema,
     DaemonPetForgetLocalPackageResponseV1Schema,
@@ -17,6 +16,7 @@ import {
 } from '@happier-dev/protocol';
 
 import type { DropdownMenuItem } from '@/components/ui/forms/dropdown/DropdownMenu';
+import type { SegmentedChoiceOption } from '@/components/ui/lists/SegmentedChoiceItem';
 import { Item } from '@/components/ui/lists/Item';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
 import { ItemList } from '@/components/ui/lists/ItemList';
@@ -39,7 +39,8 @@ import { normalizePetCompanionSizeScale } from '@/sync/domains/pets/companionSiz
 import { normalizeLocalPetSourceMetadata } from '@/sync/domains/pets/normalizeLocalPetSources';
 import { machineRpcWithServerScope } from '@/sync/runtime/orchestration/serverScopedRpc/serverScopedMachineRpc';
 import { useApplyLocalSettings, useApplySettings } from '@/sync/store/settingsWriters';
-import { isDesktopHost } from '@/utils/platform/desktopHost';
+import { settingRendersOnHost } from '@/components/settings/catalog/settingDeclarations';
+import { PETS_SETTINGS } from '@/components/settings/pets/petsSettings';
 import { fireAndForget } from '@/utils/system/fireAndForget';
 
 import { PetsAccountLibrarySection } from './petsSettingsScreen/PetsAccountLibrarySection';
@@ -56,7 +57,6 @@ import {
     upsertByKey,
 } from './petsSettingsScreen/helpers';
 import { usePetSourceActionRows } from './petsSettingsScreen/usePetSourceActionRows';
-import { Icon } from '@/components/ui/icons/Icon';
 import {
     consumePendingCodexPetRefresh,
     subscribeCodexPetRefresh,
@@ -65,8 +65,10 @@ import type {
     CodexDetectionState,
     LocalPetImportDiagnostic,
     LocalDevicePetRow,
+    PetEnabledOverride,
     PetImportCandidate,
 } from './petsSettingsScreen/types';
+import { SettingsPageHeader } from '@/components/settings/shell/SettingsPageHeader';
 
 function machineAdministrationExecutionTargetKey(
     target: FreshMachineAdministrationExecutionTargetV1,
@@ -79,7 +81,6 @@ function machineAdministrationExecutionTargetKey(
 }
 
 export function PetsSettingsScreen() {
-    const { theme } = useUnistyles();
     const settings = useSettings();
     const localSettings = useLocalSettings();
     const administrationTargetSelection = useMachineAdministrationTargetSelection(
@@ -105,8 +106,6 @@ export function PetsSettingsScreen() {
     const applyLocalSettings = useApplyLocalSettings();
     const companionEnabled = useFeatureEnabled('pets.companion');
     const syncEnabled = useFeatureEnabled('pets.sync');
-    const [deviceOverrideOpen, setDeviceOverrideOpen] = React.useState(false);
-    const [desktopOverlayOverrideOpen, setDesktopOverlayOverrideOpen] = React.useState(false);
     const [desktopOverlayVisibilityModeOpen, setDesktopOverlayVisibilityModeOpen] = React.useState(false);
     const [codexDetectionState, setCodexDetectionState] = React.useState<CodexDetectionState>('idle');
     const [codexDetectionTargetKey, setCodexDetectionTargetKey] = React.useState<string | null>(null);
@@ -119,7 +118,7 @@ export function PetsSettingsScreen() {
     const [localImportDiagnosticTargetKey, setLocalImportDiagnosticTargetKey] = React.useState<string | null>(null);
     const removingLocalPetSourceKeysRef = React.useRef(new Set<string>());
     const forgottenLocalPetSourceKeysRef = React.useRef(new Set<string>());
-    const showDesktopOverlaySettings = isDesktopHost();
+    const showDesktopOverlaySettings = settingRendersOnHost(PETS_SETTINGS.settings.desktopOverlayEnabled);
     const companionSizeScale = normalizePetCompanionSizeScale(localSettings.petsCompanionSizeScale);
     const scopedDiscoveredPets = discoveredPetsTargetKey === executionTargetKey ? discoveredPets : [];
     const scopedImportedLocalPets = importedLocalPetsTargetKey === executionTargetKey ? importedLocalPets : [];
@@ -130,10 +129,10 @@ export function PetsSettingsScreen() {
         ? localImportDiagnostic
         : null;
 
-    const overrideItems: DropdownMenuItem[] = [
-        { id: 'inherit', title: t('settingsPets.overrideInherit') },
-        { id: 'enabled', title: t('settingsPets.overrideEnabled') },
-        { id: 'disabled', title: t('settingsPets.overrideDisabled') },
+    const overrideOptions: SegmentedChoiceOption<PetEnabledOverride>[] = [
+        { id: 'inherit', label: t('settingsPets.overrideInherit') },
+        { id: 'enabled', label: t('settingsPets.overrideEnabled') },
+        { id: 'disabled', label: t('settingsPets.overrideDisabled') },
     ];
     const visibilityModeItems: DropdownMenuItem[] = [
         { id: 'inherit', title: t('settingsPets.visibilityModeInherit') },
@@ -421,12 +420,12 @@ export function PetsSettingsScreen() {
 
     if (!companionEnabled) {
         return (
-            <ItemList style={{ paddingTop: 0 }}>
+            <ItemList style={{ paddingTop: 0 }} presentation="page">
+                <SettingsPageHeader description={t('settings.petsSubtitle')} />
                 <ItemGroup>
                     <Item
                         title={t('settingsPets.disabledTitle')}
                         subtitle={t('settingsPets.disabledSubtitle')}
-                        icon={<Icon name="paw-print" size={24} color={theme.colors.text.secondary} />}
                         mode="info"
                     />
                 </ItemGroup>
@@ -435,19 +434,23 @@ export function PetsSettingsScreen() {
     }
 
     return (
-        <ItemList style={{ paddingTop: 0 }}>
-            <MachineAdministrationTargetSelector
-                selection={administrationTargetSelection}
-                testIDPrefix="pets-settings-target"
+        <ItemList style={{ paddingTop: 0 }} presentation="page">
+            <SettingsPageHeader
+                description={t('settings.petsSubtitle')}
+                actions={(
+                    <MachineAdministrationTargetSelector
+                        selection={administrationTargetSelection}
+                        testIDPrefix="pets-settings-target"
+                        presentation="chip"
+                    />
+                )}
             />
             <PetsAccountSettingsSection
                 companionSizeScale={companionSizeScale}
-                deviceOverrideOpen={deviceOverrideOpen}
-                onDeviceOverrideOpenChange={setDeviceOverrideOpen}
                 onCompanionSizeScaleChange={(value) => applyLocalSettings({ petsCompanionSizeScale: value })}
                 onPetsEnabledChange={(value) => applySettings({ petsEnabled: value })}
                 onPetsEnabledOverrideChange={(override) => applyLocalSettings({ petsEnabledOverride: override })}
-                overrideItems={overrideItems}
+                overrideOptions={overrideOptions}
                 petsEnabled={settings.petsEnabled}
                 petsEnabledOverride={localSettings.petsEnabledOverride}
             />
@@ -481,17 +484,15 @@ export function PetsSettingsScreen() {
             {showDesktopOverlaySettings ? (
                 <PetsDesktopOverlaySettingsSection
                     desktopOverlayDefaultEnabled={settings.petsDesktopOverlayDefaultEnabled}
-                    desktopOverlayOverrideOpen={desktopOverlayOverrideOpen}
                     desktopOverlayVisibilityModeOpen={desktopOverlayVisibilityModeOpen}
                     desktopPetOverlayEnabledOverride={localSettings.desktopPetOverlayEnabledOverride}
                     desktopPetOverlayVisibilityModeOverride={localSettings.desktopPetOverlayVisibilityModeOverride}
                     onDefaultEnabledChange={(value) => applySettings({ petsDesktopOverlayDefaultEnabled: value })}
                     onDesktopOverlayOverrideChange={(override) => applyLocalSettings({ desktopPetOverlayEnabledOverride: override })}
-                    onDesktopOverlayOverrideOpenChange={setDesktopOverlayOverrideOpen}
                     onDesktopOverlayVisibilityModeOverrideChange={(override) => applyLocalSettings({ desktopPetOverlayVisibilityModeOverride: override })}
                     onDesktopOverlayVisibilityModeOpenChange={setDesktopOverlayVisibilityModeOpen}
                     onResetPosition={handleResetDesktopOverlayPosition}
-                    overrideItems={overrideItems}
+                    overrideOptions={overrideOptions}
                     visibilityModeItems={visibilityModeItems}
                 />
             ) : null}

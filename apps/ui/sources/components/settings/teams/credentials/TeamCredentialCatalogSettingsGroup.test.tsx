@@ -38,6 +38,7 @@ describe('TeamCredentialCatalogSettingsGroup', () => {
                     homeNameByTeamId: { 'team-1': 'Home A' },
                     currentResourceKeys: new Set(['team-1:resource-provider', 'team-1:resource-connected']),
                     current: true,
+                    reload: async () => undefined,
                 }}
                 onOpen={onOpen}
             />,
@@ -51,6 +52,7 @@ describe('TeamCredentialCatalogSettingsGroup', () => {
 
     it('retains stale rows but prevents navigation until exact currentness returns', async () => {
         const onOpen = vi.fn();
+        const onRetry = vi.fn();
         const resource = {
             id: 'resource-provider', teamId: 'team-1', displayName: 'Acme Provider', resourceRevision: 7,
             readiness: { kind: 'available' as const }, recoveryAction: 'retry' as const, deliveryMode: 'direct' as const,
@@ -68,13 +70,56 @@ describe('TeamCredentialCatalogSettingsGroup', () => {
                 catalog={{
                     resources: [resource], teamNameById: { 'team-1': 'Acme' },
                     homeNameByTeamId: { 'team-1': 'Home A' }, currentResourceKeys: new Set(), current: false,
+                    reload: async () => undefined,
                 }}
+                onRetry={onRetry}
                 onOpen={onOpen}
             />,
         );
 
         expect(screen.getTextContent()).toContain('Showing the last known data for this Home.');
         expect(screen.findByTestId('team-credential-catalog-resource:team-1:resource-provider')?.props.onPress).toBeUndefined();
+        screen.pressByTestId('team-credential-catalog-retry:provider');
+        expect(onRetry).toHaveBeenCalledTimes(1);
+    });
+
+    it('keeps an empty stale catalog actionable instead of presenting it as no shared credentials', async () => {
+        const onRetry = vi.fn();
+        const screen = await renderScreen(
+            <TeamCredentialCatalogSettingsGroup
+                title="Provided by Teams"
+                sourceKind="provider"
+                catalog={{
+                    resources: [], teamNameById: {}, homeNameByTeamId: {}, currentResourceKeys: new Set(), current: false,
+                    reload: async () => undefined,
+                }}
+                onRetry={onRetry}
+                onOpen={() => undefined}
+            />,
+        );
+
+        expect(screen.getTextContent()).toContain('Showing the last known data for this Home.');
+        screen.pressByTestId('team-credential-catalog-retry:provider');
+        expect(onRetry).toHaveBeenCalledTimes(1);
+    });
+
+    it('says the section is showing last known data once, not in its title and again in its description', async () => {
+        const screen = await renderScreen(
+            <TeamCredentialCatalogSettingsGroup
+                title="Shared with you"
+                sourceKind="connected_service"
+                catalog={{
+                    resources: [], teamNameById: {}, homeNameByTeamId: {}, currentResourceKeys: new Set(), current: false,
+                    reload: async () => undefined,
+                }}
+                onRetry={() => undefined}
+                onOpen={() => undefined}
+            />,
+        );
+
+        const occurrences = screen.getTextContent().split('Showing the last known data for this Home.').length - 1;
+        expect(occurrences).toBe(1);
+        expect(screen.getTextContent()).toContain('Shared with you');
     });
 
     it('keeps an exact current repair row reachable while another catalog slice is stale', async () => {
@@ -96,6 +141,7 @@ describe('TeamCredentialCatalogSettingsGroup', () => {
                 catalog={{
                     resources: [resource], teamNameById: { 'team-1': 'Acme' }, homeNameByTeamId: { 'team-1': 'Home A' },
                     currentResourceKeys: new Set(['team-1:resource-provider']), current: false,
+                    reload: async () => undefined,
                 }}
                 onOpen={onOpen}
             />,

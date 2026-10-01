@@ -7,26 +7,24 @@ import {
 } from '@happier-dev/protocol';
 import type { DaemonProviderContributionAuthoringPreviewV1 } from '@happier-dev/protocol/rpc';
 import { View } from 'react-native';
-import { StyleSheet } from 'react-native-unistyles';
+import { useUnistyles } from 'react-native-unistyles';
 
-import { MachineSetupTextField } from '@/components/ui/forms/MachineSetupTextField';
+import { RoundButton } from '@/components/ui/buttons/RoundButton';
 import { Switch } from '@/components/ui/forms/Switch';
-import { SafeIonicons } from '@/components/ui/icons/SafeIonicons';
+import { PageHeader } from '@/components/ui/layout/PageHeader';
+import { PageHeaderMarkTile, PageHeaderMenu, type PageHeaderMenuAction } from '@/components/ui/layout/PageHeaderEntityParts';
 import { Item } from '@/components/ui/lists/Item';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
 import { ItemList } from '@/components/ui/lists/ItemList';
-import type { MachineAdministrationTargetSelectionV1 } from '@/sync/domains/machines/administration/useTargetSelection';
+import { StatusPill } from '@/components/ui/status/StatusPill';
+import { ProviderIcon } from '@/providers/connection/ProviderIcon';
 import { t } from '@/text';
 import { ProviderErrorItems } from '../ProviderErrorItems';
 import { ProviderExternalLinkItem } from '../ProviderExternalLinkItem';
-import { MachineAdministrationTargetSelector } from '@/components/settings/machines/MachineAdministrationTargetSelector';
-import { Icon } from '@/components/ui/icons/Icon';
+import { ProviderHeaderActions, ProviderSavedSecretControl } from '../ProviderPageParts';
+import { ProviderFieldRow } from './ProviderFieldRow';
 
 type PreviewCredential = Readonly<{ required: boolean }>;
-
-const styles = StyleSheet.create(() => ({
-    fields: { gap: 16, paddingHorizontal: 16, paddingVertical: 14 },
-}));
 
 /**
  * Translated endpoint labels exist only for the protocols this build bundles a
@@ -46,11 +44,17 @@ function endpointProtocolLabel(protocol: ProviderWireProtocol): string {
     return key === null ? protocol : t(key);
 }
 
+/**
+ * A provider from the catalog being added in the Providers collection. The page is the draft's
+ * editor: choose its key and, where the catalog asks, its endpoints; Connect saves it.
+ */
 export function BuiltInProviderAuthoringView(props: Readonly<{
-    targetSelection: MachineAdministrationTargetSelectionV1;
+    /** The managed machine the provider is added on (its chip). */
+    contextBar?: React.ReactNode;
     machineId: string;
     currentMachineName: string;
     providerName: string | null;
+    icon: string | null;
     provenance: 'first_party' | 'external' | null;
     websiteUrl?: string;
     keyUrl?: string;
@@ -75,62 +79,107 @@ export function BuiltInProviderAuthoringView(props: Readonly<{
     onEndpointChange: (endpointTemplateId: string, baseUrl: string) => void;
     onEnableAfterSavingChange: (enabled: boolean) => void;
     onSave: () => void;
+    onOpenWebsite: (url: string) => void;
+    onDiscard: () => void;
 }>): React.ReactElement {
+    const { theme } = useUnistyles();
+    const menuActions: PageHeaderMenuAction[] = [
+        ...(props.websiteUrl ? [{
+            id: 'website',
+            testID: 'settings-provider-authoring-website',
+            title: t('settingsProviders.links.providerWebsite'),
+            onSelect: () => props.onOpenWebsite(props.websiteUrl!),
+        }] : []),
+        { id: 'discard', title: t('settingsProvidersCollection.discard'), onSelect: props.onDiscard },
+    ];
+    const connectBlocked = Boolean(props.previewCredential?.required && !props.savedSecretSelectionEnabled);
     return (
-        <ItemList testID="settings-provider-authoring-built-in" style={{ paddingTop: 0 }}>
-            <MachineAdministrationTargetSelector
-                selection={props.targetSelection}
-                testIDPrefix="settings.providers.administration.target"
-            />
-            <ItemGroup title={props.providerName ?? t('settingsProviders.authoring.providerTitle')} footer={t('settingsProviders.authoring.builtInDescription')}>
-                {props.provenance === 'external' ? (
-                    <Item
+        <ItemList presentation="page" testID="settings-provider-authoring-built-in">
+            {props.contextBar}
+            <PageHeader
+                testID="settings-provider-authoring-header"
+                alwaysShowTitle
+                title={props.providerName ?? t('settingsProviders.authoring.providerTitle')}
+                titleAccessory={props.provenance === 'external' ? (
+                    <StatusPill
                         testID="settings-provider-authoring-experimental"
-                        mode="info"
-                        title={t('settingsProviders.compatibility.experimental')}
-                        subtitle={t('settingsProviders.compatibility.experimentalDescription')}
-                        icon={<Icon name="warning" size={29} color={props.warningColor} />}
+                        variant="warning"
+                        label={t('settingsProviders.compatibility.experimental')}
+                        hideDot
                     />
-                ) : null}
-                {props.websiteUrl ? (
-                    <ProviderExternalLinkItem kind="providerWebsite" url={props.websiteUrl} />
-                ) : null}
-                {props.previewCredential ? (
+                ) : undefined}
+                description={props.provenance === 'external'
+                    ? t('settingsProviders.compatibility.experimentalDescription')
+                    : t('settingsProviders.authoring.builtInDescription')}
+                leading={(
+                    <PageHeaderMarkTile appearance="glyph">
+                        <ProviderIcon icon={props.icon} size={24} color={theme.colors.text.secondary} />
+                    </PageHeaderMarkTile>
+                )}
+                actions={(
+                    <ProviderHeaderActions>
+                        <RoundButton
+                            testID="settings-provider-authoring-connect"
+                            size="small"
+                            title={t('settingsProvidersCollection.connect')}
+                            accessibilityLabel={t('settingsProviders.authoring.connect')}
+                            loading={props.savePending || props.previewLoading}
+                            disabled={connectBlocked || props.preview?.status !== 'resolved' || props.previewLoading}
+                            // Connect acts only on a reviewed destination.
+                            onPress={props.preview?.status === 'resolved' && !props.previewLoading ? props.onSave : undefined}
+                        />
+                        <PageHeaderMenu testID="settings-provider-authoring-menu" actions={menuActions} />
+                    </ProviderHeaderActions>
+                )}
+            />
+            {props.error ? <ItemGroup><ProviderErrorItems error={props.error} retry={props.errorRetry} /></ItemGroup> : null}
+            {props.previewCredential ? (
+                <ItemGroup title={t('settingsProviders.detail.apiKeyTitle')} description={t('settingsProviders.detail.apiKeyFooter')}>
                     <Item
                         testID="settings-provider-authoring-api-key"
                         title={t('settingsProviders.authoring.apiKey')}
-                        subtitle={props.secretSelected
-                            ? t('settingsProviders.detail.apiKeySelected')
-                            : !props.savedSecretSelectionEnabled
-                                ? t('settingsProviders.local.accountScopeMismatchDescription')
+                        subtitle={!props.savedSecretSelectionEnabled
+                            ? t('settingsProviders.local.accountScopeMismatchDescription')
                             : props.previewCredential.required
                                 ? t('settingsProviders.authoring.apiKeyDescription')
                                 : t('settingsProviders.authoring.apiKeyOptionalDescription')}
-                        icon={<Icon name="key" size={29} color={props.secondaryTextColor} />}
-                        disabled={!props.savedSecretSelectionEnabled}
-                        onPress={props.savedSecretSelectionEnabled ? props.onPickSecret : undefined}
-                    />
-                ) : null}
-                {props.keyUrl ? (
-                    <ProviderExternalLinkItem kind="getApiKey" url={props.keyUrl} />
-                ) : null}
-                {props.endpointTemplates.length > 0 ? (
-                    <View style={styles.fields}>
-                        {props.endpointTemplates.map((endpoint) => (
-                            <MachineSetupTextField
-                                key={endpoint.id}
-                                testID={`settings-provider-authoring-endpoint-${endpoint.id}`}
-                                label={endpointProtocolLabel(endpoint.protocol)}
-                                value={props.endpointValues[endpoint.id] ?? ''}
-                                placeholder={t('settingsProviders.authoring.baseUrlPlaceholder')}
-                                autoCapitalize="none"
-                                autoCorrect={false}
-                                keyboardType="url"
-                                onChangeText={(baseUrl) => props.onEndpointChange(endpoint.id, baseUrl)}
+                        subtitleLines={0}
+                        showChevron={false}
+                        rightElement={(
+                            <ProviderSavedSecretControl
+                                testID="settings-provider-authoring-api-key"
+                                saved={props.secretSelected}
+                                disabled={!props.savedSecretSelectionEnabled}
+                                onChoose={props.onPickSecret}
                             />
-                        ))}
-                    </View>
-                ) : null}
+                        )}
+                        rightElementOutsidePressable
+                    />
+                    {props.keyUrl ? (
+                        <ProviderExternalLinkItem kind="getApiKey" url={props.keyUrl} />
+                    ) : null}
+                </ItemGroup>
+            ) : null}
+            {props.endpointTemplates.length > 0 ? (
+                <ItemGroup title={t('settingsProvidersCollection.endpointsTitle')} description={t('settingsProvidersCollection.endpointsDescription')}>
+                    {props.endpointTemplates.map((endpoint) => (
+                        <ProviderFieldRow
+                            key={endpoint.id}
+                            testID={`settings-provider-authoring-endpoint-${endpoint.id}`}
+                            title={endpointProtocolLabel(endpoint.protocol)}
+                            value={props.endpointValues[endpoint.id] ?? ''}
+                            placeholder={t('settingsProviders.authoring.baseUrlPlaceholder')}
+                            keyboardType="url"
+                            monospace
+                            onChangeText={(baseUrl) => props.onEndpointChange(endpoint.id, baseUrl)}
+                        />
+                    ))}
+                </ItemGroup>
+            ) : null}
+            <ItemGroup
+                title={t('settingsProviders.authoring.destinationReview')}
+                description={t('settingsProvidersCollection.destinationDescription')}
+            >
                 {props.previewLoading ? (
                     <View
                         testID="settings-provider-authoring-destination-status"
@@ -143,7 +192,7 @@ export function BuiltInProviderAuthoringView(props: Readonly<{
                     </View>
                 ) : props.preview?.status === 'selection_required' ? (
                     <>
-                        <Item mode="info" title={t('settingsProviders.authoring.destinationSelection')} subtitle={t('settingsProviders.authoring.destinationSelectionDescription')} />
+                        <Item mode="info" title={t('settingsProviders.authoring.destinationSelection')} subtitle={t('settingsProviders.authoring.destinationSelectionDescription')} subtitleLines={0} />
                         {props.preview.candidates.map((candidate) => (
                             <Item
                                 key={candidate.candidateId}
@@ -164,6 +213,7 @@ export function BuiltInProviderAuthoringView(props: Readonly<{
                             subtitle={props.preview.scope === 'machine'
                                 ? `${t('settingsProviders.authoring.destinationMachine')} · ${props.preview.machineId === props.machineId ? props.currentMachineName : props.preview.machineId}`
                                 : t('settingsProviders.authoring.destinationAccount')}
+                            mode="info"
                         />
                         {props.preview.endpoints.map((endpoint) => (
                             <Item
@@ -171,25 +221,24 @@ export function BuiltInProviderAuthoringView(props: Readonly<{
                                 testID={`settings-provider-authoring-resolved-endpoint:${endpoint.endpointTemplateId}`}
                                 title={endpoint.protocol}
                                 subtitle={endpoint.normalizedUrl}
+                                mode="info"
                             />
                         ))}
                     </>
-                ) : null}
+                ) : (
+                    <Item mode="info" title={t('settingsProviders.authoring.destinationReview')} subtitle={t('settingsProvidersCollection.destinationPending')} subtitleLines={0} />
+                )}
+            </ItemGroup>
+            <ItemGroup title={t('settingsProvidersCollection.afterSavingTitle')}>
                 <Item
                     title={t('settingsProviders.authoring.enableAfterSaving')}
                     subtitle={t('settingsProviders.authoring.enableAccountWide')}
+                    subtitleLines={0}
+                    showChevron={false}
                     rightElement={<Switch testID="settings-provider-authoring-enable-after-save" accessibilityLabel={t('settingsProviders.authoring.enableAfterSaving')} value={props.enableAfterSaving} onValueChange={props.onEnableAfterSavingChange} />}
                     rightElementOutsidePressable
                 />
-                <Item
-                    testID="settings-provider-authoring-connect"
-                    title={t('settingsProviders.authoring.connect')}
-                    loading={props.savePending || props.previewLoading}
-                    disabled={Boolean(props.previewCredential?.required && !props.savedSecretSelectionEnabled)}
-                    onPress={props.preview?.status === 'resolved' && !props.previewLoading ? props.onSave : undefined}
-                />
             </ItemGroup>
-            {props.error ? <ItemGroup><ProviderErrorItems error={props.error} retry={props.errorRetry} /></ItemGroup> : null}
         </ItemList>
     );
 }

@@ -9,6 +9,8 @@ import { PERSONAL_HOME_SYSTEM_TASK_KIND_IDS } from '@happier-dev/cli-common/syst
 import { type Capability } from '../service';
 import { DISCOVER_CONFIGURED_SSH_HOSTS_SYSTEM_TASK_KIND } from '../systemTasks/ssh/discoverConfiguredSshHosts/task';
 import { getLiveSystemTasksRunnerAdapter } from '../systemTasks/liveSystemTasksRunner';
+import { CLI_UPDATE_SYSTEM_TASK_KIND } from '../systemTasks/kinds/cliUpdateRemote';
+import { readCliUpdateFactsForThisCli } from '@/cli/runtime/update/cliUpdateFacts';
 
 export const SYSTEM_TASK_KIND_IDS = [
   DISCOVER_CONFIGURED_SSH_HOSTS_SYSTEM_TASK_KIND,
@@ -22,6 +24,16 @@ export const SYSTEM_TASK_KIND_IDS = [
   'relay.runtime.uninstall.v1',
   ...PERSONAL_HOME_SYSTEM_TASK_KIND_IDS,
 ] as const;
+
+/**
+ * The kinds this daemon advertises. The list is the capability negotiation: an app offers an
+ * action only for a listed kind, so `cli.update.v1` (plan R13 K5) is listed only when this machine
+ * can actually run its CLI update remotely (a managed install on a service manager that lets the
+ * updater outlive the restart). Older daemons never list it.
+ */
+export function listAdvertisedSystemTaskKinds(params: Readonly<{ canUpdateCliRemotely: boolean }>): string[] {
+  return [...SYSTEM_TASK_KIND_IDS, ...(params.canUpdateCliRemotely ? [CLI_UPDATE_SYSTEM_TASK_KIND] : [])];
+}
 
 type SystemTasksRunnerAdapter = Readonly<{
   start: (params: Record<string, unknown>) => Promise<unknown>;
@@ -80,7 +92,10 @@ export function createProtocolSystemTasksRunnerAdapter(
   };
 }
 
-export function createSystemTasksCapability(runner: SystemTasksRunnerAdapter = createUnsupportedRunner()): Capability {
+export function createSystemTasksCapability(
+  runner: SystemTasksRunnerAdapter = createUnsupportedRunner(),
+  canUpdateCliRemotely: () => boolean = () => readCliUpdateFactsForThisCli().canUpdateRemotely,
+): Capability {
   return {
     descriptor: {
       id: 'tool.systemTasks',
@@ -94,7 +109,7 @@ export function createSystemTasksCapability(runner: SystemTasksRunnerAdapter = c
     },
     detect: async () => ({
       available: true,
-      kinds: [...SYSTEM_TASK_KIND_IDS],
+      kinds: listAdvertisedSystemTaskKinds({ canUpdateCliRemotely: canUpdateCliRemotely() }),
       methods: ['start', 'poll', 'respond'],
       taskGroups: [
         {

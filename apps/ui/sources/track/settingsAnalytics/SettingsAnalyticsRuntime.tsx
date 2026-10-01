@@ -4,7 +4,10 @@ import { getTrackingAnonymousUserId, subscribeTrackingAnonymousUserId } from '@/
 import { tracking } from '@/track/tracking';
 import { useEffectiveServerSelection } from '@/hooks/server/useEffectiveServerSelection';
 import { useServerFeaturesMainSelectionSnapshot } from '@/sync/domains/features/featureDecisionRuntime';
-import { useLocalSettings, useSettings } from '@/sync/store/hooks';
+import { useLocalSettings, useSettingsSelector } from '@/sync/store/hooks';
+import { ACCOUNT_SETTING_ANALYTICS_ARTIFACTS } from '@/sync/domains/settings/registry/account/accountSettingAnalytics';
+import type { Settings } from '@/sync/domains/settings/settings';
+import type { FeatureLocalPolicySettings } from '@/sync/domains/features/featureLocalPolicy';
 
 import { buildAccountSettingsSnapshot } from './buildAccountSettingsSnapshot';
 import { buildFeatureAnalyticsSnapshot } from './buildFeatureAnalyticsSnapshot';
@@ -13,8 +16,21 @@ import { diffAnalyticsProperties } from './diffAnalyticsSnapshot';
 import { getDeviceAnalyticsId } from './deviceAnalyticsIdentity';
 import { flushTrackingClient } from './flushTrackingClient';
 
+const accountAnalyticsKeys = [...new Set([
+    ...Object.keys(ACCOUNT_SETTING_ANALYTICS_ARTIFACTS.trackedCurrentStateDefinitions),
+    ...Object.keys(ACCOUNT_SETTING_ANALYTICS_ARTIFACTS.trackedDerivedDefinitions),
+])] as (keyof Settings)[];
+
+function selectAnalyticsSettings(settings: Settings): Partial<Settings> & FeatureLocalPolicySettings {
+    return {
+        ...Object.fromEntries(accountAnalyticsKeys.map((key) => [key, settings[key]])),
+        experiments: settings.experiments,
+        featureToggles: settings.featureToggles,
+    };
+}
+
 export function SettingsAnalyticsRuntime() {
-    const settings = useSettings();
+    const settings = useSettingsSelector(selectAnalyticsSettings);
     const localSettings = useLocalSettings();
     const selection = useEffectiveServerSelection();
     const mainSelectionSnapshot = useServerFeaturesMainSelectionSnapshot(selection.serverIds, { enabled: true });

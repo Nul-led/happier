@@ -69,6 +69,21 @@ const baseMetadata: Metadata = {
 };
 
 describe('applyRegisteredSessionStateFieldMutationToMetadata', () => {
+    it('preserves neighboring owner work metadata when applying roles and active role mutations', () => {
+        const roles = { overrides: {}, sessionRoles: {}, notes: 'CURRENT_NOTES' };
+        const original = { ...baseMetadata, work: { keep: 'other-lane', sessionRolesV1: { overrides: {}, sessionRoles: {}, notes: 'PREVIOUS_NOTES' } } };
+        const withRoles = applyRegisteredSessionStateFieldMutationToMetadata(original,
+            mutation({ kind: 'set', value: roles }, 'intent.sessionRoles'));
+        expect(withRoles).toMatchObject({ work: { keep: 'other-lane', sessionRolesV1: roles } });
+        const selected = applyRegisteredSessionStateFieldMutationToMetadata(withRoles,
+            mutation({ kind: 'set', value: 'builder' }, 'intent.role'));
+        expect(selected).toMatchObject({ work: { keep: 'other-lane', sessionRolesV1: { ...roles, roleId: 'builder' } } });
+        expect(applyRegisteredSessionStateFieldMutationToMetadata(selected,
+            mutation({ kind: 'clear' }, 'intent.role'))).toEqual(withRoles);
+        expect(() => applyRegisteredSessionStateFieldMutationToMetadata(original,
+            mutation({ kind: 'set', value: { ...roles, grants: ['forged'] } }, 'intent.sessionRoles'))).toThrow();
+    });
+
     it('applies canonical display-title mutations through the shared metadata binding', () => {
         expect(applyRegisteredSessionStateFieldMutationToMetadata(
             baseMetadata,

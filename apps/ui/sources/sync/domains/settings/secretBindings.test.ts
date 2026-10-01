@@ -5,6 +5,7 @@ import {
     mergeCurrentSecretBindingsIntoRawBindings,
     pruneSecretBindings,
     readRetainedSecretBindingsByProfileId,
+    projectCurrentSecretBindingsByProfileId,
 } from '@/sync/domains/settings/secretBindings';
 
 function createCustomProfile(id: string) {
@@ -36,6 +37,14 @@ function createSavedSecret() {
 }
 
 describe('pruneSecretBindings', () => {
+    it('projects moved Saved Secret references from hydrated V2 profile documents without values', () => {
+        const profile = { v: 2 as const, id: 'published', name: 'Published', extraEnvironmentVariables: [],
+            defaultPermissionModeByTargetKey: {}, defaultPersistenceModeByTargetKey: {}, compatibilityByTargetKey: {},
+            createdAt: 1, updatedAt: 1, envVarRequirements: [{ name: 'TOKEN', kind: 'secret' as const, required: true }],
+            artifactId: 'document', secretBindings: { TOKEN: 'happier:shared-secret:v1:deploy' } };
+        expect(projectCurrentSecretBindingsByProfileId({ profiles: [{ artifactId: 'document' }], secrets: [] }, [profile]))
+            .toEqual({ published: { TOKEN: 'happier:shared-secret:v1:deploy' } });
+    });
     it('preserves syntactically valid shared Saved Secret references without a personal record', () => {
         const base = settingsParse({});
         const sharedRef = 'happier:shared-secret:v1:resource_01';

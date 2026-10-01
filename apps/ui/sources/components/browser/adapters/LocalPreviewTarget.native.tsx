@@ -1,4 +1,6 @@
 import * as React from 'react';
+import type { BrowserControlViewState } from '@/sync/domains/browser/control/state';
+import type { BrowserSurfaceLifecycleState } from '../surfaces/browserSurfaceLifecycle';
 
 import { resolveUrlOrigin } from '@/sync/domains/browser/adapters/targets/localPreview';
 import {
@@ -17,6 +19,9 @@ export function LocalPreviewTarget(props: Readonly<{
     title: string;
     url: string;
     testID: string;
+    view?: BrowserControlViewState;
+    profileId?: string | null;
+    lifecycleState?: BrowserSurfaceLifecycleState;
     navigationCommand?: BrowserFrameNavigationCommand;
     onLoadStart?: () => void;
     onLoadEnd?: () => void;

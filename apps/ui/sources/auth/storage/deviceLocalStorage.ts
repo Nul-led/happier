@@ -1,4 +1,5 @@
 import { Platform } from 'react-native';
+import { isEmbedWindowContext } from '@/embed/isEmbedWindowContext';
 
 import { desktopHostKind, invokeDesktopHost } from '@/utils/platform/desktopHost';
 
@@ -33,6 +34,7 @@ const DESKTOP_SECURE_STORAGE_COMMANDS = {
 } as const;
 
 const deviceLocalStorageOperationTails = new Map<string, Promise<void>>();
+const embedLocalValues = new Map<string, string>();
 
 async function serializeDeviceLocalStorageOperation<T>(key: string, run: () => Promise<T>): Promise<T> {
     const previous = deviceLocalStorageOperationTails.get(key) ?? Promise.resolve();
@@ -84,6 +86,7 @@ async function discardUnverifiedDesktopStorageString(key: string): Promise<void>
  * an encryption-at-rest, E2EE, or hardware-backed security claim.
  */
 async function readDeviceLocalStorageStringUnserialized(key: string): Promise<string | null> {
+    if (isEmbedWindowContext()) return embedLocalValues.get(key) ?? null;
     if (isDesktopWebRuntime()) {
         const nativeValue = await readDesktopSecureStorageString(key);
         if (nativeValue !== null) return nativeValue;
@@ -123,6 +126,7 @@ async function readDeviceLocalStorageStringUnserialized(key: string): Promise<st
 }
 
 async function writeDeviceLocalStorageStringUnserialized(key: string, value: string): Promise<void> {
+    if (isEmbedWindowContext()) { embedLocalValues.set(key, value); return; }
     if (isDesktopWebRuntime()) {
         try {
             await writeDesktopSecureStorageString(key, value);
@@ -146,6 +150,7 @@ async function writeDeviceLocalStorageStringUnserialized(key: string, value: str
 }
 
 async function removeDeviceLocalStorageStringUnserialized(key: string): Promise<void> {
+    if (isEmbedWindowContext()) { embedLocalValues.delete(key); return; }
     if (isDesktopWebRuntime()) {
         let nativeFailure: unknown;
         try {

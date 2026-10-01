@@ -40,8 +40,8 @@ export function resolveActionSettingsApprovalSurface(
  * The policy suppresses its dangerous-Action confirmation floor for that pair only
  * where the app hosts its own confirmation, and keeps it as the default where it
  * does not (Session responsibility assignment), so the row must ask with the same
- * authority the runtime supplies. Explicit require/waive settings are evaluated
- * first either way.
+ * authority the runtime supplies. The canonical policy also determines whether
+ * an explicit waiver can change that confirmation.
  */
 export function getActionTargetApprovalRequired(params: Readonly<{
     settings: ActionsSettingsV1;
@@ -49,16 +49,35 @@ export function getActionTargetApprovalRequired(params: Readonly<{
     targetId: ActionSettingsTargetId;
     target?: ActionSettingsTargetDefinition;
 }>): boolean {
+    return getActionTargetApprovalPolicy(params).approvalRequiredByPolicy;
+}
+
+/** Projects effective confirmation and whether a waiver can change it from the shared policy. */
+export function getActionTargetApprovalPolicy(params: Readonly<{
+    settings: ActionsSettingsV1;
+    actionId: ActionSettingsActionId;
+    targetId: ActionSettingsTargetId;
+    target?: ActionSettingsTargetDefinition;
+}>): Readonly<{ approvalRequiredByPolicy: boolean; approvalWaivable: boolean }> {
     const normalizedSettings = normalizeActionsSettings(params.settings);
     const surface = resolveActionSettingsApprovalSurface(params.actionId, params.targetId, params.target);
     if (!surface) {
-        return false;
+        return { approvalRequiredByPolicy: false, approvalWaivable: false };
     }
-
-    return isApprovalRequiredByActionsSettings(params.actionId, normalizedSettings, {
+    const context = {
         surface,
         ...(surface === 'ui' ? { authority: 'present_user' as const } : {}),
+    };
+    const waivedSettings = setActionApprovalOverride({
+        settings: normalizedSettings,
+        actionId: params.actionId,
+        surface,
+        approvalRequired: false,
     });
+    return {
+        approvalRequiredByPolicy: isApprovalRequiredByActionsSettings(params.actionId, normalizedSettings, context),
+        approvalWaivable: !isApprovalRequiredByActionsSettings(params.actionId, waivedSettings, context),
+    };
 }
 
 /**
@@ -97,6 +116,8 @@ export function setActionTargetApprovalRequired(params: Readonly<{
         settings: normalizedSettings,
         actionId: params.actionId,
         surface,
-        approvalRequired: params.approvalRequired,
+        approvalRequired: params.approvalRequired === false && !getActionTargetApprovalPolicy(params).approvalWaivable
+            ? null
+            : params.approvalRequired,
     });
 }

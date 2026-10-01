@@ -345,13 +345,17 @@ describe('Discord Channels as a first-class Automation Event source', () => {
           id: BACKGROUND_SERVICE_ID,
           qualifiedId: `${PLUGIN_ID}/backgroundServices/${BACKGROUND_SERVICE_ID}`,
         },
-        generation: 'discord-generation',
-        immutableGenerationId: IMMUTABLE_GENERATION_ID,
+        occurrenceId: 'discord-occurrence',
+        sourceCustody: {
+          kind: 'managed',
+          immutableGenerationId: IMMUTABLE_GENERATION_ID,
+          installSource: 'archive',
+        },
         surface: 'background',
         resolveCurrentPluginMaterializationRef:
           callerFixture.resolveCurrentPluginMaterializationRef,
         signal: invocationController.signal,
-        isGenerationCurrent: () => true,
+        isOccurrenceCurrent: () => true,
       },
       actionExecutor: createActionExecutor(createUnrelatedActionExecutorDeps()),
       invokeContributedAction: async ({ action, input, signal, caller }) => {
@@ -405,7 +409,7 @@ describe('Discord Channels as a first-class Automation Event source', () => {
       registrations: [{
         pluginId: PLUGIN_ID,
         pluginVersion: '0.0.0',
-        generation: 'discord-generation',
+        occurrenceId: 'discord-generation',
         localId: BACKGROUND_SERVICE_ID,
         runner: registeredRunner,
       }],

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { validateSpawnProfileEnvironment } from './validateSpawnProfile';
+import { resolveCanonicalSpawnProfile, validateSpawnProfileEnvironment } from './validateSpawnProfile';
 
 const slim = {
   v: 2 as const,
@@ -15,6 +15,19 @@ const slim = {
 };
 
 describe('validateSpawnProfileEnvironment', () => {
+  it('resolves published and grant-visible profiles without pretending a reference is an inline row', () => {
+    const profile = { ...slim, extraEnvironmentVariables: [] };
+    const resource = { artifactId: 'document', header: { kind: 'launch-profile.v1', profileId: profile.id, name: profile.name },
+      body: JSON.stringify({ kind: 'launch-profile.v1', profile, secretBindings: {} }), access: 'view' as const };
+    const artifactsById = new Map([[resource.artifactId, resource]]);
+    expect(resolveCanonicalSpawnProfile({ rawSettings: { profiles: [{ artifactId: 'document' }] }, profileId: profile.id, artifactsById }))
+      .toMatchObject({ ok: true, kind: 'slim', profile: { id: profile.id, artifactId: 'document', viewOnly: true } });
+    expect(resolveCanonicalSpawnProfile({ rawSettings: {}, profileId: profile.id, artifactsById }))
+      .toMatchObject({ ok: true, kind: 'slim' });
+    expect(resolveCanonicalSpawnProfile({ rawSettings: { profiles: [{ artifactId: 'document' }, profile] }, profileId: profile.id, artifactsById }))
+      .toMatchObject({ ok: false, reason: 'profile_overlay_mismatch' });
+  });
+
   it('rejects dynamic agent-owned keys in canonical V2 profiles and mismatched caller overlays', () => {
     expect(validateSpawnProfileEnvironment({
       rawSettings: { profiles: [{ ...slim, extraEnvironmentVariables: [{ name: 'THIRD_PARTY_AUTH', value: 'secret' }] }] },

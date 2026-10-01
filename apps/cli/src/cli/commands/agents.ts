@@ -3,6 +3,8 @@ import {
 } from '@happier-dev/agents';
 import {
     installAgentCliForRuntime,
+    planAgentCliInstallForRuntime,
+    classifyAgentCliInstall,
     resolvePlatformFromNodePlatform,
     resolveAgentCliCommandForRuntime,
     type InstallAgentCliResult,
@@ -17,6 +19,8 @@ import { resolveMergedContributionRegistry } from '@/plugins/projection/registry
 import type { ResolvedContributionRegistry, ResolvedAgentContribution } from '@/plugins/projection/registry/types';
 import { isInteractiveTerminal } from '@/terminal/prompts/promptInput';
 import { promptMultipleSelection } from '@/terminal/prompts/promptMultipleChoice';
+import { promptConfirmYesNo } from '@/terminal/prompts/promptConfirmYesNo';
+import { waitForLocalAgentInstallJob } from './agents/installJobClient';
 import { bullets, cmd, createOutputBuilder, dim, errorFrame, fail, kv, neutral, ok, renderHelpPage, sectionTitle } from '@happier-dev/cli-common/output';
 import type { CapabilityId } from '@happier-dev/protocol';
 import { resolveConnectTargetServiceIdsFromRegistry } from './connect/resolveConnectTargetServiceIds';
@@ -41,13 +45,16 @@ function usage(agentRows: readonly AgentStatusRow[] = []): string {
             { label: 'happier agents list [--json]', description: 'List agents and whether they are installed' },
             { label: 'happier agents status [--json]', description: 'Show agent status for the current environment' },
             { label: 'happier agents probe <agentId> [--models] [--modes] [--config-options] [--json]', description: 'Probe agent model, mode, and config-option availability' },
+            { label: 'happier agents auth login <agentId>', description: 'Authenticate an agent-owned managed ACP runtime' },
             { label: 'happier agents install <agentId> [--dry-run] [--force]', description: 'Install one agent CLI' },
+            { label: 'happier agents update <agentId> [--dry-run] [--yes]', description: 'Update an installed agent CLI through its owner' },
             { label: 'happier agents setup [--provider <id> ...] [--providers <id1,id2>] [--dry-run] [--force] [--yes]', description: 'Install one or more agents' },
         ],
         sections: agentRowsSection,
         notes: [
             'Agents are the local tools Happier can run sessions with.',
             'Installs are binary-safe and do not require Node or a package manager.',
+            'Install/update jobs run in the local daemon. Vendor recipes require --yes, --allow-vendor-recipe, or interactive confirmation.',
             `For cloud-stored API keys and subscription OAuth, use ${cmd('happier connect')}.`,
             `Non-interactive defaults: ${cmd('happier agents setup --yes')} installs the recommended agents.`,
         ],
@@ -76,10 +83,11 @@ function readSingleFlagValue(argv: readonly string[], flag: string): string | nu
     return trimmed ? trimmed : null;
 }
 
-function parseInstallFlags(args: readonly string[]): Readonly<{ dryRun: boolean; skipIfInstalled: boolean }> {
+function parseInstallFlags(args: readonly string[]): Readonly<{ dryRun: boolean; skipIfInstalled: boolean; vendorConsent: boolean }> {
     return {
         dryRun: args.includes('--dry-run'),
         skipIfInstalled: !args.includes('--force'),
+        vendorConsent: args.includes('--yes') || args.includes('--allow-vendor-recipe'),
     };
 }
 
@@ -203,28 +211,66 @@ function printHumanStatus(rows: readonly AgentStatusRow[]): void {
     console.log(out.render());
 }
 
+type AgentsInstallResult = Readonly<{
+    plan: Extract<InstallAgentCliResult, { ok: true }>['plan'] | null;
+    logPath: string | null;
+    jobId?: string;
+    version?: string | null;
+}> & (Readonly<{ ok: true; alreadyInstalled: boolean }> | Readonly<{
+    ok: false; errorCode: string; errorMessage: string; stepId?: string; guideUrl?: string;
+}>);
+
+export function formatAgentInstallJobCompletion(input: Readonly<{
+    title: string;
+    version: string | null;
+}>): string {
+    // Start may adopt any running job for this agent, regardless of argv intent.
+    // The terminal outcome/version is observed; the requested mutation is not.
+    return `${input.title} job completed successfully${input.version ? ` (${input.version})` : ''}.`;
+}
+
 async function runAgentsInstall(
     runtimeSpec: AgentCliRuntimeDescriptor,
-    flags: Readonly<{ dryRun: boolean; skipIfInstalled: boolean }>,
-): Promise<InstallAgentCliResult> {
+    flags: ReturnType<typeof parseInstallFlags>,
+    intent: 'install' | 'update' = 'install',
+    json = false,
+): Promise<AgentsInstallResult> {
     const platform = resolvePlatformFromNodePlatform(process.platform);
-    if (!platform) {
-        return {
-            ok: false,
-            errorCode: 'no-recipe',
-            errorMessage: `Unsupported platform: ${process.platform}`,
-            plan: null,
-            logPath: null,
-        };
+    const planned = platform ? planAgentCliInstallForRuntime({ runtimeSpec, platform }) : null;
+    const plan = planned?.ok ? planned.plan : null;
+    const resolution = resolveAgentCliCommandForRuntime(runtimeSpec, { processEnv: process.env });
+    if (flags.dryRun) {
+        if (!platform) return { ok: false, errorCode: 'unsupported_platform', errorMessage: `Unsupported platform: ${process.platform}`, plan, logPath: null };
+        if (intent === 'update' && !resolution) {
+            return { ok: false, errorCode: 'update_not_available', errorMessage: 'The agent CLI must be installed before it can be updated.', plan, logPath: null };
+        }
+        return await installAgentCliForRuntime({
+            runtimeSpec, platform, env: process.env, dryRun: true,
+            skipIfInstalled: flags.skipIfInstalled, allowVendorRecipeExecution: false,
+            intent,
+            ...(intent === 'update' && resolution ? { updateTarget: { command: resolution.command, source: resolution.source } } : {}),
+        });
     }
-    return await installAgentCliForRuntime({
-        runtimeSpec,
-        platform,
-        env: process.env,
-        dryRun: flags.dryRun,
-        skipIfInstalled: flags.skipIfInstalled,
-        allowVendorRecipeExecution: !flags.dryRun,
+    const vendorRecipe = intent === 'update' && resolution && platform
+        ? classifyAgentCliInstall({ runtimeSpec, platform, command: resolution.command, source: resolution.source, env: process.env }).nativeUpdateArgs !== null
+        : plan?.installMode === 'vendor_recipe';
+    const vendorConsent = flags.vendorConsent || Boolean(vendorRecipe && !json && isInteractiveTerminal()
+        && await promptConfirmYesNo(`Allow ${runtimeSpec.title}'s vendor installation/update recipe to run on this machine?`, { default: 'no' }));
+    const result = await waitForLocalAgentInstallJob({
+        request: { agentId: runtimeSpec.id, intent, consent: { vendorRecipe: vendorConsent }, ...(!flags.skipIfInstalled ? { force: true } : {}) },
+        ...(!json ? { onEvent: (event) => {
+            if (event.t === 'step') process.stderr.write(`${event.label}: ${event.state}\n`);
+            else if (event.t === 'log') process.stderr.write(`${event.line}\n`);
+            else process.stderr.write(`${event.stepId}: ${event.bytesDone}${event.bytesTotal === null ? '' : `/${event.bytesTotal}`} bytes\n`);
+        } } : {}),
     });
+    if (!result.ok) return { ok: false, errorCode: result.errorCode, errorMessage: result.error, plan, logPath: null };
+    if (result.outcome.kind === 'failed') {
+        return { ok: false, errorCode: result.outcome.code, errorMessage: result.outcome.message, stepId: result.outcome.stepId,
+            ...(result.outcome.guideUrl ? { guideUrl: result.outcome.guideUrl } : {}), jobId: result.jobId, plan, logPath: null };
+    }
+    return { ok: true, alreadyInstalled: intent === 'install' && flags.skipIfInstalled && resolution !== null,
+        jobId: result.jobId, version: result.outcome.version, plan, logPath: null };
 }
 
 function isSetupSupportedAgentRow(row: AgentStatusRow): row is InstallableAgentStatusRow {
@@ -290,6 +336,7 @@ export async function handleAgentsCommand(args: string[]): Promise<void> {
         if (subcommand === 'list') return 'agents_list';
         if (subcommand === 'status') return 'agents_status';
         if (subcommand === 'probe') return 'agents_probe';
+        if (subcommand === 'auth') return 'agents_auth';
         if (subcommand === 'install') return 'agents_install';
         if (subcommand === 'setup') return 'agents_setup';
         return `agents_${subcommand}`;
@@ -299,7 +346,9 @@ export async function handleAgentsCommand(args: string[]): Promise<void> {
         subcommand === 'list'
         || subcommand === 'status'
         || subcommand === 'probe'
+        || subcommand === 'auth'
         || subcommand === 'install'
+        || subcommand === 'update'
         || subcommand === 'setup'
         || !subcommand
         || subcommand === 'help'
@@ -413,7 +462,45 @@ export async function handleAgentsCommand(args: string[]): Promise<void> {
         return;
     }
 
-    if (subcommand === 'install') {
+    if (subcommand === 'auth') {
+        const action = String(args[1] ?? '').trim();
+        const agentId = String(args[2] ?? '').trim();
+        if (action !== 'login' || !agentId || args.includes('--help') || args.includes('-h')) {
+            console.log(usage(agentRows));
+            return;
+        }
+        const agentRow = agentRowsById.get(agentId);
+        if (!agentRow || !mergedRegistry) {
+            if (json) {
+                await printUnknownAgentJsonEnvelope(kind, agentId);
+                return;
+            }
+            throw new Error(`Unknown agent id: ${agentId}`);
+        }
+        const controller = new AbortController();
+        const onInterrupt = () => controller.abort(new DOMException('Agent login cancelled', 'AbortError'));
+        process.once('SIGINT', onInterrupt);
+        process.once('SIGTERM', onInterrupt);
+        try {
+            const { authenticateDeclaredAcpAgent } = await import('@/agent/acp/authenticateDeclaredAcpAgent');
+            console.log(`Signing in to ${agentRow.title}. Follow its browser login link if requested.`);
+            await authenticateDeclaredAcpAgent({
+                registry: mergedRegistry,
+                agentId,
+                cwd: process.cwd(),
+                env: process.env,
+                signal: controller.signal,
+                onStderr: (text) => { process.stderr.write(text); },
+            });
+            console.log(`${agentRow.title} login completed.`);
+        } finally {
+            process.removeListener('SIGINT', onInterrupt);
+            process.removeListener('SIGTERM', onInterrupt);
+        }
+        return;
+    }
+
+    if (subcommand === 'install' || subcommand === 'update') {
         const agentIdRaw = String(args[1] ?? '').trim();
         if (!agentIdRaw || agentIdRaw === 'help' || agentIdRaw === '--help' || agentIdRaw === '-h') {
             console.log(usage());
@@ -440,7 +527,7 @@ export async function handleAgentsCommand(args: string[]): Promise<void> {
             throw new Error(message);
         }
         const flags = parseInstallFlags(args.slice(2));
-        const result = await runAgentsInstall(agentRow.runtimeSpec, flags);
+        const result = await runAgentsInstall(agentRow.runtimeSpec, flags, subcommand, json);
         if (json) {
             if (result.ok) {
                 await printJsonEnvelope(
@@ -452,6 +539,8 @@ export async function handleAgentsCommand(args: string[]): Promise<void> {
                             alreadyInstalled: result.alreadyInstalled ?? false,
                             plan: result.plan,
                             logPath: result.logPath ?? null,
+                            jobId: result.jobId ?? null,
+                            version: result.version ?? null,
                         },
                     },
                     { exitCode: 0 },
@@ -463,9 +552,12 @@ export async function handleAgentsCommand(args: string[]): Promise<void> {
                     ok: false,
                     kind,
                     error: {
-                        code: 'install_failed',
+                        code: result.errorCode,
                         message: result.errorMessage,
                         logPath: result.logPath ?? null,
+                        jobId: result.jobId ?? null,
+                        ...(result.stepId ? { stepId: result.stepId } : {}),
+                        ...(result.guideUrl ? { guideUrl: result.guideUrl } : {}),
                     },
                 },
                 { exitCode: 1 },
@@ -474,18 +566,19 @@ export async function handleAgentsCommand(args: string[]): Promise<void> {
         }
 
         if (!result.ok) {
-            console.error(errorFrame('Error:', [result.errorMessage, ...(result.logPath ? [`Install log: ${result.logPath}`] : [])]));
+            console.error(errorFrame('Error:', [result.errorMessage,
+                ...(result.guideUrl ? [`Installation guide: ${result.guideUrl}`] : []),
+                ...(result.logPath ? [`Install log: ${result.logPath}`] : []),
+            ]));
             process.exitCode = 1;
             return;
         }
 
         const out = createOutputBuilder();
         if (flags.dryRun) {
-            out.line(`Dry run: would install ${agentRow.title} via ${result.plan.installMode}.`);
-        } else if (result.alreadyInstalled) {
-            out.line(ok(`${agentRow.title} is already installed.`));
+            out.line(`Dry run: would ${subcommand} ${agentRow.title} via ${result.plan?.installMode ?? 'its catalog recipe'}.`);
         } else {
-            out.line(ok(`Installed ${agentRow.title}.`));
+            out.line(ok(formatAgentInstallJobCompletion({ title: agentRow.title, version: result.version ?? null })));
         }
         if (result.logPath) out.line(`  ${kv('Install log:', result.logPath)}`);
         console.log(out.render());
@@ -527,7 +620,7 @@ export async function handleAgentsCommand(args: string[]): Promise<void> {
             if (!agentRow?.runtimeSpec) {
                 throw new Error(`Agent '${agentId}' does not publish a CLI installation recipe.`);
             }
-            const result = await runAgentsInstall(agentRow.runtimeSpec, flags);
+            const result = await runAgentsInstall(agentRow.runtimeSpec, flags, 'install', json);
             installResults.push({ agentId, title: agentRow.title, result });
         }
         // Installer completion is not executable readiness. Resolve again from
@@ -566,6 +659,8 @@ export async function handleAgentsCommand(args: string[]): Promise<void> {
                                 plan: entry.result.ok ? entry.result.plan : null,
                                 logPath: entry.result.logPath ?? null,
                                 errorMessage: entry.errorMessage,
+                                jobId: entry.result.jobId ?? null,
+                                version: entry.result.version ?? null,
                             })),
                         },
                     },
@@ -587,6 +682,9 @@ export async function handleAgentsCommand(args: string[]): Promise<void> {
                             plan: entry.result.ok ? entry.result.plan : null,
                             logPath: entry.result.logPath ?? null,
                             errorMessage: entry.errorMessage,
+                            jobId: entry.result.jobId ?? null,
+                            errorCode: !entry.result.ok ? entry.result.errorCode : entry.ok ? null : 'verification_failed',
+                            ...(!entry.result.ok && entry.result.guideUrl ? { guideUrl: entry.result.guideUrl } : {}),
                         })),
                     },
                 },
@@ -600,15 +698,14 @@ export async function handleAgentsCommand(args: string[]): Promise<void> {
             if (entry.result.ok && entry.ok) {
                 if (flags.dryRun) {
                     out.line(`Dry run: would install ${entry.title} via ${entry.result.plan?.installMode ?? 'its catalog recipe'}.`);
-                } else if (entry.result.alreadyInstalled) {
-                    out.line(ok(`${entry.title} is already installed.`));
                 } else {
-                    out.line(ok(`Installed ${entry.title}.`));
+                    out.line(ok(formatAgentInstallJobCompletion({ title: entry.title, version: entry.result.version ?? null })));
                 }
                 if (entry.result.logPath) out.line(`  ${kv('Install log:', entry.result.logPath)}`);
                 console.log(out.render());
             } else {
                 console.error(fail(`Failed to install ${entry.agentId}: ${entry.errorMessage}`));
+                if (!entry.result.ok && entry.result.guideUrl) console.log(`  Installation guide: ${entry.result.guideUrl}`);
                 if (entry.result.logPath) {
                     console.log(`  ${kv('Install log:', entry.result.logPath)}`);
                 }

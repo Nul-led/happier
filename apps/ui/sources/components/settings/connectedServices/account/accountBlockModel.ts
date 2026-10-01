@@ -10,19 +10,20 @@ import { resolveQuotaToneColor } from '@/sync/domains/connectedServices/resolveQ
 type Theme = UnistylesThemes[keyof UnistylesThemes];
 
 /**
- * Pure presentation model for `AccountBlock`. Keeps the tone/health mapping in a
- * single, trivially testable place so the collapsed header signals, the expanded
- * USAGE meters, and the health dot can never disagree (they all flow through
- * `resolveQuotaTone`).
+ * Shared account-capacity presentation model. Keeps the tone/health mapping in
+ * one place so capacity avatars, usage meters, and health dots agree through
+ * `resolveQuotaTone`.
  */
 
 export type AccountUsageRow = Readonly<{
     meterId: string;
     label: string;
     tone: MeterTone;
-    /** Remaining fraction in 0..1 (the MeterBar shrinks as quota depletes). */
+    /** Remaining fraction in 0..1 (the capacity rings read it). */
     remaining: number;
-    detailLabel: string;
+    /** What is left, 0..100 (the quota row reads it). */
+    remainingPct: number;
+    resetsAt: number | null;
 }>;
 
 function clamp01(value: number): number {
@@ -33,7 +34,7 @@ function clamp01(value: number): number {
 }
 
 /**
- * Map the gauge's comparable meter rows onto the AccountBlock USAGE rows. Tone is
+ * Map the gauge's comparable meter rows onto account usage rows. Tone is
  * derived from the SAME `resolveQuotaTone` owner the meter bars and health dot
  * use, and `remaining` is normalized to the 0..1 fraction `MeterBar` expects.
  */
@@ -46,7 +47,8 @@ export function resolveAccountUsageRows(
         label: row.label,
         tone: resolveQuotaTone(row.remainingPct),
         remaining: clamp01(row.remainingPct / 100),
-        detailLabel: row.detailRightLabel,
+        remainingPct: row.remainingPct,
+        resetsAt: row.resetsAt,
     }));
 }
 

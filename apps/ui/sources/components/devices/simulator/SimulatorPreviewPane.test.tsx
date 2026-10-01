@@ -242,4 +242,89 @@ describe('SimulatorPreviewPane', () => {
         expect(screen.findByTestId('simulator-preview-toolbar-request-snapshot')).toBeNull();
         expect(screen.findByTestId('simulator-preview-toolbar-lower-quality')).toBeNull();
     });
+    it('keeps one control strip: the controller and stream controls live only in the toolbar (H-UX F-9)', async () => {
+        const mod = await import('./SimulatorPreviewPane').catch((error: unknown) => ({ importError: error }));
+
+        expect(mod).toHaveProperty('SimulatorPreviewPane');
+        if (!('SimulatorPreviewPane' in mod)) return;
+
+        const SimulatorPreviewPane = mod.SimulatorPreviewPane as React.ComponentType<{
+            viewModel: unknown;
+            actions: Record<string, unknown>;
+            testID: string;
+        }>;
+        const screen = await renderScreen(
+            <SimulatorPreviewPane
+                viewModel={{
+                    kind: 'selected',
+                    viewerId: 'viewer_1',
+                    devices: [{
+                        simulatorId: 'sim_1',
+                        label: 'iPhone 16',
+                        platformLabel: 'ios',
+                        selected: true,
+                        availability: { state: 'available' },
+                    }],
+                    selectedSimulatorId: 'sim_1',
+                    resource: {
+                        v: 1,
+                        simulatorId: 'sim_1',
+                        platform: 'ios',
+                        deviceId: 'device_1',
+                        displayName: 'iPhone 16',
+                        capture: {
+                            status: 'available',
+                            sourceId: 'source_1',
+                            supportedCodecs: ['image.mjpeg'],
+                            inputMode: 'exclusive',
+                        },
+                    },
+                    stream: {
+                        phase: 'playing',
+                        selectedCodec: 'image.mjpeg',
+                        activeRenderer: 'mjpeg',
+                        lastFrameUrl: 'data:image/jpeg;base64,AQID',
+                        decodedFrames: 1,
+                        droppedFrames: 0,
+                        bufferedBytes: 0,
+                    },
+                    lease: { state: 'held-by-me', leaseId: 'lease_1' },
+                    activeLease: null,
+                    controls: {
+                        canWatch: true,
+                        canControl: true,
+                        canRequestKeyframe: true,
+                        canRequestSnapshot: false,
+                        canSetQuality: true,
+                        canSetFps: false,
+                        canSetScale: false,
+                        supportedInputKinds: ['tap'],
+                    },
+                    sidebands: {},
+                    diagnostics: [],
+                    availability: { state: 'available' },
+                }}
+                actions={{ requestKeyframe: vi.fn(), lowerQuality: vi.fn() }}
+                testID="simulator-preview"
+            />,
+        );
+
+        // The toolbar is the single owner of refresh + quality.
+        expect(screen.findByTestId('simulator-preview-toolbar-request-keyframe')).toBeTruthy();
+        expect(screen.findByTestId('simulator-preview-toolbar-lower-quality')).toBeTruthy();
+        // No second row of text buttons under the video, no second controller badge, no fake button.
+        expect(screen.findByTestId('simulator-preview-stream-player-request-keyframe')).toBeNull();
+        expect(screen.findByTestId('simulator-preview-stream-player-lower-quality')).toBeNull();
+        expect(screen.findByTestId('simulator-preview-stream-readonly')).toBeNull();
+        expect(screen.findByTestId('simulator-preview-stream-control-state')).toBeNull();
+        const controllerLabels = screen.findAll((node) => (
+            typeof node.type === 'string' && node.props?.children === 'streamPlayer.controls.controlling'
+        ));
+        expect(controllerLabels).toHaveLength(1);
+        // The device is named once, by its display name; the raw platform id is not chrome.
+        const rawPlatform = screen.findAll((node) => (
+            typeof node.type === 'string' && node.props?.children === 'ios'
+        ));
+        expect(rawPlatform.filter((node) => node.props?.testID === 'simulator-preview-stream-meta')).toEqual([]);
+    });
 });

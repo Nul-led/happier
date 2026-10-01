@@ -8,7 +8,7 @@ describe('buildSessionModelSelectionIntent', () => {
         expect(buildSessionModelSelectionIntent({
             updatedAt: 42,
             ref: {
-                agentTargetKey: 'backend:codex',
+                agentTargetKey: 'agent:happier.agent.codex/codex',
                 providerConnectionId: ProviderConnectionIdSchema.parse('pc_openrouter'),
                 modelId: 'default',
             },
@@ -16,7 +16,7 @@ describe('buildSessionModelSelectionIntent', () => {
             v: 1,
             updatedAt: 42,
             selection: {
-                agentTargetKey: 'backend:codex',
+                agentTargetKey: 'agent:happier.agent.codex/codex',
                 providerConnectionId: 'pc_openrouter',
                 modelId: 'default',
             },

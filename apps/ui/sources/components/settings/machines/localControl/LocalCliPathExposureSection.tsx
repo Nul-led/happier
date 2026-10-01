@@ -96,7 +96,7 @@ export const LocalCliPathExposureSection = React.memo(function LocalCliPathExpos
             ?? (activeTask && result ? readTaskOutcome(activeTask.kind, result) : null);
 
     return (
-        <ItemGroup title={t('machine.cliPath.title')} footer={t('machine.cliPath.footer')}>
+        <ItemGroup title={t('machine.cliPath.title')} description={t('machine.cliPath.footer')}>
             {statusSubtitle ? (
                 <Item
                     testID="settings.localCliPath.status"

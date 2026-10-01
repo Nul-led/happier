@@ -54,7 +54,6 @@ describe('buildAccountSettingsSnapshot', () => {
             agentInputActionBarLayout: 'scroll',
             agentInputChipDensity: 'icons',
             useEnhancedSessionWizard: true,
-            showEnvironmentBadge: false,
             hideInactiveSessions: true,
             groupInactiveSessionsByProject: true,
             showFlavorIcons: false,
@@ -79,7 +78,6 @@ describe('buildAccountSettingsSnapshot', () => {
         expect(snapshot.properties.acct_setting__agentInputActionBarLayout).toBe('scroll');
         expect(snapshot.properties.acct_setting__agentInputChipDensity).toBe('icons');
         expect(snapshot.properties.acct_setting__useEnhancedSessionWizard).toBe(true);
-        expect(snapshot.properties.acct_setting__showEnvironmentBadge).toBe(false);
         expect(snapshot.properties.acct_setting__hideInactiveSessions).toBe(true);
         expect(snapshot.properties.acct_setting__groupInactiveSessionsByProject).toBe(true);
         expect(snapshot.properties.acct_setting__showFlavorIcons).toBe(false);

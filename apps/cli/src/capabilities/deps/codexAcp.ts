@@ -5,6 +5,7 @@ import { configuration } from '../../configuration';
 import { resolveExistingManagedJavaScriptRuntimeCommand } from '@/packagedRuntime/js/managedJavaScriptRuntime';
 import { readRuntimeInstallableLastCheckAtMs } from '@/packagedRuntime/installables/updateState';
 import { fetchGitHubLatestRelease } from '@happier-dev/release-runtime/github';
+import { resolveHappyHomeDirFromEnvironment } from '@happier-dev/cli-common/agents';
 
 import {
   resolveCodexAcpReleaseAsset,
@@ -22,37 +23,37 @@ type LatestVersionCheck =
 
 const githubFetchImpl = typeof globalThis.fetch === 'function' ? globalThis.fetch.bind(globalThis) : undefined;
 
-export const codexAcpInstallDir = () => join(configuration.happyHomeDir, 'tools', 'codex-acp');
+export const codexAcpInstallDir = (env?: NodeJS.ProcessEnv) => join(env ? resolveHappyHomeDirFromEnvironment(env) : configuration.happyHomeDir, 'tools', 'codex-acp');
 
-export const codexAcpBinPath = () => {
+export const codexAcpBinPath = (env?: NodeJS.ProcessEnv) => {
   const binaryName = process.platform === 'win32' ? 'codex-acp.exe' : 'codex-acp';
-  return join(codexAcpInstallDir(), 'current', 'bin', binaryName);
+  return join(codexAcpInstallDir(env), 'current', 'bin', binaryName);
 };
 
-export const codexAcpLegacyBinPaths = () => {
+export const codexAcpLegacyBinPaths = (env?: NodeJS.ProcessEnv) => {
   if (process.platform === 'win32') {
     return [
-      join(codexAcpInstallDir(), 'node_modules', '.bin', 'codex-acp.cmd'),
-      join(codexAcpInstallDir(), 'node_modules', '.bin', 'codex-acp.exe'),
-      join(codexAcpInstallDir(), 'node_modules', '.bin', 'codex-acp'),
+      join(codexAcpInstallDir(env), 'node_modules', '.bin', 'codex-acp.cmd'),
+      join(codexAcpInstallDir(env), 'node_modules', '.bin', 'codex-acp.exe'),
+      join(codexAcpInstallDir(env), 'node_modules', '.bin', 'codex-acp'),
     ] as const;
   }
 
-  return [join(codexAcpInstallDir(), 'node_modules', '.bin', 'codex-acp')] as const;
+  return [join(codexAcpInstallDir(env), 'node_modules', '.bin', 'codex-acp')] as const;
 };
 
 function hasJavaScriptRuntimeForLegacyCodexAcpShim(processEnv: NodeJS.ProcessEnv): boolean {
   return Boolean(resolveExistingManagedJavaScriptRuntimeCommand(processEnv));
 }
 
-function isLegacyCodexAcpShimRunnable(candidatePath: string, processEnv: NodeJS.ProcessEnv): boolean {
-  const legacyPaths = codexAcpLegacyBinPaths();
+function isLegacyCodexAcpShimRunnable(candidatePath: string, processEnv?: NodeJS.ProcessEnv): boolean {
+  const legacyPaths = codexAcpLegacyBinPaths(processEnv);
   if (!legacyPaths.includes(candidatePath as (typeof legacyPaths)[number])) return true;
 
-  return hasJavaScriptRuntimeForLegacyCodexAcpShim(processEnv);
+  return hasJavaScriptRuntimeForLegacyCodexAcpShim(processEnv ?? process.env);
 }
 
-function isCodexAcpManagedBinRunnable(candidatePath: string, processEnv: NodeJS.ProcessEnv): boolean {
+function isCodexAcpManagedBinRunnable(candidatePath: string, processEnv?: NodeJS.ProcessEnv): boolean {
   const accessMode = process.platform === 'win32' ? fsConstants.F_OK : fsConstants.X_OK;
   try {
     accessSync(candidatePath, accessMode);
@@ -63,8 +64,8 @@ function isCodexAcpManagedBinRunnable(candidatePath: string, processEnv: NodeJS.
   return isLegacyCodexAcpShimRunnable(candidatePath, processEnv);
 }
 
-export function resolveExistingCodexAcpManagedBinPath(processEnv: NodeJS.ProcessEnv = process.env): string | null {
-  const candidates = [codexAcpBinPath(), ...codexAcpLegacyBinPaths()];
+export function resolveExistingCodexAcpManagedBinPath(processEnv?: NodeJS.ProcessEnv): string | null {
+  const candidates = [codexAcpBinPath(processEnv), ...codexAcpLegacyBinPaths(processEnv)];
   for (const candidate of candidates) {
     try {
       if (existsSync(candidate) && isCodexAcpManagedBinRunnable(candidate, processEnv)) return candidate;
@@ -75,11 +76,11 @@ export function resolveExistingCodexAcpManagedBinPath(processEnv: NodeJS.Process
   return null;
 }
 
-const codexAcpStatePath = () => join(codexAcpInstallDir(), 'install-state.json');
+const codexAcpStatePath = (env?: NodeJS.ProcessEnv) => join(codexAcpInstallDir(env), 'install-state.json');
 
-async function readCodexAcpState(): Promise<CodexAcpState> {
+async function readCodexAcpState(env?: NodeJS.ProcessEnv): Promise<CodexAcpState> {
   try {
-    const raw = await readFile(codexAcpStatePath(), 'utf8');
+    const raw = await readFile(codexAcpStatePath(env), 'utf8');
     const parsed = JSON.parse(raw);
     return {
       installedVersion: typeof parsed?.installedVersion === 'string' ? parsed.installedVersion : null,
@@ -90,12 +91,12 @@ async function readCodexAcpState(): Promise<CodexAcpState> {
   }
 }
 
-async function detectLatestVersionCheck(): Promise<LatestVersionCheck> {
+async function detectLatestVersionCheck(env?: NodeJS.ProcessEnv): Promise<LatestVersionCheck> {
   try {
     const release = await fetchGitHubLatestRelease({
       githubRepo: CODEX_ACP_GITHUB_REPO,
       userAgent: 'happier-cli',
-      githubToken: process.env.GITHUB_TOKEN,
+      githubToken: (env ?? process.env).GITHUB_TOKEN,
       ...(githubFetchImpl ? { fetchImpl: githubFetchImpl } : {}),
     });
     const asset = resolveCodexAcpReleaseAsset(release);
@@ -120,27 +121,28 @@ export type CodexAcpDepData = Readonly<{
 }>;
 
 export async function getCodexAcpDepStatus(opts?: {
+  env?: NodeJS.ProcessEnv;
   includeLatestVersion?: boolean;
   onlyIfInstalled?: boolean;
 }): Promise<CodexAcpDepData> {
-  const installDir = codexAcpInstallDir();
-  const state = await readCodexAcpState();
+  const installDir = codexAcpInstallDir(opts?.env);
+  const state = await readCodexAcpState(opts?.env);
   const accessMode = process.platform === 'win32' ? fsConstants.F_OK : fsConstants.X_OK;
-  const candidatePaths = [codexAcpBinPath(), ...codexAcpLegacyBinPaths()];
+  const candidatePaths = [codexAcpBinPath(opts?.env), ...codexAcpLegacyBinPaths(opts?.env)];
   let resolvedBinPath: string | null = null;
   for (const candidatePath of candidatePaths) {
     const installed = await access(candidatePath, accessMode).then(() => true).catch(() => false);
     if (!installed) continue;
-    if (!isCodexAcpManagedBinRunnable(candidatePath, process.env)) continue;
+    if (!isCodexAcpManagedBinRunnable(candidatePath, opts?.env)) continue;
     resolvedBinPath = candidatePath;
     break;
   }
   const includeLatestVersion = opts?.includeLatestVersion === true;
   const onlyIfInstalled = opts?.onlyIfInstalled === true;
   const latestVersionCheck = includeLatestVersion && (!onlyIfInstalled || resolvedBinPath !== null)
-    ? await detectLatestVersionCheck()
+    ? await detectLatestVersionCheck(opts?.env)
     : undefined;
-  const lastBackgroundUpdateCheckAtMs = await readRuntimeInstallableLastCheckAtMs('codex-acp');
+  const lastBackgroundUpdateCheckAtMs = await readRuntimeInstallableLastCheckAtMs('codex-acp', opts?.env);
 
   return {
     installed: resolvedBinPath !== null,

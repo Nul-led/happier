@@ -4,6 +4,7 @@ import {
     createAutomationDefinition,
     isAutomationApiErrorCode,
     reconcileAutomationDefinition,
+    type AutomationRequestContext,
 } from '@/sync/api/automations/apiAutomations';
 import {
     AutomationTriggerDefinitionSchema,
@@ -11,7 +12,7 @@ import {
     AutomationEncryptedTriggerDefinitionEnvelopeV1Schema,
     type AutomationDefinitionDetail,
     type AutomationEventTriggerDefinitionStoredPayloadV1,
-    type AutomationPluginEventDefinitionTriggerInput,
+    sealAutomationPluginEventTriggerInputV1,
     type AutomationEncryptedTriggerDefinitionEnvelopeV1,
     type AutomationTriggerDefinitionBindingV1,
     type AutomationTriggerDefinitionInput,
@@ -55,18 +56,8 @@ function prepareTriggerForWrite(params: Readonly<{
     if (!sourceBinding || sourceBinding.sourceInstanceId !== definition.sourceInstanceId) {
         throw new AutomationEditorSaveStaleError();
     }
-    const storedDefinition: AutomationEventTriggerDefinitionStoredPayloadV1 = {
-        v: 1,
-        sourceInstanceId: definition.sourceInstanceId,
-        ...(definition.observationTransport.kind === 'durablePush' ? {
-            webhookRoutingSourceInstanceId: definition.observationTransport.webhookRoutingSourceInstanceId,
-        } : {}),
-        sourceConfig: definition.sourceConfig,
-        displayLabel: definition.displayLabel,
-        filter: definition.filter,
-        maximumObservationAgeMs: definition.maximumObservationAgeMs,
-    };
-    const triggerDefinitionEnvelope = params.sealAutomationTriggerDefinition({
+    return sealAutomationPluginEventTriggerInputV1({
+        trigger: definition,
         binding: {
             v: 1,
             automationId: params.automationId,
@@ -76,18 +67,8 @@ function prepareTriggerForWrite(params: Readonly<{
             eventRef: definition.eventRef,
             sourceSelectorId: sourceBinding.sourceSelectorId,
         },
-        definition: storedDefinition,
+        seal: params.sealAutomationTriggerDefinition,
     });
-    const encrypted: AutomationPluginEventDefinitionTriggerInput = {
-        kind: 'pluginEvent',
-        enabled: definition.enabled,
-        eventRef: definition.eventRef,
-        sourceSelectorId: sourceBinding.sourceSelectorId,
-        sourceContractVersion: definition.sourceContractVersion,
-        observationTransport: definition.observationTransport,
-        triggerDefinitionEnvelope,
-    };
-    return encrypted;
 }
 
 /**
@@ -98,12 +79,17 @@ function prepareTriggerForWrite(params: Readonly<{
 export async function saveAutomationEditorDraft(params: Readonly<{
     credentials: AuthCredentials;
     draft: AutomationEditorDraft;
+    /** Sync supplies its incumbent Home request and feature identity. */
+    requestContext?: AutomationRequestContext;
     isCurrent?: () => boolean;
     sealAutomationTriggerDefinition?: SealAutomationTriggerDefinition;
 }>): Promise<AutomationDefinitionDetail> {
     const isCurrent = params.isCurrent ?? (() => true);
     assertCurrent(isCurrent);
-    const encryptionMode = await fetchAccountEncryptionMode(params.credentials, { retry: 'none' });
+    const encryptionMode = await fetchAccountEncryptionMode(params.credentials, {
+        retry: 'none',
+        ...(params.requestContext ? { request: params.requestContext.request } : {}),
+    });
     assertCurrent(isCurrent);
     const sealAutomationTriggerDefinition = encryptionMode.mode === 'e2ee'
         ? params.sealAutomationTriggerDefinition
@@ -128,6 +114,8 @@ export async function saveAutomationEditorDraft(params: Readonly<{
             name: params.draft.name,
             description: params.draft.description,
             enabled: params.draft.enabled,
+            ...(params.draft.workflowDefinitionId !== undefined ? { workflowDefinitionId: params.draft.workflowDefinitionId } : {}),
+            ...(params.draft.scopeSessionId !== undefined ? { scopeSessionId: params.draft.scopeSessionId } : {}),
             executionRecipe: params.draft.executionRecipe,
             assignments: [...params.draft.assignments],
             triggers: params.draft.triggers.map((trigger) => {
@@ -143,7 +131,7 @@ export async function saveAutomationEditorDraft(params: Readonly<{
                     }),
                 };
             }),
-        });
+        }, params.requestContext);
         assertCurrent(isCurrent);
         return created;
     }
@@ -243,13 +231,15 @@ export async function saveAutomationEditorDraft(params: Readonly<{
             description: params.draft.description,
             enabled: params.draft.enabled,
             ...(params.draft.recipeDirty === true ? { executionRecipe: params.draft.executionRecipe } : {}),
+            ...(params.draft.workflowDefinitionId !== undefined ? { workflowDefinitionId: params.draft.workflowDefinitionId } : {}),
+            ...(params.draft.scopeSessionId !== undefined ? { scopeSessionId: params.draft.scopeSessionId } : {}),
             assignments: [...params.draft.assignments],
             triggers,
             removedTriggers: params.draft.removedTriggers.map((trigger) => ({
                 triggerId: trigger.id,
                 expectedRevision: trigger.revision,
             })),
-        });
+        }, params.requestContext);
     } catch (error) {
         if (
             isAutomationApiErrorCode(error, 'automation_template_version_conflict')

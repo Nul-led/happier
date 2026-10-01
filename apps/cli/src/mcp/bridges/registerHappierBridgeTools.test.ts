@@ -78,7 +78,7 @@ describe('registerHappierBridgeTools', () => {
       handler: (args: unknown) => Promise<any>;
     }> = [];
     const callHttpTool = vi.fn(async () => ({
-      content: [{ type: 'text', text: 'ok' }],
+      content: [{ type: 'text' as const, text: 'ok' }],
       isError: false,
     }));
 
@@ -194,7 +194,7 @@ describe('registerHappierBridgeTools', () => {
       handler: (args: unknown, extra?: { signal?: AbortSignal }) => Promise<any>;
     }> = [];
     const callHttpTool = vi.fn(async () => ({
-      content: [{ type: 'text', text: 'ok' }],
+      content: [{ type: 'text' as const, text: 'ok' }],
       isError: false,
     }));
 
@@ -264,7 +264,7 @@ describe('registerHappierBridgeTools', () => {
       onprogress?: (progress: { progress: number }) => void;
     }) => {
       options?.onprogress?.({ progress: 1 });
-      return { content: [{ type: 'text', text: 'ok' }], isError: false };
+      return { content: [{ type: 'text' as const, text: 'ok' }], isError: false };
     });
 
     registerHappierBridgeTools({

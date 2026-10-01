@@ -1,5 +1,8 @@
 import {
   getActionContextualDefaults,
+  getActionSpec,
+  RuntimeActionIdV1Schema,
+  resolveRuntimeActionExecutionFamily,
   type ActionContextualDefaults,
 } from '@happier-dev/protocol';
 import { z } from 'zod';
@@ -15,6 +18,25 @@ export type SessionBoundActionToolContext = Readonly<{
 function normalizeContextValue(value: unknown): string | null {
   const normalized = typeof value === 'string' ? value.trim() : '';
   return normalized.length > 0 ? normalized : null;
+}
+
+function schemaDeclaresField(schema: unknown, field: string): boolean {
+  if (schema instanceof z.ZodObject) return Object.prototype.hasOwnProperty.call(schema.shape, field);
+  if (schema instanceof z.ZodIntersection) {
+    return schemaDeclaresField(schema.def.left, field) || schemaDeclaresField(schema.def.right, field);
+  }
+  return false;
+}
+
+function contextualBrowserSessionId(actionId: string, context: SessionBoundActionToolContext): string | null {
+  const sessionId = normalizeContextValue(context.defaultSessionId);
+  if (!sessionId) return null;
+  const parsed = RuntimeActionIdV1Schema.safeParse(actionId);
+  if (!parsed.success || resolveRuntimeActionExecutionFamily(parsed.data) !== 'browser') return null;
+  const schema = getActionSpec(parsed.data).inputSchema;
+  return schemaDeclaresField(schema, 'browserSessionId')
+    ? sessionId
+    : null;
 }
 
 export function resolveActionToolContextualDefaults(params: Readonly<{
@@ -40,23 +62,27 @@ export function bindContextualActionToolInput(params: Readonly<{
 }>): unknown {
   if (!params.input || typeof params.input !== 'object' || Array.isArray(params.input)) return params.input;
   const defaults = resolveActionToolContextualDefaults(params);
-  if (!defaults) return params.input;
+  const browserSessionId = contextualBrowserSessionId(params.actionId, params.context);
+  if (!defaults && !browserSessionId) return params.input;
 
   const input = params.input as Readonly<Record<string, unknown>>;
   const additions: Record<string, string> = {};
   if (
-    defaults.sessionId === 'current_session'
+    defaults?.sessionId === 'current_session'
     && !Object.prototype.hasOwnProperty.call(input, 'sessionId')
   ) {
     const value = normalizeContextValue(params.context.defaultSessionId);
     if (value) additions.sessionId = value;
   }
   if (
-    defaults.machineId === 'current_session_machine'
+    defaults?.machineId === 'current_session_machine'
     && normalizeContextValue(input.machineId) === null
   ) {
     const value = normalizeContextValue(params.context.defaultSessionMachineId);
     if (value) additions.machineId = value;
+  }
+  if (browserSessionId && !Object.prototype.hasOwnProperty.call(input, 'browserSessionId')) {
+    additions.browserSessionId = browserSessionId;
   }
   return Object.keys(additions).length === 0 ? params.input : { ...input, ...additions };
 }
@@ -70,12 +96,22 @@ export function projectSessionBoundActionToolInputSchema(params: Readonly<{
   contextualDefaults?: ActionContextualDefaults | null;
 }>): unknown {
   const defaults = params.contextualDefaults ?? resolveActionToolContextualDefaults(params);
-  if (!defaults) return params.inputSchema;
+  const browserSessionId = contextualBrowserSessionId(params.actionId, params.context);
+  if (!defaults && !browserSessionId) return params.inputSchema;
 
   const optionalFields = new Set<string>();
-  if (defaults.sessionId && normalizeContextValue(params.context.defaultSessionId)) optionalFields.add('sessionId');
-  if (defaults.machineId && normalizeContextValue(params.context.defaultSessionMachineId)) optionalFields.add('machineId');
+  if (defaults?.sessionId && normalizeContextValue(params.context.defaultSessionId)) optionalFields.add('sessionId');
+  if (defaults?.machineId && normalizeContextValue(params.context.defaultSessionMachineId)) optionalFields.add('machineId');
+  if (browserSessionId) optionalFields.add('browserSessionId');
   if (optionalFields.size === 0) return params.inputSchema;
+
+  // Browser automation combines the strict request with its action-kind refinement. Project
+  // both sides so host defaults are accepted without dropping either validation contract.
+  if (params.inputSchema instanceof z.ZodIntersection) {
+    const left = projectSessionBoundActionToolInputSchema({ ...params, inputSchema: params.inputSchema.def.left });
+    const right = projectSessionBoundActionToolInputSchema({ ...params, inputSchema: params.inputSchema.def.right });
+    return left instanceof z.ZodType && right instanceof z.ZodType ? z.intersection(left, right) : params.inputSchema;
+  }
 
   if (params.inputSchema instanceof z.ZodObject) {
     const shape = params.inputSchema.shape as Record<string, z.ZodTypeAny>;

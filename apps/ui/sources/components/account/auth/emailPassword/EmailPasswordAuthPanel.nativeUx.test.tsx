@@ -146,7 +146,7 @@ it('associates the email problem with the field that owns it', async () => {
 });
 
 it('shows the reset request its own field error and submits from the address field', async () => {
-    screen = await renderPanel({ action: 'login' });
+    screen = await renderPanel({ action: 'login', passwordReset: 'email' });
     await screen.pressByTestIdAsync('email-password-forgot');
 
     await screen.pressByTestIdAsync('email-password-request-reset');

@@ -144,6 +144,39 @@ function input(selection: 'selected-account' | 'other-account' = 'selected-accou
 }
 
 describe('Agent Provider catalog observation', () => {
+  it('retains the successful observation time when a refresh fails', async () => {
+    let status = 200;
+    const h = harness(async () => response(status, ['listed']));
+    const success = await h.observation.observe(input());
+    expect(success).toMatchObject({ observedAt: expect.any(Number), stale: false });
+    status = 503;
+    const failed = await h.observation.observe(input());
+    expect(failed).toMatchObject({ observedAt: success.observedAt, stale: true });
+  });
+
+  it('uses a native OAuth bearer through the same catalog observation owner', async () => {
+    const requests: Array<Readonly<Record<string, string>>> = [];
+    const h = harness(async (request) => {
+      requests.push(request.headers);
+      return response(200, ['native-only']);
+    });
+
+    await expect(h.observation.observeNative({
+      ...input(),
+      service,
+      credential: {
+        accessToken: 'native-oauth-token',
+        credentialFingerprint: `sha256:${'b'.repeat(64)}`,
+      },
+    })).resolves.toMatchObject({
+      source: 'dynamic',
+      stale: false,
+      models: [{ id: 'native-only' }],
+    });
+    expect(requests).toEqual([expect.objectContaining({ authorization: 'Bearer native-oauth-token' })]);
+    expect(h.requestAuth.lookupRequestAuth).not.toHaveBeenCalled();
+  });
+
   it('uses only the selected account bearer and authoritative membership, including successful empty', async () => {
     const requests: Array<Readonly<Record<string, string>>> = [];
     let models = ['curated', 'api-only'];
@@ -164,7 +197,7 @@ describe('Agent Provider catalog observation', () => {
     expect(h.requestAuth.lookupRequestAuth).toHaveBeenCalledTimes(2);
 
     models = [];
-    await expect(h.observation.observe(input())).resolves.toEqual({ source: 'dynamic', models: [], stale: false });
+    await expect(h.observation.observe(input())).resolves.toMatchObject({ source: 'dynamic', models: [], stale: false });
   });
 
   it('falls back static on cold failure and retains the bounded last-good observation after later failure', async () => {
@@ -210,7 +243,7 @@ describe('Agent Provider catalog observation', () => {
     await vi.waitFor(() => expect(releaseActive).toBeTypeOf('function'));
 
     await expect(h.observation.observe(input())).resolves.toMatchObject({
-      source: 'dynamic', stale: false, models: [{ id: 'api-only' }],
+      source: 'dynamic', stale: false, refreshError: true, models: [{ id: 'api-only' }],
     });
 
     releaseActive();

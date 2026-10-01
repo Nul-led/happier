@@ -23,24 +23,23 @@ export const FEATURES_SETTINGS = defineSettingsPage({
         general: {
             titleKey: 'settingsFeatures.generalTitle',
             settings: {
-                environmentBadge: { titleKey: 'settingsFeatures.environmentBadge', descriptionKey: 'settingsFeatures.environmentBadgeSubtitle' },
-                machinePickerSearch: { titleKey: 'settingsFeatures.machinePickerSearch', descriptionKey: 'settingsFeatures.machinePickerSearchSubtitle' },
-                pathPickerSearch: { titleKey: 'settingsFeatures.pathPickerSearch', descriptionKey: 'settingsFeatures.pathPickerSearchSubtitle' },
-                profiles: { titleKey: 'settingsFeatures.profiles' },
+                machinePickerSearch: { storage: { scope: 'account', key: 'useMachinePickerSearch', access: 'read_write' }, titleKey: 'settingsFeatures.machinePickerSearch', descriptionKey: 'settingsFeatures.machinePickerSearchSubtitle' },
+                pathPickerSearch: { storage: { scope: 'account', key: 'usePathPickerSearch', access: 'read_write' }, titleKey: 'settingsFeatures.pathPickerSearch', descriptionKey: 'settingsFeatures.pathPickerSearchSubtitle' },
+                profiles: { storage: { scope: 'account', key: 'useProfiles', access: 'read_write' }, titleKey: 'settingsFeatures.profiles' },
             },
         },
         optionalFeatures: {
             titleKey: 'settingsFeatures.localTogglesTitle',
             settings: Object.assign({}, declareToggles(false), {
-                terminalLocation: { titleKey: 'terminalEmbedded.settings.locationTitle' },
-                terminalRenderer: { titleKey: 'terminalEmbedded.settings.rendererTitle', host: settingsHosts.notWeb },
+                terminalLocation: { storage: { scope: 'local', key: 'embeddedTerminalDockLocation', access: 'read_write' }, titleKey: 'terminalEmbedded.settings.locationTitle' },
+                terminalRenderer: { storage: { scope: 'local', key: 'terminalRendererPreference', access: 'read_write' }, titleKey: 'terminalEmbedded.settings.rendererTitle', host: settingsHosts.notWeb },
             } satisfies Readonly<Record<string, SettingDeclaration>>),
         },
         webFeatures: {
             titleKey: 'settingsFeatures.webFeatures',
             host: settingsHosts.web,
             settings: {
-                commandPalette: { titleKey: 'settingsFeatures.commandPalette' },
+                commandPalette: { storage: { scope: 'account', key: 'commandPaletteEnabled', access: 'read_write' }, titleKey: 'settingsFeatures.commandPalette' },
             },
         },
         experiments: {

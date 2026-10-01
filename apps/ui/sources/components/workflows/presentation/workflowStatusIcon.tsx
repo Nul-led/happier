@@ -3,39 +3,47 @@ import { useUnistyles } from 'react-native-unistyles';
 
 import { ActivitySpinner, iconMatchedSpinnerSize } from '@/components/ui/feedback/ActivitySpinner';
 import { Icon } from '@/components/ui/icons/Icon';
-import type {
-    SessionWorkflowAgentStatusV1,
-    SessionWorkflowRunStatusV1,
+import {
+    fromWorkflowAgentStatus,
+    fromWorkflowRunStatus,
+    type SessionWorkflowAgentStatusV1,
+    type SessionWorkflowRunStatusV1,
 } from '@happier-dev/protocol';
+
+import { resolveWorkStatusTone } from '@/components/work/status/resolveWorkStatusTone';
+import { workStatusGlyphColor } from '@/components/work/status/workStatusTreatment';
 
 /**
  * Shared status icon for workflow run / agent statuses, reused by the transcript card (UIW4) and the
- * popover section (UIW3) so they share one visual language. Colors come from themed `state.*` tokens
- * (no hex). Active uses the app `ActivitySpinner`; terminal states use Ionicons. The "active/running"
- * tone maps to the `state.info` token (`../dev` has no `state.active`).
+ * popover section (UIW3) so they share one visual language. The glyph says which state; its colour is
+ * the one work-status tone (INT §5.3), so healthy work is quiet and only trouble is coloured.
  */
 
 type WorkflowEntityStatus = SessionWorkflowRunStatusV1 | SessionWorkflowAgentStatusV1;
 
+function toneOf(status: WorkflowEntityStatus) {
+    // `pending` is the one agent-only status; every other value reads the same for runs and agents.
+    const activity = status === 'pending' ? fromWorkflowAgentStatus(status) : fromWorkflowRunStatus(status);
+    return resolveWorkStatusTone({ kind: 'agent_activity', facts: { status: activity, word: '' } }).tone;
+}
+
 export const WorkflowStatusIcon = React.memo<{ status: WorkflowEntityStatus; size?: number }>(({ status, size = 16 }) => {
     const { theme } = useUnistyles();
-    const stateColors = theme.colors.state;
+    const color = workStatusGlyphColor(theme.colors, toneOf(status));
     switch (status) {
         case 'active':
-            return <ActivitySpinner size={iconMatchedSpinnerSize(size)} color={stateColors.info.foreground} />;
+            return <ActivitySpinner size={iconMatchedSpinnerSize(size)} color={color} />;
         case 'complete':
-            return <Icon name="check-circle" size={size} color={stateColors.success.foreground} />;
+            return <Icon name="check-circle" size={size} color={color} />;
         case 'failed':
-            return <Icon name="x-circle" size={size} color={stateColors.danger.foreground} />;
+            return <Icon name="x-circle" size={size} color={color} />;
         case 'blocked':
-            return <Icon name="warning-circle" size={size} color={stateColors.warning.foreground} />;
+            return <Icon name="warning-circle" size={size} color={color} />;
         case 'stopped':
         case 'cancelled':
-            return <Icon name="stop-circle" size={size} color={stateColors.neutral.foreground} />;
-        case 'pending':
-            return <Icon name="circle" size={size} color={stateColors.neutral.foreground} />;
+            return <Icon name="stop-circle" size={size} color={color} />;
         default:
-            return <Icon name="circle" size={size} color={stateColors.neutral.foreground} />;
+            return <Icon name="circle" size={size} color={color} />;
     }
 });
 WorkflowStatusIcon.displayName = 'WorkflowStatusIcon';

@@ -45,7 +45,14 @@ export type CliAccountServiceHomeEntryOutcome =
       homes: readonly AccountServiceDirectoryAdoptionTarget[];
       directoryAdoptionFailures?: readonly AccountServiceDirectoryAdoptionTarget[];
     }>
-  | Readonly<{ kind: 'account_connected_no_homes' }>
+  | Readonly<{
+      kind: 'account_connected_no_homes';
+      /**
+       * Present only when the signed-in service is itself a Home (the dual-role
+       * deployment), so the no-Homes state can offer it as a destination.
+       */
+      availableHome?: Readonly<{ canonicalServerUrl: string }>;
+    }>
   | Readonly<{ kind: 'explicit_target_not_linked'; homeServerIdentityId: string }>
   | Readonly<{ kind: 'direct_home_selected' }>
   | Readonly<{ kind: 'home_material_required'; homeServerIdentityId: string; profileId: string; reason: 'missing_material' | 'invalid_material' }>
@@ -132,6 +139,16 @@ export type CliAccountServiceHomeEntryPorts = Readonly<{
         kind: 'home_unavailable' | 'cancelled' | 'timed_out' | 'identity_mismatch' | 'failed';
       }>
   >;
+  /**
+   * Reports that the journey has entered the existing-device approval wait.
+   * The wait is a poll loop inside this coordinator, so the composing CLI
+   * surface cannot otherwise tell the user what is happening or when the
+   * request expires.
+   */
+  reportApprovalWait?(input: Readonly<{
+    homeServerIdentityId: string;
+    expiresAtMs: number;
+  }>): void;
   continueMachineAndService(input: Readonly<{
     homeServerIdentityId: string;
     profileId: string;
@@ -284,8 +301,16 @@ async function runCliAccountServiceHomeEntryWithSignal(
     ...(input.timeoutMs !== undefined ? { timeoutMs: input.timeoutMs } : {}),
   });
   let approvalPollCount = 1;
+  let approvalWaitReported = false;
   while (journey.kind === 'awaiting_approval') {
     if (signal.aborted) return { kind: 'cancelled' };
+    if (!approvalWaitReported) {
+      approvalWaitReported = true;
+      ports.reportApprovalWait?.({
+        homeServerIdentityId: journey.homeServerIdentityId,
+        expiresAtMs: journey.expiresAtMs,
+      });
+    }
     const nowMs = Date.now();
     const deadlineMs = Math.min(
       journey.expiresAtMs,

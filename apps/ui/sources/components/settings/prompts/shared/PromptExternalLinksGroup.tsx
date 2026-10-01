@@ -1,12 +1,10 @@
 import * as React from 'react';
-import { useRouter } from 'expo-router';
-import { useUnistyles } from 'react-native-unistyles';
+import { useRouter } from '@/components/appShell/workspace/destinationRoute';
 
 import type { PromptExternalLinkEntryV1 } from '@happier-dev/protocol';
 
 import { Item } from '@/components/ui/lists/Item';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
-import { ItemRowActions } from '@/components/ui/lists/ItemRowActions';
 import { useAllMachines, useSetting } from '@/sync/domains/state/storage';
 import { t } from '@/text';
 
@@ -22,7 +20,6 @@ export const PromptExternalLinksGroup = React.memo(function PromptExternalLinksG
     linkTestIDPrefix: string;
 }>) {
     const router = useRouter();
-    const { theme } = useUnistyles();
     const machines = useAllMachines();
     const promptExternalLinksV1 = useSetting('promptExternalLinksV1');
 
@@ -41,12 +38,12 @@ export const PromptExternalLinksGroup = React.memo(function PromptExternalLinksG
     };
 
     return (
-        <ItemGroup title={t('promptLibrary.externalAssets')}>
+        <ItemGroup title={t('promptLibrary.externalAssets')} description={t('promptLibrary.surface.externalLinksDescription')}>
             <Item
                 testID={props.manageItemTestID}
+                icon={<Icon name="cloud-arrow-up" />}
                 title={t('promptLibrary.manageExternalAssets')}
                 subtitle={props.manageItemSubtitle}
-                icon={<Icon name="cloud-arrow-up" size={20} color={theme.colors.accent.blue} />}
                 onPress={() => openManageScreen()}
             />
 
@@ -63,24 +60,10 @@ export const PromptExternalLinksGroup = React.memo(function PromptExternalLinksG
                     <Item
                         key={link.id}
                         testID={`${props.linkTestIDPrefix}.${index}`}
+                        icon={<Icon name="link" />}
                         title={title}
                         subtitle={subtitle}
-                        icon={<Icon name="link" size={20} color={theme.colors.text.secondary} />}
                         onPress={() => openManageScreen(link)}
-                        rightElement={(
-                            <ItemRowActions
-                                title={title}
-                                compactActionIds={['manage']}
-                                actions={[
-                                    {
-                                        id: 'manage',
-                                        title: t('promptLibrary.manageExternalAssets'),
-                                        icon: 'cloud-arrow-up',
-                                        onPress: () => openManageScreen(link),
-                                    },
-                                ]}
-                            />
-                        )}
                     />
                 );
             })}

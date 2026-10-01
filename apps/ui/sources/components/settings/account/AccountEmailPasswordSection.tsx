@@ -7,6 +7,7 @@ import { resolveHomeKeyChallengeExpectedAudience } from '@/auth/flows/resolveHom
 import { isLegacyAuthCredentials } from '@/auth/storage/tokenStorage';
 import { decodeBase64 } from '@/encryption/base64';
 import { PasswordField } from '@/components/account/auth/emailPassword/PasswordField';
+import { EmailPasswordSetupSteps, type EmailPasswordSetupStep } from '@/components/account/auth/emailPassword/EmailPasswordSetupSteps';
 import {
     createEmailPasswordDraft,
     describeEmailPasswordFailure,
@@ -18,13 +19,15 @@ import {
 } from '@/components/account/auth/emailPassword/emailPasswordFormModel';
 import { Icon } from '@/components/ui/icons/Icon';
 import { Item } from '@/components/ui/lists/Item';
+import { ItemLoadStateRows } from '@/components/ui/lists/ItemLoadStateRows';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
 import { ExpandableItem } from '@/components/ui/lists/ExpandableItem';
 import { RoundButton } from '@/components/ui/buttons/RoundButton';
 import { SettingAnchor } from '@/components/settings/shell/SettingRow';
 import { ACCOUNT_SECURITY_SETTINGS } from './accountSecuritySettings';
 import { FieldItem } from '@/components/ui/forms/FieldItem';
-import { Text, TextInput } from '@/components/ui/text/Text';
+import { Text } from '@/components/ui/text/Text';
+import { FieldTextInput } from '@/components/ui/forms/FieldTextInput';
 import type { WelcomeActionAdmission } from '@/components/onboarding/preAuth/WelcomeActionList';
 import { Modal } from '@/modal';
 import { useActionApprovalContinuation } from '@/components/approvals/useActionApprovalContinuation';
@@ -35,7 +38,7 @@ import {
     type AccountSecurityGetResponseV1,
 } from '@happier-dev/protocol';
 import { serverFetch } from '@/sync/http/client';
-import { captureActiveServerAccountScopeCurrentness } from '@/sync/domains/scope/activeServerAccountScope';
+import { captureActiveServerAccountScopeCurrentness, getActiveServerAccountScope } from '@/sync/domains/scope/activeServerAccountScope';
 import { useActiveServerSnapshot } from '@/hooks/server/useActiveServerSnapshot';
 import { useProfile } from '@/sync/domains/state/storage';
 import {
@@ -124,6 +127,8 @@ function resolveE2eePasswordExpectedAudience(serverId: string) {
  */
 export const AccountEmailPasswordSection = React.memo(function AccountEmailPasswordSection(props: Readonly<{
     client?: AccountSecurityActionClient;
+    /** Exact credential-bound Account when a routed Security screen already resolved it. */
+    accountId?: string;
     verificationToken?: string | null;
     connectIntent?: boolean;
     /**
@@ -136,12 +141,16 @@ export const AccountEmailPasswordSection = React.memo(function AccountEmailPassw
     const auth = useAuth();
     const profile = useProfile();
     const activeServer = useActiveServerSnapshot();
+    // The credential-bound active scope is authoritative while profile storage
+    // catches up after a Home switch. The profile remains the compatibility
+    // fallback for the initial unbound render and test fixtures.
+    const accountId = props.accountId ?? getActiveServerAccountScope()?.accountId ?? profile.id;
     const { theme } = useUnistyles();
     const client = React.useMemo(() => props.client ?? createAccountSecurityActionClient(), [props.client]);
     // Start from the last projection read for this Account and Home, so a page opened after the
     // Account overview does not re-announce facts it already has.
     const [state, setState] = React.useState<SectionState>(() => {
-        const initialScopeKey = auth.credentials ? accountSecurityProjectionScopeKey(activeServer.serverId, profile.id) : null;
+        const initialScopeKey = auth.credentials ? accountSecurityProjectionScopeKey(activeServer.serverId, accountId) : null;
         const known = initialScopeKey ? getLastKnownAccountSecurityProjection(initialScopeKey) : null;
         return known && initialScopeKey ? { kind: 'ready', scopeKey: initialScopeKey, projection: known } : { kind: 'loading' };
     });
@@ -161,7 +170,6 @@ export const AccountEmailPasswordSection = React.memo(function AccountEmailPassw
     const mountedRef = React.useRef(true);
     const operationAbortRef = React.useRef<AbortController | null>(null);
     const onProjectionRef = React.useRef(props.onProjection);
-    const effectMayHaveBegunRef = React.useRef(false);
     /**
      * A recovery secret supplied by the person for this mounted ceremony only.
      * It is never written to storage and is wiped when the section retires or
@@ -174,7 +182,7 @@ export const AccountEmailPasswordSection = React.memo(function AccountEmailPassw
     const passwordInputRef = React.useRef<{ focus(): void } | null>(null);
     const confirmPasswordInputRef = React.useRef<{ focus(): void } | null>(null);
     const scopeKey = auth.credentials
-        ? accountSecurityProjectionScopeKey(activeServer.serverId, profile.id)
+        ? accountSecurityProjectionScopeKey(activeServer.serverId, accountId)
         : null;
     const scopeKeyRef = React.useRef(scopeKey);
     const noopApprovalRefresh = React.useCallback(() => undefined, []);
@@ -206,7 +214,7 @@ export const AccountEmailPasswordSection = React.memo(function AccountEmailPassw
             unlockedSecretRef.current?.fill(0);
             unlockedSecretRef.current = null;
             const expected = {
-                accountId: profile.id,
+                accountId,
                 target: {
                     serverId: activeServer.serverId,
                     serverUrl: activeServer.serverUrl,
@@ -220,7 +228,7 @@ export const AccountEmailPasswordSection = React.memo(function AccountEmailPassw
                 }
             });
         };
-    }, [activeServer.serverId, activeServer.serverUrl, profile.id]);
+    }, [accountId, activeServer.serverId, activeServer.serverUrl]);
 
     React.useEffect(() => {
         // The ref starts with the first render's scope, so only a real
@@ -255,7 +263,7 @@ export const AccountEmailPasswordSection = React.memo(function AccountEmailPassw
         if (!props.verificationToken && !props.connectIntent) return;
         setPendingPlainPasswordOAuth(null);
         clearAccountPasswordEnrollmentExternalAuthCustody({
-            accountId: profile.id,
+            accountId,
             target: {
                 serverId: activeServer.serverId,
                 serverUrl: activeServer.serverUrl,
@@ -267,7 +275,7 @@ export const AccountEmailPasswordSection = React.memo(function AccountEmailPassw
     }, [
         activeServer.serverId,
         activeServer.serverUrl,
-        profile.id,
+        accountId,
         props.connectIntent,
         props.verificationToken,
     ]);
@@ -276,13 +284,13 @@ export const AccountEmailPasswordSection = React.memo(function AccountEmailPassw
         if (openForm === 'change_password') return;
         setPendingPlainPasswordOAuth(null);
         clearAccountPasswordEnrollmentExternalAuthCustody({
-            accountId: profile.id,
+            accountId,
             target: {
                 serverId: activeServer.serverId,
                 serverUrl: activeServer.serverUrl,
             },
         });
-    }, [activeServer.serverId, activeServer.serverUrl, openForm, profile.id]);
+    }, [accountId, activeServer.serverId, activeServer.serverUrl, openForm]);
 
     /**
      * Reads the projection through the shared owner. The mount read joins a read already in flight
@@ -330,20 +338,15 @@ export const AccountEmailPasswordSection = React.memo(function AccountEmailPassw
      * derivation, reauthentication, approval wait) still dispatches the
      * mutation after the person was told it was cancelled.
      *
-     * Once the mutation has been dispatched the Home may already have applied
-     * it. That outcome is not this control's to discard, so the operation is
-     * left to settle through its own truthful presentation.
+     * The HTTP owner decides whether cancellation interrupted an issued write.
+     * Its content-free unknown outcome must still be presented in this scope.
      */
     const cancelForm = React.useCallback(() => {
         const inFlight = operationAbortRef.current;
-        if (inFlight && effectMayHaveBegunRef.current) return;
         if (inFlight) {
-            // Retiring the pre-effect operation also releases the busy state it
-            // held: its own `finally` no longer owns the section once it is
-            // retired here, so it cannot clear (or leave latched) a later one.
+            // Keep admission until settlement so a replacement cannot overtake
+            // an issued write whose outcome is still unknown.
             inFlight.abort();
-            operationAbortRef.current = null;
-            setBusy(false);
         }
         closeForm();
     }, [closeForm]);
@@ -371,9 +374,8 @@ export const AccountEmailPasswordSection = React.memo(function AccountEmailPassw
     }, [activeServer.serverUrl, reload, scopeKey]);
 
     /**
-     * Marks the exact point after which the Home may already have applied a
-     * mutation. Everything before it is a pre-effect refusal that keeps its own
-     * typed cause.
+     * Stop deferred preparation before Action admission when cancelled. Only
+     * the transport can determine whether the subsequent write was issued.
      */
     const dispatchMutation = React.useCallback(async <T,>(
         signal: AbortSignal,
@@ -382,7 +384,6 @@ export const AccountEmailPasswordSection = React.memo(function AccountEmailPassw
         // An escape pressed during the deferred preparation stops here, so the
         // refusal stays a pre-effect one and nothing reaches the Home.
         signal.throwIfAborted();
-        effectMayHaveBegunRef.current = true;
         return await operation();
     }, []);
 
@@ -412,14 +413,14 @@ export const AccountEmailPasswordSection = React.memo(function AccountEmailPassw
                 && scopeKey
             ) {
                 clearAccountPasswordEnrollmentExternalAuthCustody({
-                    accountId: profile.id,
+                    accountId,
                     includingClaimed: true,
                     target,
                 });
                 requestApproval(createActionApprovalContinuation({
                     artifactId: cause.artifactId,
                     actionId: 'account.password.enroll',
-                    scope: { serverId: activeServer.serverId, accountId: profile.id },
+                    scope: { serverId: activeServer.serverId, accountId },
                     expectedInput: actionInput,
                     onSucceeded: completePlainPasswordEnrollment,
                     onFailed: reportPlainPasswordEnrollmentApprovalFailure,
@@ -437,14 +438,14 @@ export const AccountEmailPasswordSection = React.memo(function AccountEmailPassw
                 && cause.code === 'reauthentication_required'
             ) {
                 clearAccountPasswordEnrollmentExternalAuthCustody({
-                    accountId: profile.id,
+                    accountId,
                     target,
                 });
             }
             throw cause;
         }
         clearAccountPasswordEnrollmentExternalAuthCustody({
-            accountId: profile.id,
+            accountId,
             target,
         });
         return 'completed';
@@ -454,7 +455,7 @@ export const AccountEmailPasswordSection = React.memo(function AccountEmailPassw
         client,
         completePlainPasswordEnrollment,
         dispatchMutation,
-        profile.id,
+        accountId,
         reportPlainPasswordEnrollmentApprovalFailure,
         requestApproval,
         scopeKey,
@@ -494,7 +495,7 @@ export const AccountEmailPasswordSection = React.memo(function AccountEmailPassw
         }
         if (session.kind !== 'completed') return false;
         const reauthentication = await readAccountPasswordEnrollmentExternalAuthProof({
-            accountId: profile.id,
+            accountId,
             currentCredentials,
             target: pending.target,
         });
@@ -514,7 +515,7 @@ export const AccountEmailPasswordSection = React.memo(function AccountEmailPassw
             signal,
         );
         return submission === 'completed';
-    }, [auth.credentials, profile.id, scopeKey, submitPreparedPlainPasswordEnrollment]);
+    }, [accountId, auth.credentials, scopeKey, submitPreparedPlainPasswordEnrollment]);
 
     const problemMessage = problem ? resolveEmailPasswordProblemMessage(problem) : null;
     const outcomeMessage = outcome === 'set_up'
@@ -563,12 +564,12 @@ export const AccountEmailPasswordSection = React.memo(function AccountEmailPassw
     ) => {
         if (busy || approvalPending || !scopeKey) return;
         const requestedScopeKey = scopeKey;
+        const requestedForm = openForm;
         const controller = new AbortController();
         const accountLifetime = captureActiveServerAccountScopeCurrentness();
         const retirement = accountLifetime.onRetire(() => controller.abort());
         operationAbortRef.current?.abort();
         operationAbortRef.current = controller;
-        effectMayHaveBegunRef.current = false;
         // A previous outcome is no longer the current truth once new work starts.
         setOutcome(null);
         setBusy(true);
@@ -577,14 +578,16 @@ export const AccountEmailPasswordSection = React.memo(function AccountEmailPassw
             await operation(controller.signal);
             if (!accountLifetime.isCurrent() || scopeKeyRef.current !== requestedScopeKey) controller.abort();
         } catch (cause) {
-            if (mountedRef.current && !controller.signal.aborted && scopeKeyRef.current === requestedScopeKey) {
+            const unknownOutcome = cause instanceof HappyError && cause.code === 'outcome_unknown';
+            if (mountedRef.current && accountLifetime.isCurrent() && scopeKeyRef.current === requestedScopeKey
+                && (!controller.signal.aborted || unknownOutcome)) {
                 const nextProblem = describeEmailPasswordFailure(cause, {
                     // Named-Home copy ("disabled on X", "update X") is otherwise
                     // rendered with an empty placeholder from this surface.
                     homeLabel: activeServer.serverUrl,
                     ...(credentialField ? { credentialField } : {}),
-                    ...(effectMayHaveBegunRef.current ? { effectMayHaveBegun: true } : {}),
                 });
+                if (unknownOutcome) setOpenForm(requestedForm);
                 setProblem(nextProblem);
                 focusProblem(nextProblem);
                 // The Home owns what actually happened. Re-read it rather than
@@ -598,7 +601,7 @@ export const AccountEmailPasswordSection = React.memo(function AccountEmailPassw
                 if (mountedRef.current) setBusy(false);
             }
         }
-    }, [activeServer.serverUrl, approvalPending, busy, focusProblem, reload, scopeKey]);
+    }, [activeServer.serverUrl, approvalPending, busy, focusProblem, openForm, reload, scopeKey]);
 
     React.useEffect(() => {
         const verificationToken = props.verificationToken;
@@ -617,7 +620,7 @@ export const AccountEmailPasswordSection = React.memo(function AccountEmailPassw
         void run(async (signal) => {
             const prepared =
                 await readAccountPasswordEnrollmentExternalAuthProof({
-                    accountId: profile.id,
+                    accountId,
                     currentCredentials,
                     target: {
                         serverId: activeServer.serverId,
@@ -638,7 +641,7 @@ export const AccountEmailPasswordSection = React.memo(function AccountEmailPassw
         activeServer.serverUrl,
         auth.credentials,
         completePlainPasswordEnrollment,
-        profile.id,
+        accountId,
         props.verificationToken,
         run,
         scopeKey,
@@ -647,8 +650,6 @@ export const AccountEmailPasswordSection = React.memo(function AccountEmailPassw
     ]);
 
     const currentCredentials = auth.credentials;
-    // A retry keeps the unavailable row on screen; only the answer replaces it.
-    const [retrying, setRetrying] = React.useState(false);
     /**
      * Which surface the current problem belongs to. One `problem` serves every
      * operation, so the pending-confirmation body and an open form in another
@@ -660,50 +661,32 @@ export const AccountEmailPasswordSection = React.memo(function AccountEmailPassw
     if (state.kind === 'loading' || state.scopeKey !== scopeKey) {
         // The rows exist before their values do: render them now so nothing
         // below this section moves when the projection lands.
+        // (The section's `SettingSection` answers search for these rows until they render.)
         return (
             <ItemGroup title={t('settingsAccount.nativePassword.securitySectionTitle')}>
-                <SettingAnchor setting={ACCOUNT_SECURITY_SETTINGS.settings.signInEmail}>
-                    <Item
-                        testID="settings-account-sign-in-email-loading"
-                        title={t('settingsAccount.nativePassword.signInEmail')}
-                        detail={t('common.loading')}
-                        mode="info"
-                        showChevron={false}
-                    />
-                </SettingAnchor>
-                <SettingAnchor setting={ACCOUNT_SECURITY_SETTINGS.settings.password}>
-                    <Item
-                        testID="settings-account-password-loading"
-                        title={t('settingsAccount.nativePassword.password')}
-                        detail={t('common.loading')}
-                        mode="info"
-                        showChevron={false}
-                    />
-                </SettingAnchor>
+                <ItemLoadStateRows
+                    testID="settings-account-security-loading"
+                    state={{ kind: 'loading' }}
+                    rows={2}
+                    lines={1}
+                    accessibilityLabel={t('settingsAccount.nativePassword.securitySectionTitle')}
+                />
             </ItemGroup>
         );
     }
 
     if (state.kind === 'unavailable') {
-        const retry = async () => {
-            if (retrying) return;
-            setRetrying(true);
-            try {
-                await reload();
-            } finally {
-                if (mountedRef.current) setRetrying(false);
-            }
-        };
+        // One failure row for the read: what failed, and Retry, which re-reads it. The row stays
+        // until the answer lands (Retry shows its own progress), so the section never blanks.
         return (
             <ItemGroup title={t('settingsAccount.nativePassword.securitySectionTitle')}>
-                <Item
+                <ItemLoadStateRows
                     testID="settings-account-security-unavailable"
-                    title={t('settingsAccount.nativePassword.securitySectionTitle')}
-                    subtitle={resolveEmailPasswordProblemMessage(state.problem)}
-                    icon={<Icon name="warning" size={24} color={theme.colors.status.error} />}
-                    detail={retrying ? undefined : t('common.retry')}
-                    loading={retrying}
-                    onPress={() => { void retry(); }}
+                    state={{
+                        kind: 'failed',
+                        reason: resolveEmailPasswordProblemMessage(state.problem),
+                        onRetry: () => reload(),
+                    }}
                 />
             </ItemGroup>
         );
@@ -852,13 +835,13 @@ export const AccountEmailPasswordSection = React.memo(function AccountEmailPassw
                     serverUrl: activeServer.serverUrl,
                 };
                 let reauthentication = await readAccountPasswordEnrollmentExternalAuthProof({
-                    accountId: profile.id,
+                    accountId,
                     currentCredentials,
                     target,
                 });
                 if (!reauthentication) {
                     const started = await startAccountPasswordEnrollmentExternalAuth({
-                        accountId: profile.id,
+                        accountId,
                         currentCredentials,
                         linkedProviderIds: (profile.linkedProviders ?? []).map((linked) => linked.id),
                         normalizedNativeEmail: validated.normalizedEmail,
@@ -934,7 +917,7 @@ export const AccountEmailPasswordSection = React.memo(function AccountEmailPassw
                             expectedCredentialRevision: revision,
                             normalizedNativeEmail: normalizeVerifiedEmail(projection.nativeEmail ?? '')?.normalizedEmail ?? null,
                             secret,
-                            accountId: profile.id,
+                            accountId,
                             expectedAudience,
                             newPassword: validated.password,
                             signal,
@@ -945,7 +928,7 @@ export const AccountEmailPasswordSection = React.memo(function AccountEmailPassw
                             email: validated.email,
                             normalizedNativeEmail: validated.normalizedEmail,
                             secret,
-                            accountId: profile.id,
+                            accountId,
                             expectedAudience,
                             newPassword: validated.password,
                             signal,
@@ -983,7 +966,7 @@ export const AccountEmailPasswordSection = React.memo(function AccountEmailPassw
                         expectedCredentialRevision: revision,
                         normalizedNativeEmail: normalizeVerifiedEmail(projection.nativeEmail ?? '')?.normalizedEmail ?? null,
                         secret,
-                        accountId: profile.id,
+                        accountId,
                         expectedAudience,
                     });
                     await dispatchMutation(signal, () => client.removeE2eePassword(request, signal));
@@ -1008,7 +991,7 @@ export const AccountEmailPasswordSection = React.memo(function AccountEmailPassw
     const cancelPasswordForm = () => {
         if (!enrolled && !e2ee && props.verificationToken) {
             clearAccountPasswordEnrollmentExternalAuthCustody({
-                accountId: profile.id,
+                accountId,
                 includingClaimed: true,
                 target: {
                     serverId: activeServer.serverId,
@@ -1020,7 +1003,21 @@ export const AccountEmailPasswordSection = React.memo(function AccountEmailPassw
     };
 
     // --- Row disclosure: each row expands in place to its form or its result.
-    const emailExpanded = openForm === 'change_email' || emailPending;
+    /**
+     * With no sign-in email yet, the email and the password are added together: the Home links the
+     * first address only through the mailbox-first password setup (an email change needs a current
+     * address to change). The email row hosts that one flow, step by step, and the Password row
+     * says it needs the email first and leads there.
+     */
+    const setsUpFirstEmail = !enrolled && projection.nativeEmail === null;
+    const setupExpanded = openForm === 'change_password' || passwordPending;
+    const setupStep: EmailPasswordSetupStep = openForm === 'change_password' && enrollmentVerificationToken
+        ? 'password'
+        : passwordPending ? 'confirm' : 'email';
+    // Until the Home reports the new password, the setup's result is announced where the setup ran.
+    const emailExpanded = setsUpFirstEmail
+        ? setupExpanded || outcomeMessage !== null
+        : openForm === 'change_email' || emailPending;
     const passwordExpanded = openForm === 'change_password' || passwordPending || outcomeMessage !== null;
     const removeExpanded = openForm === 'remove_password';
 
@@ -1155,33 +1152,24 @@ export const AccountEmailPasswordSection = React.memo(function AccountEmailPassw
                     ) : null}
                     {!enrolled && !removing ? (
                         <FieldItem label={t('settingsAccount.nativePassword.email')}>
-                            <TextInput
+                            <FieldTextInput
                                 ref={emailInputRef as never}
                                 testID="settings-account-password-enroll-email"
                                 accessibilityLabel={t('settingsAccount.nativePassword.email')}
-                                aria-invalid={Boolean(fieldProblem('email'))}
-                                style={[styles.input, {
-                                    color: theme.colors.text.primary,
-                                    borderColor: fieldProblem('email') ? theme.colors.status.error : theme.colors.border.default,
-                                }]}
+                                error={fieldProblem('email')}
                                 placeholder={t('settingsAccount.nativePassword.emailPlaceholder')}
-                                placeholderTextColor={theme.colors.text.secondary}
                                 value={draft.email}
                                 onChangeText={(email) => setDraft((current) => ({ ...current, email }))}
-                                autoCapitalize="none"
-                                autoCorrect={false}
                                 keyboardType="email-address"
                                 inputMode="email"
                                 autoComplete="email"
                                 textContentType="username"
                                 editable={fieldsEditable}
                                 returnKeyType={collectsNewPassword ? 'next' : 'go'}
-                                submitBehavior="submit"
                                 onSubmitEditing={collectsNewPassword
                                     ? () => passwordInputRef.current?.focus()
                                     : () => { void submitPassword(); }}
                             />
-                            {fieldProblem('email') ? <FieldError message={fieldProblem('email')!} /> : null}
                         </FieldItem>
                     ) : null}
                     {collectsNewPassword ? (
@@ -1245,6 +1233,62 @@ export const AccountEmailPasswordSection = React.memo(function AccountEmailPassw
         );
     };
 
+    const renderOutcome = () => outcomeMessage ? (
+        <View style={styles.body}>
+            <View style={styles.notice}>
+                <Icon name="check" size={16} color={theme.colors.state.success.foreground} />
+                <Text
+                    testID="settings-account-password-outcome"
+                    accessibilityRole="alert"
+                    accessibilityLiveRegion="polite"
+                    style={[styles.noticeText, { color: theme.colors.state.success.foreground }]}
+                >{outcomeMessage}</Text>
+            </View>
+        </View>
+    ) : null;
+
+    const openSetupAtEmail = () => {
+        if (!setupExpanded) setPasswordExpanded(true);
+        requestAnimationFrame(() => emailInputRef.current?.focus());
+    };
+
+    if (setsUpFirstEmail) {
+        return (
+            <ItemGroup title={t('settingsAccount.nativePassword.securitySectionTitle')}>
+                <SettingAnchor setting={ACCOUNT_SECURITY_SETTINGS.settings.signInEmail}>
+                    <ExpandableItem
+                        testID="settings-account-sign-in-email-row"
+                        expanded={emailExpanded}
+                        onExpandedChange={setPasswordExpanded}
+                        header={({ headerProps }) => (
+                            <Item
+                                {...headerProps}
+                                testID="settings-account-sign-in-email"
+                                title={t('settingsAccount.nativePassword.signInEmail')}
+                                detail={t('settingsAccount.nativePassword.signInEmailNotSet')}
+                            />
+                        )}
+                    >
+                        {setupExpanded ? <EmailPasswordSetupSteps step={setupStep} /> : null}
+                        {renderOutcome()}
+                        {passwordPending ? renderPendingBody() : null}
+                        {openForm === 'change_password' ? renderPasswordForm() : null}
+                    </ExpandableItem>
+                </SettingAnchor>
+                <SettingAnchor setting={ACCOUNT_SECURITY_SETTINGS.settings.password}>
+                    <Item
+                        testID="settings-account-password"
+                        title={t('settingsAccount.nativePassword.password')}
+                        detail={t('settingsAccount.nativePassword.passwordNeedsEmail')}
+                        accessibilityHint={t('settingsAccount.nativePassword.passwordNeedsEmailHint')}
+                        showChevron={false}
+                        onPress={openSetupAtEmail}
+                    />
+                </SettingAnchor>
+            </ItemGroup>
+        );
+    }
+
     return (
         <ItemGroup title={t('settingsAccount.nativePassword.securitySectionTitle')}>
             <SettingAnchor setting={ACCOUNT_SECURITY_SETTINGS.settings.signInEmail}>
@@ -1269,31 +1313,22 @@ export const AccountEmailPasswordSection = React.memo(function AccountEmailPassw
                                     label={t('settingsAccount.nativePassword.email')}
                                     supportingText={t('settingsAccount.nativePassword.changeEmailExplanation')}
                                 >
-                                    <TextInput
+                                    <FieldTextInput
                                         ref={emailInputRef as never}
                                         testID="settings-account-change-email-input"
                                         accessibilityLabel={t('settingsAccount.nativePassword.email')}
-                                        aria-invalid={Boolean(fieldProblem('email'))}
-                                        style={[styles.input, {
-                                            color: theme.colors.text.primary,
-                                            borderColor: fieldProblem('email') ? theme.colors.status.error : theme.colors.border.default,
-                                        }]}
+                                        error={fieldProblem('email')}
                                         placeholder={t('settingsAccount.nativePassword.emailPlaceholder')}
-                                        placeholderTextColor={theme.colors.text.secondary}
                                         value={draft.email}
                                         onChangeText={(email) => setDraft((current) => ({ ...current, email }))}
-                                        autoCapitalize="none"
-                                        autoCorrect={false}
                                         keyboardType="email-address"
                                         inputMode="email"
                                         autoComplete="email"
                                         textContentType="username"
                                         editable={fieldsEditable}
                                         returnKeyType="go"
-                                        submitBehavior="submit"
                                         onSubmitEditing={() => { void submitEmailForm(); }}
                                     />
-                                    {fieldProblem('email') ? <FieldError message={fieldProblem('email')!} /> : null}
                                 </FieldItem>
                             </View>
                             {emailFormError ? (
@@ -1334,19 +1369,7 @@ export const AccountEmailPasswordSection = React.memo(function AccountEmailPassw
                         />
                     )}
                 >
-                    {outcomeMessage ? (
-                        <View style={styles.body}>
-                            <View style={styles.notice}>
-                                <Icon name="check" size={16} color={theme.colors.state.success.foreground} />
-                                <Text
-                                    testID="settings-account-password-outcome"
-                                    accessibilityRole="alert"
-                                    accessibilityLiveRegion="polite"
-                                    style={[styles.noticeText, { color: theme.colors.state.success.foreground }]}
-                                >{outcomeMessage}</Text>
-                            </View>
-                        </View>
-                    ) : null}
+                    {renderOutcome()}
                     {passwordPending ? renderPendingBody() : null}
                     {openForm === 'change_password' ? renderPasswordForm() : null}
                 </ExpandableItem>
@@ -1375,14 +1398,6 @@ export const AccountEmailPasswordSection = React.memo(function AccountEmailPassw
 });
 
 /** An error that belongs to one field, announced beneath it. */
-function FieldError(props: Readonly<{ message: string }>) {
-    const { theme } = useUnistyles();
-    return (
-        <Text accessibilityRole="alert" accessibilityLiveRegion="polite"
-            style={[styles.fieldError, { color: theme.colors.status.error }]}>{props.message}</Text>
-    );
-}
-
 /** An error with no field of its own in this form, announced above the actions. */
 function FormError(props: Readonly<{ message: string; testID?: string }>) {
     const { theme } = useUnistyles();
@@ -1403,13 +1418,4 @@ const styles = StyleSheet.create((theme) => ({
     actions: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: 8 },
     notice: { flexDirection: 'row', alignItems: 'flex-start', gap: 8, maxWidth: 560 },
     noticeText: { flex: 1, fontSize: 14, lineHeight: 20, color: theme.colors.text.secondary },
-    fieldError: { fontSize: 12, marginTop: 5 },
-    input: {
-        borderWidth: 1,
-        borderRadius: 12,
-        backgroundColor: theme.colors.surface.base,
-        paddingHorizontal: 12,
-        paddingVertical: 10,
-        minHeight: Platform.OS === 'android' ? 48 : 44,
-    },
 }));

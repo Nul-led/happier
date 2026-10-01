@@ -2,18 +2,16 @@ import * as React from 'react';
 
 import type { SettingsBelowFoldSectionsProps } from '@/components/settings/settingsBelowFoldSectionTypes';
 import { SettingsCatalogOverviewGroup } from '@/components/settings/SettingsCatalogOverviewGroup';
+import { Icon } from '@/components/ui/icons/Icon';
 import { Item } from '@/components/ui/lists/Item';
 import { SETTINGS_ROUTES } from '@/components/settings/catalog/routes';
 import { t } from '@/text';
-import { Icon } from '@/components/ui/icons/Icon';
 
 type SettingsSessionsBehaviorSectionProps = Readonly<Pick<SettingsBelowFoldSectionsProps,
     | 'automationsNeedLocalEnablement'
     | 'onNavigate'
     | 'router'
     | 'showAutomations'
-    | 'terminalUseTmux'
-    | 'theme'
 >>;
 
 export const SettingsSessionsBehaviorSection = React.memo(function SettingsSessionsBehaviorSection({
@@ -21,30 +19,28 @@ export const SettingsSessionsBehaviorSection = React.memo(function SettingsSessi
     onNavigate,
     router,
     showAutomations,
-    terminalUseTmux,
-    theme,
 }: SettingsSessionsBehaviorSectionProps) {
     return (
         <SettingsCatalogOverviewGroup
             groupId="groupSessionsBehavior"
             onNavigate={onNavigate}
             router={router}
-            theme={theme}
             resolveSubtitle={(page, defaultSubtitle) => (
                 page.id === 'session'
-                    ? terminalUseTmux
-                        ? t('settings.sessionSubtitleTmuxEnabled')
-                        : t('settings.sessionSubtitleMessageSendingAndTmux')
+                    ? t('settingsSessionPages.runtime.pageDescription')
                     : defaultSubtitle
             )}
             append={showAutomations ? (
                 <Item
-                    title={t('settings.automations')}
+                    testID="settings-workflow-run-settings"
+                    title={t('workflows.destination.runSettingsPage.title')}
+                    icon={<Icon name="tree-structure" />}
                     subtitle={automationsNeedLocalEnablement
                         ? t('settingsFeatures.expAutomationsSubtitle')
-                        : t('settings.automationsSubtitle')}
-                    icon={<Icon name="timer" size={29} color={theme.colors.accent.blue} />}
-                    onPress={() => router.push(automationsNeedLocalEnablement ? SETTINGS_ROUTES.features : '/automations')}
+                        : t('workflows.destination.runSettingsPage.description')}
+                    // Workflow run settings live under the Workflows destination (FIN 04 §3.5); while
+                    // Automations is off on this device the row leads to the switch that turns it on.
+                    onPress={() => router.push(automationsNeedLocalEnablement ? SETTINGS_ROUTES.features : '/workflows/settings')}
                 />
             ) : null}
         />

@@ -58,7 +58,7 @@ function authorization(modelId: string): ExternalAuthorization {
     observationAuthorizationFingerprint: 'observation-authorization:v1:test',
     binding: {
       v: 1,
-      agentTargetKey: 'backend:claude',
+      agentTargetKey: 'agent:happier.agent.claude/claude',
       selection: {
         connectionId,
         model: { id: modelId, name: modelId },

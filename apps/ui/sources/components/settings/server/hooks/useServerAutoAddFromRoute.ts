@@ -1,128 +1,84 @@
 import * as React from 'react';
 
 import { t } from '@/text';
-import { getServerFeaturesSnapshot } from '@/sync/api/capabilities/serverFeaturesClient';
-import { validateServerUrl } from '@/sync/domains/server/serverConfig';
 import {
-    getServerProfileById,
-    listServerProfiles,
-    removeServerProfile,
-    adoptHomeProfile,
-} from '@/sync/domains/server/serverProfiles';
-import { canonicalizeServerUrl } from '@/sync/domains/server/url/serverUrlCanonical';
-import { canSafelyAutoAdoptCanonicalServerUrl } from '@/sync/domains/server/url/serverUrlClassification';
+    connectHomeAtAddress,
+    type ConnectHomeAtAddressResult,
+} from '@/sync/ops/home/connectHomeAtAddress';
+import {
+    confirmCanonicalHomeUrl,
+    confirmInsecureHomeHttp,
+    homeConnectFailureMessage,
+} from '@/components/homes/add/homeConnectPresentation';
 import { fireAndForget } from '@/utils/system/fireAndForget';
 
-function normalizeUrl(raw: string): string {
-    return canonicalizeServerUrl(raw);
-}
-
-function defaultServerName(rawUrl: string): string {
-    const url = normalizeUrl(rawUrl);
-    try {
-        const parsed = new URL(url);
-        const host = parsed.hostname;
-        if (!host) return url;
-        return parsed.port ? `${host}:${parsed.port}` : host;
-    } catch {
-        return url;
-    }
-}
+type RouteHomeConnectionState = Readonly<{
+    isConnecting: boolean;
+    result: ConnectHomeAtAddressResult | null;
+    error: string | null;
+}>;
 
 export function useServerAutoAddFromRoute(params: Readonly<{
     enabled: boolean;
-    url: string | null;
-    validateServerReachable: (url: string) => Promise<boolean>;
-    setError: (value: string | null) => void;
-    onSwitchServerById: (serverId: string, opts?: { normalizeRoute?: boolean }) => Promise<void>;
-    onAfterSuccess: () => void;
-    source: 'url' | 'manual';
-}>) {
+    address: string | null | undefined;
+    source: 'url' | 'manual' | 'notification';
+    confirmInsecureHttp?: () => Promise<boolean>;
+    confirmCanonicalUrl?: () => Promise<boolean>;
+}>): RouteHomeConnectionState {
     const handledRef = React.useRef(false);
+    const controllerRef = React.useRef<AbortController | null>(null);
+    const mountedRef = React.useRef(true);
+    const [state, setState] = React.useState<RouteHomeConnectionState>({
+        isConnecting: false,
+        result: null,
+        error: null,
+    });
 
     React.useEffect(() => {
-        if (!params.enabled) return;
-        if (!params.url) return;
-        if (handledRef.current) return;
+        mountedRef.current = true;
+        return () => {
+            mountedRef.current = false;
+            controllerRef.current?.abort();
+        };
+    }, []);
+
+    React.useEffect(() => {
+        if (!params.enabled || !params.address || handledRef.current) return;
         handledRef.current = true;
+        const address = params.address;
+        const controller = new AbortController();
+        controllerRef.current = controller;
+        setState({ isConnecting: true, result: null, error: null });
 
         fireAndForget((async () => {
-            const url = params.url;
-            if (!url) return;
-            const validation = validateServerUrl(url);
-            if (!validation.valid) {
-                params.setError(validation.error || t('errors.invalidFormat'));
-                return;
-            }
-
-            const isValid = await params.validateServerReachable(url);
-            if (!isValid) return;
-
-            const normalized = normalizeUrl(url);
-            const preexistingProfileIds = new Set(
-                listServerProfiles().map((profile) => profile.id),
-            );
-            const created = await adoptHomeProfile({
-                descriptor: {
-                    serverUrl: normalized,
-                    displayName: defaultServerName(normalized),
-                },
-                source: params.source,
-                preserveUserLabel: true,
-            });
-            const createdForThisAttempt =
-                !preexistingProfileIds.has(created.id);
-
-            let profile = created;
+            let result: ConnectHomeAtAddressResult;
             try {
-                const featuresSnapshot = await getServerFeaturesSnapshot({ serverId: created.id, force: true, timeoutMs: 1000 });
-                if (featuresSnapshot.status === 'ready') {
-                    const advertisedRaw = featuresSnapshot.features.capabilities?.server?.canonicalServerUrl;
-                    const advertised = typeof advertisedRaw === 'string' ? normalizeUrl(advertisedRaw) : '';
-                    const learnedIdentity = featuresSnapshot.features.capabilities?.serverIdentity?.serverIdentityId
-                        ?? getServerProfileById(created.id)?.serverIdentityId
-                        ?? undefined;
-                    if (
-                        advertised
-                        && (
-                            advertised === created.serverUrl
-                            || canSafelyAutoAdoptCanonicalServerUrl({ currentUrl: created.serverUrl, advertisedUrl: advertised })
-                        )
-                    ) {
-                        const canonical = await adoptHomeProfile({
-                            descriptor: {
-                                serverUrl: created.serverUrl,
-                                canonicalServerUrl: advertised,
-                                displayName: created.name,
-                                ...(learnedIdentity ? { homeServerIdentityId: learnedIdentity } : {}),
-                            },
-                            source: params.source,
-                            preserveUserLabel: true,
-                        });
-                        if (
-                            createdForThisAttempt
-                            && canonical.id !== created.id
-                        ) {
-                            try {
-                                await removeServerProfile(created.id);
-                            } catch {
-                                // ignore; best-effort cleanup
-                            }
-                        }
-                        profile = canonical;
-                    }
+                result = await connectHomeAtAddress({
+                    serverUrl: address,
+                    source: params.source,
+                    signal: controller.signal,
+                    confirmInsecureHttp: params.confirmInsecureHttp ?? confirmInsecureHomeHttp,
+                    confirmCanonicalUrl: params.confirmCanonicalUrl ?? confirmCanonicalHomeUrl,
+                });
+            } catch (error) {
+                if (controller.signal.aborted || (error instanceof Error && error.name === 'AbortError')) {
+                    if (mountedRef.current) setState({ isConnecting: false, result: null, error: null });
+                    return;
                 }
-                profile = getServerProfileById(profile.id) ?? profile;
-            } catch {
-                // best-effort
+                throw error;
             }
-
-            params.onAfterSuccess();
+            if (!mountedRef.current) return;
+            const error = homeConnectFailureMessage(result);
+            setState({ isConnecting: false, result, error });
         })(), {
             tag: 'useServerAutoAddFromRoute.autoAdd',
             onError: () => {
-                params.setError(t('errors.operationFailed'));
+                if (!mountedRef.current) return;
+                const message = t('errors.operationFailed');
+                setState({ isConnecting: false, result: null, error: message });
             },
         });
     }, [params]);
+
+    return state;
 }

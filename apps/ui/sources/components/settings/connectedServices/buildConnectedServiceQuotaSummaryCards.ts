@@ -1,3 +1,5 @@
+import type { MeterTone } from '@/components/ui/lists/MeterBar';
+import { resolveQuotaMeterTone } from '@/sync/domains/connectedServices/resolveQuotaTone';
 import { t } from '@/text';
 
 import type { ConnectedServiceQuotaSummary } from '@/hooks/server/connectedServices/useConnectedServiceQuotaSummaries';
@@ -6,8 +8,12 @@ export type ConnectedServiceQuotaSummaryCardMeter = Readonly<{
     key: string;
     label: string;
     remainingPct: number | null;
+    /** When the window resets (epoch ms), when the provider reports it. */
+    resetsAt: number | null;
     valueText: string;
     status: ConnectedServiceQuotaSummary['meters'][number]['status'];
+    /** Health colour of the meter, from the one quota tone owner. */
+    tone: MeterTone;
 }>;
 
 export type ConnectedServiceQuotaSummaryCard = Readonly<{
@@ -45,8 +51,10 @@ export function buildConnectedServiceQuotaSummaryCards(
                 key: meter.meterId,
                 label: meter.label,
                 remainingPct: meter.remainingPct,
+                resetsAt: meter.resetsAt,
                 valueText: formatRemainingPct(meter.remainingPct),
                 status: meter.status,
+                tone: resolveQuotaMeterTone(meter),
             })),
         } satisfies ConnectedServiceQuotaSummaryCard;
     });

@@ -1,40 +1,45 @@
 import * as React from 'react';
-import { useRouter } from 'expo-router';
+import { useRouter } from '@/components/appShell/workspace/destinationRoute';
 
 import { Item } from '@/components/ui/lists/Item';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
 import { useTeamPagedList } from '@/hooks/teams/useTeamPagedList';
 import { TEAMS_ACCOUNT_CHANGE_ENTITY_ID_V1 } from '@happier-dev/protocol';
+import type { TeamDirectoryPeoplePageV1 } from '@happier-dev/protocol/teams';
+import type { ActionApprovalRegistration } from '@/components/approvals/actionApprovalContinuation';
 import type { ServerAccountScope } from '@/sync/domains/scope/serverAccountScope';
 import type { TeamAddress } from '@/sync/domains/teams/teamAddress';
+import type { HomeDomainFailure } from '@/sync/api/home/homeServerActionTransport';
 import { t } from '@/text';
 
 import { teamMemberDetailPath } from '../teamsRoutes';
-import { createIdentityAdministrationClient } from './identityAdministrationClient';
+import { teamReadFailureLabel } from '../teamMutationPresentation';
+import { createIdentityAdministrationClient, executeIdentityAdministrationRead } from './identityAdministrationClient';
 
 export function useDirectoryPeopleList(props: Readonly<{
     scope: ServerAccountScope;
     address: TeamAddress;
     sourceId: string;
     enabled?: boolean;
+    requestApproval?: (registration: ActionApprovalRegistration) => void;
 }>) {
     const client = React.useMemo(
-        () => createIdentityAdministrationClient(props.scope),
-        [props.scope.accountId, props.scope.serverId],
+        () => createIdentityAdministrationClient(props.scope, { onApprovalPending: props.requestApproval }),
+        [props.requestApproval, props.scope.accountId, props.scope.serverId],
     );
-    const loadPage = React.useCallback(async (cursor: string | null) => {
-        const result = await client.executeDirectory('teams.directory.people.list', {
+    const loadPage = React.useCallback(async (cursor: string | null, signal: AbortSignal) => {
+        const result = await executeIdentityAdministrationRead<TeamDirectoryPeoplePageV1>((options) => client.executeDirectory('teams.directory.people.list', {
             v: 1,
             teamId: props.address.teamId,
             sourceId: props.sourceId,
             limit: 50,
             cursor,
-        });
+        }, options), signal);
         return result.ok
             ? { kind: 'succeeded' as const, value: result.value }
             : {
                 kind: 'failed' as const,
-                failure: { kind: 'unknown' as const, retryable: result.failure.retryable, code: null },
+                failure: result.failure.domainFailure ?? { kind: 'unknown' as const, retryable: result.failure.retryable, code: null },
             };
     }, [client, props.address.teamId, props.sourceId]);
     return useTeamPagedList({
@@ -46,10 +51,22 @@ export function useDirectoryPeopleList(props: Readonly<{
     });
 }
 
+export function DirectoryListFailure(props: Readonly<{
+    testID: string;
+    failure: HomeDomainFailure;
+    retry: () => Promise<void>;
+}>) {
+    return <>
+        <Item testID={`${props.testID}-error`} title={teamReadFailureLabel(props.failure)} accessibilityLiveRegion="polite" showChevron={false} />
+        {props.failure.retryable ? <Item testID={`${props.testID}-retry`} title={t('common.retry')} onPress={() => void props.retry()} showChevron={false} /> : null}
+    </>;
+}
+
 export const DirectoryPeopleList = React.memo(function DirectoryPeopleList(props: Readonly<{
     scope: ServerAccountScope;
     address: TeamAddress;
     sourceId: string;
+    requestApproval?: (registration: ActionApprovalRegistration) => void;
 }>) {
     const router = useRouter();
     const people = useDirectoryPeopleList(props);
@@ -59,8 +76,8 @@ export const DirectoryPeopleList = React.memo(function DirectoryPeopleList(props
             <ItemGroup title={t('teams.authentication.directory.people.section')}>
                 {people.status === 'loading' && people.rows.length === 0 ? (
                     <Item title={t('common.loading')} loading showChevron={false} />
-                ) : people.rows.length === 0 ? (
-                    <Item title={t('teams.authentication.directory.people.empty')} showChevron={false} />
+                ) : people.rows.length === 0 && !people.error ? (
+                    <Item testID="directory-people-empty" title={t('teams.authentication.directory.people.empty')} showChevron={false} />
                 ) : people.rows.map((person) => {
                     const membershipId = person.accountBinding.state === 'bound'
                         ? person.accountBinding.teamMembershipId
@@ -87,18 +104,11 @@ export const DirectoryPeopleList = React.memo(function DirectoryPeopleList(props
                 })}
             </ItemGroup>
             {people.error ? (
-                <ItemGroup footer={people.error.retryable ? t('teams.unavailable.offline') : t('identityAdministration.error')}>
-                    {people.error.retryable ? (
-                        <Item
-                            testID="directory-people-retry"
-                            title={t('common.retry')}
-                            onPress={() => void people.reload()}
-                            showChevron={false}
-                        />
-                    ) : null}
+                <ItemGroup>
+                    <DirectoryListFailure testID="directory-people" failure={people.error} retry={people.reload} />
                 </ItemGroup>
             ) : null}
-            {people.hasMore ? (
+            {people.hasMore && people.status !== 'loading' && !people.error ? (
                 <ItemGroup>
                     <Item
                         testID="directory-people-load-more"

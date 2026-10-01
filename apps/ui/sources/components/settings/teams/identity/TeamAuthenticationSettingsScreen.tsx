@@ -1,5 +1,6 @@
 import * as React from 'react';
-import { useRouter } from 'expo-router';
+import { useRouter } from '@/components/appShell/workspace/destinationRoute';
+import type { AuthEntryProjectionV1 } from '@happier-dev/protocol';
 import type {
     TeamIdentityConnectionStateV1,
     TeamIdentityEligibleProviderV1,
@@ -8,9 +9,13 @@ import type {
 import { ActivitySpinner } from '@/components/ui/feedback/ActivitySpinner';
 import { Item } from '@/components/ui/lists/Item';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
+import { SettingAnchor, SettingSection } from '@/components/settings/shell/SettingRow';
+import { TEAM_AUTHENTICATION_SETTINGS } from './teamAuthenticationSettings';
 import { identityAdministrationFailureMessage } from '@/components/settings/identity/identityAdministrationFailure';
-import { projectAuthenticationMethodCapabilities } from '@/auth/capabilities/authMethodCapabilities';
-import { useServerFeaturesSnapshotForServerId } from '@/sync/domains/features/featureDecisionRuntime';
+import { projectAuthEntryMethodCapabilities } from '@/auth/capabilities/authMethodCapabilities';
+import { fetchHomeAuthEntry } from '@/auth/entry/authEntryClient';
+import { serverAccountScopeKeySuffix } from '@/sync/domains/scope/serverAccountScope';
+import { isHomeAdministrationAccountChange, subscribeHomeAccountChange } from '@/sync/runtime/orchestration/homeAccountChange';
 import { announceAccessibilityMessage } from '@/components/ui/accessibility/announceAccessibilityMessage';
 import { t } from '@/text';
 
@@ -20,15 +25,10 @@ import { teamDirectoryPath, teamIdentityConnectionPath, teamIdentityProviderSetu
 import { TeamAuthenticationPolicySections } from './TeamAuthenticationPolicySections';
 import { TeamMemberSignInLinkSection } from './TeamMemberSignInLinkSection';
 import { TeamGitHubAppsSection } from './TeamGitHubAppScreens';
-import { identityConnectionMode } from './identityAdministrationPresentation';
+import { identityConnectionMode, identityProviderKindLabel } from './identityAdministrationPresentation';
 import { useIdentityAdministration } from './useIdentityAdministration';
 import { createIdentityAdministrationClient } from './identityAdministrationClient';
-
-function providerKindLabel(kind: 'oidc' | 'workos_sso' | 'github_app_identity'): string {
-    if (kind === 'oidc') return 'OpenID Connect';
-    if (kind === 'workos_sso') return 'WorkOS';
-    return 'GitHub';
-}
+import { Icon } from '@/components/ui/icons/Icon';
 
 export function connectionStateLabel(state: TeamIdentityConnectionStateV1): string {
     switch (state) {
@@ -55,7 +55,7 @@ const AuthorizedAuthenticationContent = React.memo(function AuthorizedAuthentica
     address: Parameters<typeof teamIdentityConnectionPath>[0];
 }>) {
     const router = useRouter();
-    const { state, refresh } = useIdentityAdministration(props.scope, props.address.teamId);
+    const { state, refresh } = useIdentityAdministration(props.scope, props.address.teamId, props.context.requestApproval);
     const client = React.useMemo(
         () => createIdentityAdministrationClient(props.scope, {
             onApprovalPending: props.context.requestApproval,
@@ -65,23 +65,65 @@ const AuthorizedAuthenticationContent = React.memo(function AuthorizedAuthentica
     const [pendingProviderId, setPendingProviderId] = React.useState<string | null>(null);
     const [providerFailure, setProviderFailure] = React.useState<string | null>(null);
 
-    // The Home's own sign-in methods, read from the capability projection the
-    // Home already publishes to every client that opens its sign-in page. A Team
-    // administrator therefore learns nothing about Home configuration that a
-    // visitor could not already see, and no second Home-method owner is created:
-    // this is the same canonical projector the Welcome and Team entry surfaces
-    // consume. Only methods that can *log in* can be an accepted reference.
-    const homeFeatures = useServerFeaturesSnapshotForServerId(props.scope.serverId);
+    // Ask this exact Home's current entry owner, as Welcome does. Features are
+    // independently cached discovery, not the complete contextual method list.
+    // Keep only a route-local answer; Home policy and method decisions remain
+    // with the server and the shared entry projector.
+    const homeScopeKey = serverAccountScopeKeySuffix(props.scope);
+    const [homeEntry, setHomeEntry] = React.useState<Readonly<{
+        scopeKey: string;
+        status: 'loading' | 'ready' | 'unavailable';
+        projection: Extract<AuthEntryProjectionV1, { state: 'ready' }> | null;
+    }> | null>(null);
+    const [homeEntryRefresh, setHomeEntryRefresh] = React.useState(0);
+    const refreshHomeEntry = React.useCallback(() => {
+        setHomeEntry((current) => current?.scopeKey === homeScopeKey
+            ? { ...current, status: 'loading' }
+            : null);
+        setHomeEntryRefresh((current) => current + 1);
+    }, [homeScopeKey]);
+    React.useEffect(() => {
+        const controller = new AbortController();
+        const scope = { serverId: props.scope.serverId, accountId: props.scope.accountId };
+        void fetchHomeAuthEntry({ accountScope: scope, signal: controller.signal }).then((result) => {
+            if (controller.signal.aborted) return;
+            const projection = result.kind === 'ready' && result.projection.state === 'ready'
+                && result.projection.scope.kind === 'home' ? result.projection : null;
+            setHomeEntry((current) => ({
+                scopeKey: homeScopeKey,
+                status: projection ? 'ready' : 'unavailable',
+                projection: projection ?? (result.kind === 'unavailable' && current?.scopeKey === homeScopeKey
+                    ? current.projection : null),
+            }));
+        });
+        return () => controller.abort();
+    }, [homeScopeKey, props.scope.serverId, props.scope.accountId, homeEntryRefresh]);
+    React.useEffect(() => subscribeHomeAccountChange((event) => {
+        if (event.serverId === props.scope.serverId && isHomeAdministrationAccountChange(event)) refreshHomeEntry();
+    }), [props.scope.serverId, refreshHomeEntry]);
+    const currentHomeEntry = homeEntry?.scopeKey === homeScopeKey ? homeEntry : null;
     const homeMethods = React.useMemo(() => (
-        homeFeatures.status === 'ready'
-            ? projectAuthenticationMethodCapabilities(homeFeatures.features).catalog.methods
+        currentHomeEntry?.projection
+            ? projectAuthEntryMethodCapabilities(currentHomeEntry.projection).catalog.methods
                 .filter((method) => method.enabledActions.some((action) => action.id === 'login'))
                 .map((method) => Object.freeze({
                     methodId: method.id,
                     displayName: method.presentation?.displayName ?? method.id,
                 }))
             : []
-    ), [homeFeatures]);
+    ), [currentHomeEntry?.projection]);
+    const homeMethodsNotice = currentHomeEntry?.status === 'unavailable' ? (
+        <ItemGroup>
+            <Item
+                testID="team-authentication-home-methods-unavailable"
+                title={t('teams.unavailable.title')}
+                subtitle={t('teams.authentication.policy.connectionOwnerHome')}
+                detail={t('common.retry')}
+                onPress={refreshHomeEntry}
+                showChevron={false}
+            />
+        </ItemGroup>
+    ) : null;
 
     // A typed Home outcome becomes one localized sentence, announced as well as
     // shown because it lands away from the control that was pressed.
@@ -110,13 +152,14 @@ const AuthorizedAuthenticationContent = React.memo(function AuthorizedAuthentica
                         showChevron={false}
                     />
                 </ItemGroup>
+                {homeMethodsNotice}
                 <TeamAuthenticationPolicySections
                     context={props.context}
                     connections={[]}
                     connectionsCurrent={false}
                     admissionModeApplicability={null}
                     homeMethods={homeMethods}
-                    homeMethodsCurrent={homeFeatures.status === 'ready'}
+                    homeMethodsCurrent={currentHomeEntry?.status === 'ready'}
                 />
             </>
         );
@@ -129,21 +172,20 @@ const AuthorizedAuthenticationContent = React.memo(function AuthorizedAuthentica
                     <Item
                         testID="team-authentication-unavailable"
                         title={t('teams.unavailable.title')}
-                        subtitle={state.failure.retryable
-                            ? identityAdministrationFailureMessage(state.failure.code)
-                            : t('teams.errors.forbidden')}
+                        subtitle={identityAdministrationFailureMessage(state.failure.code)}
                         detail={state.failure.retryable ? t('common.retry') : undefined}
                         onPress={state.failure.retryable ? refresh : undefined}
                         showChevron={false}
                     />
                 </ItemGroup>
+                {homeMethodsNotice}
                 <TeamAuthenticationPolicySections
                     context={props.context}
                     connections={[]}
                     connectionsCurrent={false}
                     admissionModeApplicability={null}
                     homeMethods={homeMethods}
-                    homeMethodsCurrent={homeFeatures.status === 'ready'}
+                    homeMethodsCurrent={currentHomeEntry?.status === 'ready'}
                 />
             </>
         );
@@ -213,7 +255,7 @@ const AuthorizedAuthenticationContent = React.memo(function AuthorizedAuthentica
     return (
         <>
             {state.stale ? (
-                <ItemGroup footer={t('teams.stale.label')}>
+                <ItemGroup description={t('teams.stale.label')}>
                     <Item
                         testID="team-authentication-stale"
                         title={t('teams.unavailable.offline')}
@@ -223,9 +265,9 @@ const AuthorizedAuthenticationContent = React.memo(function AuthorizedAuthentica
                     />
                 </ItemGroup>
             ) : null}
-            <ItemGroup
+            <SettingAnchor setting={TEAM_AUTHENTICATION_SETTINGS.settings.connections}><ItemGroup
                 title={t('teams.authentication.connectionsSection')}
-                footer={t('teams.authentication.subtitle')}
+                description={t('teams.authentication.subtitle')}
             >
                 {state.items.length === 0 ? (
                     <Item
@@ -243,11 +285,11 @@ const AuthorizedAuthenticationContent = React.memo(function AuthorizedAuthentica
                         onPress={() => router.push(teamIdentityConnectionPath(props.address, connection.id))}
                     />
                 ))}
-            </ItemGroup>
-            <ItemGroup title={t('identityAdministration.eligibleProviders')}>
+            </ItemGroup></SettingAnchor>
+            <SettingAnchor setting={TEAM_AUTHENTICATION_SETTINGS.settings.eligibleProviders}><ItemGroup title={t('identityAdministration.eligibleProviders')}>
                 {state.eligibleProviders.map((provider, index) => {
                     const choice = provider.availability.status === 'available' ? provider.availability.setupChoice : null;
-                    const title = provider.displayName ?? providerKindLabel(provider.providerKind);
+                    const title = provider.displayName ?? identityProviderKindLabel(provider.providerKind);
                     const owner = provider.owner === 'home'
                         ? t('identityAdministration.providerOwnerHome')
                         : t('identityAdministration.providerOwnerTeam');
@@ -274,18 +316,19 @@ const AuthorizedAuthenticationContent = React.memo(function AuthorizedAuthentica
                         showChevron={choice?.kind === 'create_managed' && choice.actionId !== 'teams.identity.workos.connection.create'}
                     />;
                 })}
-            </ItemGroup>
+            </ItemGroup></SettingAnchor>
             {providerFailure ? <ItemGroup><Item testID="team-authentication-failure" title={providerFailure} showChevron={false} /></ItemGroup> : null}
             {/* Admission and accepted sign-in are Team policy, written through the
                 one revision-guarded `teams.policy.set` owner rather than through
                 the connection client above. */}
+            {homeMethodsNotice}
             <TeamAuthenticationPolicySections
                 context={props.context}
                 connections={state.items}
                 connectionsCurrent={projectionCurrent}
                 admissionModeApplicability={state.admissionModeApplicability}
                 homeMethods={homeMethods}
-                homeMethodsCurrent={homeFeatures.status === 'ready'}
+                homeMethodsCurrent={currentHomeEntry?.status === 'ready'}
             />
             {/* Existing registrations remain inspectable when policy later
                 disables new setup; only the create affordance is unavailable. */}
@@ -301,14 +344,15 @@ const AuthorizedAuthenticationContent = React.memo(function AuthorizedAuthentica
             />
             <ItemGroup
                 title={t('teams.authentication.directory.section')}
-                footer={t('teams.authentication.directory.overviewSubtitle')}
+                description={t('teams.authentication.directory.overviewSubtitle')}
             >
-                <Item
+                <SettingAnchor setting={TEAM_AUTHENTICATION_SETTINGS.settings.directory}><Item
                     testID="team-authentication-directory"
+                    icon={<Icon name="users" />}
                     title={t('teams.authentication.directory.title')}
                     subtitle={t('teams.authentication.directory.manageSubtitle')}
                     onPress={() => router.push(teamDirectoryPath(props.address))}
-                />
+                /></SettingAnchor>
             </ItemGroup>
         </>
     );
@@ -319,18 +363,18 @@ export const TeamAuthenticationSettingsScreen = React.memo(function TeamAuthenti
     teamId: string;
 }>) {
     return (
-        <TeamSection serverId={props.serverId} teamId={props.teamId} title={t('teams.tabs.authentication')}>
+        <TeamSection serverId={props.serverId} teamId={props.teamId} title={t('teams.tabs.authentication')} description={t('teams.pages.authentication')}>
             {(context) => context.team.capabilities.manageAuthentication ? (
                 <AuthorizedAuthenticationContent context={context} scope={context.scope} address={context.address} />
             ) : (
-                <ItemGroup title={t('teams.tabs.authentication')}>
+                <SettingSection section={TEAM_AUTHENTICATION_SETTINGS.sectionRefs.accepted} answersFor={Object.values(TEAM_AUTHENTICATION_SETTINGS.sectionRefs)}><ItemGroup title={t('teams.tabs.authentication')}>
                     <Item
                         testID="team-authentication-forbidden"
                         title={t('homeGovernance.forbiddenTitle')}
                         subtitle={t('teams.errors.forbidden')}
                         showChevron={false}
                     />
-                </ItemGroup>
+                </ItemGroup></SettingSection>
             )}
         </TeamSection>
     );

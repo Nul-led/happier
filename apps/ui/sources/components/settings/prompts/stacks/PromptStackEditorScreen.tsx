@@ -1,24 +1,22 @@
 import * as React from 'react';
-import { ScrollView, View, Switch } from 'react-native';
-import { StyleSheet, useUnistyles } from 'react-native-unistyles';
-import { useRouter } from 'expo-router';
+import { View } from 'react-native';
+import { StyleSheet } from 'react-native-unistyles';
+import { useRouter } from '@/components/appShell/workspace/destinationRoute';
 
 import type { PromptStackEntryV1, PromptStacksV1 } from '@happier-dev/protocol';
 
+import { SettingsPageHeader } from '@/components/settings/shell/SettingsPageHeader';
+import { Switch } from '@/components/ui/forms/Switch';
 import { Item } from '@/components/ui/lists/Item';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
+import { ItemList } from '@/components/ui/lists/ItemList';
 import { ItemRowActions } from '@/components/ui/lists/ItemRowActions';
-import { layout } from '@/components/ui/layout/layout';
+import { SectionActionButton } from '@/components/ui/lists/SectionActionButton';
 import { Modal } from '@/modal';
 import { useArtifacts, useSettingMutable } from '@/sync/domains/state/storage';
 import { t } from '@/text';
-import { Icon } from '@/components/ui/icons/Icon';
 
-const styles = StyleSheet.create((theme) => ({
-  container: {
-    flex: 1,
-    backgroundColor: theme.colors.background.canvas,
-  },
+const styles = StyleSheet.create(() => ({
   rightControls: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -68,7 +66,6 @@ export const PromptStackEditorScreen = React.memo((props: Readonly<{
   profileId?: string | null;
   title: string;
 }>) => {
-  const { theme } = useUnistyles();
   const router = useRouter();
   const artifacts = useArtifacts();
   const [promptStacksV1, setPromptStacksV1] = useSettingMutable('promptStacksV1');
@@ -126,10 +123,27 @@ export const PromptStackEditorScreen = React.memo((props: Readonly<{
     );
   }, [entries, setEntries]);
 
+  const description = props.surface === 'coding'
+    ? t('promptLibrary.codingStackSubtitle')
+    : props.surface === 'voice'
+      ? t('promptLibrary.voiceStackSubtitle')
+      : t('promptLibrary.surface.profileStackEditorDescription');
+
   return (
-    <View style={styles.container}>
-      <ScrollView contentContainerStyle={{ paddingVertical: 12, maxWidth: layout.maxWidth, width: '100%', alignSelf: 'center' }}>
-        <ItemGroup title={t('promptLibrary.stackEntries')}>
+    <ItemList presentation="page">
+      <SettingsPageHeader title={props.title} description={description} />
+      <ItemGroup
+        title={t('promptLibrary.stackEntries')}
+        description={t('promptLibrary.surface.stackEntriesDescription')}
+        action={(
+          <SectionActionButton
+            testID="promptStack.add"
+            title={t('promptLibrary.addToStack')}
+            icon="plus"
+            onPress={onAdd}
+          />
+        )}
+      >
           {entries.map((entry, index) => {
             const title = titleByArtifactId.get(entry.ref.artifactId) ?? t('promptLibrary.untitledPrompt');
             const subtitle = entry.placement === 'skill_instructions'
@@ -142,7 +156,6 @@ export const PromptStackEditorScreen = React.memo((props: Readonly<{
                 testID={`promptStack.entry.${entry.id}`}
                 title={title}
                 subtitle={subtitle}
-                icon={<Icon name={entry.ref.kind === 'bundle' ? 'sparkle' : 'file-text'} size={20} color={theme.colors.text.secondary} />}
                 onPress={() => openArtifactEditor(entry)}
                 rightElement={(
                   <View style={styles.rightControls}>
@@ -195,23 +208,12 @@ export const PromptStackEditorScreen = React.memo((props: Readonly<{
               testID="promptStack.empty"
               title={t('promptLibrary.stackEmptyTitle')}
               subtitle={t('promptLibrary.stackEmptySubtitle')}
-              icon={<Icon name="info" size={20} color={theme.colors.text.secondary} />}
+              mode="info"
               showChevron={false}
             />
           ) : null}
-        </ItemGroup>
-
-        <ItemGroup>
-          <Item
-            testID="promptStack.add"
-            title={t('promptLibrary.addToStack')}
-            subtitle={t('promptLibrary.addToStackSubtitle')}
-            icon={<Icon name="plus-circle" size={20} color={theme.colors.accent.blue} />}
-            onPress={onAdd}
-          />
-        </ItemGroup>
-      </ScrollView>
-    </View>
+      </ItemGroup>
+    </ItemList>
   );
 });
 

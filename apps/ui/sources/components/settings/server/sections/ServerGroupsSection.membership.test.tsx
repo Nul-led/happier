@@ -25,7 +25,7 @@ describe('ServerGroupsSection membership', () => {
         const { ServerGroupsSection } = await import('./ServerGroupsSection');
         const screen = await renderScreen(React.createElement(ServerGroupsSection, {
             groupSelectionPresentation: 'grouped',
-            activeServerGroupId: 'group-ab',
+            groupId: 'group-ab',
             selectedGroupServerIds: new Set(['identity-b']),
             servers: [{
                 id: 'profile-b',
@@ -48,5 +48,29 @@ describe('ServerGroupsSection membership', () => {
         expect(row?.props.selected).toBe(true);
         row?.props.onPress();
         expect(onToggleGroupServer).toHaveBeenCalledWith('identity-b');
+    });
+
+    it('chooses how grouped Homes appear with a two-option control instead of a tap-to-cycle row', async () => {
+        const onToggleGroupPresentation = vi.fn();
+        const { ServerGroupsSection } = await import('./ServerGroupsSection');
+        const screen = await renderScreen(React.createElement(ServerGroupsSection, {
+            groupSelectionPresentation: 'grouped',
+            groupId: 'group-ab',
+            selectedGroupServerIds: new Set<string>(),
+            servers: [],
+            onToggleGroupPresentation,
+            onToggleGroupServer: vi.fn(),
+        }));
+
+        const row = findTestInstanceByTypeWithProps(screen, 'Item' as never, { testID: 'server-group-presentation' });
+        expect(row?.props.onPress).toBeUndefined();
+        const control = row?.props.rightElement?.props as { tabs: { id: string }[]; activeTabId: string; onSelectTab: (id: string) => void };
+        expect(control.tabs.map((tab) => tab.id)).toEqual(['flat-with-badge', 'grouped']);
+        expect(control.activeTabId).toBe('grouped');
+
+        control.onSelectTab('grouped');
+        expect(onToggleGroupPresentation).not.toHaveBeenCalled();
+        control.onSelectTab('flat-with-badge');
+        expect(onToggleGroupPresentation).toHaveBeenCalledTimes(1);
     });
 });

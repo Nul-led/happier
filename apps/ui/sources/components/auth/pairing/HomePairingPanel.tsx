@@ -1,0 +1,722 @@
+import * as React from 'react';
+import { Linking, View, type LayoutChangeEvent } from 'react-native';
+import { StyleSheet, useUnistyles } from 'react-native-unistyles';
+import { happierPageTextMetrics } from '@happier-dev/plugin-ui/presentation';
+
+import { useAuth } from '@/auth/context/AuthContext';
+import {
+    formatPairingCountdown,
+    resolveHomeEnrollmentPresentation,
+    type HomeEnrollmentPresentationModel,
+} from '@/auth/pairing/pairingPresentation';
+import { PairingLinkDisclosure } from '@/components/auth/pairing/PairingLinkDisclosure';
+import { resolveHomeDisplayName } from '@/components/settings/server/homeDisplayName';
+import { IconButton } from '@/components/ui/buttons/IconButton';
+import { RoundButton } from '@/components/ui/buttons/RoundButton';
+import { CopiedPill } from '@/components/ui/copy/CopiedPill';
+import { useTemporaryCopyFeedback } from '@/components/ui/copy/useTemporaryCopyFeedback';
+import { ActivitySpinner } from '@/components/ui/feedback/ActivitySpinner';
+import { Icon } from '@/components/ui/icons/Icon';
+import { Text } from '@/components/ui/text/Text';
+import {
+    HAPPIER_APP_STORE_SHORT_URL,
+    HAPPIER_APP_STORE_URL,
+    HAPPIER_DESKTOP_DOWNLOAD_URL,
+    HAPPIER_GOOGLE_PLAY_SHORT_URL,
+    HAPPIER_GOOGLE_PLAY_URL,
+} from '@/constants/downloadUrls';
+import { QRCode } from '@/components/qr/QRCode';
+import { HappierPressable } from '@happier-dev/plugin-ui/presentation';
+import { Typography } from '@/constants/Typography';
+import { usePairingSession, type PairingFailureCause, type PairingPresentation } from '@/hooks/auth/usePairingSession';
+import { Modal } from '@/modal';
+import { getActiveServerSnapshot } from '@/sync/domains/server/serverRuntime';
+import { getServerProfileById } from '@/sync/domains/server/serverProfiles';
+import { t } from '@/text';
+import { setClipboardStringSafe } from '@/utils/ui/clipboard';
+
+import { useSetupBlockPanelWidth } from '@/components/ui/setupBlocks/SetupBlockGrid';
+import { SetupSteps, type SetupStep } from '@/components/ui/setupBlocks/SetupSteps';
+
+import { PairingQrCode } from './PairingQrCode';
+import { PAIRING_QR_PALETTE } from './pairingQrPalette';
+
+/** Who the code is for: a phone scans it; another computer opens (or pastes) its link. */
+export type HomePairingPurpose = 'phone' | 'computer';
+/**
+ * `inline`: inside Home's Get set up row, drawn on the morph frame's surface (QR beside the text when
+ * there is room). `modal`: centred, for entry points with no tile to grow. `page`: the Add your phone
+ * page, which also lets the person see the link and cancel the code.
+ */
+export type HomePairingPanelLayout = 'inline' | 'modal' | 'page';
+
+/** The paper: a 216 px code (as dense as the Add your phone page's) inside its margin. */
+const QR_PAPER_PX = 240;
+/** Narrower than this, the text goes under the code instead of beside it. */
+const SIDE_BY_SIDE_MIN_WIDTH_PX = 560;
+
+type PanelState =
+    | Readonly<{ kind: 'making' }>
+    | Readonly<{ kind: 'ready'; link: string; qrAvailable: boolean; expiresAtMs: number }>
+    | Readonly<{ kind: 'adding'; device: string; retrying: boolean }>
+    | Readonly<{ kind: 'joined'; device: string }>
+    | Readonly<{ kind: 'failed'; cause: PairingFailureCause | null }>
+    | Readonly<{ kind: 'expired' }>
+    | Readonly<{ kind: 'updateRequired' }>
+    | Readonly<{ kind: 'stopped' }>;
+
+function resolvePanelState(presentation: PairingPresentation, isStarting: boolean, stopped: boolean): PanelState {
+    switch (presentation.phase) {
+        case 'ready':
+            return { kind: 'ready', link: presentation.deepLink, qrAvailable: presentation.qrAvailable, expiresAtMs: presentation.context.expiresAtMs };
+        case 'adding':
+        case 'retryable_error':
+            return {
+                kind: 'adding',
+                device: presentation.requestedDeviceLabel ?? t('homeDeviceApproval.deviceFallback'),
+                retrying: presentation.phase === 'retryable_error',
+            };
+        case 'succeeded':
+            return { kind: 'joined', device: presentation.requestedDeviceLabel ?? t('homeDeviceApproval.deviceFallback') };
+        case 'invalid_request':
+            return { kind: 'failed', cause: presentation.cause ?? null };
+        case 'update_required':
+            return { kind: 'updateRequired' };
+        // A code that ran its course is replaced at once (the panel asks for a new one); one the Home
+        // gave up on early is not renewed behind the person's back.
+        case 'expired':
+            return isRenewableExpiry(presentation.context.expiresAtMs) ? { kind: 'making' } : { kind: 'expired' };
+        case 'generating':
+            return stopped && !isStarting ? { kind: 'stopped' } : { kind: 'making' };
+    }
+}
+
+/**
+ * Whether an expired code reached the end of its life (and "New code in 0:00" is due), as opposed to
+ * the Home forgetting it early. The slack covers the lifecycle noticing expiry a poll after the fact
+ * seen from a clock a little ahead of the Home's.
+ */
+const EXPIRY_CLOCK_SLACK_MS = 1_000;
+function isRenewableExpiry(expiresAtMs: number): boolean {
+    return Date.now() >= expiresAtMs - EXPIRY_CLOCK_SLACK_MS;
+}
+
+function readHomeName(targetProfileId: string | null | undefined): string {
+    const profileId = targetProfileId ?? getActiveServerSnapshot().serverId;
+    const profile = profileId ? getServerProfileById(profileId) : null;
+    return resolveHomeDisplayName(profile) ?? t('homeSetup.thisHome');
+}
+
+/**
+ * The one surface that adds a device to a Home with a code: the QR (with the Happier mark), what to
+ * do, the store links, the link itself, and the live state ("Waiting for your phone…", "New code in
+ * 4:32", then who joined). It runs on the canonical pairing owner (`usePairingSession`): the code
+ * exists only while this panel is mounted, a code that expires is replaced while it stays open, and
+ * unmounting it cancels the live code. Home's Get set up tile grows into it, the modal shows it for
+ * entry points with no tile, and the Add your phone page is built on it.
+ */
+export const HomePairingPanel = React.memo(function HomePairingPanel(props: Readonly<{
+    purpose: HomePairingPurpose;
+    layout: HomePairingPanelLayout;
+    testIDPrefix: string;
+    /** The saved Home the code adds a device to; the focused Home when omitted. */
+    targetProfileId?: string | null;
+    onClose?: () => void;
+}>) {
+    const { theme } = useUnistyles();
+    const auth = useAuth();
+    const prefix = props.testIDPrefix;
+    // Focused-Home authentication is only an admission hint. A retained Home's actual
+    // credentials and identity are checked by the pairing owner, never borrowed from focus.
+    const canRequestPairing = auth.isAuthenticated || Boolean(props.targetProfileId);
+    const { presentation, isStarting, startPairing, cancelPairing } = usePairingSession({
+        enabled: canRequestPairing,
+        isAuthenticated: canRequestPairing,
+        targetProfileId: props.targetProfileId ?? null,
+    });
+    const [stopped, setStopped] = React.useState(false);
+    const [cancelling, setCancelling] = React.useState(false);
+    const [width, setWidth] = React.useState(0);
+    // Inside a growing set-up block the row's width is known before this panel measures itself.
+    const hintedWidth = useSetupBlockPanelWidth();
+
+    const start = React.useCallback(async () => {
+        setStopped(false);
+        await startPairing();
+    }, [startPairing]);
+
+    // The code lives while the panel is on screen: it is made when the panel mounts (and again when
+    // its target Home changes), and `usePairingSession` cancels it when the panel unmounts.
+    React.useEffect(() => {
+        if (!canRequestPairing) return;
+        void start();
+    }, [canRequestPairing, start]);
+
+    // "New code in m:ss" is a promise: when the code runs out, the next one is made while the panel
+    // stays open. Once per expired code, so a failure to make one ends in the failed state, not a loop.
+    const expiredPairId = presentation.phase === 'expired' && isRenewableExpiry(presentation.context.expiresAtMs)
+        ? presentation.context.pairId
+        : null;
+    React.useEffect(() => {
+        if (expiredPairId) void start();
+    }, [expiredPairId, start]);
+
+    const cancel = React.useCallback(async () => {
+        setCancelling(true);
+        try {
+            const cancelled = await cancelPairing();
+            if (!cancelled.ok) throw new Error(`Failed to cancel pairing session: ${cancelled.status}`);
+            setStopped(true);
+        } catch {
+            await Modal.alertAsync(t('common.error'), t('errors.operationFailed'));
+        } finally {
+            setCancelling(false);
+        }
+    }, [cancelPairing]);
+
+    const onLayout = React.useCallback((event: LayoutChangeEvent) => {
+        const next = event.nativeEvent.layout.width;
+        if (Number.isFinite(next) && next > 0) setWidth((current) => (current === next ? current : next));
+    }, []);
+
+    const state = resolvePanelState(presentation, isStarting, stopped);
+    const homeName = readHomeName(props.targetProfileId);
+    const laidOutWidth = width > 0 ? width : hintedWidth ?? 0;
+    const sideBySide = props.layout !== 'modal' && laidOutWidth >= SIDE_BY_SIDE_MIN_WIDTH_PX;
+    const centred = !sideBySide;
+    const phone = props.purpose === 'phone';
+    const link = state.kind === 'ready' ? state.link : null;
+    const enrollment = resolveHomeEnrollmentPresentation({
+        kind: 'trusted_home_display',
+        phase: presentation.phase,
+    });
+
+    return (
+        <View
+            testID={`${prefix}-panel`}
+            onLayout={onLayout}
+            style={[styles.root, props.layout === 'page' ? styles.rootPage : null, props.layout === 'modal' ? styles.rootModal : null]}
+        >
+            {props.onClose ? (
+                <View style={styles.close}>
+                    <IconButton
+                        testID={`${prefix}-close`}
+                        iconName="x"
+                        variant="plain"
+                        size={24}
+                        accessibilityLabel={t('homeSetup.close')}
+                        onPress={props.onClose}
+                    />
+                </View>
+            ) : null}
+            <View style={sideBySide ? styles.sideBySide : styles.stacked}>
+                <PairingCodeBlock testIDPrefix={prefix} state={state} homeName={homeName} />
+                <View style={sideBySide ? styles.bodySide : styles.bodyStacked}>
+                    <Text style={[styles.title, centred ? styles.centredText : null]}>
+                        {t(phone ? 'homeSetup.pairingPhoneTitle' : 'homeSetup.pairingComputerTitle')}
+                    </Text>
+                    <Text style={[styles.body, centred ? styles.centredText : null]}>
+                        {phone ? t('homeSetup.pairingPhoneBody', { home: homeName }) : t('homeSetup.pairingComputerBody', { home: homeName })}
+                    </Text>
+                    {props.layout !== 'modal' ? <PairingSteps purpose={props.purpose} /> : null}
+                    <View style={[styles.actions, centred ? styles.actionsCentred : null]}>
+                        {phone ? (
+                            // At a computer a store button cannot reach the phone: the stores are codes the
+                            // phone's camera opens, quieter than the pairing code (a click opens the listing).
+                            <View style={styles.stores}>
+                                <StoreQr
+                                    testID={`${prefix}-app-store`}
+                                    store={t('homeSetup.appStore')}
+                                    qrLink={HAPPIER_APP_STORE_SHORT_URL}
+                                    listingUrl={HAPPIER_APP_STORE_URL}
+                                />
+                                <StoreQr
+                                    testID={`${prefix}-google-play`}
+                                    store={t('homeSetup.googlePlay')}
+                                    qrLink={HAPPIER_GOOGLE_PLAY_SHORT_URL}
+                                    listingUrl={HAPPIER_GOOGLE_PLAY_URL}
+                                />
+                            </View>
+                        ) : (
+                            <RoundButton
+                                testID={`${prefix}-desktop-download`}
+                                size="small"
+                                display="secondary"
+                                title={t('homeSetup.getDesktopApp')}
+                                onPress={() => { void Linking.openURL(HAPPIER_DESKTOP_DOWNLOAD_URL).catch(() => {}); }}
+                            />
+                        )}
+                        {sideBySide ? <View style={styles.grow} /> : null}
+                        {props.layout !== 'page' ? <CopyLinkButton testIDPrefix={prefix} link={link} /> : null}
+                    </View>
+                    <View
+                        testID={`${prefix}-status`}
+                        accessibilityLiveRegion="polite"
+                        style={[styles.status, centred ? styles.statusCentred : null]}
+                    >
+                        <PairingStatusLine
+                            testIDPrefix={prefix}
+                            state={state}
+                            purpose={props.purpose}
+                            homeName={homeName}
+                            phaseBodyKey={enrollment.primaryTranslationKey}
+                            centred={centred}
+                            accent={theme.colors.accent.blue}
+                            onNewCode={start}
+                            starting={isStarting}
+                        />
+                        {props.layout === 'page' && state.kind === 'ready' ? (
+                            <RoundButton
+                                testID={`${prefix}-cancel`}
+                                size="small"
+                                display="secondary"
+                                title={t('homeSetup.cancelCode')}
+                                action={cancel}
+                                disabled={cancelling}
+                                loading={cancelling}
+                            />
+                        ) : null}
+                    </View>
+                    {props.layout === 'page' && link ? (
+                        <PairingLinkDisclosure testIDPrefix={`${prefix}-pairing-link`} link={link} />
+                    ) : null}
+                </View>
+            </View>
+        </View>
+    );
+});
+
+/** Why no code could be made, said after "Couldn't make a code for this Home." */
+function describePairingFailure(cause: PairingFailureCause, home: string): string {
+    switch (cause) {
+        case 'home_unreachable': return t('homeSetup.codeFailedUnreachable', { home });
+        case 'home_identity_unverified': return t('homeSetup.codeFailedIdentity', { home });
+        case 'signed_out': return t('homeSetup.codeFailedSignedOut', { home });
+        case 'invite_too_large': return t('homeSetup.codeFailedTooLarge');
+        case 'home_refused': return t('homeSetup.codeFailedRefused', { home });
+        case 'unexpected': return t('homeSetup.codeFailedUnexpected');
+    }
+}
+
+const STORE_QR_PX = 72;
+
+/** A store listing as a small code the phone's camera opens, with the store's name under it. */
+function StoreQr(props: Readonly<{ testID: string; store: string; qrLink: string; listingUrl: string }>) {
+    return (
+        <HappierPressable
+            testID={props.testID}
+            accessibilityRole="link"
+            accessibilityLabel={t('homeSetup.storeQrLabel', { store: props.store })}
+            onPress={() => { void Linking.openURL(props.listingUrl).catch(() => {}); }}
+            style={styles.store}
+        >
+            <View style={styles.storePaper}>
+                <QRCode data={props.qrLink} size={STORE_QR_PX} />
+            </View>
+            <Text style={styles.storeLabel}>{props.store}</Text>
+        </HappierPressable>
+    );
+}
+
+/** The code on its paper, or what stands in its place while there is none. */
+function PairingCodeBlock(props: Readonly<{ testIDPrefix: string; state: PanelState; homeName: string }>) {
+    const { theme } = useUnistyles();
+    const { state } = props;
+    const showsCode = state.kind === 'making' || state.kind === 'ready';
+    const label = state.kind === 'ready'
+        ? state.qrAvailable
+            ? t('homeSetup.qrLabel', { home: props.homeName })
+            : `${t('connect.pairingQrTooLargeTitle')}. ${t('connect.pairingQrTooLargeBody')}`
+        : undefined;
+    return (
+        <View
+            testID={showsCode ? `${props.testIDPrefix}-qr` : `${props.testIDPrefix}-qr-placeholder`}
+            accessible={label !== undefined}
+            accessibilityRole={label !== undefined ? 'image' : undefined}
+            accessibilityLabel={label}
+            style={styles.codeSlot}
+        >
+            {state.kind === 'ready' && state.qrAvailable ? (
+                <PairingQrCode link={state.link} size={QR_PAPER_PX} />
+            ) : (
+                <View style={styles.codeStandIn}>
+                    {state.kind === 'ready' ? (
+                        <>
+                            <Text style={styles.standInTitle}>{t('connect.pairingQrTooLargeTitle')}</Text>
+                            <Text style={styles.standInBody}>{t('connect.pairingQrTooLargeBody')}</Text>
+                        </>
+                    ) : state.kind === 'making' || state.kind === 'adding' ? (
+                        <ActivitySpinner size="small" color={theme.colors.text.secondary} />
+                    ) : state.kind === 'joined' ? (
+                        <Icon name="check-circle" size={40} color={theme.colors.state.success.foreground} />
+                    ) : (
+                        <Icon name="qr-code" size={40} color={theme.colors.text.tertiary} />
+                    )}
+                </View>
+            )}
+        </View>
+    );
+}
+
+function PairingSteps(props: Readonly<{ purpose: HomePairingPurpose }>) {
+    const steps: readonly SetupStep[] = props.purpose === 'phone'
+        ? [
+            { key: 'install', title: t('homeSetup.pairingPhoneStepInstall') },
+            { key: 'scan', title: t('homeSetup.pairingPhoneStepScan') },
+            { key: 'join', title: t('homeSetup.pairingPhoneStepJoin') },
+        ]
+        : [
+            { key: 'install', title: t('homeSetup.pairingComputerStepInstall') },
+            { key: 'open', title: t('homeSetup.pairingComputerStepOpen') },
+            { key: 'join', title: t('homeSetup.pairingComputerStepJoin') },
+        ];
+    return (
+        <View style={styles.steps}>
+            <SetupSteps plain steps={steps} />
+        </View>
+    );
+}
+
+/**
+ * Copies the code's link (the same token as the QR, so it expires with it). The link is a secret
+ * that adds a device, so copying it says so right there.
+ */
+function CopyLinkButton(props: Readonly<{ testIDPrefix: string; link: string | null }>) {
+    const { theme } = useUnistyles();
+    const feedback = useTemporaryCopyFeedback(4000);
+    const link = props.link;
+    return (
+        <View style={styles.copy}>
+            <RoundButton
+                testID={`${props.testIDPrefix}-copy-link`}
+                size="small"
+                display="secondary"
+                title={t('homeSetup.copyLink')}
+                leading={<Icon name="copy" size={14} color={theme.colors.text.secondary} />}
+                disabled={!link}
+                action={async () => {
+                    if (!link) return;
+                    const copied = await setClipboardStringSafe(link);
+                    if (!copied) {
+                        await Modal.alertAsync(t('common.error'), t('items.failedToCopyToClipboard'));
+                        return;
+                    }
+                    feedback.markCopied();
+                }}
+            />
+            <CopiedPill visible={feedback.isCopied()} testID={`${props.testIDPrefix}-copy-link-feedback`} />
+            {feedback.isCopied() ? (
+                <Text testID={`${props.testIDPrefix}-copy-link-warning`} style={styles.copyWarning}>
+                    {t('connect.pairingLinkSecurityWarning')}
+                </Text>
+            ) : null}
+        </View>
+    );
+}
+
+/** The live line under the actions: what the panel is doing right now. */
+function PairingStatusLine(props: Readonly<{
+    testIDPrefix: string;
+    state: PanelState;
+    purpose: HomePairingPurpose;
+    homeName: string;
+    /** What the lifecycle owner says for this phase (the update requirement, the retry). */
+    phaseBodyKey: HomeEnrollmentPresentationModel['primaryTranslationKey'];
+    centred: boolean;
+    accent: string;
+    starting: boolean;
+    onNewCode: () => Promise<void>;
+}>) {
+    const { theme } = useUnistyles();
+    const prefix = props.testIDPrefix;
+    const { state } = props;
+    switch (state.kind) {
+        case 'ready':
+            return (
+                <View style={styles.statusRow}>
+                    <View style={[styles.pulse, { backgroundColor: props.accent, boxShadow: `0 0 0 4px ${theme.colors.state.active.background}` }]} />
+                    <Text style={styles.statusText}>
+                        {t(props.purpose === 'phone' ? 'homeSetup.waitingForPhone' : 'homeSetup.waitingForComputer')}
+                    </Text>
+                    {props.centred ? <Text style={styles.statusText}>·</Text> : <View style={styles.grow} />}
+                    <PairingCountdown testID={`${prefix}-countdown`} expiresAtMs={state.expiresAtMs} />
+                </View>
+            );
+        case 'making':
+            return (
+                <View style={styles.statusRow}>
+                    <ActivitySpinner size="small" color={theme.colors.text.secondary} />
+                    <Text style={styles.statusText}>{t('homeSetup.makingCode')}</Text>
+                </View>
+            );
+        case 'adding':
+            return (
+                <View testID={`${prefix}-request-card`} style={styles.statusRow}>
+                    <ActivitySpinner size="small" color={theme.colors.text.secondary} />
+                    <Text style={styles.statusText}>
+                        {state.retrying ? t(props.phaseBodyKey) : t('homeSetup.addingDevice', { device: state.device })}
+                    </Text>
+                </View>
+            );
+        case 'joined':
+            return (
+                <View testID={`${prefix}-complete`} style={styles.statusRow}>
+                    <Icon name="check-circle" size={16} color={theme.colors.state.success.foreground} />
+                    <Text style={styles.statusStrong}>
+                        {t('homeSetup.deviceJoined', { device: state.device, home: props.homeName })}
+                    </Text>
+                </View>
+            );
+        case 'failed':
+            return (
+                <View testID={`${prefix}-invalid-request`} style={styles.statusRow}>
+                    <Text style={[styles.statusText, props.centred ? null : styles.grow]}>
+                        {state.cause ? `${t('homeSetup.codeFailed')} ${describePairingFailure(state.cause, props.homeName)}` : t('homeSetup.codeFailed')}
+                    </Text>
+                    <RoundButton
+                        testID={`${prefix}-generate`}
+                        size="small"
+                        display="secondary"
+                        title={t('surfaceState.tryAgain')}
+                        action={props.onNewCode}
+                        disabled={props.starting}
+                    />
+                </View>
+            );
+        case 'expired':
+            return (
+                <View testID={`${prefix}-expired`} style={styles.statusRow}>
+                    <Text style={[styles.statusText, props.centred ? null : styles.grow]}>{t('connect.pairingQrExpired')}</Text>
+                    <RoundButton
+                        testID={`${prefix}-generate`}
+                        size="small"
+                        display="secondary"
+                        title={t('homeSetup.newCode')}
+                        action={props.onNewCode}
+                        disabled={props.starting}
+                    />
+                </View>
+            );
+        case 'stopped':
+            return (
+                <View style={styles.statusRow}>
+                    {props.centred ? null : <View style={styles.grow} />}
+                    <RoundButton
+                        testID={`${prefix}-generate`}
+                        size="small"
+                        display="secondary"
+                        title={t('homeSetup.newCode')}
+                        action={props.onNewCode}
+                        disabled={props.starting}
+                    />
+                </View>
+            );
+        case 'updateRequired':
+            return (
+                <View testID={`${prefix}-update-required`} style={styles.statusColumn}>
+                    <Text style={styles.statusStrong}>{t('connect.updateRequiredTitle')}</Text>
+                    <Text style={styles.statusText}>{t(props.phaseBodyKey)}</Text>
+                </View>
+            );
+    }
+}
+
+/** "New code in 4:32": the one ticking leaf, so the panel around it does not re-render every second. */
+function PairingCountdown(props: Readonly<{ testID: string; expiresAtMs: number }>) {
+    const [now, setNow] = React.useState(() => Date.now());
+    React.useEffect(() => {
+        setNow(Date.now());
+        const timer = setInterval(() => setNow(Date.now()), 1000);
+        return () => clearInterval(timer);
+    }, [props.expiresAtMs]);
+    return (
+        <Text testID={props.testID} style={styles.countdown}>
+            {t('homeSetup.newCodeIn', { time: formatPairingCountdown(props.expiresAtMs, now) })}
+        </Text>
+    );
+}
+
+const styles = StyleSheet.create((theme) => ({
+    root: {
+        position: 'relative',
+        paddingTop: 22,
+        paddingBottom: 22,
+        paddingLeft: 22,
+        paddingRight: 24,
+    },
+    rootPage: {
+        paddingLeft: 0,
+        paddingRight: 0,
+        paddingTop: 4,
+    },
+    rootModal: {
+        paddingTop: 26,
+        paddingBottom: 22,
+        paddingHorizontal: 28,
+    },
+    close: {
+        position: 'absolute',
+        top: 10,
+        right: 10,
+        zIndex: 1,
+    },
+    sideBySide: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 30,
+    },
+    stacked: {
+        alignItems: 'center',
+        gap: 20,
+    },
+    bodySide: {
+        flex: 1,
+        minWidth: 0,
+    },
+    bodyStacked: {
+        width: '100%',
+        alignItems: 'center',
+    },
+    codeSlot: {
+        width: QR_PAPER_PX,
+        height: QR_PAPER_PX,
+        flexShrink: 0,
+    },
+    codeStandIn: {
+        flex: 1,
+        borderRadius: 18,
+        borderWidth: StyleSheet.hairlineWidth,
+        borderColor: theme.colors.border.default,
+        backgroundColor: theme.colors.surface.inset,
+        alignItems: 'center',
+        justifyContent: 'center',
+        padding: 16,
+        gap: 6,
+    },
+    standInTitle: {
+        ...Typography.default('semiBold'),
+        ...happierPageTextMetrics('rowTitle'),
+        color: theme.colors.text.primary,
+        textAlign: 'center',
+    },
+    standInBody: {
+        ...Typography.default(),
+        ...happierPageTextMetrics('rowDescription'),
+        color: theme.colors.text.secondary,
+        textAlign: 'center',
+    },
+    title: {
+        ...Typography.default('semiBold'),
+        fontSize: 18,
+        lineHeight: 24,
+        letterSpacing: -0.2,
+        color: theme.colors.text.primary,
+        paddingRight: 28,
+    },
+    body: {
+        ...Typography.default(),
+        ...happierPageTextMetrics('pageDescription'),
+        marginTop: 5,
+        maxWidth: 460,
+        color: theme.colors.text.secondary,
+    },
+    centredText: {
+        textAlign: 'center',
+        paddingRight: 0,
+        alignSelf: 'center',
+    },
+    steps: {
+        marginTop: 16,
+    },
+    stepText: {
+        ...Typography.default(),
+        ...happierPageTextMetrics('rowDescription'),
+        color: theme.colors.text.primary,
+    },
+    stores: {
+        flexDirection: 'row',
+        gap: 14,
+    },
+    store: {
+        alignItems: 'center',
+        gap: 6,
+    },
+    storePaper: {
+        padding: 5,
+        borderRadius: 10,
+        backgroundColor: PAIRING_QR_PALETTE.paper,
+        borderWidth: StyleSheet.hairlineWidth,
+        borderColor: theme.colors.border.default,
+    },
+    storeLabel: {
+        ...Typography.default('medium'),
+        ...happierPageTextMetrics('meta'),
+        color: theme.colors.text.secondary,
+    },
+    actions: {
+        marginTop: 18,
+        flexDirection: 'row',
+        flexWrap: 'wrap',
+        alignItems: 'flex-start',
+        gap: 8,
+    },
+    actionsCentred: {
+        justifyContent: 'center',
+    },
+    grow: {
+        flex: 1,
+    },
+    copy: {
+        alignItems: 'flex-end',
+        gap: 6,
+    },
+    copyWarning: {
+        ...Typography.default(),
+        ...happierPageTextMetrics('meta'),
+        maxWidth: 280,
+        color: theme.colors.text.secondary,
+        textAlign: 'right',
+    },
+    status: {
+        marginTop: 16,
+        paddingTop: 14,
+        borderTopWidth: StyleSheet.hairlineWidth,
+        borderTopColor: theme.colors.border.default,
+        alignSelf: 'stretch',
+        gap: 10,
+    },
+    statusCentred: {
+        alignItems: 'center',
+    },
+    statusRow: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 10,
+    },
+    statusColumn: {
+        gap: 2,
+    },
+    pulse: {
+        width: 8,
+        height: 8,
+        borderRadius: 4,
+    },
+    statusText: {
+        ...Typography.default(),
+        ...happierPageTextMetrics('meta'),
+        color: theme.colors.text.secondary,
+        flexShrink: 1,
+    },
+    statusStrong: {
+        ...Typography.default('medium'),
+        ...happierPageTextMetrics('meta'),
+        color: theme.colors.text.primary,
+        flexShrink: 1,
+    },
+    countdown: {
+        ...Typography.default(),
+        ...happierPageTextMetrics('meta'),
+        color: theme.colors.text.tertiary,
+        fontVariant: ['tabular-nums'],
+    },
+}));

@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import { resolveCurrentHomeAttention, resolveHomeRowActions } from './homeRowActions';
 
-const saved = { isCurrent: false, isDeviceDefault: false, isWeb: false, routineScope: 'device' } as const;
+const saved = { isCurrent: false, isDeviceDefault: false, isUnnamed: false, isWeb: false, routineScope: 'device' } as const;
 
 describe('resolveHomeRowActions', () => {
     it('offers the one action a saved Home needs for its real connection state', () => {
@@ -42,6 +42,18 @@ describe('resolveHomeRowActions', () => {
         const desktop = { ...saved, isWeb: true, routineScope: 'device' } as const;
         expect(resolveHomeRowActions({ ...desktop, summaryKind: 'connected' }))
             .toEqual({ primary: 'switch', menu: ['switch-tab', 'rename', 'remove'] });
+    });
+});
+
+describe('resolveHomeRowActions: naming', () => {
+    it('leads an unnamed Home’s menu with naming it, and adds no inline action for it', () => {
+        const current = resolveHomeRowActions({ ...saved, isCurrent: true, isUnnamed: true, summaryKind: 'connected' });
+        expect(current.menu[0]).toBe('rename');
+        expect(current).not.toHaveProperty('quiet');
+        expect(resolveHomeRowActions({ ...saved, isUnnamed: true, summaryKind: 'sign_in' }).menu)
+            .toEqual(['rename', 'switch', 'remove']);
+        // A named Home keeps rename among its rarer actions.
+        expect(resolveHomeRowActions({ ...saved, summaryKind: 'sign_in' }).menu).toEqual(['switch', 'rename', 'remove']);
     });
 });
 

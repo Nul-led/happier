@@ -1,39 +1,42 @@
 import * as React from 'react';
-import { Animated, Platform, Pressable, ScrollView, View } from 'react-native';
+import { Platform, Pressable, ScrollView, View } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
-import { useRouter } from 'expo-router';
-import { HappierItemGroupBehavior, useHappierItemGroupItemBehavior } from '@happier-dev/plugin-ui/presentation';
+import { useRouter } from '@/components/appShell/workspace/destinationRoute';
+import { resolveHappierFocusRingVisible } from '@happier-dev/plugin-ui/presentation';
 
 import { announceAccessibilityMessage } from '@/components/ui/accessibility/announceAccessibilityMessage';
 import { RoundButton } from '@/components/ui/buttons/RoundButton';
+import { FieldTextInput } from '@/components/ui/forms/FieldTextInput';
 import { Switch } from '@/components/ui/forms/Switch';
-import { Item } from '@/components/ui/lists/Item';
-import { Modal } from '@/modal';
-import { useTemporaryCopyFeedback } from '@/components/ui/copy/useTemporaryCopyFeedback';
 import { Icon } from '@/components/ui/icons/Icon';
 import { resolveMinimumInteractiveTargetSize } from '@/components/ui/interactiveTargetSize';
-import { motionTokens, StepTransitionFrame, stepTransitionTokens } from '@/components/ui/motion';
-import { Text, TextInput } from '@/components/ui/text/Text';
+import { Item } from '@/components/ui/lists/Item';
+import { ItemGroup } from '@/components/ui/lists/ItemGroup';
+import { SegmentedChoiceItem } from '@/components/ui/lists/SegmentedChoiceItem';
+import { motionTokens, StepTransitionFrame } from '@/components/ui/motion';
+import { Text } from '@/components/ui/text/Text';
 import { Typography } from '@/constants/Typography';
 import { useReducedMotionPreference } from '@/hooks/ui/useReducedMotionPreference';
+import { Modal } from '@/modal';
 import type { CustomModalInjectedProps } from '@/modal';
 import { useModalCardChrome } from '@/modal/components/card/useModalCardChrome';
-import { t, type TranslationKey } from '@/text';
-import { setClipboardStringSafe } from '@/utils/ui/clipboard';
+import { t } from '@/text';
 import { useActiveServerAccountScope } from '@/sync/domains/state/storage';
 import { getActiveServerSnapshot } from '@/sync/domains/server/serverRuntime';
 
-import type { ApiTokenExpiryPreset, ApiTokenSettingsController } from './apiTokenSettingsController';
+import {
+    resolveApiTokenExpiryInstant,
+    type ApiTokenSettingsController,
+} from './apiTokenSettingsController';
+import { buildApiTokenCreateRestorePath } from './apiTokenCreateResume';
+import { ApiTokenExpiryChoiceItem } from './ApiTokenExpiryChoiceItem';
+import { ApiTokenRevealBody, ApiTokenRevealDone } from './ApiTokenReveal';
+import { confirmForCapturedAccount } from './confirmForCapturedAccount';
 import { resolveApiTokenOperationErrorMessageKey } from './apiTokenSettingsPresentation';
+import { ApiTokenGrantEditor } from './grant/ApiTokenGrantEditor';
+import { API_TOKEN_LIMITED_GRANT_START_V1, areApiTokenGrantsEqual, isApiTokenGrantDraftSendable } from './grant/apiTokenGrantDraft';
 import { useApiTokenSettingsControllerState } from './useApiTokenSettingsControllerState';
 
-const EXPIRY_PRESETS: readonly ApiTokenExpiryPreset[] = ['30d', '90d', '1y', 'none'];
-const EXPIRY_PRESET_LABEL_KEYS = {
-    '30d': 'settingsApiTokens.create.expiryOptions.30d',
-    '90d': 'settingsApiTokens.create.expiryOptions.90d',
-    '1y': 'settingsApiTokens.create.expiryOptions.1y',
-    none: 'settingsApiTokens.create.expiryOptions.none',
-} satisfies Record<ApiTokenExpiryPreset, TranslationKey>;
 
 const stylesheet = StyleSheet.create((theme) => ({
     body: {
@@ -42,56 +45,37 @@ const stylesheet = StyleSheet.create((theme) => ({
         paddingBottom: 24,
         gap: 18,
     },
-    label: {
-        ...Typography.default('semiBold'),
-        color: theme.colors.text.primary,
-        fontSize: 14,
-        marginBottom: 8,
+    stack: {
+        gap: 18,
     },
-    input: {
-        ...Typography.default(),
-        minHeight: Platform.OS === 'android' ? 48 : 44,
-        color: theme.colors.text.primary,
-        backgroundColor: theme.colors.input.background,
-        borderColor: theme.colors.border.default,
-        borderWidth: 1,
-        borderRadius: 10,
-        paddingHorizontal: 12,
-        paddingVertical: 10,
-    },
-    presets: {
+    footer: {
         flexDirection: 'row',
-        flexWrap: 'wrap',
-        gap: 8,
-    },
-    preset: {
-        minHeight: Platform.OS === 'android' ? 48 : 44,
-        minWidth: Platform.OS === 'android' ? 48 : 44,
+        justifyContent: 'flex-end',
         alignItems: 'center',
-        justifyContent: 'center',
-        borderRadius: 10,
-        paddingHorizontal: 14,
-        backgroundColor: theme.colors.surface.inset,
-        borderColor: theme.colors.border.default,
-        borderWidth: 1,
+        paddingHorizontal: 16,
+        paddingVertical: 12,
+        gap: 10,
     },
-    presetSelected: {
-        backgroundColor: theme.colors.surface.selected,
-        borderColor: theme.colors.border.strong,
+    footerNote: {
+        flex: 1,
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 6,
+        minWidth: 0,
     },
-    presetText: {
-        ...Typography.default('semiBold'),
-        color: theme.colors.text.secondary,
-        fontSize: 13,
-    },
-    presetTextSelected: {
-        color: theme.colors.text.primary,
+    footerNoteText: {
+        ...Typography.default(),
+        flexShrink: 1,
+        color: theme.colors.state.warning.foreground,
+        fontSize: 12.5,
+        lineHeight: 17,
     },
     guidanceRow: {
         flexDirection: 'row',
         flexWrap: 'wrap',
         alignItems: 'center',
         columnGap: 4,
+        paddingHorizontal: 2,
     },
     guidanceText: {
         ...Typography.default(),
@@ -126,405 +110,112 @@ const stylesheet = StyleSheet.create((theme) => ({
         fontSize: 13,
         lineHeight: 18,
     },
-    revealHero: {
-        alignItems: 'center',
-        gap: 8,
-        paddingTop: 4,
-    },
-    revealTitle: {
-        ...Typography.default('semiBold'),
-        color: theme.colors.text.primary,
-        fontSize: 22,
-        lineHeight: 28,
-        textAlign: 'center',
-    },
-    revealBody: {
-        ...Typography.default(),
-        color: theme.colors.text.secondary,
-        textAlign: 'center',
-        lineHeight: 20,
-    },
-    secretSurface: {
-        backgroundColor: theme.colors.surface.inset,
-        borderRadius: 12,
-        padding: 12,
-        gap: 10,
-    },
     secret: {
         ...Typography.mono(),
         color: theme.colors.text.primary,
         fontSize: 13,
         lineHeight: 19,
     },
-    copyRow: {
-        minHeight: Platform.OS === 'android' ? 48 : 44,
-        flexDirection: 'row',
-        alignItems: 'center',
-        justifyContent: 'center',
-        gap: 8,
-        borderRadius: 10,
-        backgroundColor: theme.colors.button.secondary.background,
-    },
-    copyText: {
-        ...Typography.default('semiBold'),
-        color: theme.colors.button.secondary.tint,
-    },
-    copyFeedbackContent: {
-        position: 'relative',
-        flexDirection: 'row',
-        alignItems: 'center',
-        justifyContent: 'center',
-    },
-    copyFeedbackLayer: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        justifyContent: 'center',
-        gap: 8,
-    },
-    copyFeedbackOverlay: {
-        position: 'absolute',
-        top: 0,
-        right: 0,
-        bottom: 0,
-        left: 0,
-    },
 }));
 
-type WebKeyboardEvent = Readonly<{
-    key?: string;
-    nativeEvent?: Readonly<{ key?: string }>;
-    preventDefault?(): void;
-    stopPropagation?(): void;
-}>;
+type CreateStage = 'basics' | 'access';
 
-type ApiTokenExpiryPresetOptionProps = Readonly<{
-    preset: ApiTokenExpiryPreset;
-    selected: boolean;
-    disabled: boolean;
-    itemGroupRadioIndex?: number;
-    accessibilityRole?: 'radio';
-    onPress(): void;
-}>;
-
-/** Preserves the token modal pill treatment while using ItemGroup's shared radio behavior. */
-function ApiTokenExpiryPresetOption(props: ApiTokenExpiryPresetOptionProps): React.ReactElement {
-    const styles = stylesheet;
-    const isWeb = Platform.OS === 'web';
-    const groupItem = useHappierItemGroupItemBehavior({
-        role: 'radio',
-        itemGroupRadioIndex: props.itemGroupRadioIndex,
-        disabled: props.disabled,
-    });
-    const onKeyDown = React.useCallback((event: WebKeyboardEvent) => {
-        if (!isWeb) return;
-        const key = event.nativeEvent?.key ?? event.key;
-        if (!key || !groupItem.onKeyDown(key)) return;
-        event.preventDefault?.();
-        event.stopPropagation?.();
-    }, [groupItem, isWeb]);
-    const webKeyDownProps = { onKeyDown: isWeb ? onKeyDown : undefined } as Record<string, unknown>;
-
-    return (
-        <Pressable
-            ref={groupItem.grouped ? groupItem.targetRef : undefined}
-            testID={'settings-api-tokens-expiry-' + props.preset}
-            accessibilityRole="radio"
-            accessibilityState={{ checked: props.selected, disabled: props.disabled }}
-            role={isWeb ? 'radio' : undefined}
-            aria-checked={isWeb ? props.selected : undefined}
-            tabIndex={isWeb && groupItem.grouped
-                ? groupItem.tabStopIndex === props.itemGroupRadioIndex ? 0 : -1
-                : undefined}
-            disabled={props.disabled}
-            {...webKeyDownProps}
-            onPress={props.onPress}
-            style={(interactionState) => {
-                const webState = interactionState as typeof interactionState & { focused?: boolean };
-                return [
-                    styles.preset,
-                    props.selected ? styles.presetSelected : null,
-                    webState.focused === true ? styles.webFocusRing : null,
-                    { opacity: interactionState.pressed ? 0.7 : 1 },
-                ];
-            }}
-        >
-            <Text style={[styles.presetText, props.selected ? styles.presetTextSelected : null]}>
-                {t(EXPIRY_PRESET_LABEL_KEYS[props.preset])}
-            </Text>
-        </Pressable>
-    );
-}
-
-function ApiTokenCopyFeedbackContent(props: Readonly<{
-    copied: boolean;
-    color: string;
-}>) {
-    const styles = stylesheet;
-    const progress = React.useRef(new Animated.Value(props.copied ? 1 : 0)).current;
-
-    React.useEffect(() => {
-        const animation = Animated.timing(progress, {
-            toValue: props.copied ? 1 : 0,
-            duration: motionTokens.durationMs.fast,
-            easing: motionTokens.easing.standard,
-            useNativeDriver: true,
-        });
-        animation.start();
-        return () => animation.stop();
-    }, [progress, props.copied]);
-
-    const hiddenFromAccessibility = {
-        accessibilityElementsHidden: true,
-        importantForAccessibility: 'no-hide-descendants' as const,
-    };
-
-    return (
-        <View style={styles.copyFeedbackContent}>
-            <Animated.View
-                {...hiddenFromAccessibility}
-                style={[styles.copyFeedbackLayer, {
-                    opacity: progress.interpolate({ inputRange: [0, 1], outputRange: [1, 0] }),
-                }]}
-            >
-                <Icon name="copy" size={18} color={props.color} />
-                <Text style={styles.copyText}>{t('settingsApiTokens.reveal.copy')}</Text>
-            </Animated.View>
-            <Animated.View
-                {...hiddenFromAccessibility}
-                style={[styles.copyFeedbackLayer, styles.copyFeedbackOverlay, { opacity: progress }]}
-            >
-                <Icon name="check" size={18} color={props.color} />
-                <Text style={styles.copyText}>{t('settingsApiTokens.reveal.copied')}</Text>
-            </Animated.View>
-        </View>
-    );
-}
-
-function ApiTokenRevealDone(props: Readonly<{
-    revealKey: string;
-    reducedMotion: boolean;
-    onClose: () => void;
-}>) {
-    const progress = React.useRef(new Animated.Value(props.reducedMotion ? 1 : 0)).current;
-    const [revealed, setRevealed] = React.useState(props.reducedMotion);
-
-    React.useEffect(() => {
-        if (props.reducedMotion) {
-            progress.setValue(1);
-            setRevealed(true);
-            return;
-        }
-        progress.setValue(0);
-        setRevealed(false);
-        const animation = Animated.timing(progress, {
-            toValue: 1,
-            delay: motionTokens.durationMs.fast * 3,
-            duration: stepTransitionTokens.durationMs.enter,
-            easing: stepTransitionTokens.easing,
-            useNativeDriver: true,
-        });
-        const revealTimer = setTimeout(
-            () => setRevealed(true),
-            motionTokens.durationMs.fast * 3 + stepTransitionTokens.durationMs.enter,
-        );
-        animation.start();
-        return () => {
-            clearTimeout(revealTimer);
-            animation.stop();
-        };
-    }, [progress, props.reducedMotion, props.revealKey]);
-
-    return (
-        <Animated.View
-            testID="settings-api-tokens-reveal-stage-done"
-            pointerEvents={revealed ? 'auto' : 'none'}
-            accessibilityElementsHidden={!revealed}
-            importantForAccessibility={revealed ? 'auto' : 'no-hide-descendants'}
-            style={{
-                opacity: progress,
-                transform: props.reducedMotion ? [] : [{
-                    translateY: progress.interpolate({
-                        inputRange: [0, 1],
-                        outputRange: [stepTransitionTokens.translatePx, 0],
-                    }),
-                }],
-            }}
-        >
-            <RoundButton
-                size="normal"
-                title={t('common.done')}
-                testID="settings-api-tokens-reveal-done"
-                disabled={!revealed}
-                onPress={props.onClose}
-            />
-        </Animated.View>
-    );
-}
-
-function ApiTokenRevealStages(props: Readonly<{
-    revealKey: string;
-    reducedMotion: boolean;
-    success: React.ReactNode;
-    warning: React.ReactNode;
-    secret: React.ReactNode;
-}>) {
-    const successProgress = React.useRef(new Animated.Value(props.reducedMotion ? 1 : 0)).current;
-    const warningProgress = React.useRef(new Animated.Value(props.reducedMotion ? 1 : 0)).current;
-    const secretProgress = React.useRef(new Animated.Value(props.reducedMotion ? 1 : 0)).current;
-    const reducedOpacity = React.useRef(new Animated.Value(props.reducedMotion ? 0 : 1)).current;
-    const activeAnimationRef = React.useRef<Animated.CompositeAnimation | null>(null);
-
-    React.useEffect(() => {
-        activeAnimationRef.current?.stop();
-        const stageProgresses = [successProgress, secretProgress, warningProgress];
-
-        if (props.reducedMotion) {
-            stageProgresses.forEach((progress) => progress.setValue(1));
-            reducedOpacity.setValue(0);
-            const animation = Animated.timing(reducedOpacity, {
-                toValue: 1,
-                duration: stepTransitionTokens.durationMs.enter,
-                easing: stepTransitionTokens.easing,
-                useNativeDriver: true,
-            });
-            activeAnimationRef.current = animation;
-            animation.start();
-            return () => {
-                animation.stop();
-                if (activeAnimationRef.current === animation) activeAnimationRef.current = null;
-            };
-        }
-
-        reducedOpacity.setValue(1);
-        stageProgresses.forEach((progress) => progress.setValue(0));
-        const animation = Animated.stagger(
-            motionTokens.durationMs.fast,
-            stageProgresses.map((progress) => Animated.timing(progress, {
-                toValue: 1,
-                duration: stepTransitionTokens.durationMs.enter,
-                easing: stepTransitionTokens.easing,
-                useNativeDriver: true,
-            })),
-        );
-        activeAnimationRef.current = animation;
-        animation.start();
-        return () => {
-            animation.stop();
-            if (activeAnimationRef.current === animation) activeAnimationRef.current = null;
-        };
-    }, [props.reducedMotion, props.revealKey, reducedOpacity, secretProgress, successProgress, warningProgress]);
-
-    if (props.reducedMotion) {
-        return (
-            <Animated.View testID="settings-api-tokens-reveal-reduced-fade" style={{ gap: 18, opacity: reducedOpacity }}>
-                {props.success}
-                {props.secret}
-                {props.warning}
-            </Animated.View>
-        );
-    }
-
-    const stageStyle = (progress: Animated.Value) => ({
-        opacity: progress,
-        transform: [{
-            translateY: progress.interpolate({
-                inputRange: [0, 1],
-                outputRange: [stepTransitionTokens.translatePx, 0],
-            }),
-        }],
-    });
-
-    return (
-        <View testID="settings-api-tokens-reveal-stages" style={{ gap: 18 }}>
-            <Animated.View testID="settings-api-tokens-reveal-stage-success" style={stageStyle(successProgress)}>
-                {props.success}
-            </Animated.View>
-            <Animated.View testID="settings-api-tokens-reveal-stage-secret" style={stageStyle(secretProgress)}>
-                {props.secret}
-            </Animated.View>
-            <Animated.View testID="settings-api-tokens-reveal-stage-warning" style={stageStyle(warningProgress)}>
-                {props.warning}
-            </Animated.View>
-        </View>
-    );
-}
-
+/**
+ * Create an API token (label, access, expiry, content and Team access; then, for limited access, the
+ * grant editor), reveal it once — or, in `editAccess` mode, edit an existing token's grant. The
+ * lifecycle of both lives in `apiTokenSettingsController`.
+ */
 export function ApiTokenCreateModal(props: Readonly<{
     controller: ApiTokenSettingsController;
+    mode?: 'create' | 'editAccess';
+    /** Domain-specific copy actions can accompany the canonical one-time reveal. */
+    revealAccessory?: React.ReactNode;
 }> & CustomModalInjectedProps) {
-    const { theme } = useUnistyles();
+    if (props.mode === 'editAccess') return <ApiTokenEditAccessContent {...props} />;
+    return <ApiTokenCreateContent {...props} />;
+}
+
+function ApiTokenCreateContent(props: Readonly<{ controller: ApiTokenSettingsController; revealAccessory?: React.ReactNode }> & CustomModalInjectedProps) {
     const styles = stylesheet;
     const router = useRouter();
     const activeServerAccountScope = useActiveServerAccountScope();
     const state = useApiTokenSettingsControllerState(props.controller);
-    const copyFeedback = useTemporaryCopyFeedback(1_500);
-    const [copyError, setCopyError] = React.useState(false);
-    const [copyPending, setCopyPending] = React.useState(false);
-    const copyPendingRef = React.useRef(false);
     const reveal = state.reveal;
     const reducedMotion = useReducedMotionPreference();
     const minimumInteractiveTargetSize = resolveMinimumInteractiveTargetSize(Platform.OS);
+    const [stage, setStage] = React.useState<CreateStage>('basics');
+    const draft = state.createDraft;
+    const limited = draft.access === 'limited';
+    const grant = draft.grant ?? API_TOKEN_LIMITED_GRANT_START_V1;
+    const onAccessStage = limited && stage === 'access' && !reveal;
+    const labelReady = draft.label.trim().length > 0;
+    const canSubmit = labelReady && !state.createPending && !state.recoveryTokenId
+        && (!limited || isApiTokenGrantDraftSendable(grant));
 
     React.useEffect(() => {
         if (!reveal) return;
         announceAccessibilityMessage(t('settingsApiTokens.reveal.accessibilityAnnouncement'));
     }, [reveal?.token]);
 
+    const setDraft = props.controller.setCreateDraft;
+    const advance = React.useCallback(() => {
+        if (!labelReady) return;
+        if (limited && stage === 'basics') {
+            setStage('access');
+            return;
+        }
+        void props.controller.createToken();
+    }, [labelReady, limited, props.controller, stage]);
+
     const footer = React.useMemo(() => (
-        <View style={{ flexDirection: 'row', justifyContent: 'flex-end', paddingHorizontal: 16, paddingVertical: 12, gap: 10 }}>
+        <View style={styles.footer}>
             {reveal ? (
-                <ApiTokenRevealDone
-                    revealKey={reveal.token}
-                    reducedMotion={reducedMotion}
-                    onClose={props.onClose}
-                />
+                <ApiTokenRevealDone revealKey={reveal.token} reducedMotion={reducedMotion} onClose={props.onClose} />
             ) : (
                 <>
                     <RoundButton
                         size="normal"
                         display="inverted"
-                        title={t('common.cancel')}
-                        onPress={props.onClose}
+                        title={onAccessStage ? t('settingsApiTokens.create.back') : t('common.cancel')}
+                        testID={onAccessStage ? 'settings-api-tokens-create-back' : undefined}
+                        disabled={state.createPending && onAccessStage}
+                        onPress={onAccessStage ? () => setStage('basics') : props.onClose}
                     />
-                    <RoundButton
-                        size="normal"
-                        title={t('settingsApiTokens.create.submit')}
-                        testID="settings-api-tokens-create-submit"
-                        disabled={!state.createDraft.label.trim() || state.createPending || !!state.recoveryTokenId}
-                        loading={state.createPending}
-                        action={props.controller.createToken}
-                    />
+                    {limited && !onAccessStage ? (
+                        <RoundButton
+                            size="normal"
+                            title={t('settingsApiTokens.create.continue')}
+                            testID="settings-api-tokens-create-continue"
+                            disabled={!labelReady || !!state.recoveryTokenId}
+                            onPress={() => setStage('access')}
+                        />
+                    ) : (
+                        <RoundButton
+                            size="normal"
+                            title={t('settingsApiTokens.create.submit')}
+                            testID="settings-api-tokens-create-submit"
+                            disabled={!canSubmit}
+                            loading={state.createPending}
+                            action={props.controller.createToken}
+                        />
+                    )}
                 </>
             )}
         </View>
-    ), [props.controller, props.onClose, reducedMotion, reveal, state.createDraft.label, state.createPending, state.recoveryTokenId]);
+    ), [canSubmit, labelReady, limited, onAccessStage, props.controller.createToken, props.onClose, reducedMotion, reveal, state.createPending, state.recoveryTokenId, styles.footer]);
 
     useModalCardChrome(props.setChrome, React.useMemo(() => ({
         kind: 'card' as const,
-        title: reveal ? t('settingsApiTokens.reveal.title') : t('settingsApiTokens.create.title'),
-        subtitle: reveal ? t('settingsApiTokens.reveal.accessibilityAnnouncement') : t('settingsApiTokens.create.subtitle'),
+        title: reveal
+            ? t('settingsApiTokens.reveal.title')
+            : onAccessStage ? t('settingsApiTokens.create.accessTitle') : t('settingsApiTokens.create.title'),
+        // The reveal body already says the token is shown once; the band does not repeat it.
+        subtitle: reveal ? undefined : onAccessStage ? draft.label.trim() : t('settingsApiTokens.create.subtitle'),
         testID: 'settings-api-tokens-create-modal',
         closeButtonTestID: 'settings-api-tokens-create-close',
         dimensions: { width: 600, maxHeightRatio: 0.9, size: 'md' as const },
         footer,
-    }), [footer, reveal]));
-
-    const copy = React.useCallback(async () => {
-        if (!reveal || copyPendingRef.current) return;
-        copyPendingRef.current = true;
-        setCopyPending(true);
-        setCopyError(false);
-        try {
-            const copied = await setClipboardStringSafe(reveal.token);
-            setCopyError(!copied);
-            if (!copied) return;
-            props.controller.acknowledgeReveal();
-            copyFeedback.markCopied('token');
-        } finally {
-            copyPendingRef.current = false;
-            setCopyPending(false);
-        }
-    }, [copyFeedback, props.controller, reveal]);
+    }), [draft.label, footer, onAccessStage, reveal]));
 
     return (
         <ScrollView
@@ -534,210 +225,250 @@ export function ApiTokenCreateModal(props: Readonly<{
             contentContainerStyle={styles.body}
         >
             <StepTransitionFrame
-                transitionKey={reveal ? 'reveal' : 'create'}
-                direction="replace"
+                transitionKey={reveal ? 'reveal' : onAccessStage ? 'access' : 'create'}
+                direction={reveal ? 'replace' : onAccessStage ? 'forward' : 'backward'}
                 reducedMotion={reducedMotion}
                 testID="settings-api-tokens-create-step"
             >
                 {reveal ? (
-                    <ApiTokenRevealStages
-                        revealKey={reveal.token}
-                        reducedMotion={reducedMotion}
-                        success={(
-                            <View style={styles.revealHero}>
-                                <Icon name="check-circle" size={34} color={theme.colors.state.success.foreground} />
-                                <Text style={styles.revealTitle}>{t('settingsApiTokens.reveal.successTitle')}</Text>
-                            </View>
-                        )}
-                        warning={<Text style={styles.revealBody}>{t('settingsApiTokens.reveal.shownOnce')}</Text>}
-                        secret={(
-                            <View style={styles.secretSurface}>
-                                <Text selectable testID="settings-api-tokens-reveal-secret" style={styles.secret}>{reveal.token}</Text>
-                                <Pressable
-                                    testID="settings-api-tokens-reveal-copy"
-                                    accessibilityRole="button"
-                                    accessibilityLabel={copyFeedback.isCopied('token')
-                                        ? t('settingsApiTokens.reveal.copied')
-                                        : t('settingsApiTokens.reveal.copy')}
-                                    accessibilityState={{ disabled: copyPending, busy: copyPending }}
-                                    accessibilityLiveRegion="polite"
-                                    focusable
-                                    disabled={copyPending}
-                                    onPress={copy}
-                                    style={(interactionState) => {
-                                        const webState = interactionState as typeof interactionState & { focused?: boolean };
-                                        return [
-                                            styles.copyRow,
-                                            webState.focused === true ? styles.webFocusRing : null,
-                                            { opacity: interactionState.pressed ? 0.7 : 1 },
-                                        ];
-                                    }}
-                                >
-                                    <ApiTokenCopyFeedbackContent
-                                        copied={copyFeedback.isCopied('token')}
-                                        color={theme.colors.button.secondary.tint}
-                                    />
-                                </Pressable>
-                                {copyError ? (
-                                    <Text accessibilityLiveRegion="assertive" style={styles.error} testID="settings-api-tokens-copy-error">
-                                        {t('settingsApiTokens.errors.copyFailed')}
-                                    </Text>
-                                ) : null}
-                            </View>
-                        )}
-                    />
-                ) : (
-                    <View style={{ gap: 18 }}>
-                        <View>
-                            <Text style={styles.label}>{t('settingsApiTokens.create.label')}</Text>
-                            <TextInput
-                                testID="settings-api-tokens-create-label"
-                                accessibilityLabel={t('settingsApiTokens.create.label')}
-                                autoFocus
-                                maxLength={256}
-                                value={state.createDraft.label}
-                                placeholder={t('settingsApiTokens.create.labelPlaceholder')}
-                                placeholderTextColor={theme.colors.input.placeholder}
-                                editable={!state.createPending}
-                                onChangeText={(label) => props.controller.setCreateDraft({ ...state.createDraft, label })}
-                                style={styles.input}
-                                returnKeyType="done"
-                                onSubmitEditing={() => {
-                                    if (state.createDraft.label.trim() && !state.createPending && !state.recoveryTokenId) void props.controller.createToken();
-                                }}
-                            />
-                        </View>
-                        <View>
-                            <Text style={styles.label}>{t('settingsApiTokens.create.expiry')}</Text>
-                            <HappierItemGroupBehavior
-                                accessibilityRole="radiogroup"
-                                accessibilityLabel={t('settingsApiTokens.create.expiry')}
-                                selectableItemCount={EXPIRY_PRESETS.length}
-                                renderContent={(presets) => (
-                                    <View
-                                        style={styles.presets}
-                                        accessibilityRole={Platform.OS === 'web' ? undefined : 'radiogroup'}
-                                        accessibilityLabel={t('settingsApiTokens.create.expiry')}
-                                        role={Platform.OS === 'web' ? 'radiogroup' : undefined}
-                                        aria-label={Platform.OS === 'web' ? t('settingsApiTokens.create.expiry') : undefined}
-                                    >
-                                        {presets}
-                                    </View>
-                                )}
-                            >
-                                {EXPIRY_PRESETS.map((preset) => (
-                                    <ApiTokenExpiryPresetOption
-                                        key={preset}
-                                        accessibilityRole="radio"
-                                        preset={preset}
-                                        selected={state.createDraft.expiryPreset === preset}
-                                        disabled={state.createPending}
-                                        onPress={() => props.controller.setCreateDraft({ ...state.createDraft, expiryPreset: preset })}
-                                    />
-                                ))}
-                            </HappierItemGroupBehavior>
-                        </View>
-                        <Item
-                            title={t('settingsApiTokens.unattended.choice')}
-                            subtitle={t('settingsApiTokens.unattended.consequence')}
-                            rightElement={<Switch
-                                testID="settings-api-tokens-unattended-team-access"
-                                accessibilityLabel={t('settingsApiTokens.unattended.choice')}
-                                value={state.createDraft.authorizeUnattendedTeamAccess === true}
-                                disabled={state.createPending}
-                                onValueChange={(authorizeUnattendedTeamAccess) => props.controller.setCreateDraft({
-                                    ...state.createDraft,
-                                    authorizeUnattendedTeamAccess,
-                                })}
-                            />}
+                    <>
+                        <ApiTokenRevealBody token={reveal.token} reducedMotion={reducedMotion} onCopied={props.controller.acknowledgeReveal} />
+                        {props.revealAccessory}
+                    </>
+                ) : onAccessStage ? (
+                    <View style={styles.stack}>
+                        <ApiTokenGrantEditor
+                            testID="settings-api-tokens-grant-editor"
+                            value={grant}
+                            onChange={(next) => setDraft({ ...draft, grant: next })}
+                            disabled={state.createPending}
+                            label={draft.label}
+                            expiresAt={resolveApiTokenExpiryInstant(draft.expiryPreset, Date.now())}
                         />
-                        {state.canCreateEncrypted ? (
-                            <Item
-                                title={t('settingsApiTokens.encryption.choice')}
-                                subtitle={t('settingsApiTokens.encryption.consequence')}
-                                rightElement={<Switch
-                                    testID="settings-api-tokens-encryption-access"
-                                    accessibilityLabel={t('settingsApiTokens.encryption.choice')}
-                                    value={state.createDraft.encryptionAccess === true}
-                                    disabled={state.createPending}
-                                    onValueChange={(encryptionAccess) => props.controller.setCreateDraft({ ...state.createDraft, encryptionAccess })}
-                                />}
-                            />
-                        ) : null}
-                        <View style={styles.guidanceRow}>
-                            <Text style={styles.guidanceText}>{t('settingsApiTokens.create.actionSettingsPrefix')}</Text>
-                            <Pressable
-                                testID="settings-api-tokens-action-settings"
-                                accessibilityRole="link"
-                                accessibilityLabel={t('settingsApiTokens.create.actionSettingsLink')}
-                                accessibilityState={{ disabled: state.createPending }}
-                                focusable
-                                disabled={state.createPending}
-                                onPress={() => {
-                                    props.onClose();
-                                    router.push('/settings/actions');
-                                }}
-                                style={(interactionState) => {
-                                    const webState = interactionState as typeof interactionState & { focused?: boolean };
-                                    return [
-                                        styles.actionSettingsLink,
-                                        {
-                                            minWidth: minimumInteractiveTargetSize,
-                                            minHeight: minimumInteractiveTargetSize,
-                                        },
-                                        webState.focused === true ? styles.webFocusRing : null,
-                                        { opacity: interactionState.pressed ? 0.7 : 1 },
-                                    ];
-                                }}
-                            >
-                                <Text style={styles.link}>{t('settingsApiTokens.create.actionSettingsLink')}</Text>
-                            </Pressable>
-                        </View>
                         {state.createError ? (
                             <Text accessibilityLiveRegion="assertive" style={styles.error} testID="settings-api-tokens-create-error">
                                 {t(resolveApiTokenOperationErrorMessageKey(state.createError))}
                             </Text>
                         ) : null}
-                        {state.recoveryTokenId ? (
-                            <View testID="settings-api-tokens-create-recovery" style={{ gap: 10 }}>
-                                <Text style={styles.guidanceText}>{t('settingsApiTokens.encryption.outcomeUnknown')}</Text>
-                                <Text selectable style={styles.secret}>{state.recoveryTokenId}</Text>
-                                <RoundButton size="normal" display="inverted" title={t('common.refresh')}
-                                    action={props.controller.refresh} />
-                                <RoundButton size="normal" display="inverted" title={t('settingsApiTokens.revoke.confirm')}
-                                    action={async () => {
-                                        const tokenId = state.recoveryTokenId;
-                                        if (!tokenId) return;
-                                        const confirmed = await Modal.confirm(
-                                            t('settingsApiTokens.revoke.title', { label: state.createDraft.label || tokenId }),
-                                            t('settingsApiTokens.revoke.body'),
-                                            { cancelText: t('common.cancel'), confirmText: t('settingsApiTokens.revoke.confirm'), destructive: true },
-                                        );
-                                        if (confirmed && props.controller.getState().recoveryTokenId === tokenId) {
-                                            await props.controller.revokeToken(tokenId);
-                                        }
-                                    }} />
+                    </View>
+                ) : (
+                    <View style={styles.stack}>
+                        <ItemGroup>
+                            <Item
+                                title={t('settingsApiTokens.create.label')}
+                                accessoryLayout="adaptive"
+                                rightElement={(
+                                    <FieldTextInput
+                                        testID="settings-api-tokens-create-label"
+                                        accessibilityLabel={t('settingsApiTokens.create.label')}
+                                        autoFocus
+                                        maxLength={256}
+                                        value={draft.label}
+                                        placeholder={t('settingsApiTokens.create.labelPlaceholder')}
+                                        editable={!state.createPending}
+                                        onChangeText={(label) => setDraft({ ...draft, label })}
+                                        returnKeyType={limited ? 'next' : 'done'}
+                                        onSubmitEditing={() => {
+                                            if (!state.createPending && !state.recoveryTokenId) advance();
+                                        }}
+                                    />
+                                )}
+                                mode="info"
+                                showChevron={false}
+                            />
+                            <SegmentedChoiceItem
+                                title={t('settingsApiTokens.create.access')}
+                                testIDPrefix="settings-api-tokens-access"
+                                options={[
+                                    { id: 'full' as const, label: t('settingsApiTokens.create.accessFull') },
+                                    { id: 'limited' as const, label: t('settingsApiTokens.create.accessLimited'), description: t('settingsApiTokens.create.accessLimitedDescription') },
+                                ]}
+                                value={limited ? 'limited' : 'full'}
+                                disabled={state.createPending}
+                                onChange={(access) => setDraft({
+                                    ...draft,
+                                    access,
+                                    ...(access === 'limited' && !draft.grant ? { grant: API_TOKEN_LIMITED_GRANT_START_V1 } : {}),
+                                })}
+                            />
+                            <ApiTokenExpiryChoiceItem
+                                value={draft.expiryPreset}
+                                disabled={state.createPending}
+                                onChange={(expiryPreset) => setDraft({ ...draft, expiryPreset })}
+                            />
+                        </ItemGroup>
+                        <ItemGroup>
+                            {state.encryptionAvailability === 'ready' ? (
+                                <Item
+                                    title={t('settingsApiTokens.encryption.choice')}
+                                    subtitle={t('settingsApiTokens.encryption.consequence')}
+                                    subtitleLines={0}
+                                    rightElement={<Switch
+                                        testID="settings-api-tokens-encryption-access"
+                                        accessibilityLabel={t('settingsApiTokens.encryption.choice')}
+                                        value={draft.encryptionAccess === true}
+                                        disabled={state.createPending}
+                                        onValueChange={(encryptionAccess) => setDraft({ ...draft, encryptionAccess })}
+                                    />}
+                                    showChevron={false}
+                                />
+                            ) : null}
+                            <Item
+                                title={t('settingsApiTokens.unattended.choice')}
+                                subtitle={t('settingsApiTokens.unattended.consequence')}
+                                subtitleLines={0}
+                                rightElement={<Switch
+                                    testID="settings-api-tokens-unattended-team-access"
+                                    accessibilityLabel={t('settingsApiTokens.unattended.choice')}
+                                    value={draft.authorizeUnattendedTeamAccess === true}
+                                    disabled={state.createPending}
+                                    onValueChange={(authorizeUnattendedTeamAccess) => setDraft({ ...draft, authorizeUnattendedTeamAccess })}
+                                />}
+                                showChevron={false}
+                            />
+                        </ItemGroup>
+                        {!limited ? (
+                            <View style={styles.guidanceRow}>
+                                <Text style={styles.guidanceText}>{t('settingsApiTokens.create.actionSettingsPrefix')}</Text>
+                                <Pressable
+                                    testID="settings-api-tokens-action-settings"
+                                    accessibilityRole="link"
+                                    accessibilityLabel={t('settingsApiTokens.create.actionSettingsLink')}
+                                    accessibilityState={{ disabled: state.createPending }}
+                                    focusable
+                                    disabled={state.createPending}
+                                    onPress={() => {
+                                        props.onClose();
+                                        router.push('/settings/actions');
+                                    }}
+                                    style={(interactionState) => {
+                                        const webState = interactionState as typeof interactionState & { focused?: boolean };
+                                        return [
+                                            styles.actionSettingsLink,
+                                            { minWidth: minimumInteractiveTargetSize, minHeight: minimumInteractiveTargetSize },
+                                            resolveHappierFocusRingVisible(webState.focused) ? styles.webFocusRing : null,
+                                            { opacity: interactionState.pressed ? motionTokens.press.opacity : 1 },
+                                        ];
+                                    }}
+                                >
+                                    <Text style={styles.link}>{t('settingsApiTokens.create.actionSettingsLink')}</Text>
+                                </Pressable>
                             </View>
                         ) : null}
-                        {(state.createError === 'api_token_encryption_not_ready' || state.createError === 'api_token_encryption_stale')
-                            && activeServerAccountScope ? (
-                            <RoundButton
-                                testID="settings-api-tokens-restore-encryption"
-                                size="normal"
-                                display="inverted"
-                                title={t('navigation.restoreWithSecretKey')}
-                                onPress={() => {
-                                    const returnTo = '/settings/account/api-tokens';
-                                    const targetServerUrl = String(getActiveServerSnapshot().serverUrl ?? '').trim();
-                                    if (!targetServerUrl) return;
-                                    props.onClose();
-                                    router.push(`/restore/manual?returnTo=${encodeURIComponent(returnTo)}&resumeCreate=1&label=${encodeURIComponent(state.createDraft.label.trim())}&expiry=${state.createDraft.expiryPreset}&targetServerId=${encodeURIComponent(activeServerAccountScope.serverId)}&targetServerUrl=${encodeURIComponent(targetServerUrl)}&expectedAccountId=${encodeURIComponent(activeServerAccountScope.accountId)}`);
-                                }}
-                            />
-                        ) : null}
+                {state.createError ? (
+                    <Text accessibilityLiveRegion="assertive" style={styles.error} testID="settings-api-tokens-create-error">
+                        {t(resolveApiTokenOperationErrorMessageKey(state.createError))}
+                    </Text>
+                ) : null}
+                {state.recoveryTokenId ? (
+                    <View testID="settings-api-tokens-create-recovery" style={{ gap: 10 }}>
+                        <Text style={styles.guidanceText}>{t('settingsApiTokens.encryption.outcomeUnknown')}</Text>
+                        <Text selectable style={styles.secret}>{state.recoveryTokenId}</Text>
+                        <RoundButton size="normal" display="inverted" title={t('common.refresh')}
+                            action={props.controller.refresh} />
+                        <RoundButton size="normal" display="inverted" title={t('settingsApiTokens.revoke.confirm')}
+                            action={async () => {
+                                const tokenId = state.recoveryTokenId;
+                                if (!tokenId) return;
+                                const target = await confirmForCapturedAccount(props.controller, () => Modal.confirm(
+                                    t('settingsApiTokens.revoke.title', { label: state.createDraft.label || tokenId }),
+                                    t('settingsApiTokens.revoke.body'),
+                                    { cancelText: t('common.cancel'), confirmText: t('settingsApiTokens.revoke.confirm'), destructive: true },
+                                ));
+                                if (target && props.controller.getState().recoveryTokenId === tokenId) {
+                                    await props.controller.revokeToken(tokenId, target);
+                                }
+                            }} />
+                    </View>
+                ) : null}
+                {(state.createError === 'api_token_encryption_not_ready' || state.createError === 'api_token_encryption_stale')
+                    && activeServerAccountScope ? (
+                    <RoundButton
+                        testID="settings-api-tokens-restore-encryption"
+                        size="normal"
+                        display="inverted"
+                        title={t('navigation.restoreWithSecretKey')}
+                        onPress={() => {
+                            const targetServerUrl = String(getActiveServerSnapshot().serverUrl ?? '').trim();
+                            if (!targetServerUrl) return;
+                            props.onClose();
+                            // The whole non-secret draft travels (a limited grant included), never a secret.
+                            router.push(buildApiTokenCreateRestorePath('/settings/account/api-tokens', state.createDraft, {
+                                targetServerId: activeServerAccountScope.serverId,
+                                targetServerUrl,
+                                expectedAccountId: activeServerAccountScope.accountId,
+                            }));
+                        }}
+                    />
+                ) : null}
                     </View>
                 )}
             </StepTransitionFrame>
+        </ScrollView>
+    );
+}
+
+/** Edit an existing token's access: the same editor, Save as the primary, and the consequence for embedded credentials. */
+function ApiTokenEditAccessContent(props: Readonly<{ controller: ApiTokenSettingsController }> & CustomModalInjectedProps) {
+    const { theme } = useUnistyles();
+    const styles = stylesheet;
+    const state = useApiTokenSettingsControllerState(props.controller);
+    const edit = state.accessEdit;
+    const token = edit ? state.tokens.find((candidate) => candidate.tokenId === edit.tokenId) ?? null : null;
+    const changed = Boolean(edit && token && !areApiTokenGrantsEqual(edit.grant, token.grant));
+    const canSave = Boolean(edit && changed && !edit.pending && isApiTokenGrantDraftSendable(edit.grant));
+    const { onClose } = props;
+
+    const save = React.useCallback(async () => {
+        if (await props.controller.saveAccessEdit()) onClose();
+    }, [onClose, props.controller]);
+
+    const footer = React.useMemo(() => (
+        <View style={styles.footer}>
+            {edit?.signsOutEmbeddedCredentials ? (
+                <View style={styles.footerNote} testID="settings-api-tokens-edit-signs-out">
+                    <Icon name="warning" size={14} color={theme.colors.state.warning.foreground} />
+                    <Text style={styles.footerNoteText}>{t('settingsApiTokens.edit.signsOut')}</Text>
+                </View>
+            ) : null}
+            <RoundButton size="normal" display="inverted" title={t('common.cancel')} onPress={onClose} />
+            <RoundButton
+                size="normal"
+                title={t('settingsApiTokens.edit.save')}
+                testID="settings-api-tokens-edit-save"
+                disabled={!canSave}
+                loading={edit?.pending === true}
+                action={save}
+            />
+        </View>
+    ), [canSave, edit?.pending, edit?.signsOutEmbeddedCredentials, onClose, save, styles.footer, styles.footerNote, styles.footerNoteText, theme.colors.state.warning.foreground]);
+
+    useModalCardChrome(props.setChrome, React.useMemo(() => ({
+        kind: 'card' as const,
+        title: t('settingsApiTokens.edit.title'),
+        subtitle: token?.label,
+        testID: 'settings-api-tokens-edit-modal',
+        closeButtonTestID: 'settings-api-tokens-edit-close',
+        dimensions: { width: 600, maxHeightRatio: 0.9, size: 'md' as const },
+        footer,
+    }), [footer, token?.label]));
+
+    if (!edit || !token) return null;
+    return (
+        <ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={styles.body}>
+            <ApiTokenGrantEditor
+                testID="settings-api-tokens-edit-editor"
+                value={edit.grant}
+                onChange={props.controller.setAccessEditGrant}
+                disabled={edit.pending}
+                label={token.label}
+                expiresAt={token.expiresAt}
+            />
+            {edit.error ? (
+                <Text accessibilityLiveRegion="assertive" style={styles.error} testID="settings-api-tokens-edit-error">
+                    {t(resolveApiTokenOperationErrorMessageKey(edit.error))}
+                </Text>
+            ) : null}
         </ScrollView>
     );
 }

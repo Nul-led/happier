@@ -21,9 +21,26 @@ import {
     installMachineAdministrationTargetSelectionBoundary,
 } from '@/dev/testkit/mocks/machineAdministrationTargetSelection';
 import { renderSettingsView } from '@/dev/testkit/harness/settingsViewHarness';
+import { AppPaneProvider } from '@/components/appShell/panes/AppPaneProvider';
 import type { ActiveServerAccountScopeLifetime } from '@/sync/domains/scope/activeServerAccountScope';
 import { resetSessionDraftRepositoryForTests } from '@/sync/ops/sessionDrafts/sessionDraftRepository';
 import { installSettingsViewCommonModuleMocks } from '../settingsViewTestHelpers';
+
+/**
+ * The page renders under the app root's pane state: its details pane stands in the app's pane host
+ * (`AppScopePaneHost`), exactly as in the app. Re-renders of the tree go through the same wrapper.
+ */
+function inAppPanes(element: React.ReactElement): React.ReactElement {
+    return React.createElement(AppPaneProvider, null, element);
+}
+
+async function renderInAppPanes(
+    element: React.ReactElement,
+    options: Parameters<typeof renderSettingsView>[1] = {},
+): ReturnType<typeof renderSettingsView> {
+    return renderSettingsView(inAppPanes(element), options);
+}
+
 
 type InstalledPluginDiagnostic = Readonly<{
     code: string;
@@ -699,6 +716,99 @@ function findDevelopmentPluginAction(
         .find((action) => action.id === actionId);
 }
 
+/** The Browse search field: the input itself, not its field wrapper. */
+function findDiscoverSearchInput(screen: Awaited<ReturnType<typeof renderSettingsView>>): ReactTestInstance | null {
+    return screen.findAll((node) => node.props?.testID === 'settings.plugins.marketplace.search'
+        && typeof node.props.accessibilityLabel === 'string')[0] ?? null;
+}
+
+/** Browse searches on submit; while the daemon cannot answer, the field offers no submit at all. */
+function canSubmitDiscoverSearch(screen: Awaited<ReturnType<typeof renderSettingsView>>): boolean {
+    return typeof findDiscoverSearchInput(screen)?.props.onSubmitEditing === 'function';
+}
+
+function submitDiscoverSearch(screen: Awaited<ReturnType<typeof renderSettingsView>>): void {
+    const submit = findDiscoverSearchInput(screen)?.props.onSubmitEditing as (() => void) | undefined;
+    if (!submit) throw new Error('Expected the Browse search to accept a submit');
+    submit();
+}
+
+function findDiscoverSourceFilter(screen: Awaited<ReturnType<typeof renderSettingsView>>): ReactTestInstance | null {
+    return screen.findAll((node) => node.props?.testID === 'settings.plugins.marketplace.sourceFilter'
+        && Array.isArray(node.props.items))[0] ?? null;
+}
+
+/** The source choices the Browse filter offers, "all" first. */
+function findDiscoverSourceFilterIds(screen: Awaited<ReturnType<typeof renderSettingsView>>): readonly string[] {
+    return (findDiscoverSourceFilter(screen)?.props.items ?? []).map((item: { id: string }) => item.id);
+}
+
+function selectDiscoverSource(screen: Awaited<ReturnType<typeof renderSettingsView>>, sourceId: string): void {
+    const onSelect = findDiscoverSourceFilter(screen)?.props.onSelect as ((id: string) => void) | undefined;
+    if (!onSelect) throw new Error('Expected the Browse source filter');
+    onSelect(sourceId);
+}
+
+/** A rare operation in a plugin page's header `⋯` menu (update, roll back). */
+function findDetailMenuAction(
+    screen: Awaited<ReturnType<typeof renderSettingsView>>,
+    pluginId: string,
+    actionId: 'update' | 'rollback',
+): Readonly<{ id: string; disabled?: boolean; onSelect: () => void }> | null {
+    const menu = screen.findAll((node) => node.props?.testID === `settings.plugins.detail.${pluginId}.menu`
+        && Array.isArray(node.props.actions))[0];
+    return menu?.props.actions.find((action: { id: string }) => action.id === actionId) ?? null;
+}
+
+/**
+ * An installed row's one inline control: its Enabled switch. Everything rarer
+ * (update, roll back, uninstall) lives on the plugin's own page.
+ */
+function findInstalledRowToggle(
+    screen: Awaited<ReturnType<typeof renderSettingsView>>,
+    pluginId: string,
+): Readonly<{ action: 'enable' | 'disable'; disabled: boolean; toggle: () => void }> | null {
+    const prefix = `settings.plugins.marketplace.installed.${pluginId}.action.`;
+    const toggle = screen.findAll((node) => typeof node.props?.testID === 'string'
+        && node.props.testID.startsWith(prefix)
+        && typeof node.props.onValueChange === 'function')[0];
+    if (!toggle) return null;
+    // Capture the handler of this render, as a pressed control would hold it.
+    const onValueChange = toggle.props.onValueChange as (value: boolean) => void;
+    const value = Boolean(toggle.props.value);
+    return {
+        action: toggle.props.testID.slice(prefix.length) as 'enable' | 'disable',
+        disabled: Boolean(toggle.props.disabled),
+        toggle: () => onValueChange(!value),
+    };
+}
+
+/**
+ * Starts one lifecycle operation from a plugin page: roll back lives in the
+ * header `⋯` menu, uninstall and forget trust in the leave row.
+ */
+function pressDetailLifecycleAction(
+    screen: Awaited<ReturnType<typeof renderSettingsView>>,
+    pluginId: string,
+    method: 'rollback' | 'uninstall' | 'forgetTrust',
+): void {
+    if (method === 'rollback') {
+        const action = findDetailMenuAction(screen, pluginId, 'rollback');
+        if (!action) throw new Error(`Expected the ${pluginId} page menu to offer rollback`);
+        action.onSelect();
+        return;
+    }
+    screen.pressRow(`settings.plugins.detail.${pluginId}.action.${method}`);
+}
+
+/** Flips a plugin page's header "Enabled" switch. */
+function toggleDetailEnabled(screen: Awaited<ReturnType<typeof renderSettingsView>>, testID: string): void {
+    const toggle = screen.findAll((node) => node.props?.testID === testID
+        && typeof node.props.onValueChange === 'function')[0];
+    if (!toggle) throw new Error(`Expected the enabled switch ${testID}`);
+    toggle.props.onValueChange(!toggle.props.value);
+}
+
 /** Whether `node` renders inside `ancestor`, used to prove a fact belongs to one row. */
 function isRenderedWithin(node: ReactTestInstance | null, ancestor: ReactTestInstance | null): boolean {
     if (!node || !ancestor) return false;
@@ -736,6 +846,9 @@ installSettingsViewCommonModuleMocks({
     router: async () => {
         const { createExpoRouterMock } = await import('@/dev/testkit/mocks/router');
         return createExpoRouterMock({
+            // These screens are rendered in their Settings host; the Plugins
+            // routes they build follow the host the pathname names.
+            pathname: '/settings/plugins',
             router: {
                 push: (value) => routerPushSpy(value),
                 back: vi.fn(),
@@ -762,6 +875,11 @@ installSettingsViewCommonModuleMocks({
     storage: async () => {
         const { createStorageModuleStub } = await import('@/dev/testkit/mocks/storage');
         return createStorageModuleStub({
+            // The Plugins page remembers Grid | List per view on this device. This suite reads the list: its rows
+            // mount before the page is measured, where the grid (as in the app) waits for its measured width.
+            useLocalSettingMutable: ((key: string) => (key === 'pluginsCollectionViewV1'
+                ? [{ installed: 'list', discover: 'list' }, () => {}]
+                : [undefined, () => {}])) as never,
             useAllMachines: () => [],
             useMachineListByServerId: () => ({}),
             useMachineListStatusByServerId: () => ({}),
@@ -784,6 +902,17 @@ installSettingsViewCommonModuleMocks({
 const webhookFeature = vi.hoisted(() => ({ enabled: true }));
 const observedFeatureIds = vi.hoisted(() => [] as string[]);
 
+// Whether a side pane exists is the platform's answer; a test that follows a plugin to its own page
+// says it runs where there is none (a phone).
+const deviceTypeOverride = vi.hoisted(() => ({ value: null as 'phone' | null }));
+afterEach(() => {
+    deviceTypeOverride.value = null;
+});
+vi.mock('@/utils/platform/responsive', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('@/utils/platform/responsive')>();
+    return { ...actual, useDeviceType: () => deviceTypeOverride.value ?? actual.useDeviceType() };
+});
+
 vi.mock('@/hooks/server/useFeatureEnabled', () => ({
     useFeatureEnabled: (featureId: string) => {
         observedFeatureIds.push(featureId);
@@ -791,12 +920,14 @@ vi.mock('@/hooks/server/useFeatureEnabled', () => ({
     },
 }));
 
-vi.mock('@/sync/domains/server/serverProfiles', async () => {
+vi.mock('@/sync/domains/server/serverProfiles', async (importOriginal) => {
     const { createServerProfilesModuleMock } = await import('@/dev/testkit/mocks/serverProfiles');
     const base = createServerProfilesModuleMock({
         listServerProfiles: () => machineAdministrationFixture.profiles,
     });
     return {
+        // The app's pane state loads the real store, which watches the active server and the Home view.
+        ...(await importOriginal<typeof import('@/sync/domains/server/serverProfiles')>()),
         ...base,
         getActiveServerId: () => getActiveServerIdMock(),
         getActiveServerSnapshot: () => ({
@@ -819,7 +950,9 @@ vi.mock('@/sync/domains/server/serverProfiles', async () => {
     };
 });
 
-vi.mock('@/sync/domains/server/serverRuntime', () => ({
+vi.mock('@/sync/domains/server/serverRuntime', async (importOriginal) => ({
+    // The app's pane state loads the real store, which subscribes to the active server.
+    ...(await importOriginal<typeof import('@/sync/domains/server/serverRuntime')>()),
     getActiveServerSnapshot: () => ({
         serverId: machineAdministrationFixture.activeServerId,
         serverUrl: 'https://server-a.example.test',
@@ -839,9 +972,12 @@ vi.mock('@/sync/domains/scope/useServerCredentialAccountScopes', () => ({
     useServerCredentialAccountScopeBindings: (serverIds: readonly string[]) => {
         const serverId = serverIds[0];
         return React.useMemo(() => serverId
+            // The binding IS a `ServerAccountScopeLifetime`: its `scope` is what
+            // routed readers (the daemon projection loader) key the Account on.
             ? new Map([[serverId, {
                 serverId,
                 accountId: activeAccountLifetime.scope.accountId,
+                scope: { serverId, accountId: activeAccountLifetime.scope.accountId },
                 revision: 1,
                 isCurrent: activeAccountLifetime.isCurrent,
                 onRetire: activeAccountLifetime.onRetire,
@@ -875,7 +1011,10 @@ vi.mock('@/hooks/server/useMachineCapabilitiesCache', () => ({
 
 vi.mock('@/sync/store/hooks', () => ({
     useEndpointStatus: () => endpointConnectivityState.status,
-    useLocalSetting: () => 'comfortable',
+    // The app's pane state starts empty; every other local setting this page reads is the list density.
+    useLocalSetting: (key: string) => (key === 'appPaneScopesV1' ? null : 'comfortable'),
+    // The Plugins page remembers Grid | List per view on this device; the default (grid) is read.
+    useLocalSettingMutable: () => [{}, () => {}],
     useMachineCliDetectionTarget: (...args: unknown[]) => useMachineCliDetectionTargetMock(...args),
     useMachineRecordValues: () => machineAdministrationFixture.activeMachines,
     useMachineRecordListsByServerId: () => machineAdministrationFixture.machineListByServerId,
@@ -1258,7 +1397,7 @@ describe('PluginSettingsHomeScreen', () => {
         useMachineCapabilitiesCacheMock.mockReturnValue({ state: createMachineCapabilitiesState([]), refresh: vi.fn() });
         machineMarketplaceSourceRegistryGetMock.mockResolvedValue(null);
         const { PluginDevelopmentScreen } = await import('./development/PluginDevelopmentScreen');
-        const screen = await renderSettingsView(React.createElement(PluginDevelopmentScreen));
+        const screen = await renderInAppPanes(React.createElement(PluginDevelopmentScreen));
         await act(async () => { await flushAsync(); await flushAsync(); });
         await act(async () => { screen.pressByTestId(`settings.plugins.management.development.action.${action}`); });
         const form = modalShowMock.mock.calls.at(-1)?.[0]?.props?.form as import('@/components/plugins/actions/actionInputForm').ActionInputForm | undefined;
@@ -1280,19 +1419,19 @@ describe('PluginSettingsHomeScreen', () => {
         machineMarketplaceSourceRegistryGetMock.mockResolvedValue(null);
         const { PluginSettingsHomeScreen } = await import('./PluginSettingsHomeScreen');
         const RerenderableHome = PluginSettingsHomeScreen as React.ComponentType<{ capabilityRevision?: number }>;
-        const screen = await renderSettingsView(React.createElement(RerenderableHome, { capabilityRevision: 1 }));
+        const screen = await renderInAppPanes(React.createElement(RerenderableHome, { capabilityRevision: 1 }));
         await act(async () => { await flushAsync(); });
         expect(screen.findRow('settings.plugins.marketplace.installed.empty')).toBeFalsy();
         expect(screen.findRow('settings.plugins.marketplace.installed.loading')).toBeTruthy();
 
         capabilityState = createMachineCapabilitiesState([]);
         await act(async () => {
-            screen.tree.update(React.createElement(RerenderableHome, { capabilityRevision: 2 }));
+            screen.tree.update(inAppPanes(React.createElement(RerenderableHome, { capabilityRevision: 2 })));
             await flushAsync();
         });
         expect(screen.findRow('settings.plugins.marketplace.installed.loading')).toBeFalsy();
         expect(screen.findRow('settings.plugins.marketplace.installed.empty')).toBeTruthy();
-        await act(async () => { screen.pressRow('settings.plugins.marketplace.installed.empty'); });
+        await act(async () => { screen.pressRow('settings.plugins.marketplace.installed.empty.browse'); });
         expect(screen.findByTestId('settings.plugins.management.view:discover')?.props.accessibilityState).toMatchObject({ selected: true });
     });
 
@@ -1310,27 +1449,42 @@ describe('PluginSettingsHomeScreen', () => {
             syncAdministrationTargetBoundary();
         }
         const { PluginSettingsHomeScreen } = await import('./PluginSettingsHomeScreen');
-        const screen = await renderSettingsView(React.createElement(PluginSettingsHomeScreen));
+        const screen = await renderInAppPanes(React.createElement(PluginSettingsHomeScreen));
         await act(async () => { await flushAsync(); await flushAsync(); });
         expect(Boolean(screen.findRow('settings.plugins.marketplace.readOnlySnapshot'))).toBe(kind !== 'unselected');
         expect(screen.findRow('settings.plugins.marketplace.installed.empty')).toBeFalsy();
         expect(invokeWithAlertsMock).not.toHaveBeenCalled();
     });
 
-    it('keeps Account data recovery after primary and secondary destinations in each view', async () => {
+    it('reads an online machine it cannot resolve yet as checking, never as disconnected or empty', async () => {
+        useMachineCapabilitiesCacheMock.mockReturnValue({ state: { status: 'idle' }, refresh: vi.fn() });
+        machineMarketplaceSourceRegistryGetMock.mockResolvedValue(null);
+        administrationTargetBoundary.controller.setExecutionPending(true);
+        try {
+            const { PluginSettingsHomeScreen } = await import('./PluginSettingsHomeScreen');
+            const screen = await renderInAppPanes(React.createElement(PluginSettingsHomeScreen));
+            await act(async () => { await flushAsync(); await flushAsync(); });
+            expect(screen.findRow('settings.plugins.marketplace.readOnlySnapshot')).toBeFalsy();
+            expect(screen.findRow('settings.plugins.marketplace.installed.empty')).toBeFalsy();
+            expect(screen.findRow('settings.plugins.marketplace.installed.loading')).toBeTruthy();
+        } finally {
+            administrationTargetBoundary.controller.setExecutionPending(false);
+        }
+    });
+
+    it('keeps Account data recovery for removed plugins on Diagnostics, off the everyday Plugins page', async () => {
         useMachineCapabilitiesCacheMock.mockReturnValue({ state: createMachineCapabilitiesState([]), refresh: vi.fn() });
         machineMarketplaceSourceRegistryGetMock.mockResolvedValue(null);
         const { PluginSettingsHomeScreen } = await import('./PluginSettingsHomeScreen');
-        const screen = await renderSettingsView(React.createElement(PluginSettingsHomeScreen));
+        const home = await renderInAppPanes(React.createElement(PluginSettingsHomeScreen));
         for (const view of ['installed', 'discover'] as const) {
-            await selectPluginManagementView(screen, view);
-            const visibleIds = screen.findAll((node) => typeof node.type === 'string' && typeof node.props.testID === 'string')
-                .map((node) => node.props.testID as string);
-            const recovery = visibleIds.indexOf('settings.plugins.accountDataErase');
-            expect(recovery).toBeGreaterThan(visibleIds.indexOf('settings.plugins.sources'));
-            expect(recovery).toBeGreaterThan(visibleIds.indexOf('settings.plugins.development'));
-            expect(screen.findRow('settings.plugins.accountDataErase')?.props.onPress).toBeTypeOf('function');
+            await selectPluginManagementView(home, view);
+            expect(home.findRow('settings.plugins.accountDataErase')).toBeFalsy();
+            expect(home.findRow('settings.plugins.diagnostics')?.props.onPress).toBeTypeOf('function');
         }
+        const { PluginDiagnosticsScreen } = await import('./diagnostics/PluginDiagnosticsScreen');
+        const diagnostics = await renderInAppPanes(React.createElement(PluginDiagnosticsScreen));
+        expect(diagnostics.findRow('settings.plugins.accountDataErase')?.props.onPress).toBeTypeOf('function');
     });
 
     it.each(['home', 'detail'] as const)('offers cold capability failure recovery on %s without claiming absence', async (route) => {
@@ -1343,13 +1497,16 @@ describe('PluginSettingsHomeScreen', () => {
         const element = route === 'home'
             ? React.createElement(PluginSettingsHomeScreen)
             : React.createElement(PluginDetailScreen, { pluginId: 'unread-plugin' });
-        const screen = await renderSettingsView(element);
+        const screen = await renderInAppPanes(element);
         await act(async () => { await flushAsync(); await flushAsync(); });
-        const prefix = route === 'home' ? 'settings.plugins.marketplace' : 'settings.plugins.detail';
-        expect(screen.findRow(`${prefix}.readOnlySnapshot-retry`)).toBeTruthy();
+        const retryTestID = route === 'home'
+            ? 'settings.plugins.marketplace.installed.readFailed-action'
+            : 'settings.plugins.detail.readOnlySnapshot-retry';
+        expect(screen.findRow(retryTestID)).toBeTruthy();
         expect(screen.findRow('settings.plugins.marketplace.installed.empty')).toBeFalsy();
+        expect(screen.findRow('settings.plugins.marketplace.installed.loading')).toBeFalsy();
         await act(async () => {
-            screen.pressRow(`${prefix}.readOnlySnapshot-retry`);
+            screen.pressRow(retryTestID);
             await flushAsync();
         });
         expect(refresh).toHaveBeenCalledWith({ bypassCache: true });
@@ -1368,7 +1525,7 @@ describe('PluginSettingsHomeScreen', () => {
         });
 
         const { PluginSettingsHomeScreen } = await import('./PluginSettingsHomeScreen');
-        const screen = await renderSettingsView(React.createElement(PluginSettingsHomeScreen));
+        const screen = await renderInAppPanes(React.createElement(PluginSettingsHomeScreen));
 
         expect(useMachineCapabilitiesCacheMock.mock.calls.at(-1)?.[0]).toMatchObject({
             machineId: 'admin-machine-b',
@@ -1389,7 +1546,7 @@ describe('PluginSettingsHomeScreen', () => {
             refresh: vi.fn(),
         });
         const { PluginSettingsHomeScreen } = await import('./PluginSettingsHomeScreen');
-        const screen = await renderSettingsView(React.createElement(PluginSettingsHomeScreen));
+        const screen = await renderInAppPanes(React.createElement(PluginSettingsHomeScreen));
 
         expect(screen.findRow('settings.plugins.webhooks')).toBeTruthy();
 
@@ -1406,7 +1563,7 @@ describe('PluginSettingsHomeScreen', () => {
             refresh: vi.fn(),
         });
         const { PluginSettingsHomeScreen } = await import('./PluginSettingsHomeScreen');
-        const screen = await renderSettingsView(React.createElement(PluginSettingsHomeScreen));
+        const screen = await renderInAppPanes(React.createElement(PluginSettingsHomeScreen));
 
         expect(screen.findRow('settings.plugins.sources')).toBeTruthy();
         await act(async () => { screen.pressRow('settings.plugins.sources'); });
@@ -1420,7 +1577,7 @@ describe('PluginSettingsHomeScreen', () => {
             refresh: vi.fn(),
         });
         const { PluginSettingsHomeScreen } = await import('./PluginSettingsHomeScreen');
-        const screen = await renderSettingsView(React.createElement(PluginSettingsHomeScreen));
+        const screen = await renderInAppPanes(React.createElement(PluginSettingsHomeScreen));
 
         expect(observedFeatureIds).toContain('plugins.webhooks');
         expect(screen.findRow('settings.plugins.webhooks')).toBeNull();
@@ -1475,7 +1632,7 @@ describe('PluginSettingsHomeScreen', () => {
         });
 
         const { PluginSettingsHomeScreen } = await import('./PluginSettingsHomeScreen');
-        const screen = await renderSettingsView(React.createElement(PluginSettingsHomeScreen));
+        const screen = await renderInAppPanes(React.createElement(PluginSettingsHomeScreen));
 
         await act(async () => {
             await flushAsync();
@@ -1492,7 +1649,6 @@ describe('PluginSettingsHomeScreen', () => {
         expect(discoverSelector?.props.accessibilityState).toMatchObject({ selected: false });
         expect(developmentEntry).toBeTruthy();
         expect(diagnosticsEntry).toBeTruthy();
-        expect(screen.findByTestId('settings.plugins.management.viewScroller')?.props.horizontal).toBe(true);
         const taskOrder = screen.tree.root.findAll((node) => [
             'settings.plugins.management.view:installed',
             'settings.plugins.sources',
@@ -1513,11 +1669,9 @@ describe('PluginSettingsHomeScreen', () => {
         // retired catalog-URL/registries home controls no longer exist.
         const searchInput = screen.findRow('settings.plugins.marketplace.search');
         expect(searchInput).toBeTruthy();
-        expect(searchInput?.props.accessibilityLabel).toBe('settingsPlugins.discoverSearchLabel');
+        expect(searchInput?.props.accessibilityLabel).toBe('settingsPlugins.discoverSearchPlaceholder');
         expect(searchInput?.props.value).toBe('');
-        expect(screen.findByTestId('settings.plugins.marketplace.refreshDiscover')).toBeTruthy();
-        expect(screen.findAllHostsByTestId('settings.plugins.marketplace.sourceFilter:all')).toHaveLength(1);
-        expect(screen.findAllHostsByTestId('settings.plugins.marketplace.sourceFilter:marketplace:community-npm')).toHaveLength(1);
+        expect(findDiscoverSourceFilterIds(screen)).toEqual(['all', 'marketplace:community-npm']);
         // Entering Discover auto-loads the aggregate query: real (empty) search
         // text, no source filter, no client-side catalog fetch.
         await act(async () => {
@@ -1566,7 +1720,7 @@ describe('PluginSettingsHomeScreen', () => {
         }));
 
         const { PluginSettingsHomeScreen } = await import('./PluginSettingsHomeScreen');
-        const screen = await renderSettingsView(React.createElement(PluginSettingsHomeScreen));
+        const screen = await renderInAppPanes(React.createElement(PluginSettingsHomeScreen));
         await act(async () => {
             await flushAsync();
             await flushAsync();
@@ -1633,7 +1787,7 @@ describe('PluginSettingsHomeScreen', () => {
         ));
 
         const { PluginSettingsHomeScreen } = await import('./PluginSettingsHomeScreen');
-        const screen = await renderSettingsView(React.createElement(PluginSettingsHomeScreen));
+        const screen = await renderInAppPanes(React.createElement(PluginSettingsHomeScreen));
         await act(async () => {
             await flushAsync();
             await flushAsync();
@@ -1646,22 +1800,19 @@ describe('PluginSettingsHomeScreen', () => {
             await flushAsync();
         });
 
-        const sourceHealthRow = screen.findByTestId('settings.plugins.marketplace.discover.sourceHealth.marketplace:curated');
-        const sourceDiagnosticRow = screen.findByTestId(
-            'settings.plugins.marketplace.discover.diagnostic.source:marketplace%3Acurated:source_index_stale:0',
-        );
-        const diagnosticRow = screen.findByTestId(
-            'settings.plugins.marketplace.discover.diagnostic.index:index_partial:0',
-        );
+        // One notice per source and one for the index; the raw messages and codes wait behind Details.
+        const sourceHealthRow = screen.findByTestId('settings.plugins.marketplace.discover.issue.marketplace:curated');
+        const diagnosticRow = screen.findByTestId('settings.plugins.marketplace.discover.issue.index');
         const nonInstallableRow = screen.findByTestId('settings.plugins.marketplace.discover.nonInstallable.marketplace:curated.locked-plugin');
         expect(sourceHealthRow).toBeTruthy();
-        expect(sourceDiagnosticRow).toBeTruthy();
-        expect(screen.getTextContent()).toContain('Curated Marketplace · settingsPlugins.discover.diagnostic.title');
+        expect(diagnosticRow).toBeTruthy();
+        expect(screen.getTextContent()).toContain('settingsPlugins.discover.diagnostic.behindTitle(source=Curated Marketplace)');
+        expect(screen.getTextContent()).toContain('settingsPlugins.discover.diagnostic.indexTitle');
+        expect(screen.getTextContent()).not.toContain('Source index is stale');
+        await screen.pressByTestIdAsync('settings.plugins.marketplace.discover.issue.marketplace:curated.details');
+        await screen.pressByTestIdAsync('settings.plugins.marketplace.discover.issue.index.details');
         expect(screen.getTextContent()).toContain('Source index is stale');
         expect(screen.getTextContent()).toContain('settingsPlugins.diagnosticsTechnicalCode(code=source_index_stale)');
-        expect(diagnosticRow).toBeTruthy();
-        expect(screen.getTextContent()).toContain('settingsPlugins.discover.diagnostic.title');
-        expect(screen.getTextContent()).toContain('settingsPlugins.discover.diagnostic.recovery');
         expect(screen.getTextContent()).toContain('settingsPlugins.diagnosticsTechnicalCode(code=index_partial)');
         expect(nonInstallableRow).toBeTruthy();
 
@@ -1678,7 +1829,6 @@ describe('PluginSettingsHomeScreen', () => {
         // Each detail row sits outside the accessible announcement parent, so
         // VoiceOver and TalkBack can traverse the exact failures one by one.
         expect(closestAccessibleAnnouncementAncestor(sourceHealthRow)).toBeNull();
-        expect(closestAccessibleAnnouncementAncestor(sourceDiagnosticRow)).toBeNull();
         expect(closestAccessibleAnnouncementAncestor(diagnosticRow)).toBeNull();
         expect(closestAccessibleAnnouncementAncestor(nonInstallableRow)).toBeNull();
     });
@@ -1747,7 +1897,7 @@ describe('PluginSettingsHomeScreen', () => {
         });
 
         const { PluginDevelopmentScreen } = await import('./development/PluginDevelopmentScreen');
-        const screen = await renderSettingsView(React.createElement(PluginDevelopmentScreen));
+        const screen = await renderInAppPanes(React.createElement(PluginDevelopmentScreen));
 
         await act(async () => {
             await flushAsync();
@@ -1902,7 +2052,7 @@ describe('PluginSettingsHomeScreen', () => {
         });
 
         const { PluginDevelopmentScreen } = await import('./development/PluginDevelopmentScreen');
-        const screen = await renderSettingsView(React.createElement(PluginDevelopmentScreen));
+        const screen = await renderInAppPanes(React.createElement(PluginDevelopmentScreen));
         await act(async () => { await flushAsync(); await flushAsync(); });
 
         await act(async () => {
@@ -1977,7 +2127,7 @@ describe('PluginSettingsHomeScreen', () => {
         });
 
         const { PluginDevelopmentScreen } = await import('./development/PluginDevelopmentScreen');
-        const screen = await renderSettingsView(React.createElement(PluginDevelopmentScreen));
+        const screen = await renderInAppPanes(React.createElement(PluginDevelopmentScreen));
         await act(async () => { await flushAsync(); await flushAsync(); });
 
         await act(async () => {
@@ -2030,7 +2180,7 @@ describe('PluginSettingsHomeScreen', () => {
         });
 
         const { PluginDevelopmentScreen } = await import('./development/PluginDevelopmentScreen');
-        const screen = await renderSettingsView(React.createElement(PluginDevelopmentScreen));
+        const screen = await renderInAppPanes(React.createElement(PluginDevelopmentScreen));
         await act(async () => { await flushAsync(); await flushAsync(); });
 
         await act(async () => {
@@ -2073,7 +2223,7 @@ describe('PluginSettingsHomeScreen', () => {
         });
 
         const { PluginDevelopmentScreen } = await import('./development/PluginDevelopmentScreen');
-        const screen = await renderSettingsView(React.createElement(PluginDevelopmentScreen));
+        const screen = await renderInAppPanes(React.createElement(PluginDevelopmentScreen));
         await act(async () => { await flushAsync(); await flushAsync(); });
 
         await act(async () => {
@@ -2136,7 +2286,7 @@ describe('PluginSettingsHomeScreen', () => {
         });
 
         const { PluginDevelopmentScreen } = await import('./development/PluginDevelopmentScreen');
-        const screen = await renderSettingsView(React.createElement(PluginDevelopmentScreen));
+        const screen = await renderInAppPanes(React.createElement(PluginDevelopmentScreen));
         await act(async () => { await flushAsync(); await flushAsync(); });
         await act(async () => {
             screen.pressByTestId('settings.plugins.management.development.action.create');
@@ -2193,7 +2343,7 @@ describe('PluginSettingsHomeScreen', () => {
 
         const { PluginDevelopmentScreen } = await import('./development/PluginDevelopmentScreen');
         const RerenderableDevelopmentScreen = PluginDevelopmentScreen as unknown as React.ComponentType<{ scopeToken: string }>;
-        const screen = await renderSettingsView(React.createElement(RerenderableDevelopmentScreen, { scopeToken: 'machine-1' }));
+        const screen = await renderInAppPanes(React.createElement(RerenderableDevelopmentScreen, { scopeToken: 'machine-1' }));
         await act(async () => { await flushAsync(); await flushAsync(); });
         await act(async () => {
             screen.pressByTestId('settings.plugins.management.development.action.create');
@@ -2220,7 +2370,7 @@ describe('PluginSettingsHomeScreen', () => {
         });
         getActiveServerIdMock.mockReturnValue('server-b');
         await act(async () => {
-            screen.tree.update(React.createElement(RerenderableDevelopmentScreen, { scopeToken: 'machine-2' }));
+            screen.tree.update(inAppPanes(React.createElement(RerenderableDevelopmentScreen, { scopeToken: 'machine-2' })));
             await flushAsync();
         });
         deferred.resolve();
@@ -2260,7 +2410,7 @@ describe('PluginSettingsHomeScreen', () => {
             });
 
         const { PluginDevelopmentScreen } = await import('./development/PluginDevelopmentScreen');
-        const screen = await renderSettingsView(React.createElement(PluginDevelopmentScreen));
+        const screen = await renderInAppPanes(React.createElement(PluginDevelopmentScreen));
         await act(async () => { await flushAsync(); await flushAsync(); });
         await act(async () => {
             screen.pressByTestId('settings.plugins.management.development.action.create');
@@ -2339,7 +2489,7 @@ describe('PluginSettingsHomeScreen', () => {
         modalConfirmMock.mockResolvedValueOnce(true);
 
         const { PluginSettingsHomeScreen } = await import('./PluginSettingsHomeScreen');
-        const screen = await renderSettingsView(React.createElement(PluginSettingsHomeScreen));
+        const screen = await renderInAppPanes(React.createElement(PluginSettingsHomeScreen));
         await act(async () => {
             await flushAsync();
             await flushAsync();
@@ -2397,7 +2547,7 @@ describe('PluginSettingsHomeScreen', () => {
         });
 
         const { PluginSettingsHomeScreen } = await import('./PluginSettingsHomeScreen');
-        const screen = await renderSettingsView(React.createElement(PluginSettingsHomeScreen));
+        const screen = await renderInAppPanes(React.createElement(PluginSettingsHomeScreen));
         await act(async () => {
             await flushAsync();
             await flushAsync();
@@ -2439,7 +2589,7 @@ describe('PluginSettingsHomeScreen', () => {
         modalConfirmMock.mockResolvedValueOnce(true);
 
         const { PluginSettingsHomeScreen } = await import('./PluginSettingsHomeScreen');
-        const screen = await renderSettingsView(React.createElement(PluginSettingsHomeScreen));
+        const screen = await renderInAppPanes(React.createElement(PluginSettingsHomeScreen));
         await act(async () => {
             await flushAsync();
             await flushAsync();
@@ -2495,7 +2645,7 @@ describe('PluginSettingsHomeScreen', () => {
         });
 
         const { PluginSettingsHomeScreen } = await import('./PluginSettingsHomeScreen');
-        const screen = await renderSettingsView(React.createElement(PluginSettingsHomeScreen));
+        const screen = await renderInAppPanes(React.createElement(PluginSettingsHomeScreen));
         await act(async () => {
             await flushAsync();
             await flushAsync();
@@ -2538,7 +2688,7 @@ describe('PluginSettingsHomeScreen', () => {
         });
 
         const { PluginSettingsHomeScreen } = await import('./PluginSettingsHomeScreen');
-        const screen = await renderSettingsView(React.createElement(PluginSettingsHomeScreen));
+        const screen = await renderInAppPanes(React.createElement(PluginSettingsHomeScreen));
         await act(async () => {
             await flushAsync();
             await flushAsync();
@@ -2594,7 +2744,7 @@ describe('PluginSettingsHomeScreen', () => {
         machineRpcWithServerScopeMock.mockResolvedValueOnce({ kind: 'outcomeUnknown', pluginId: 'community-plugin' });
 
         const { PluginSettingsHomeScreen } = await import('./PluginSettingsHomeScreen');
-        const screen = await renderSettingsView(React.createElement(PluginSettingsHomeScreen));
+        const screen = await renderInAppPanes(React.createElement(PluginSettingsHomeScreen));
         await act(async () => {
             await flushAsync();
             await flushAsync();
@@ -2651,7 +2801,7 @@ describe('PluginSettingsHomeScreen', () => {
         machineRpcWithServerScopeMock.mockResolvedValueOnce({ kind: 'outcomeUnknown', pluginId: 'community-plugin' });
 
         const { PluginSettingsHomeScreen } = await import('./PluginSettingsHomeScreen');
-        const screen = await renderSettingsView(React.createElement(PluginSettingsHomeScreen));
+        const screen = await renderInAppPanes(React.createElement(PluginSettingsHomeScreen));
         await act(async () => {
             await flushAsync();
             await flushAsync();
@@ -2704,7 +2854,7 @@ describe('PluginSettingsHomeScreen', () => {
         });
 
         const { PluginSettingsHomeScreen } = await import('./PluginSettingsHomeScreen');
-        const screen = await renderSettingsView(React.createElement(PluginSettingsHomeScreen));
+        const screen = await renderInAppPanes(React.createElement(PluginSettingsHomeScreen));
         await act(async () => {
             await flushAsync();
             await flushAsync();
@@ -2751,7 +2901,7 @@ describe('PluginSettingsHomeScreen', () => {
         });
 
         const { PluginDevelopmentScreen } = await import('./development/PluginDevelopmentScreen');
-        const screen = await renderSettingsView(React.createElement(PluginDevelopmentScreen));
+        const screen = await renderInAppPanes(React.createElement(PluginDevelopmentScreen));
         await act(async () => {
             await flushAsync();
             await flushAsync();
@@ -2811,7 +2961,7 @@ describe('PluginSettingsHomeScreen', () => {
         modalConfirmMock.mockResolvedValueOnce(true);
 
         const { PluginDevelopmentScreen } = await import('./development/PluginDevelopmentScreen');
-        const screen = await renderSettingsView(React.createElement(PluginDevelopmentScreen));
+        const screen = await renderInAppPanes(React.createElement(PluginDevelopmentScreen));
         await act(async () => {
             await flushAsync();
             await flushAsync();
@@ -2892,7 +3042,7 @@ describe('PluginSettingsHomeScreen', () => {
         useMachineCapabilitiesCacheMock.mockReturnValue({ state: staleState, refresh: vi.fn() });
 
         const { PluginDevelopmentScreen } = await import('./development/PluginDevelopmentScreen');
-        const screen = await renderSettingsView(React.createElement(PluginDevelopmentScreen));
+        const screen = await renderInAppPanes(React.createElement(PluginDevelopmentScreen));
         await act(async () => {
             await flushAsync();
         });
@@ -2926,7 +3076,7 @@ describe('PluginSettingsHomeScreen', () => {
         machineMarketplaceSourceRegistryGetMock.mockResolvedValue(null);
 
         const { PluginDevelopmentScreen } = await import('./development/PluginDevelopmentScreen');
-        const screen = await renderSettingsView(React.createElement(PluginDevelopmentScreen));
+        const screen = await renderInAppPanes(React.createElement(PluginDevelopmentScreen));
         await act(async () => {
             await flushAsync();
             await flushAsync();
@@ -2969,7 +3119,7 @@ describe('PluginSettingsHomeScreen', () => {
         const RerenderablePluginDevelopmentScreen = PluginDevelopmentScreen as unknown as React.ComponentType<{
             capabilityRevision: number;
         }>;
-        const screen = await renderSettingsView(React.createElement(RerenderablePluginDevelopmentScreen, {
+        const screen = await renderInAppPanes(React.createElement(RerenderablePluginDevelopmentScreen, {
             capabilityRevision: 1,
         }));
         await act(async () => {
@@ -2982,9 +3132,9 @@ describe('PluginSettingsHomeScreen', () => {
         endpointConnectivityState.status = 'offline';
         capabilityState = { status: 'idle' };
         await act(async () => {
-            screen.tree.update(React.createElement(RerenderablePluginDevelopmentScreen, {
+            screen.tree.update(inAppPanes(React.createElement(RerenderablePluginDevelopmentScreen, {
                 capabilityRevision: 2,
-            }));
+            })));
             await flushAsync();
         });
 
@@ -3014,7 +3164,7 @@ describe('PluginSettingsHomeScreen', () => {
         });
 
         const { PluginSettingsHomeScreen } = await import('./PluginSettingsHomeScreen');
-        const screen = await renderSettingsView(React.createElement(PluginSettingsHomeScreen));
+        const screen = await renderInAppPanes(React.createElement(PluginSettingsHomeScreen));
         await act(async () => {
             await flushAsync();
             await flushAsync();
@@ -3056,7 +3206,7 @@ describe('PluginSettingsHomeScreen', () => {
         });
 
         const { PluginMarketplaceSourcesScreen } = await import('./PluginMarketplaceSourcesScreen');
-        await renderSettingsView(React.createElement(PluginMarketplaceSourcesScreen));
+        await renderInAppPanes(React.createElement(PluginMarketplaceSourcesScreen));
         await act(async () => {
             await flushAsync();
             await flushAsync();
@@ -3089,17 +3239,17 @@ describe('PluginSettingsHomeScreen', () => {
             revision?: number;
         }>;
         const props = _name === 'Detail' ? { pluginId: 'missing-plugin', revision: 1 } : { revision: 1 };
-        const screen = await renderSettingsView(React.createElement(Screen, props));
+        const screen = await renderInAppPanes(React.createElement(Screen, props));
         await act(async () => { await flushAsync(); await flushAsync(); });
         expect(machineMarketplaceSourceRegistryGetMock).toHaveBeenCalledTimes(1);
 
         screenFocusState.value = false;
-        screen.tree.update(React.createElement(Screen, { ...props, revision: 2 }));
+        screen.tree.update(inAppPanes(React.createElement(Screen, { ...props, revision: 2 })));
         await act(async () => { await flushAsync(); });
         machineMarketplaceSourceRegistryGetMock.mockClear();
 
         screenFocusState.value = true;
-        screen.tree.update(React.createElement(Screen, { ...props, revision: 3 }));
+        screen.tree.update(inAppPanes(React.createElement(Screen, { ...props, revision: 3 })));
         await act(async () => { await flushAsync(); await flushAsync(); });
 
         expect(machineMarketplaceSourceRegistryGetMock).toHaveBeenCalledTimes(1);
@@ -3120,7 +3270,7 @@ describe('PluginSettingsHomeScreen', () => {
         syncAdministrationTargetBoundary();
 
         const { PluginMarketplaceSourcesScreen } = await import('./PluginMarketplaceSourcesScreen');
-        const screen = await renderSettingsView(React.createElement(PluginMarketplaceSourcesScreen));
+        const screen = await renderInAppPanes(React.createElement(PluginMarketplaceSourcesScreen));
         await act(async () => {
             await flushAsync();
             await flushAsync();
@@ -3202,7 +3352,7 @@ describe('PluginSettingsHomeScreen', () => {
         const RerenderablePluginSettingsHomeScreen = PluginSettingsHomeScreen as unknown as React.ComponentType<{
             capabilityRevision: number;
         }>;
-        const screen = await renderSettingsView(React.createElement(RerenderablePluginSettingsHomeScreen, {
+        const screen = await renderInAppPanes(React.createElement(RerenderablePluginSettingsHomeScreen, {
             capabilityRevision: 1,
         }));
 
@@ -3213,11 +3363,9 @@ describe('PluginSettingsHomeScreen', () => {
 
         expect(screen.findRow('settings.plugins.marketplace.readOnlySnapshot')).toBeFalsy();
         expect(machineContributionRegistryProjectionDescribeMock).toHaveBeenCalledTimes(1);
-        const staleOnlineDisable = screen.findAllByType('ItemRowActions' as any)
-            .find((node) => node.props.title === 'Installed Plugin')
-            ?.props.actions
-            ?.find((action: Readonly<{ id: string }>) => action.id === 'disable')
-            ?.onPress as (() => void);
+        const staleOnlineToggle = findInstalledRowToggle(screen, 'installed-plugin');
+        expect(staleOnlineToggle).toMatchObject({ action: 'disable', disabled: false });
+        const staleOnlineDisable = staleOnlineToggle?.toggle as (() => void);
 
         await act(async () => {
             screen.pressByTestId('settings.plugins.management.view:discover');
@@ -3246,9 +3394,9 @@ describe('PluginSettingsHomeScreen', () => {
         selectedMachine.activeAt = 0;
         await act(async () => {
             syncAdministrationTargetBoundary();
-            screen.tree.update(React.createElement(RerenderablePluginSettingsHomeScreen, {
+            screen.tree.update(inAppPanes(React.createElement(RerenderablePluginSettingsHomeScreen, {
                 capabilityRevision: 2,
-            }));
+            })));
             await flushAsync();
         });
 
@@ -3256,14 +3404,13 @@ describe('PluginSettingsHomeScreen', () => {
         expect(screen.findRow('settings.plugins.marketplace.readOnlySnapshot')).toBeTruthy();
         expect(screen.findByTestId('settings.plugins.management.view:installed')?.props.accessibilityState).toMatchObject({ selected: true });
 
-        const disconnectedActions = screen.findAllByType('ItemRowActions' as any)
-            .find((node) => node.props.title === 'Installed Plugin')
-            ?.props.actions as readonly Readonly<{ id: string; disabled: boolean; onPress: () => void }>[] | undefined;
-        expect(disconnectedActions?.find((action) => action.id === 'reload')).toBeUndefined();
-        expect(disconnectedActions?.find((action) => action.id === 'disable')?.disabled).toBe(true);
+        // The retained row stays visible, but its one inline control (the
+        // Enabled switch) is inert while the machine is away.
+        const disconnectedToggle = findInstalledRowToggle(screen, 'installed-plugin');
+        expect(disconnectedToggle).toMatchObject({ action: 'disable', disabled: true });
 
         await act(async () => {
-            disconnectedActions?.find((action) => action.id === 'disable')?.onPress();
+            disconnectedToggle?.toggle();
             staleOnlineDisable();
             await flushAsync();
         });
@@ -3274,7 +3421,7 @@ describe('PluginSettingsHomeScreen', () => {
         expect(machineContributionRegistryProjectionDescribeMock).toHaveBeenCalledTimes(1);
 
         const { PluginDetailScreen } = await import('./detail/PluginDetailScreen');
-        const detailScreen = await renderSettingsView(React.createElement(PluginDetailScreen, {
+        const detailScreen = await renderInAppPanes(React.createElement(PluginDetailScreen, {
             pluginId: installedPlugin.pluginId,
         }));
         await act(async () => {
@@ -3284,7 +3431,7 @@ describe('PluginSettingsHomeScreen', () => {
         expect(detailScreen.findRow('settings.plugins.detail.readOnlySnapshot')).toBeTruthy();
         expect(detailScreen.findRow('settings.plugins.detail.installed-plugin.action.reload')).toBeFalsy();
         expect(detailScreen.findRow('settings.plugins.detail.installed-plugin.action.disable')?.props.disabled).toBe(true);
-        expect(detailScreen.findRow('settings.plugins.detail.installed-plugin.action.rollback')?.props.disabled).toBe(true);
+        expect(findDetailMenuAction(detailScreen, 'installed-plugin', 'rollback')?.disabled).toBe(true);
         expect(detailScreen.findRow('settings.plugins.detail.installed-plugin.action.uninstall')?.props.disabled).toBe(true);
         expect(detailScreen.findRow('settings.plugins.detail.installed-plugin.action.forgetTrust')?.props.disabled).toBe(true);
         expect(invokeWithAlertsMock).not.toHaveBeenCalled();
@@ -3296,16 +3443,16 @@ describe('PluginSettingsHomeScreen', () => {
         // search stays non-editable, refresh is disabled, and the aggregate
         // query is neither issued nor repeated.
         expect(screen.findRow('settings.plugins.marketplace.search')?.props.editable).toBe(false);
-        expect(screen.findByTestId('settings.plugins.marketplace.refreshDiscover')?.props.disabled).toBe(true);
+        expect(canSubmitDiscoverSearch(screen)).toBe(false);
         expect(machineMarketplaceIndexQueryMock).not.toHaveBeenCalled();
 
         selectedMachine.active = true;
         selectedMachine.activeAt = Date.now();
         await act(async () => {
             syncAdministrationTargetBoundary();
-            screen.tree.update(React.createElement(RerenderablePluginSettingsHomeScreen, {
+            screen.tree.update(inAppPanes(React.createElement(RerenderablePluginSettingsHomeScreen, {
                 capabilityRevision: 3,
-            }));
+            })));
             await flushAsync();
             await flushAsync();
         });
@@ -3319,14 +3466,14 @@ describe('PluginSettingsHomeScreen', () => {
 
         freshCapabilitiesReady = true;
         await act(async () => {
-            screen.tree.update(React.createElement(RerenderablePluginSettingsHomeScreen, {
+            screen.tree.update(inAppPanes(React.createElement(RerenderablePluginSettingsHomeScreen, {
                 capabilityRevision: 4,
-            }));
+            })));
             await flushAsync();
         });
 
         expect(screen.findRow('settings.plugins.marketplace.readOnlySnapshot')).toBeTruthy();
-        expect(screen.findByTestId('settings.plugins.marketplace.refreshDiscover')?.props.disabled).toBe(true);
+        expect(canSubmitDiscoverSearch(screen)).toBe(false);
         expect(machineMarketplaceIndexQueryMock).not.toHaveBeenCalled();
 
         await act(async () => {
@@ -3341,7 +3488,7 @@ describe('PluginSettingsHomeScreen', () => {
         // With daemon truth current again, Discover acquires the aggregate page
         // by itself — once — and the installed listing still gets no lifecycle
         // row; update belongs to the installed record.
-        expect(screen.findByTestId('settings.plugins.marketplace.refreshDiscover')?.props.disabled).toBe(false);
+        expect(canSubmitDiscoverSearch(screen)).toBe(true);
         await act(async () => {
             await flushAsync();
             await flushAsync();
@@ -3356,23 +3503,31 @@ describe('PluginSettingsHomeScreen', () => {
         await act(async () => {
             screen.pressByTestId('settings.plugins.management.view:installed');
         });
-        const reconnectedActions = screen.findAllByType('ItemRowActions' as any)
-            .find((node) => node.props.title === 'Installed Plugin')
-            ?.props.actions as readonly Readonly<{ id: string; disabled: boolean }>[] | undefined;
-        expect(reconnectedActions?.find((action) => action.id === 'reload')).toBeUndefined();
-        expect(reconnectedActions?.find((action) => action.id === 'disable')?.disabled).toBe(false);
-        // Update is offered from the installed record itself once the daemon is
-        // current again — never re-created as a Discover-row action.
-        expect(reconnectedActions?.find((action) => action.id === 'update')?.disabled).toBe(false);
+        expect(findInstalledRowToggle(screen, 'installed-plugin')).toMatchObject({ action: 'disable', disabled: false });
         expect(invokeWithAlertsMock).not.toHaveBeenCalled();
         expect(machineContributionRegistryProjectionDescribeMock).toHaveBeenCalledTimes(2);
         expect(machineContributionRegistryProjectionDescribeMock).toHaveBeenCalledWith('machine-1', {
+            // The read is routed to, and shared only within, this Home's
+            // Account; the RPC transport owns its deadline.
             serverId: 'server-a',
-            timeoutMs: 10_000,
+            accountLifetime: expect.objectContaining({ scope: { serverId: 'server-a', accountId: 'account-a' } }),
         });
+
+        // Update is offered from the installed record itself (its page's `⋯`
+        // menu) once the daemon is current again — never re-created as a
+        // Discover-row action.
+        const reconnectedDetail = await renderInAppPanes(React.createElement(PluginDetailScreen, {
+            pluginId: installedPlugin.pluginId,
+        }));
+        await act(async () => {
+            await flushAsync();
+        });
+        expect(findDetailMenuAction(reconnectedDetail, 'installed-plugin', 'update')?.disabled).toBe(false);
+        expect(invokeWithAlertsMock).not.toHaveBeenCalled();
     });
 
     it('navigates installed plugin rows to a detail route instead of inlining plugin details on the home screen', async () => {
+        deviceTypeOverride.value = 'phone';
         const installedPlugin = createInstalledPlugin({
             pluginId: 'installed-plugin',
             title: 'Installed Plugin',
@@ -3412,7 +3567,7 @@ describe('PluginSettingsHomeScreen', () => {
         });
 
         const { PluginSettingsHomeScreen } = await import('./PluginSettingsHomeScreen');
-        const screen = await renderSettingsView(React.createElement(PluginSettingsHomeScreen));
+        const screen = await renderInAppPanes(React.createElement(PluginSettingsHomeScreen));
 
         await act(async () => {
             await flushAsync();
@@ -3532,7 +3687,7 @@ describe('PluginSettingsHomeScreen', () => {
         });
 
         const { PluginDetailScreen } = await import('./detail/PluginDetailScreen');
-        const screen = await renderSettingsView(React.createElement(PluginDetailScreen, { pluginId: 'com.acme.installed-plugin' }));
+        const screen = await renderInAppPanes(React.createElement(PluginDetailScreen, { pluginId: 'com.acme.installed-plugin' }));
 
         await act(async () => {
             await flushAsync();
@@ -3542,23 +3697,24 @@ describe('PluginSettingsHomeScreen', () => {
         expect(machineContributionRegistryProjectionDescribeMock).toHaveBeenCalledWith('machine-1', expect.objectContaining({
             serverId: 'server-a',
         }));
-        expect(navigationSetOptionsSpy).toHaveBeenCalledWith(expect.objectContaining({
+        // One title: the page header names the plugin; the native header is never retitled with it.
+        expect(navigationSetOptionsSpy).not.toHaveBeenCalledWith(expect.objectContaining({
             headerTitle: 'Installed Plugin',
         }));
         expect(screen.findRow('settings.plugins.detail.com.acme.installed-plugin.header')).toBeTruthy();
-        expect(screen.findRow('settings.plugins.detail.com.acme.installed-plugin.summary')).toBeTruthy();
+        expect(screen.findRow('settings.plugins.detail.com.acme.installed-plugin.id')).toBeTruthy();
         expect(screen.getTextContent()).toContain('trusted');
         expect(screen.findRow('settings.plugins.detail.com.acme.installed-plugin.contribution.action.com.acme.installed-plugin.refresh')).toBeTruthy();
         expect(screen.findRow('settings.plugins.detail.com.acme.installed-plugin.contribution.resource.com.acme.installed-plugin.prompt')).toBeTruthy();
         expect(screen.findRow('settings.plugins.detail.com.acme.installed-plugin.action.reload')).toBeFalsy();
         expect(screen.findRow('settings.plugins.detail.com.acme.installed-plugin.action.disable')).toBeTruthy();
-        expect(screen.findRow('settings.plugins.detail.com.acme.installed-plugin.action.rollback')).toBeTruthy();
+        expect(findDetailMenuAction(screen, 'com.acme.installed-plugin', 'rollback')).toBeTruthy();
         expect(screen.findRow('settings.plugins.detail.com.acme.installed-plugin.action.uninstall')).toBeTruthy();
         expect(screen.findRow('settings.plugins.detail.com.acme.installed-plugin.action.forgetTrust')).toBeTruthy();
         expect(screen.getTextContent()).toContain('Plugin activated');
         expect(screen.getTextContent()).toContain('Registry rebuilt with warnings');
         await act(async () => {
-            screen.pressRow('settings.plugins.detail.com.acme.installed-plugin.action.disable');
+            toggleDetailEnabled(screen, 'settings.plugins.detail.com.acme.installed-plugin.action.disable');
             await flushAsync();
         });
 
@@ -3595,14 +3751,14 @@ describe('PluginSettingsHomeScreen', () => {
         });
 
         const { PluginDetailScreen } = await import('./detail/PluginDetailScreen');
-        const screen = await renderSettingsView(React.createElement(PluginDetailScreen, {
+        const screen = await renderInAppPanes(React.createElement(PluginDetailScreen, {
             pluginId: installedPlugin.pluginId,
         }));
         await act(async () => {
             await flushAsync();
         });
 
-        expect(screen.findRow(`settings.plugins.detail.${installedPlugin.pluginId}.action.rollback`)).toBeFalsy();
+        expect(findDetailMenuAction(screen, installedPlugin.pluginId, 'rollback')).toBeFalsy();
         expect(screen.findRow(`settings.plugins.detail.${installedPlugin.pluginId}.action.uninstall`)).toBeTruthy();
         expect(screen.findRow(`settings.plugins.detail.${installedPlugin.pluginId}.action.forgetTrust`)).toBeTruthy();
     });
@@ -3626,27 +3782,25 @@ describe('PluginSettingsHomeScreen', () => {
             pluginId: string;
             capabilityRevision: number;
         }>;
-        const screen = await renderSettingsView(React.createElement(RerenderablePluginDetailScreen, {
+        const screen = await renderInAppPanes(React.createElement(RerenderablePluginDetailScreen, {
             pluginId: 'installed-plugin',
             capabilityRevision: 1,
         }));
         await act(async () => {
             await flushAsync();
         });
-        const staleRollbackPress = screen.findRow(
-            'settings.plugins.detail.installed-plugin.action.rollback',
-        )?.props.onPress as (() => void) | undefined;
+        const staleRollbackPress = findDetailMenuAction(screen, 'installed-plugin', 'rollback')?.onSelect;
         expect(staleRollbackPress).toBeTypeOf('function');
 
         rollbackAvailability = 'unavailable';
         await act(async () => {
-            screen.tree.update(React.createElement(RerenderablePluginDetailScreen, {
+            screen.tree.update(inAppPanes(React.createElement(RerenderablePluginDetailScreen, {
                 pluginId: 'installed-plugin',
                 capabilityRevision: 2,
-            }));
+            })));
             await flushAsync();
         });
-        expect(screen.findRow('settings.plugins.detail.installed-plugin.action.rollback')).toBeFalsy();
+        expect(findDetailMenuAction(screen, 'installed-plugin', 'rollback')).toBeFalsy();
 
         await act(async () => {
             staleRollbackPress?.();
@@ -3684,7 +3838,7 @@ describe('PluginSettingsHomeScreen', () => {
         });
 
         const { PluginDetailScreen } = await import('./detail/PluginDetailScreen');
-        const screen = await renderSettingsView(React.createElement(PluginDetailScreen, {
+        const screen = await renderInAppPanes(React.createElement(PluginDetailScreen, {
             pluginId: installedPlugin.pluginId,
         }));
         await act(async () => {
@@ -3693,7 +3847,7 @@ describe('PluginSettingsHomeScreen', () => {
 
         modalConfirmMock.mockResolvedValueOnce(false);
         await act(async () => {
-            screen.pressRow(`settings.plugins.detail.${installedPlugin.pluginId}.action.${method}`);
+            pressDetailLifecycleAction(screen, installedPlugin.pluginId, method);
             await flushAsync();
         });
         // A plugin change lands on ONE machine reached through ONE server. The
@@ -3711,7 +3865,7 @@ describe('PluginSettingsHomeScreen', () => {
 
         modalConfirmMock.mockResolvedValueOnce(true);
         await act(async () => {
-            screen.pressRow(`settings.plugins.detail.${installedPlugin.pluginId}.action.${method}`);
+            pressDetailLifecycleAction(screen, installedPlugin.pluginId, method);
             await flushAsync();
         });
         expect(invokeWithAlertsMock).toHaveBeenCalledWith(expect.objectContaining({
@@ -3748,7 +3902,7 @@ describe('PluginSettingsHomeScreen', () => {
         });
 
         const { PluginDetailScreen } = await import('./detail/PluginDetailScreen');
-        const screen = await renderSettingsView(React.createElement(PluginDetailScreen, {
+        const screen = await renderInAppPanes(React.createElement(PluginDetailScreen, {
             pluginId: installedPlugin.pluginId,
         }));
         await act(async () => {
@@ -3807,12 +3961,12 @@ describe('PluginSettingsHomeScreen', () => {
             });
 
             const { PluginDetailScreen } = await import('./detail/PluginDetailScreen');
-            const screen = await renderSettingsView(React.createElement(PluginDetailScreen, {
+            const screen = await renderInAppPanes(React.createElement(PluginDetailScreen, {
                 pluginId: installedPlugin.pluginId,
             }));
             await act(async () => {
                 await flushAsync();
-                screen.pressRow(`settings.plugins.detail.${installedPlugin.pluginId}.action.${method}`);
+                pressDetailLifecycleAction(screen, installedPlugin.pluginId, method);
                 await flushAsync();
                 await flushAsync();
             });
@@ -3854,7 +4008,7 @@ describe('PluginSettingsHomeScreen', () => {
         invokeWithAlertsMock.mockResolvedValueOnce({ supported: false, reason: 'error' });
 
         const { PluginDetailScreen } = await import('./detail/PluginDetailScreen');
-        const screen = await renderSettingsView(React.createElement(PluginDetailScreen, {
+        const screen = await renderInAppPanes(React.createElement(PluginDetailScreen, {
             pluginId: installedPlugin.pluginId,
         }));
         await act(async () => {
@@ -3898,7 +4052,7 @@ describe('PluginSettingsHomeScreen', () => {
         });
 
         const { PluginDetailScreen } = await import('./detail/PluginDetailScreen');
-        const screen = await renderSettingsView(React.createElement(PluginDetailScreen, {
+        const screen = await renderInAppPanes(React.createElement(PluginDetailScreen, {
             pluginId: installedPlugin.pluginId,
         }));
         await act(async () => {
@@ -3963,7 +4117,7 @@ describe('PluginSettingsHomeScreen', () => {
             pluginId: string;
             scopeToken: string;
         }>;
-        const screen = await renderSettingsView(React.createElement(RerenderablePluginDetailScreen, {
+        const screen = await renderInAppPanes(React.createElement(RerenderablePluginDetailScreen, {
             pluginId: installedPlugin.pluginId,
             scopeToken: 'machine-1',
         }));
@@ -3981,10 +4135,10 @@ describe('PluginSettingsHomeScreen', () => {
         });
         getActiveServerIdMock.mockReturnValue('server-b');
         await act(async () => {
-            screen.tree.update(React.createElement(RerenderablePluginDetailScreen, {
+            screen.tree.update(inAppPanes(React.createElement(RerenderablePluginDetailScreen, {
                 pluginId: installedPlugin.pluginId,
                 scopeToken: 'machine-2',
-            }));
+            })));
             await flushAsync();
         });
 
@@ -4190,7 +4344,7 @@ describe('PluginSettingsHomeScreen', () => {
         });
 
         const { PluginDetailScreen } = await import('./detail/PluginDetailScreen');
-        const screen = await renderSettingsView(React.createElement(PluginDetailScreen, { pluginId: 'acme.hooks' }));
+        const screen = await renderInAppPanes(React.createElement(PluginDetailScreen, { pluginId: 'acme.hooks' }));
 
         await act(async () => {
             await flushAsync();
@@ -4321,7 +4475,7 @@ describe('PluginSettingsHomeScreen', () => {
         });
 
         const { PluginDetailScreen } = await import('./detail/PluginDetailScreen');
-        const screen = await renderSettingsView(React.createElement(PluginDetailScreen, { pluginId: 'installed-plugin' }));
+        const screen = await renderInAppPanes(React.createElement(PluginDetailScreen, { pluginId: 'installed-plugin' }));
 
         await act(async () => {
             await flushAsync();
@@ -4329,7 +4483,7 @@ describe('PluginSettingsHomeScreen', () => {
         });
 
         expect(screen.findRow('settings.plugins.detail.installed-plugin.header')).toBeTruthy();
-        expect(screen.findRow('settings.plugins.detail.installed-plugin.summary')).toBeTruthy();
+        expect(screen.findRow('settings.plugins.detail.installed-plugin.id')).toBeTruthy();
     });
 
     it('reuses the shared daemon projection cache on the detail screen when the scoped projection is already warm', async () => {
@@ -4378,14 +4532,14 @@ describe('PluginSettingsHomeScreen', () => {
         expect(machineContributionRegistryProjectionDescribeMock).toHaveBeenCalledTimes(1);
 
         const { PluginDetailScreen } = await import('./detail/PluginDetailScreen');
-        const screen = await renderSettingsView(React.createElement(PluginDetailScreen, { pluginId: 'installed-plugin' }));
+        const screen = await renderInAppPanes(React.createElement(PluginDetailScreen, { pluginId: 'installed-plugin' }));
 
         await act(async () => {
             await flushAsync();
             await flushAsync();
         });
 
-        expect(screen.findRow('settings.plugins.detail.installed-plugin.summary')).toBeTruthy();
+        expect(screen.findRow('settings.plugins.detail.installed-plugin.id')).toBeTruthy();
         expect(machineContributionRegistryProjectionDescribeMock).toHaveBeenCalledTimes(1);
     });
 
@@ -4469,7 +4623,7 @@ describe('PluginSettingsHomeScreen', () => {
         const RerenderablePluginSettingsHomeScreen = PluginSettingsHomeScreen as unknown as React.ComponentType<{
             scopeToken: string;
         }>;
-        const screen = await renderSettingsView(React.createElement(RerenderablePluginSettingsHomeScreen, {
+        const screen = await renderInAppPanes(React.createElement(RerenderablePluginSettingsHomeScreen, {
             scopeToken: 'machine-1',
         }));
 
@@ -4489,8 +4643,10 @@ describe('PluginSettingsHomeScreen', () => {
         expect(machineMarketplaceIndexQueryMock).toHaveBeenCalledWith('machine-1', expect.anything(), expect.any(Object));
         expect(screen.findRow(discoverListingTestID('sample-plugin'))).toBeTruthy();
         expect(machineContributionRegistryProjectionDescribeMock).toHaveBeenCalledWith('machine-1', {
+            // The read is routed to, and shared only within, this Home's
+            // Account; the RPC transport owns its deadline.
             serverId: 'server-a',
-            timeoutMs: 10_000,
+            accountLifetime: expect.objectContaining({ scope: { serverId: 'server-a', accountId: 'account-a' } }),
         });
 
         setMachineAdministrationTargetFixture({
@@ -4501,16 +4657,18 @@ describe('PluginSettingsHomeScreen', () => {
         getActiveServerIdMock.mockReturnValue('server-b');
 
         await act(async () => {
-            screen.tree.update(React.createElement(RerenderablePluginSettingsHomeScreen, {
+            screen.tree.update(inAppPanes(React.createElement(RerenderablePluginSettingsHomeScreen, {
                 scopeToken: 'machine-2',
-            }));
+            })));
             await flushAsync();
             await flushAsync();
         });
 
         expect(machineContributionRegistryProjectionDescribeMock).toHaveBeenCalledWith('machine-2', {
+            // The read is routed to, and shared only within, this Home's
+            // Account; the RPC transport owns its deadline.
             serverId: 'server-b',
-            timeoutMs: 10_000,
+            accountLifetime: expect.objectContaining({ scope: { serverId: 'server-b', accountId: 'account-a' } }),
         });
         // The machine-1 Discover page and its controls are cleared, never shown
         // as machine-2 truth; machine-2's projection is unsupported, so no new
@@ -4555,7 +4713,7 @@ describe('PluginSettingsHomeScreen', () => {
             pluginId: string;
             scopeToken: string;
         }>;
-        const screen = await renderSettingsView(React.createElement(RerenderablePluginDetailScreen, {
+        const screen = await renderInAppPanes(React.createElement(RerenderablePluginDetailScreen, {
             pluginId: installedPlugin.pluginId,
             scopeToken: 'machine-1',
         }));
@@ -4564,15 +4722,13 @@ describe('PluginSettingsHomeScreen', () => {
             await flushAsync();
         });
 
-        const findRollbackAction = () => screen.findRow(
-            `settings.plugins.detail.${installedPlugin.pluginId}.action.rollback`,
-        );
+        const findRollbackAction = () => findDetailMenuAction(screen, installedPlugin.pluginId, 'rollback');
 
         await act(async () => {
-            screen.pressRow(`settings.plugins.detail.${installedPlugin.pluginId}.action.rollback`);
+            findRollbackAction()?.onSelect();
             await flushAsync();
         });
-        expect(findRollbackAction()?.props.disabled).toBe(true);
+        expect(findRollbackAction()?.disabled).toBe(true);
 
         setMachineAdministrationTargetFixture({
             serverIdentityId: 'srv_identity-b',
@@ -4581,34 +4737,34 @@ describe('PluginSettingsHomeScreen', () => {
         });
         getActiveServerIdMock.mockReturnValue('server-b');
         await act(async () => {
-            screen.tree.update(React.createElement(RerenderablePluginDetailScreen, {
+            screen.tree.update(inAppPanes(React.createElement(RerenderablePluginDetailScreen, {
                 pluginId: installedPlugin.pluginId,
                 scopeToken: 'machine-2',
-            }));
+            })));
             await flushAsync();
             await flushAsync();
         });
 
-        expect(findRollbackAction()?.props.disabled).not.toBe(true);
+        expect(findRollbackAction()?.disabled).not.toBe(true);
         await act(async () => {
-            screen.pressRow(`settings.plugins.detail.${installedPlugin.pluginId}.action.rollback`);
+            findRollbackAction()?.onSelect();
             await flushAsync();
         });
-        expect(findRollbackAction()?.props.disabled).toBe(true);
+        expect(findRollbackAction()?.disabled).toBe(true);
 
         machineOneAction.resolve();
         await act(async () => {
             await flushAsync();
             await flushAsync();
         });
-        expect(findRollbackAction()?.props.disabled).toBe(true);
+        expect(findRollbackAction()?.disabled).toBe(true);
 
         machineTwoAction.resolve();
         await act(async () => {
             await flushAsync();
             await flushAsync();
         });
-        expect(findRollbackAction()?.props.disabled).not.toBe(true);
+        expect(findRollbackAction()?.disabled).not.toBe(true);
     });
 
     it('deduplicates repeated same-plugin mutations before the busy state rerenders', async () => {
@@ -4633,23 +4789,22 @@ describe('PluginSettingsHomeScreen', () => {
         });
 
         const { PluginSettingsHomeScreen } = await import('./PluginSettingsHomeScreen');
-        const screen = await renderSettingsView(React.createElement(PluginSettingsHomeScreen));
+        const screen = await renderInAppPanes(React.createElement(PluginSettingsHomeScreen));
         await act(async () => {
             await flushAsync();
             await flushAsync();
         });
 
-        const findDisableAction = () => screen.findAllByType('ItemRowActions' as any)
-            .find((node) => node.props.title === 'Installed Plugin')
-            ?.props.actions
-            ?.find((action: Readonly<{ id: string }>) => action.id === 'disable') as
-            | Readonly<{ disabled: boolean; onPress: () => void }>
-            | undefined;
+        const findDisableAction = () => {
+            const toggle = findInstalledRowToggle(screen, 'installed-plugin');
+            return toggle?.action === 'disable' ? toggle : undefined;
+        };
         const actionBeforeBusyRender = findDisableAction();
+        expect(actionBeforeBusyRender?.disabled).toBe(false);
 
         act(() => {
-            actionBeforeBusyRender?.onPress();
-            actionBeforeBusyRender?.onPress();
+            actionBeforeBusyRender?.toggle();
+            actionBeforeBusyRender?.toggle();
         });
         expect(invokeWithAlertsMock).toHaveBeenCalledTimes(1);
         expect(findDisableAction()?.disabled).toBe(true);
@@ -4713,7 +4868,7 @@ describe('PluginSettingsHomeScreen', () => {
         const RerenderablePluginSettingsHomeScreen = PluginSettingsHomeScreen as unknown as React.ComponentType<{
             scopeToken: string;
         }>;
-        const screen = await renderSettingsView(React.createElement(RerenderablePluginSettingsHomeScreen, {
+        const screen = await renderInAppPanes(React.createElement(RerenderablePluginSettingsHomeScreen, {
             scopeToken: 'machine-1',
         }));
 
@@ -4725,9 +4880,9 @@ describe('PluginSettingsHomeScreen', () => {
 
         clearMachineAdministrationTargetFixture();
         await act(async () => {
-            screen.tree.update(React.createElement(RerenderablePluginSettingsHomeScreen, {
+            screen.tree.update(inAppPanes(React.createElement(RerenderablePluginSettingsHomeScreen, {
                 scopeToken: 'machine-none',
-            }));
+            })));
             await flushAsync();
         });
 
@@ -4822,7 +4977,7 @@ describe('PluginSettingsHomeScreen', () => {
         });
 
         const { PluginDetailScreen } = await import('./detail/PluginDetailScreen');
-        const screen = await renderSettingsView(React.createElement(PluginDetailScreen, {
+        const screen = await renderInAppPanes(React.createElement(PluginDetailScreen, {
             pluginId: 'com.acme.installed-plugin',
         }));
 
@@ -4838,38 +4993,37 @@ describe('PluginSettingsHomeScreen', () => {
     });
 
     it('opens a listing for inspection without installing and starts the existing exact-source action from its detail', async () => {
+        deviceTypeOverride.value = 'phone';
         useMachineCapabilitiesCacheMock.mockReturnValue({ state: createMachineCapabilitiesState([]), refresh: vi.fn() });
         const page = createDaemonMarketplaceIndexResult([
             createMarketplaceCatalogEntry({ pluginId: 'new-plugin', title: 'New Plugin', version: '0.1.0', description: 'Inspect before installing.' }),
         ]);
         machineMarketplaceIndexQueryMock.mockResolvedValue(page);
-        modalShowMock.mockReturnValue('catalog-detail');
         invokeWithAlertsMock.mockResolvedValue({ supported: true, response: {
             ok: false, error: { code: 'install_unavailable', message: 'The package is currently unavailable.' },
         } });
         const { PluginSettingsHomeScreen } = await import('./PluginSettingsHomeScreen');
-        const screen = await renderSettingsView(React.createElement(PluginSettingsHomeScreen));
+        const screen = await renderInAppPanes(React.createElement(PluginSettingsHomeScreen));
         await selectPluginManagementView(screen, 'discover');
         await act(async () => { await flushAsync(); await flushAsync(); });
 
         await act(async () => { screen.pressRow(discoverListingTestID('new-plugin')); });
         expect(invokeWithAlertsMock).not.toHaveBeenCalled();
-        expect(routerPushSpy).not.toHaveBeenCalled();
-        expect(modalShowMock).toHaveBeenCalledWith(expect.objectContaining({
-            chrome: expect.objectContaining({ testID: 'settings.plugins.catalogDetails' }),
+        expect(routerPushSpy).toHaveBeenCalledWith(expect.objectContaining({
+            pathname: '/(app)/settings/plugins/listing',
+            params: { sourceId: 'marketplace:curated', pluginId: 'new-plugin' },
         }));
-        const config = modalShowMock.mock.calls[0]?.[0] as {
-            component: React.ComponentType<{ onClose: () => void }>;
-            props: Record<string, unknown>;
-        };
-        const detail = await renderSettingsView(React.createElement(config.component, { ...config.props, onClose: vi.fn() }));
+        const { PluginListingScreen } = await import('./listing/PluginListingScreen');
+        const detail = await renderInAppPanes(React.createElement(PluginListingScreen, { sourceId: 'marketplace:curated', pluginId: 'new-plugin' }));
+        await act(async () => { await flushAsync(); await flushAsync(); });
+        // The listing page re-reads exactly this source-qualified listing.
+        expect(machineMarketplaceIndexQueryMock).toHaveBeenLastCalledWith('machine-1', expect.objectContaining({
+            filters: { sourceIds: ['marketplace:curated'], pluginIds: ['new-plugin'], includeUnavailable: true },
+        }), expect.any(Object));
         expect(detail.getTextContent()).toContain('Inspect before installing.');
         expect(detail.getTextContent()).toContain('Curated Marketplace');
-        expect(detail.getTextContent()).toContain('settingsPlugins.discover.publisherLabel(displayName=Acme,id=acme)');
-        expect(detail.getTextContent()).toContain('settingsPlugins.discover.categories(values=agents)');
-        expect(detail.getTextContent()).toContain('settingsPlugins.discover.runtimeSummary(realms=settingsPlugins.discover.executableRealm.daemon,platforms=settingsPlugins.discover.platform.web)');
         await act(async () => {
-            detail.pressByTestId('settings.plugins.catalogDetails.install');
+            detail.pressByTestId('settings.plugins.listing.install');
             await flushAsync();
         });
         expect(invokeWithAlertsMock).toHaveBeenCalledWith(expect.objectContaining({
@@ -4931,7 +5085,7 @@ describe('PluginSettingsHomeScreen', () => {
         ]));
 
         const { PluginSettingsHomeScreen } = await import('./PluginSettingsHomeScreen');
-        const screen = await renderSettingsView(React.createElement(PluginSettingsHomeScreen));
+        const screen = await renderInAppPanes(React.createElement(PluginSettingsHomeScreen));
 
         await act(async () => {
             await flushAsync();
@@ -4953,7 +5107,12 @@ describe('PluginSettingsHomeScreen', () => {
         const installedRow = screen.findRow('settings.plugins.marketplace.installed.installed-plugin');
         expect(installedRow).toBeTruthy();
         expect(screen.getTextContent()).toContain('Installed via host-owned flow');
-        expect(screen.getTextContent()).toContain('incompatible');
+        // An incompatible install says why in its footer and keeps its switch in
+        // the same place (there is nothing to review until Happier is updated);
+        // Review replaces the switch only for a plugin that needs a decision.
+        expect(screen.findAllByTestId('settings.plugins.marketplace.installed.installed-plugin.fix')).toHaveLength(0);
+        expect(screen.findAll((node) => String(node.props?.testID ?? '')
+            .startsWith('settings.plugins.marketplace.installed.installed-plugin.action.')).length).toBeGreaterThan(0);
 
         await selectPluginManagementView(screen, 'discover');
         await act(async () => {
@@ -4961,7 +5120,10 @@ describe('PluginSettingsHomeScreen', () => {
             await flushAsync();
         });
 
-        expect(screen.getTextContent()).toContain('settingsPlugins.subtitle');
+        // Browse is the active view (the pane no longer carries its own
+        // subtitle; the page's one purpose line describes Plugins).
+        expect(screen.findByTestId('settings.plugins.management.view:discover')?.props.accessibilityState)
+            .toMatchObject({ selected: true });
 
         // All is one aggregate daemon query: real (empty) search text, no
         // source filter, and no client-side catalog fetch anywhere.
@@ -4999,22 +5161,20 @@ describe('PluginSettingsHomeScreen', () => {
         machineMarketplaceIndexQueryMock.mockResolvedValue(createDaemonMarketplaceIndexResult([]));
 
         const { PluginSettingsHomeScreen } = await import('./PluginSettingsHomeScreen');
-        const screen = await renderSettingsView(React.createElement(PluginSettingsHomeScreen));
+        const screen = await renderInAppPanes(React.createElement(PluginSettingsHomeScreen));
         await act(async () => {
             await flushAsync();
             await flushAsync();
         });
         await selectPluginManagementView(screen, 'discover');
 
-        expect(screen.findAllHostsByTestId('settings.plugins.marketplace.sourceFilter:marketplace:community-npm'))
-            .toHaveLength(1);
-        expect(screen.findAllHostsByTestId('settings.plugins.marketplace.sourceFilter:marketplace:curated'))
-            .toHaveLength(1);
+        expect(findDiscoverSourceFilterIds(screen).filter((id) => id === 'marketplace:community-npm')).toHaveLength(1);
+        expect(findDiscoverSourceFilterIds(screen).filter((id) => id === 'marketplace:curated')).toHaveLength(1);
 
         // A chip narrows the same one aggregate query before acquisition; All
         // sends no source filter at all.
         await act(async () => {
-            screen.pressByTestId('settings.plugins.marketplace.sourceFilter:marketplace:curated');
+            selectDiscoverSource(screen, 'marketplace:curated');
             await flushAsync();
             await flushAsync();
         });
@@ -5023,7 +5183,7 @@ describe('PluginSettingsHomeScreen', () => {
             filters: { sourceIds: ['marketplace:curated'], includeUnavailable: true },
         }), expect.any(Object));
         await act(async () => {
-            screen.pressByTestId('settings.plugins.marketplace.sourceFilter:all');
+            selectDiscoverSource(screen, 'all');
             await flushAsync();
             await flushAsync();
         });
@@ -5049,7 +5209,7 @@ describe('PluginSettingsHomeScreen', () => {
             .mockResolvedValue(createDaemonMarketplaceIndexResult([]));
 
         const { PluginSettingsHomeScreen } = await import('./PluginSettingsHomeScreen');
-        const screen = await renderSettingsView(React.createElement(PluginSettingsHomeScreen));
+        const screen = await renderInAppPanes(React.createElement(PluginSettingsHomeScreen));
         await act(async () => {
             await flushAsync();
             await flushAsync();
@@ -5060,8 +5220,8 @@ describe('PluginSettingsHomeScreen', () => {
         });
 
         act(() => {
-            screen.pressByTestId('settings.plugins.marketplace.sourceFilter:marketplace:curated');
-            screen.pressByTestId('settings.plugins.marketplace.sourceFilter:marketplace:community-npm');
+            selectDiscoverSource(screen, 'marketplace:curated');
+            selectDiscoverSource(screen, 'marketplace:community-npm');
         });
         expect(machineMarketplaceIndexQueryMock).toHaveBeenCalledTimes(1);
 
@@ -5101,7 +5261,7 @@ describe('PluginSettingsHomeScreen', () => {
             ], { revision: 2 }));
 
         const { PluginSettingsHomeScreen } = await import('./PluginSettingsHomeScreen');
-        const screen = await renderSettingsView(React.createElement(PluginSettingsHomeScreen));
+        const screen = await renderInAppPanes(React.createElement(PluginSettingsHomeScreen));
         await act(async () => {
             await flushAsync();
             await flushAsync();
@@ -5150,7 +5310,7 @@ describe('PluginSettingsHomeScreen', () => {
 
         // Recovery stays with the user's own fresh query from cursor null.
         await act(async () => {
-            screen.pressByTestId('settings.plugins.marketplace.refreshDiscover');
+            submitDiscoverSearch(screen);
             await flushAsync();
             await flushAsync();
         });
@@ -5180,7 +5340,7 @@ describe('PluginSettingsHomeScreen', () => {
             ]));
 
         const { PluginSettingsHomeScreen } = await import('./PluginSettingsHomeScreen');
-        const screen = await renderSettingsView(React.createElement(PluginSettingsHomeScreen));
+        const screen = await renderInAppPanes(React.createElement(PluginSettingsHomeScreen));
         await act(async () => {
             await flushAsync();
             await flushAsync();
@@ -5205,7 +5365,7 @@ describe('PluginSettingsHomeScreen', () => {
         expect(screen.getTextContent()).toContain('settingsPlugins.discover.status.stale');
 
         await act(async () => {
-            screen.pressRow('settings.plugins.marketplace.refreshDiscover');
+            submitDiscoverSearch(screen);
             await flushAsync();
             await flushAsync();
         });
@@ -5217,6 +5377,57 @@ describe('PluginSettingsHomeScreen', () => {
         }), expect.any(Object));
         expect(screen.findRow(discoverListingTestID('replacement-plugin'))).toBeTruthy();
         expect(screen.findRow(discoverListingTestID('sample-plugin'))).toBeFalsy();
+    });
+
+    it('names a search that found nothing and clears it back to every listing', async () => {
+        useMachineCapabilitiesCacheMock.mockReturnValue({
+            state: createMachineCapabilitiesState([]),
+            refresh: vi.fn(),
+        });
+        machineMarketplaceSourceRegistryGetMock.mockResolvedValue({
+            t: 'happier_marketplace_source_registry_v1', schemaVersion: 1,
+            sources: [{ id: 'marketplace:curated', title: 'Curated Marketplace', sourceUrl: 'https://marketplace.example.test/catalog.json', enabled: true, origin: 'curated', addedAtMs: 1, updatedAtMs: 1 }],
+        });
+        machineMarketplaceIndexQueryMock
+            .mockResolvedValueOnce(createDaemonMarketplaceIndexResult([
+                createMarketplaceCatalogEntry({ pluginId: 'sample-plugin', title: 'Sample Plugin', description: 'Shown first', version: '1.0.0' }),
+            ]))
+            .mockResolvedValueOnce(createDaemonMarketplaceIndexResult([]))
+            .mockResolvedValueOnce(createDaemonMarketplaceIndexResult([
+                createMarketplaceCatalogEntry({ pluginId: 'sample-plugin', title: 'Sample Plugin', description: 'Shown first', version: '1.0.0' }),
+            ]));
+
+        const { PluginSettingsHomeScreen } = await import('./PluginSettingsHomeScreen');
+        const screen = await renderInAppPanes(React.createElement(PluginSettingsHomeScreen));
+        await act(async () => { await flushAsync(); await flushAsync(); });
+        await selectPluginManagementView(screen, 'discover');
+        await act(async () => { await flushAsync(); await flushAsync(); });
+        // Nothing searched yet: no "no match" line, whatever the result count.
+        expect(screen.findRow('settings.plugins.marketplace.discover.noMatch')).toBeFalsy();
+
+        await act(async () => {
+            screen.findRow('settings.plugins.marketplace.search')?.props.onChangeText('jira');
+        });
+        await act(async () => {
+            submitDiscoverSearch(screen);
+            await flushAsync();
+            await flushAsync();
+        });
+        expect(screen.findRow('settings.plugins.marketplace.discover.noMatch')).toBeTruthy();
+        expect(screen.getTextContent()).toContain('settingsPlugins.surfaces.noMatch');
+
+        await act(async () => {
+            screen.pressRow('settings.plugins.marketplace.discover.clearSearch');
+            await flushAsync();
+            await flushAsync();
+        });
+        expect(machineMarketplaceIndexQueryMock).toHaveBeenLastCalledWith('machine-1', expect.objectContaining({
+            text: '',
+            cursor: null,
+        }), expect.any(Object));
+        expect(screen.findRow('settings.plugins.marketplace.search')?.props.value).toBe('');
+        expect(screen.findRow('settings.plugins.marketplace.discover.noMatch')).toBeFalsy();
+        expect(screen.findRow(discoverListingTestID('sample-plugin'))).toBeTruthy();
     });
 
     it('reconciles exact curated install truth after the private decision response is lost', async () => {
@@ -5299,7 +5510,7 @@ describe('PluginSettingsHomeScreen', () => {
         ]));
 
         const { PluginSettingsHomeScreen } = await import('./PluginSettingsHomeScreen');
-        const screen = await renderSettingsView(React.createElement(PluginSettingsHomeScreen));
+        const screen = await renderInAppPanes(React.createElement(PluginSettingsHomeScreen));
         await act(async () => {
             await flushAsync();
             await flushAsync();
@@ -5432,7 +5643,7 @@ describe('PluginSettingsHomeScreen', () => {
         });
 
         const { PluginSettingsHomeScreen } = await import('./PluginSettingsHomeScreen');
-        const screen = await renderSettingsView(React.createElement(PluginSettingsHomeScreen));
+        const screen = await renderInAppPanes(React.createElement(PluginSettingsHomeScreen));
         await act(async () => {
             await flushAsync();
             await flushAsync();
@@ -5548,7 +5759,7 @@ describe('PluginSettingsHomeScreen', () => {
         }));
 
         const { PluginSettingsHomeScreen } = await import('./PluginSettingsHomeScreen');
-        const screen = await renderSettingsView(React.createElement(PluginSettingsHomeScreen));
+        const screen = await renderInAppPanes(React.createElement(PluginSettingsHomeScreen));
         await act(async () => {
             await flushAsync();
             await flushAsync();
@@ -5561,10 +5772,15 @@ describe('PluginSettingsHomeScreen', () => {
 
         const communityRow = screen.findRow(discoverListingTestID('community-plugin', 'marketplace:community-npm'));
         expect(communityRow).toBeTruthy();
-        expect(screen.getTextContent()).toContain('settingsPlugins.catalog.byPublisher(publisher=Acme)');
-        expect(screen.getTextContent()).toContain('Community npm');
-        expect(screen.findByTestId('settings.plugins.marketplace.reviewStatus.marketplace:community-npm.community-plugin:variant:warning'))
+        // The Browse card's byline names the publisher and the source together.
+        expect(screen.getTextContent()).toContain('Acme · Community npm');
+        // The card footer names the review state; only a withdrawal warns (a dot).
+        // Unreviewed stays a quiet fact: the Install & Trust review carries the
+        // access decision.
+        expect(screen.findByTestId('settings.plugins.marketplace.reviewStatus.marketplace:community-npm.community-plugin'))
             .toBeTruthy();
+        expect(screen.findByTestId('settings.plugins.marketplace.reviewStatus.marketplace:community-npm.community-plugin:dot'))
+            .toBeFalsy();
         expect(screen.getTextContent()).toContain('settingsPlugins.discover.reviewStatus.unreviewed');
         const communityInstallAction = findDiscoverInstallAction(screen, 'community-plugin', 'marketplace:community-npm');
         expect(communityInstallAction).toBeTruthy();
@@ -5617,7 +5833,7 @@ describe('PluginSettingsHomeScreen', () => {
             packageIdentity: { name: '@acme/community-plugin', version: '2.0.0' },
             requiredHostAccess: [expect.objectContaining({ capability: 'network' })],
         });
-        const reviewModal = await renderSettingsView(React.createElement(reviewModalConfig.component, {
+        const reviewModal = await renderInAppPanes(React.createElement(reviewModalConfig.component, {
             ...reviewModalConfig.props,
             onClose: vi.fn(),
             setChrome: vi.fn(),
@@ -5721,24 +5937,21 @@ describe('PluginSettingsHomeScreen', () => {
             pluginId: 'community-plugin',
         });
 
-        const { PluginSettingsHomeScreen } = await import('./PluginSettingsHomeScreen');
-        const screen = await renderSettingsView(React.createElement(PluginSettingsHomeScreen));
+        const { PluginDetailScreen } = await import('./detail/PluginDetailScreen');
+        const screen = await renderInAppPanes(React.createElement(PluginDetailScreen, { pluginId: 'community-plugin' }));
         await act(async () => {
             await flushAsync();
             await flushAsync();
         });
 
-        // Update starts from the installed record's own row action; Discover
-        // never advertised a lifecycle row for something already installed.
-        const updateAction = screen.findAllByType('ItemRowActions' as any)
-            .find((node) => node.props.title === 'Community Plugin')
-            ?.props.actions
-            ?.find((action: Readonly<{ id: string }>) => action.id === 'update') as
-            | Readonly<{ disabled: boolean; onPress: () => void }>
-            | undefined;
+        // Update starts from the installed record itself (its page's `⋯`
+        // menu); Discover never advertised a lifecycle row for something
+        // already installed.
+        const updateAction = findDetailMenuAction(screen, 'community-plugin', 'update');
+        expect(updateAction).not.toBeNull();
         expect(updateAction?.disabled).not.toBe(true);
         await act(async () => {
-            updateAction?.onPress();
+            updateAction?.onSelect();
             await flushAsync();
         });
 
@@ -5804,20 +6017,21 @@ describe('PluginSettingsHomeScreen', () => {
         });
         invokeWithAlertsMock.mockResolvedValueOnce({ supported: false, reason: 'error' });
 
-        const { PluginSettingsHomeScreen } = await import('./PluginSettingsHomeScreen');
-        const screen = await renderSettingsView(React.createElement(PluginSettingsHomeScreen));
+        const { PluginDetailScreen } = await import('./detail/PluginDetailScreen');
+        const screen = await renderInAppPanes(React.createElement(PluginDetailScreen, { pluginId: 'community-plugin' }));
         await act(async () => {
             await flushAsync();
             await flushAsync();
         });
+        const updateAction = findDetailMenuAction(screen, 'community-plugin', 'update');
+        expect(updateAction).not.toBeNull();
         await act(async () => {
-            screen.findAllByType('ItemRowActions' as any)
-                .find((node) => node.props.title === 'Community Plugin')
-                ?.props.actions
-                ?.find((action: Readonly<{ id: string }>) => action.id === 'update')
-                ?.onPress();
+            updateAction?.onSelect();
             await flushAsync();
         });
+        expect(invokeWithAlertsMock).toHaveBeenCalledWith(expect.objectContaining({
+            request: expect.objectContaining({ method: 'update', params: { pluginId: 'community-plugin' } }),
+        }));
 
         expect(modalAlertMock).not.toHaveBeenCalledWith('common.success', expect.anything());
         expect(screen.findByTestId('settings.plugins.installed.operationSettlement')?.props.accessibilityLiveRegion).toBe('polite');
@@ -5842,7 +6056,7 @@ describe('PluginSettingsHomeScreen', () => {
         ], options));
 
         const { PluginSettingsHomeScreen } = await import('./PluginSettingsHomeScreen');
-        const screen = await renderSettingsView(React.createElement(PluginSettingsHomeScreen));
+        const screen = await renderInAppPanes(React.createElement(PluginSettingsHomeScreen));
         await act(async () => {
             await flushAsync();
             await flushAsync();
@@ -5883,7 +6097,7 @@ describe('PluginSettingsHomeScreen', () => {
         }));
 
         const { PluginSettingsHomeScreen } = await import('./PluginSettingsHomeScreen');
-        const screen = await renderSettingsView(React.createElement(PluginSettingsHomeScreen));
+        const screen = await renderInAppPanes(React.createElement(PluginSettingsHomeScreen));
         await act(async () => {
             await flushAsync();
             await flushAsync();
@@ -5901,9 +6115,9 @@ describe('PluginSettingsHomeScreen', () => {
         }), expect.any(Object));
         const withdrawnRow = screen.findRow(discoverListingTestID('withdrawn-plugin'));
         expect(withdrawnRow).toBeTruthy();
-        // One status pill carries withdrawal on the listing's own row rather
-        // than duplicating it as a second warning line or a separate row.
-        expect(screen.findByTestId('settings.plugins.marketplace.reviewStatus.marketplace:curated.withdrawn-plugin:variant:warning'))
+        // The listing's own footer status carries the withdrawal, with the
+        // warning dot, rather than a second warning line or a separate row.
+        expect(screen.findByTestId('settings.plugins.marketplace.reviewStatus.marketplace:curated.withdrawn-plugin:dot'))
             .toBeTruthy();
         expect(screen.getTextContent()).toContain('settingsPlugins.discover.reviewStatus.withdrawn');
         // The warning never becomes authority over installed code: Discover
@@ -5962,31 +6176,26 @@ describe('PluginSettingsHomeScreen', () => {
         });
 
         const { PluginSettingsHomeScreen } = await import('./PluginSettingsHomeScreen');
-        const screen = await renderSettingsView(React.createElement(PluginSettingsHomeScreen));
+        const screen = await renderInAppPanes(React.createElement(PluginSettingsHomeScreen));
         await act(async () => {
             await flushAsync();
             await flushAsync();
         });
 
-        // Enable/disable live on the installed row; Discover renders no
-        // lifecycle actions for installed listings at all.
-        const rowActions = screen.findAllByType('ItemRowActions' as any);
-        const disableAction = rowActions
-            .find((node) => node.props.title === 'Existing Plugin')
-            ?.props.actions.find((action: { id: string }) => action.id === 'disable');
-        const enableAction = rowActions
-            .find((node) => node.props.title === 'Disabled Plugin')
-            ?.props.actions.find((action: { id: string }) => action.id === 'enable');
-        expect(disableAction).toBeTruthy();
-        expect(enableAction).toBeTruthy();
+        // Enable/disable live on the installed row (its Enabled switch);
+        // Discover renders no lifecycle actions for installed listings at all.
+        const disableAction = findInstalledRowToggle(screen, 'existing-plugin');
+        const enableAction = findInstalledRowToggle(screen, 'disabled-plugin');
+        expect(disableAction).toMatchObject({ action: 'disable', disabled: false });
+        expect(enableAction).toMatchObject({ action: 'enable', disabled: false });
 
         await act(async () => {
-            disableAction?.onPress();
+            disableAction?.toggle();
             await flushAsync();
         });
 
         await act(async () => {
-            enableAction?.onPress();
+            enableAction?.toggle();
             await flushAsync();
         });
 
@@ -6072,7 +6281,7 @@ describe('PluginSettingsHomeScreen', () => {
         }));
 
         const { PluginSettingsHomeScreen } = await import('./PluginSettingsHomeScreen');
-        const screen = await renderSettingsView(React.createElement(PluginSettingsHomeScreen));
+        const screen = await renderInAppPanes(React.createElement(PluginSettingsHomeScreen));
         await act(async () => {
             await flushAsync();
             await flushAsync();
@@ -6145,32 +6354,24 @@ describe('PluginSettingsHomeScreen', () => {
         });
 
         const { PluginSettingsHomeScreen } = await import('./PluginSettingsHomeScreen');
-        const screen = await renderSettingsView(React.createElement(PluginSettingsHomeScreen));
-
-        const rowActions = screen.findAllByType('ItemRowActions' as any);
-        const installedAction = rowActions
-            .find((node) => node.props.title === 'Installed Plugin')
-            ?.props.actions.find((action: { id: string }) => action.id === 'disable');
-        const otherAction = rowActions
-            .find((node) => node.props.title === 'Other Plugin')
-            ?.props.actions.find((action: { id: string }) => action.id === 'disable');
-        expect(rowActions.flatMap((node) => node.props.actions).some((action: { id: string }) => action.id === 'reload')).toBe(false);
-        expect(installedAction).toBeTruthy();
-        expect(otherAction?.disabled).toBe(false);
+        const screen = await renderInAppPanes(React.createElement(PluginSettingsHomeScreen));
 
         await act(async () => {
-            installedAction?.onPress();
+            await flushAsync();
+            await flushAsync();
+        });
+        const installedAction = findInstalledRowToggle(screen, 'installed-plugin');
+        const otherAction = findInstalledRowToggle(screen, 'other-plugin');
+        expect(installedAction).toMatchObject({ action: 'disable', disabled: false });
+        expect(otherAction).toMatchObject({ action: 'disable', disabled: false });
+
+        await act(async () => {
+            installedAction?.toggle();
             await flushAsync();
         });
 
-        const inFlightInstalledAction = screen.findAllByType('ItemRowActions' as any)
-            .find((node) => node.props.title === 'Installed Plugin')
-            ?.props.actions.find((action: { id: string }) => action.id === 'disable');
-        const inFlightOtherAction = screen.findAllByType('ItemRowActions' as any)
-            .find((node) => node.props.title === 'Other Plugin')
-            ?.props.actions.find((action: { id: string }) => action.id === 'disable');
-        expect(inFlightInstalledAction?.disabled).toBe(true);
-        expect(inFlightOtherAction?.disabled).toBe(false);
+        expect(findInstalledRowToggle(screen, 'installed-plugin')?.disabled).toBe(true);
+        expect(findInstalledRowToggle(screen, 'other-plugin')?.disabled).toBe(false);
 
         deferred.resolve();
         await act(async () => {
@@ -6196,7 +6397,7 @@ describe('PluginMarketplaceSourcesScreen', () => {
         machineMarketplaceSourceRegistryGetMock.mockResolvedValue(registry);
         const { PluginMarketplaceSourcesScreen } = await import('./PluginMarketplaceSourcesScreen');
         const RerenderableSources = PluginMarketplaceSourcesScreen as React.ComponentType<{ revision: number }>;
-        const screen = await renderSettingsView(React.createElement(RerenderableSources, { revision: 1 }));
+        const screen = await renderInAppPanes(React.createElement(RerenderableSources, { revision: 1 }));
         await act(async () => { await flushAsync(); });
         expect(screen.findRow('settings.plugins.sources.empty')).toBeNull();
         expect(screen.findRow('settings.plugins.sources.unavailable')).toBeTruthy();
@@ -6206,17 +6407,17 @@ describe('PluginMarketplaceSourcesScreen', () => {
         machine.activeAt = Date.now();
         await act(async () => {
             syncAdministrationTargetBoundary();
-            screen.tree.update(React.createElement(RerenderableSources, { revision: 2 }));
+            screen.tree.update(inAppPanes(React.createElement(RerenderableSources, { revision: 2 })));
             await flushAsync(); await flushAsync();
         });
         expect(screen.findRow('settings.plugins.sources.source.user-known')).toBeTruthy();
         expect(screen.findRow('settings.plugins.sources.unavailable')).toBeNull();
         machineMarketplaceSourceRegistryGetMock.mockRejectedValueOnce(new Error('read failed'));
         screenFocusState.value = false;
-        await act(async () => { screen.tree.update(React.createElement(RerenderableSources, { revision: 3 })); });
+        await act(async () => { screen.tree.update(inAppPanes(React.createElement(RerenderableSources, { revision: 3 }))); });
         screenFocusState.value = true;
         await act(async () => {
-            screen.tree.update(React.createElement(RerenderableSources, { revision: 4 }));
+            screen.tree.update(inAppPanes(React.createElement(RerenderableSources, { revision: 4 })));
             await flushAsync(); await flushAsync();
         });
         expect(screen.findRow('settings.plugins.sources.source.user-known')).toBeTruthy();
@@ -6233,7 +6434,7 @@ describe('PluginMarketplaceSourcesScreen', () => {
         replacement.activeAt = 0;
         await act(async () => {
             syncAdministrationTargetBoundary();
-            screen.tree.update(React.createElement(RerenderableSources, { revision: 5 }));
+            screen.tree.update(inAppPanes(React.createElement(RerenderableSources, { revision: 5 })));
             await flushAsync();
         });
         expect(screen.findRow('settings.plugins.sources.empty')).toBeNull();
@@ -6263,7 +6464,7 @@ describe('PluginMarketplaceSourcesScreen', () => {
         machineMarketplaceSourceRegistryMutateMock.mockImplementation(async () => ({ status: 'success' as const, registry }));
 
         const { PluginMarketplaceSourcesScreen } = await import('./PluginMarketplaceSourcesScreen');
-        const screen = await renderSettingsView(React.createElement(PluginMarketplaceSourcesScreen));
+        const screen = await renderInAppPanes(React.createElement(PluginMarketplaceSourcesScreen));
         await act(async () => { await flushAsync(); await flushAsync(); });
 
         const communityNpmRow = screen.findRow('settings.plugins.sources.communityNpm');

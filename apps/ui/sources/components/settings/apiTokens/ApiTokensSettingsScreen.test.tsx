@@ -1,3 +1,4 @@
+import { API_TOKEN_FULL_GRANT_V1 } from '@happier-dev/protocol';
 import * as React from 'react';
 import { ScrollView } from 'react-native';
 import { act } from 'react-test-renderer';
@@ -22,6 +23,7 @@ const runtime = vi.hoisted(() => ({
     hostActivelyViewedListeners: new Set<() => void>(),
     routeParams: {} as Record<string, string | undefined>,
     setRouteParams: vi.fn(),
+    push: vi.fn(),
     showCreateModal: vi.fn(),
 }));
 
@@ -29,11 +31,12 @@ installSettingsViewCommonModuleMocks({
     router: async () => {
         const { createExpoRouterMock } = await import('@/dev/testkit/mocks/router');
         const routerMock = createExpoRouterMock({
-            router: { setParams: runtime.setRouteParams },
+            router: { setParams: runtime.setRouteParams, push: runtime.push },
         }).module;
         return {
             ...routerMock,
             useLocalSearchParams: () => runtime.routeParams,
+            useGlobalSearchParams: () => runtime.routeParams,
         };
     },
     storage: async () => {
@@ -143,13 +146,21 @@ function createController(state: ApiTokenSettingsState) {
             setCreateDraft: (_draft: ApiTokenSettingsState['createDraft']) => {},
             resetCreateDraft: () => {},
             createToken: async () => {},
+            adoptCreatedToken: () => false,
             acknowledgeReveal: () => {},
             clearReveal: () => {},
             requestRevealDismiss: async () => true,
+            // The Account this fake controller serves stays active.
+            captureDestructiveTarget: () => ({ scope: { serverId: 'server-a', accountId: 'account-a' }, isCurrent: () => true, onRetire: () => ({ dispose() {} }) }),
             revokeToken: async () => true,
             revokeAllTokens: async () => 0,
             signOutEverywhere: async () => true,
             clearOperationFeedback: () => {},
+            beginAccessEdit: () => true,
+            setAccessEditGrant: () => {},
+            saveAccessEdit: async () => true,
+            updateToken: async () => null,
+            cancelAccessEdit: () => {},
             retire: () => {},
         } satisfies ApiTokenSettingsController,
         refresh,
@@ -173,13 +184,21 @@ function createObservableController(initialState: ApiTokenSettingsState) {
         setCreateDraft: () => {},
         resetCreateDraft: () => {},
         createToken: async () => {},
+        adoptCreatedToken: () => false,
         acknowledgeReveal: () => {},
         clearReveal: () => {},
         requestRevealDismiss: async () => true,
+        // The Account this fake controller serves stays active.
+        captureDestructiveTarget: () => ({ scope: { serverId: 'server-a', accountId: 'account-a' }, isCurrent: () => true, onRetire: () => ({ dispose() {} }) }),
         revokeToken: async () => true,
         revokeAllTokens: async () => 0,
         signOutEverywhere: async () => true,
         clearOperationFeedback,
+        beginAccessEdit: () => true,
+        setAccessEditGrant: () => {},
+        saveAccessEdit: async () => true,
+        updateToken: async () => null,
+        cancelAccessEdit: () => {},
         retire: () => {},
     };
     return {
@@ -209,43 +228,79 @@ afterEach(() => {
     runtime.hostActivelyViewedListeners.clear();
     runtime.routeParams = {};
     runtime.setRouteParams.mockClear();
+    runtime.push.mockClear();
     runtime.showCreateModal.mockClear();
 });
 
+const RESUMED_LIMITED_DRAFT = Object.freeze({
+    label: 'Release deploy',
+    expiryPreset: '1y' as const,
+    encryptionAccess: true,
+    access: 'limited' as const,
+    grant: {
+        ...API_TOKEN_FULL_GRANT_V1,
+        actions: { families: ['session_transcripts'], ids: [] },
+        origins: ['https://crm.acme.dev'],
+    },
+});
+
 describe('ApiTokensSettingsScreen', () => {
-    it('restores only the non-secret draft fields and reopens the existing create modal', async () => {
+    it('never resumes a limited draft that lost its grant as Full access', async () => {
         const { ApiTokensSettingsScreen } = await import('./ApiTokensSettingsScreen');
         runtime.activeServerAccountScope = { serverId: 'server-a', accountId: 'account-a' };
+        const { grant: _lost, ...withoutGrant } = RESUMED_LIMITED_DRAFT;
         runtime.routeParams = {
             resumeCreate: '1',
-            label: 'Release deploy',
-            expiry: '1y',
+            draft: JSON.stringify(withoutGrant),
             targetServerId: 'server-a',
             targetServerUrl: 'https://home-a.example.test',
             expectedAccountId: 'account-a',
         };
         const state: ApiTokenSettingsState = {
             phase: 'ready', tokens: [], isRefreshing: false, listError: null,
-            createDraft: { label: '', expiryPreset: '90d' }, canCreateEncrypted: false,
+            createDraft: { label: '', expiryPreset: '90d' }, encryptionAvailability: 'unchecked',
             recoveryTokenId: null, createPending: false, createError: null, reveal: null,
-            operation: null, operationTokenId: null, operationError: null, operationNotice: null,
+            operation: null, operationTokenId: null, operationError: null, operationNotice: null, accessEdit: null,
         };
         const { controller } = createController(state);
         const setCreateDraft = vi.spyOn(controller, 'setCreateDraft');
 
         await renderScreen(<ApiTokensSettingsScreen controller={controller} />);
 
-        expect(setCreateDraft).toHaveBeenCalledWith({ label: 'Release deploy', expiryPreset: '1y' });
+        expect(setCreateDraft).not.toHaveBeenCalled();
+        expect(runtime.showCreateModal).not.toHaveBeenCalled();
+    });
+
+    it('restores the complete non-secret draft, limited grant included, and reopens the existing create modal', async () => {
+        const { ApiTokensSettingsScreen } = await import('./ApiTokensSettingsScreen');
+        runtime.activeServerAccountScope = { serverId: 'server-a', accountId: 'account-a' };
+        runtime.routeParams = {
+            resumeCreate: '1',
+            draft: JSON.stringify(RESUMED_LIMITED_DRAFT),
+            targetServerId: 'server-a',
+            targetServerUrl: 'https://home-a.example.test',
+            expectedAccountId: 'account-a',
+        };
+        const state: ApiTokenSettingsState = {
+            phase: 'ready', tokens: [], isRefreshing: false, listError: null,
+            createDraft: { label: '', expiryPreset: '90d' }, encryptionAvailability: 'unchecked',
+            recoveryTokenId: null, createPending: false, createError: null, reveal: null,
+            operation: null, operationTokenId: null, operationError: null, operationNotice: null, accessEdit: null,
+        };
+        const { controller } = createController(state);
+        const setCreateDraft = vi.spyOn(controller, 'setCreateDraft');
+
+        await renderScreen(<ApiTokensSettingsScreen controller={controller} />);
+
+        expect(setCreateDraft).toHaveBeenCalledWith(RESUMED_LIMITED_DRAFT);
         expect(runtime.showCreateModal).toHaveBeenCalledWith(controller);
         expect(runtime.setRouteParams).toHaveBeenCalledWith({
             resumeCreate: undefined,
-            label: undefined,
-            expiry: undefined,
+            draft: undefined,
             targetServerId: undefined,
             targetServerUrl: undefined,
             expectedAccountId: undefined,
         });
-        expect(setCreateDraft.mock.calls[0]?.[0]).not.toHaveProperty('encryptionAccess');
         expect(setCreateDraft.mock.calls[0]?.[0]).not.toHaveProperty('token');
         expect(setCreateDraft.mock.calls[0]?.[0]).not.toHaveProperty('secret');
     });
@@ -256,17 +311,16 @@ describe('ApiTokensSettingsScreen', () => {
         runtime.activeServerSnapshot = { serverId: 'server-b', serverUrl: 'https://home-b.example.test' };
         runtime.routeParams = {
             resumeCreate: '1',
-            label: 'Release deploy',
-            expiry: '1y',
+            draft: JSON.stringify(RESUMED_LIMITED_DRAFT),
             targetServerId: 'server-a',
             targetServerUrl: 'https://home-a.example.test',
             expectedAccountId: 'account-a',
         };
         const state: ApiTokenSettingsState = {
             phase: 'ready', tokens: [], isRefreshing: false, listError: null,
-            createDraft: { label: '', expiryPreset: '90d' }, canCreateEncrypted: false,
+            createDraft: { label: '', expiryPreset: '90d' }, encryptionAvailability: 'unchecked',
             recoveryTokenId: null, createPending: false, createError: null, reveal: null,
-            operation: null, operationTokenId: null, operationError: null, operationNotice: null,
+            operation: null, operationTokenId: null, operationError: null, operationNotice: null, accessEdit: null,
         };
         const { controller } = createController(state);
         const setCreateDraft = vi.spyOn(controller, 'setCreateDraft');
@@ -277,8 +331,7 @@ describe('ApiTokensSettingsScreen', () => {
         expect(runtime.showCreateModal).not.toHaveBeenCalled();
         expect(runtime.setRouteParams).toHaveBeenCalledWith({
             resumeCreate: undefined,
-            label: undefined,
-            expiry: undefined,
+            draft: undefined,
             targetServerId: undefined,
             targetServerUrl: undefined,
             expectedAccountId: undefined,
@@ -293,7 +346,7 @@ describe('ApiTokensSettingsScreen', () => {
             isRefreshing: false,
             listError: null,
             createDraft: { label: '', expiryPreset: '90d' },
-            canCreateEncrypted: false,
+            encryptionAvailability: 'unchecked',
             recoveryTokenId: null,
             createPending: false,
             createError: null,
@@ -301,7 +354,7 @@ describe('ApiTokensSettingsScreen', () => {
             operation: null,
             operationTokenId: null,
             operationError: null,
-            operationNotice: null,
+            operationNotice: null, accessEdit: null,
         });
 
         const screen = await renderScreen(<ApiTokensSettingsScreen controller={controller} />);
@@ -318,7 +371,7 @@ describe('ApiTokensSettingsScreen', () => {
             isRefreshing: false,
             listError: null,
             createDraft: { label: '', expiryPreset: '90d' },
-            canCreateEncrypted: false,
+            encryptionAvailability: 'unchecked',
             recoveryTokenId: null,
             createPending: false,
             createError: null,
@@ -326,7 +379,7 @@ describe('ApiTokensSettingsScreen', () => {
             operation: null,
             operationTokenId: null,
             operationError: null,
-            operationNotice: null,
+            operationNotice: null, accessEdit: null,
         });
 
         const screen = await renderScreen(<ApiTokensSettingsScreen controller={controller} />);
@@ -354,6 +407,10 @@ describe('ApiTokensSettingsScreen', () => {
                     expiresAt: null,
                     hasEncryptionAccess: false,
                     hasUnattendedTeamAccess: false,
+                    grant: API_TOKEN_FULL_GRANT_V1,
+                    parentTokenId: null,
+                    activeChildCount: 0,
+                    embedConfig: null,
                 }],
             },
         });
@@ -373,7 +430,7 @@ describe('ApiTokensSettingsScreen', () => {
         });
     });
 
-    it('names each token overflow control with the token label', async () => {
+    it('opens a token detail from its row, and an embed-backed token in Settings → Embeds', async () => {
         const { ApiTokensSettingsScreen } = await import('./ApiTokensSettingsScreen');
         const tokens = [{
             tokenId: '11111111-1111-4111-8111-111111111111',
@@ -384,6 +441,10 @@ describe('ApiTokensSettingsScreen', () => {
             expiresAt: null,
             hasEncryptionAccess: false,
             hasUnattendedTeamAccess: false,
+            grant: API_TOKEN_FULL_GRANT_V1,
+            parentTokenId: null,
+            activeChildCount: 0,
+            embedConfig: null,
         }, {
             tokenId: '22222222-2222-4222-8222-222222222222',
             label: 'Release',
@@ -393,6 +454,11 @@ describe('ApiTokensSettingsScreen', () => {
             expiresAt: null,
             hasEncryptionAccess: true,
             hasUnattendedTeamAccess: false,
+            grant: API_TOKEN_FULL_GRANT_V1,
+            parentTokenId: null,
+            activeChildCount: 0,
+            // An embed owns this token; its embed configuration is opaque to this page.
+            embedConfig: {} as never,
         }] as const;
         const { controller } = createController({
             phase: 'ready',
@@ -400,7 +466,7 @@ describe('ApiTokensSettingsScreen', () => {
             isRefreshing: false,
             listError: null,
             createDraft: { label: '', expiryPreset: '90d' },
-            canCreateEncrypted: false,
+            encryptionAvailability: 'unchecked',
             recoveryTokenId: null,
             createPending: false,
             createError: null,
@@ -408,15 +474,21 @@ describe('ApiTokensSettingsScreen', () => {
             operation: null,
             operationTokenId: null,
             operationError: null,
-            operationNotice: null,
+            operationNotice: null, accessEdit: null,
         });
 
         const screen = await renderScreen(<ApiTokensSettingsScreen controller={controller} />);
 
-        for (const token of tokens) {
-            expect(screen.findHostByTestId(`settings-api-tokens-overflow:${token.tokenId}`)?.props.accessibilityLabel)
-                .toBe(`settingsApiTokens.moreActionsAccessibilityLabel(label=${token.label})`);
-        }
+        expect(screen.findByTestId(`settings-api-tokens-embed:${tokens[1].tokenId}`)).toBeTruthy();
+        expect(screen.findByTestId(`settings-api-tokens-embed:${tokens[0].tokenId}`)).toBeNull();
+
+        await screen.pressByTestIdAsync(`settings-api-tokens-row:${tokens[0].tokenId}`);
+        await screen.pressByTestIdAsync(`settings-api-tokens-row:${tokens[1].tokenId}`);
+
+        expect(runtime.push.mock.calls.map(([href]) => href)).toEqual([
+            `/settings/account/api-tokens/${tokens[0].tokenId}`,
+            `/settings/embeds/${tokens[1].tokenId}`,
+        ]);
     });
 
     it('keeps its owned controller current through StrictMode effect replay', async () => {
@@ -435,6 +507,10 @@ describe('ApiTokensSettingsScreen', () => {
                     expiresAt: null,
                     hasEncryptionAccess: false,
                     hasUnattendedTeamAccess: false,
+                    grant: API_TOKEN_FULL_GRANT_V1,
+                    parentTokenId: null,
+                    activeChildCount: 0,
+                    embedConfig: null,
                 }],
             },
         });
@@ -486,11 +562,15 @@ describe('ApiTokensSettingsScreen', () => {
                 expiresAt: null,
                 hasEncryptionAccess: false,
                 hasUnattendedTeamAccess: false,
+                grant: API_TOKEN_FULL_GRANT_V1,
+                parentTokenId: null,
+                activeChildCount: 0,
+                embedConfig: null,
             }],
             isRefreshing: false,
             listError: 'auth_unavailable',
             createDraft: { label: '', expiryPreset: '90d' },
-            canCreateEncrypted: false,
+            encryptionAvailability: 'unchecked',
             recoveryTokenId: null,
             createPending: false,
             createError: null,
@@ -498,7 +578,7 @@ describe('ApiTokensSettingsScreen', () => {
             operation: null,
             operationTokenId: null,
             operationError: null,
-            operationNotice: null,
+            operationNotice: null, accessEdit: null,
         });
 
         const screen = await renderScreen(<ApiTokensSettingsScreen controller={controller} />);
@@ -513,6 +593,49 @@ describe('ApiTokensSettingsScreen', () => {
         expect(refresh).toHaveBeenCalledOnce();
     });
 
+    it('closes the page with Revoke all only when there are tokens to revoke', async () => {
+        const { ApiTokensSettingsScreen } = await import('./ApiTokensSettingsScreen');
+        const base = {
+            isRefreshing: false,
+            listError: null,
+            createDraft: { label: '', expiryPreset: '90d' as const },
+            encryptionAvailability: 'unchecked',
+            recoveryTokenId: null,
+            createPending: false,
+            createError: null,
+            reveal: null,
+            operation: null,
+            operationTokenId: null,
+            operationError: null,
+            operationNotice: null, accessEdit: null,
+        } satisfies Omit<ApiTokenSettingsState, 'phase' | 'tokens'>;
+        const none = await renderScreen(<ApiTokensSettingsScreen controller={createController({ ...base, phase: 'ready', tokens: [] }).controller} />);
+        // No target, no control: nothing to revoke means no Revoke all at all (not a disabled red row).
+        expect(none.findByTestId('settings-api-tokens-revoke-all')).toBeNull();
+
+        const some = await renderScreen(<ApiTokensSettingsScreen controller={createController({
+            ...base,
+            phase: 'ready',
+            tokens: [{
+                tokenId: '11111111-1111-4111-8111-111111111111',
+                label: 'CI',
+                displayPrefix: 'hap_v1_11111111',
+                createdAt: '2026-08-22T12:00:00.000Z',
+                lastUsedAt: null,
+                expiresAt: null,
+                hasEncryptionAccess: false,
+                hasUnattendedTeamAccess: false,
+                grant: API_TOKEN_FULL_GRANT_V1,
+                parentTokenId: null,
+                activeChildCount: 0,
+                embedConfig: null,
+            }],
+        }).controller} />);
+        // The page-closing button row, not a destructive row inside a sheet.
+        expect(some.findByTestId('settings-api-tokens-closing')).toBeTruthy();
+        expect(some.findByTestId('settings-api-tokens-revoke-all')).toBeTruthy();
+    });
+
     it('keeps the empty state visible and offers the same retry after refresh failure', async () => {
         const { ApiTokensSettingsScreen } = await import('./ApiTokensSettingsScreen');
         const { controller, refresh } = createController({
@@ -521,7 +644,7 @@ describe('ApiTokensSettingsScreen', () => {
             isRefreshing: false,
             listError: 'auth_unavailable',
             createDraft: { label: '', expiryPreset: '90d' },
-            canCreateEncrypted: false,
+            encryptionAvailability: 'unchecked',
             recoveryTokenId: null,
             createPending: false,
             createError: null,
@@ -529,7 +652,7 @@ describe('ApiTokensSettingsScreen', () => {
             operation: null,
             operationTokenId: null,
             operationError: null,
-            operationNotice: null,
+            operationNotice: null, accessEdit: null,
         });
 
         const screen = await renderScreen(<ApiTokensSettingsScreen controller={controller} />);
@@ -552,7 +675,7 @@ describe('ApiTokensSettingsScreen', () => {
             isRefreshing: true,
             listError: null,
             createDraft: { label: '', expiryPreset: '90d' },
-            canCreateEncrypted: false,
+            encryptionAvailability: 'unchecked',
             recoveryTokenId: null,
             createPending: false,
             createError: null,
@@ -560,7 +683,7 @@ describe('ApiTokensSettingsScreen', () => {
             operation: null,
             operationTokenId: null,
             operationError: null,
-            operationNotice: null,
+            operationNotice: null, accessEdit: null,
         });
 
         const screen = await renderScreen(<ApiTokensSettingsScreen controller={controller} />);
@@ -577,7 +700,7 @@ describe('ApiTokensSettingsScreen', () => {
             isRefreshing: false,
             listError: 'auth_unavailable',
             createDraft: { label: '', expiryPreset: '90d' },
-            canCreateEncrypted: false,
+            encryptionAvailability: 'unchecked',
             recoveryTokenId: null,
             createPending: false,
             createError: null,
@@ -585,7 +708,7 @@ describe('ApiTokensSettingsScreen', () => {
             operation: null,
             operationTokenId: null,
             operationError: null,
-            operationNotice: null,
+            operationNotice: null, accessEdit: null,
         });
 
         const screen = await renderScreen(<ApiTokensSettingsScreen controller={controller} />);
@@ -605,7 +728,7 @@ describe('ApiTokensSettingsScreen', () => {
             isRefreshing: false,
             listError: 'auth_unavailable',
             createDraft: { label: '', expiryPreset: '90d' },
-            canCreateEncrypted: false,
+            encryptionAvailability: 'unchecked',
             recoveryTokenId: null,
             createPending: false,
             createError: null,
@@ -613,7 +736,7 @@ describe('ApiTokensSettingsScreen', () => {
             operation: null,
             operationTokenId: null,
             operationError: 'auth_unavailable',
-            operationNotice: null,
+            operationNotice: null, accessEdit: null,
         });
 
         const screen = await renderScreen(<ApiTokensSettingsScreen controller={controller} />);
@@ -628,7 +751,7 @@ describe('ApiTokensSettingsScreen', () => {
         });
     });
 
-    it('uses static final-row geometry for loading skeletons instead of a fixed-height animated imitation', async () => {
+    it('reserves the token rows with the shared quiet placeholder rows while loading', async () => {
         const { ApiTokensSettingsScreen } = await import('./ApiTokensSettingsScreen');
         const { controller } = createController({
             phase: 'loading',
@@ -636,7 +759,7 @@ describe('ApiTokensSettingsScreen', () => {
             isRefreshing: false,
             listError: null,
             createDraft: { label: '', expiryPreset: '90d' },
-            canCreateEncrypted: false,
+            encryptionAvailability: 'unchecked',
             recoveryTokenId: null,
             createPending: false,
             createError: null,
@@ -644,32 +767,20 @@ describe('ApiTokensSettingsScreen', () => {
             operation: null,
             operationTokenId: null,
             operationError: null,
-            operationNotice: null,
+            operationNotice: null, accessEdit: null,
         });
 
         const screen = await renderScreen(<ApiTokensSettingsScreen controller={controller} />);
-        const skeleton = screen.findHostByTestId('settings-api-tokens-skeleton:0');
-        const finalMetricRow = screen.findHostByTestId('settings-api-tokens-skeleton-row:0');
-        const sharedMetricNode = finalMetricRow?.findAll((node) => (
-            typeof node.type === 'string'
-            && typeof flattenStyle(node.props.style).minHeight === 'number'
-        )).at(0);
-        const wrappingMetadataRow = finalMetricRow?.findAll((node) => (
-            flattenStyle(node.props.style).flexWrap === 'wrap'
-        )).at(0);
-
-        expect(flattenStyle(skeleton?.props.style).height).toBeUndefined();
-        expect(sharedMetricNode).toBeTruthy();
-        expect(flattenStyle(wrappingMetadataRow?.props.style)).toMatchObject({
-            flexDirection: 'row',
-            flexWrap: 'wrap',
-            minWidth: 0,
-        });
-        expect(wrappingMetadataRow?.children.length).toBeGreaterThan(1);
+        // The shared quiet placeholder rows (sheet hairline tone), not text glyphs in the text colour:
+        // the placeholder must never be the loudest thing on the page.
+        const placeholder = screen.findHostByTestId('settings-api-tokens-skeleton');
+        expect(placeholder?.props.accessibilityRole).toBe('progressbar');
+        expect(screen.findHostByTestId('settings-api-tokens-skeleton-skeleton:0')).toBeTruthy();
+        expect(screen.getTextContent()).not.toContain('█');
         expect(runtime.shimmerRepeats).not.toHaveBeenCalled();
     });
 
-    it('shows exact expiry and pauses its single relative-time/expiry clock while hidden', async () => {
+    it('marks an expiring token and moves it to expired only while the page is viewed', async () => {
         vi.useFakeTimers();
         const now = Date.parse('2026-08-22T12:00:00.000Z');
         vi.setSystemTime(now);
@@ -685,11 +796,15 @@ describe('ApiTokensSettingsScreen', () => {
                 expiresAt: new Date(now + 30_000).toISOString(),
                 hasEncryptionAccess: false,
                 hasUnattendedTeamAccess: false,
+                grant: API_TOKEN_FULL_GRANT_V1,
+                parentTokenId: null,
+                activeChildCount: 0,
+                embedConfig: null,
             }],
             isRefreshing: false,
             listError: null,
             createDraft: { label: '', expiryPreset: '90d' },
-            canCreateEncrypted: false,
+            encryptionAvailability: 'unchecked',
             recoveryTokenId: null,
             createPending: false,
             createError: null,
@@ -697,18 +812,13 @@ describe('ApiTokensSettingsScreen', () => {
             operation: null,
             operationTokenId: null,
             operationError: null,
-            operationNotice: null,
+            operationNotice: null, accessEdit: null,
         });
 
         const screen = await renderScreen(<ApiTokensSettingsScreen controller={controller} />);
-        const relativeTimeNow = () => screen.findAll((node) => node.props?.atMs === now - 30_000)[0]?.props.nowMs;
+        const statusLabel = () => screen.findHostByTestId('settings-api-tokens-status:11111111-1111-4111-8111-111111111111')?.props.accessibilityLabel;
 
-        expect(relativeTimeNow()).toBe(now);
-        expect(screen.getTextContent()).toContain(new Date(now + 30_000).toLocaleString(undefined, {
-            dateStyle: 'medium',
-            timeStyle: 'short',
-        }));
-        expect(screen.findByTestId('settings-api-tokens-status:11111111-1111-4111-8111-111111111111')).toBeNull();
+        expect(statusLabel()).toBe('settingsApiTokens.status.expiresInMinutes(count=1)');
 
         await act(async () => {
             setHostActivelyViewed(false);
@@ -717,15 +827,14 @@ describe('ApiTokensSettingsScreen', () => {
             vi.advanceTimersByTime(30_001);
         });
 
-        expect(relativeTimeNow()).toBe(now);
-        expect(screen.findByTestId('settings-api-tokens-status:11111111-1111-4111-8111-111111111111')).toBeNull();
+        // The page clock is paused while hidden, so nothing re-renders behind it.
+        expect(statusLabel()).toBe('settingsApiTokens.status.expiresInMinutes(count=1)');
 
         await act(async () => {
             setHostActivelyViewed(true);
         });
 
-        expect(relativeTimeNow()).toBe(now + 30_001);
-        expect(screen.findByTestId('settings-api-tokens-status:11111111-1111-4111-8111-111111111111')).toBeTruthy();
+        expect(statusLabel()).toBe('settingsApiTokens.status.expired');
     });
 
     it('keeps a revoked token row mounted briefly while the remaining list reflows', async () => {
@@ -739,6 +848,10 @@ describe('ApiTokensSettingsScreen', () => {
             expiresAt: null,
             hasEncryptionAccess: false,
             hasUnattendedTeamAccess: false,
+            grant: API_TOKEN_FULL_GRANT_V1,
+            parentTokenId: null,
+            activeChildCount: 0,
+            embedConfig: null,
         } as const;
         const tokenB = {
             tokenId: '22222222-2222-4222-8222-222222222222',
@@ -749,6 +862,10 @@ describe('ApiTokensSettingsScreen', () => {
             expiresAt: null,
             hasEncryptionAccess: true,
             hasUnattendedTeamAccess: false,
+            grant: API_TOKEN_FULL_GRANT_V1,
+            parentTokenId: null,
+            activeChildCount: 0,
+            embedConfig: null,
         } as const;
         const initialState: ApiTokenSettingsState = {
             phase: 'ready',
@@ -756,7 +873,7 @@ describe('ApiTokensSettingsScreen', () => {
             isRefreshing: false,
             listError: null,
             createDraft: { label: '', expiryPreset: '90d' },
-            canCreateEncrypted: false,
+            encryptionAvailability: 'unchecked',
             recoveryTokenId: null,
             createPending: false,
             createError: null,
@@ -764,7 +881,7 @@ describe('ApiTokensSettingsScreen', () => {
             operation: null,
             operationTokenId: null,
             operationError: null,
-            operationNotice: null,
+            operationNotice: null, accessEdit: null,
         };
         const observable = createObservableController(initialState);
         const screen = await renderScreen(<ApiTokensSettingsScreen controller={observable.controller} />);
@@ -773,7 +890,7 @@ describe('ApiTokensSettingsScreen', () => {
             observable.setState({
                 ...initialState,
                 tokens: [tokenB],
-                operationNotice: 'revoked',
+                operationNotice: 'revoked', accessEdit: null,
             });
         });
 
@@ -788,7 +905,7 @@ describe('ApiTokensSettingsScreen', () => {
         expect(screen.findByTestId(`settings-api-tokens-row:${tokenB.tokenId}`)).toBeTruthy();
     });
 
-    it('projects a pending revoke onto its row and announces operation feedback', async () => {
+    it('holds a token being revoked and the page actions, then announces the result', async () => {
         const { ApiTokensSettingsScreen } = await import('./ApiTokensSettingsScreen');
         const token = {
             tokenId: '11111111-1111-4111-8111-111111111111',
@@ -799,6 +916,10 @@ describe('ApiTokensSettingsScreen', () => {
             expiresAt: null,
             hasEncryptionAccess: false,
             hasUnattendedTeamAccess: false,
+            grant: API_TOKEN_FULL_GRANT_V1,
+            parentTokenId: null,
+            activeChildCount: 0,
+            embedConfig: null,
         } as const;
         const otherToken = {
             tokenId: '22222222-2222-4222-8222-222222222222',
@@ -809,6 +930,10 @@ describe('ApiTokensSettingsScreen', () => {
             expiresAt: null,
             hasEncryptionAccess: false,
             hasUnattendedTeamAccess: false,
+            grant: API_TOKEN_FULL_GRANT_V1,
+            parentTokenId: null,
+            activeChildCount: 0,
+            embedConfig: null,
         } as const;
         const initialState: ApiTokenSettingsState = {
             phase: 'ready',
@@ -816,7 +941,7 @@ describe('ApiTokensSettingsScreen', () => {
             isRefreshing: false,
             listError: 'auth_unavailable',
             createDraft: { label: '', expiryPreset: '90d' },
-            canCreateEncrypted: false,
+            encryptionAvailability: 'unchecked',
             recoveryTokenId: null,
             createPending: false,
             createError: null,
@@ -824,7 +949,7 @@ describe('ApiTokensSettingsScreen', () => {
             operation: null,
             operationTokenId: null,
             operationError: null,
-            operationNotice: null,
+            operationNotice: null, accessEdit: null,
         };
         const observable = createObservableController(initialState);
         const screen = await renderScreen(<ApiTokensSettingsScreen controller={observable.controller} />);
@@ -838,23 +963,19 @@ describe('ApiTokensSettingsScreen', () => {
         });
 
         expect(screen.findHostByTestId(`settings-api-tokens-row:${token.tokenId}`)?.props.accessibilityState)
-            .toMatchObject({ busy: true });
+            .toMatchObject({ disabled: true });
+        expect(screen.findHostByTestId(`settings-api-tokens-row:${otherToken.tokenId}`)?.props.accessibilityState)
+            .not.toMatchObject({ disabled: true });
         expect(screen.findHostByTestId('settings-api-tokens-create')?.props.disabled).toBe(true);
         const tokenList = screen.findAllByType(ScrollView).find((node) => node.props.refreshControl);
         expect(tokenList?.props.refreshControl?.props.enabled).toBe(false);
         expect(screen.findHostByTestId('settings-api-tokens-refresh-retry')?.props.disabled).toBe(true);
-        for (const rowToken of [token, otherToken]) {
-            const [rowActions] = screen.findAll((node) => (
-                node.props?.overflowTriggerTestID === `settings-api-tokens-overflow:${rowToken.tokenId}`
-            ));
-            expect(rowActions?.props.actions).toMatchObject([{ disabled: true }]);
-        }
 
         await act(async () => {
             observable.setState({
                 ...initialState,
                 tokens: [],
-                operationNotice: 'revoked',
+                operationNotice: 'revoked', accessEdit: null,
             });
         });
 
@@ -867,10 +988,10 @@ describe('ApiTokensSettingsScreen', () => {
         const initialState: ApiTokenSettingsState = {
             phase: 'ready', tokens: [], isRefreshing: false, listError: null,
             createDraft: { label: '', expiryPreset: '90d' },
-            canCreateEncrypted: false,
+            encryptionAvailability: 'unchecked',
             recoveryTokenId: null, createPending: false,
             createError: null, reveal: null, operation: null, operationTokenId: null,
-            operationError: null, operationNotice: 'revoked',
+            operationError: null, operationNotice: 'revoked', accessEdit: null,
         };
         const observable = createObservableController(initialState);
         await renderScreen(<ApiTokensSettingsScreen controller={observable.controller} />);
@@ -887,10 +1008,10 @@ describe('ApiTokensSettingsScreen', () => {
         const observable = createObservableController({
             phase: 'ready', tokens: [], isRefreshing: false, listError: null,
             createDraft: { label: '', expiryPreset: '90d' },
-            canCreateEncrypted: false,
+            encryptionAvailability: 'unchecked',
             recoveryTokenId: null, createPending: false,
             createError: null, reveal: null, operation: null, operationTokenId: null,
-            operationError: 'invalid_request', operationNotice: null,
+            operationError: 'invalid_request', operationNotice: null, accessEdit: null,
         });
         await renderScreen(<ApiTokensSettingsScreen controller={observable.controller} />);
 

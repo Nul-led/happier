@@ -13,6 +13,7 @@ const settingsState = {
     serverSelectionActiveTargetId: 'server-a' as string | null,
 };
 const storageState = settingsState as Record<string, unknown>;
+const activeServerSnapshot = { serverId: 'server-a', serverUrl: 'https://a.example.test', generation: 1 } as const;
 const useSettingMutableMock = ((key: string) => [
     storageState[key],
     (value: unknown) => {
@@ -56,10 +57,17 @@ vi.mock('@/auth/context/AuthContext', () => ({
 
 vi.mock('@/sync/runtime/orchestration/connectionManager', () => ({
     switchConnectionToActiveServer: vi.fn(async () => {}),
+    getAppliedActiveServerSnapshot: () => activeServerSnapshot,
+    isAppliedActiveServerRuntimeAvailable: () => true,
+    subscribeAppliedActiveServer: () => () => {},
+    subscribeAppliedActiveServerRuntimeAvailability: () => () => {},
+    subscribeApplyingActiveServer: () => () => {},
 }));
 
 vi.mock('@/sync/domains/server/serverProfiles', () => ({
-    getActiveServerSnapshot: () => ({ serverId: 'server-a', serverUrl: 'https://a.example.test', generation: 1 }),
+    loadHomeViewState: () => null,
+    subscribeHomeViewState: () => () => {},
+    getActiveServerSnapshot: () => activeServerSnapshot,
     // Intentionally not sorted by recency.
     listServerProfiles: () => ([
         { id: 'server-a', name: 'A', serverUrl: 'https://a.example.test', lastUsedAt: 1 },
@@ -67,8 +75,15 @@ vi.mock('@/sync/domains/server/serverProfiles', () => ({
     ]),
     getActiveServerId: () => 'server-a',
     getDeviceDefaultServerId: () => 'server-a',
+    getServerProfileById: (serverId: string) => ([
+        { id: 'server-a', name: 'A', serverUrl: 'https://a.example.test', lastUsedAt: 1 },
+        { id: 'server-b', name: 'B', serverUrl: 'https://b.example.test', lastUsedAt: 999 },
+    ].find((profile) => profile.id === serverId) ?? null),
+    resolveServerProfileScopeId: (profile: { id: string; serverIdentityId?: string | null }) => profile.serverIdentityId ?? profile.id,
     getResetToDefaultServerId: () => 'server-a',
     subscribeActiveServer: vi.fn(() => () => {}),
+    getServerProfilesGeneration: () => 1,
+    subscribeServerProfiles: vi.fn(() => () => {}),
     setActiveServerId: vi.fn(),
     upsertServerProfile: vi.fn(() => ({ id: 'server-a' })),
 }));

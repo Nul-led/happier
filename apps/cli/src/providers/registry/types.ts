@@ -20,10 +20,12 @@ import type {
 export type ProviderContributionRegistryView = Readonly<{
   providersByContributionKey: ReadonlyMap<string, ResolvedProviderContribution>;
   /**
-   * Host-private executable registry generation that authored this projection.
-   * Present for authoritative daemon leases; omitted only by static test seams.
+   * Aggregate executable-registry revision for projection invalidation only.
+   * It is not Provider executable currentness.
    */
   runtimeRegistryGeneration?: number;
+  /** Process-local activation occurrence for each Provider-owning plugin. */
+  providerActivationOccurrenceIdsByPluginId?: ReadonlyMap<string, string>;
 }>;
 
 export type ProviderEndpointDnsEvidence = ReadonlyMap<string, readonly string[]>;

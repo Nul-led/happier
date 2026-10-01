@@ -3,8 +3,8 @@ import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import {
-  PluginUiArtifactsManifestV1Schema,
-  type PluginUiArtifactsManifestV1,
+  PluginUiArtifactsManifestV2Schema,
+  type PluginUiArtifactsManifestV2,
 } from '@happier-dev/protocol/plugins/ui';
 
 export const GENERATED_PLUGIN_UI_ARTIFACTS_ROOT_RELATIVE_PATH = 'dist/happier-plugin-ui';
@@ -13,9 +13,9 @@ export const GENERATED_PLUGIN_UI_ARTIFACTS_MANIFEST_RELATIVE_PATH =
 
 function parseGeneratedPluginUiArtifactsManifest(
   raw: string,
-): PluginUiArtifactsManifestV1 | null {
+): PluginUiArtifactsManifestV2 | null {
   try {
-    const parsed = PluginUiArtifactsManifestV1Schema.safeParse(JSON.parse(raw) as unknown);
+    const parsed = PluginUiArtifactsManifestV2Schema.safeParse(JSON.parse(raw) as unknown);
     return parsed.success ? parsed.data : null;
   } catch {
     return null;
@@ -25,7 +25,7 @@ function parseGeneratedPluginUiArtifactsManifest(
 /** Reads the generated executable UI graph from one installed plugin generation. */
 export async function readGeneratedPluginUiArtifactsManifest(
   pluginRootPath: string,
-): Promise<PluginUiArtifactsManifestV1 | null> {
+): Promise<PluginUiArtifactsManifestV2 | null> {
   let raw: string;
   try {
     raw = await readFile(
@@ -42,7 +42,7 @@ export async function readGeneratedPluginUiArtifactsManifest(
 /** Reads the same generated graph for synchronously projected bundled packages. */
 export function readGeneratedPluginUiArtifactsManifestSync(
   pluginRootPath: string,
-): PluginUiArtifactsManifestV1 | null {
+): PluginUiArtifactsManifestV2 | null {
   let raw: string;
   try {
     raw = readFileSync(

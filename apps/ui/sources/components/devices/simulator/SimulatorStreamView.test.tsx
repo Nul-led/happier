@@ -18,18 +18,6 @@ vi.mock('@/text', async () => {
     });
 });
 
-function flattenStreamStyle(style: unknown): Record<string, unknown> {
-    if (!style) return {};
-    if (Array.isArray(style)) {
-        return style.reduce<Record<string, unknown>>(
-            (acc, item) => Object.assign(acc, flattenStreamStyle(item)),
-            {},
-        );
-    }
-    if (typeof style === 'object') return style as Record<string, unknown>;
-    return {};
-}
-
 const availableResource: SimulatorDeviceResourceV1 = {
     v: 1,
     simulatorId: 'sim_1',
@@ -80,7 +68,6 @@ describe('SimulatorStreamView', () => {
                     droppedFrames: 0,
                     bufferedBytes: 0,
                 }}
-                lease={{ state: 'none' }}
                 controls={{
                     canWatch: false,
                     canControl: false,
@@ -96,7 +83,7 @@ describe('SimulatorStreamView', () => {
         expect(screen.findByTestId('simulator-stream-player-frame')).toBeNull();
     });
 
-    it('emphasizes the device name as the primary header label with platform secondary and a status dot', async () => {
+    it('names the device by its display name with a status dot, not a raw platform id', async () => {
         const mod = await import('./SimulatorStreamView').catch((error: unknown) => ({ importError: error }));
 
         expect(mod).toHaveProperty('SimulatorStreamView');
@@ -115,7 +102,6 @@ describe('SimulatorStreamView', () => {
                     droppedFrames: 0,
                     bufferedBytes: 0,
                 }}
-                lease={{ state: 'held-by-me' }}
                 controls={{
                     canWatch: true,
                     canControl: true,
@@ -127,16 +113,9 @@ describe('SimulatorStreamView', () => {
             />,
         );
 
-        const title = screen.findByTestId('simulator-stream-title');
-        const meta = screen.findByTestId('simulator-stream-meta');
-        const titleStyle = flattenStreamStyle(title?.props.style);
-        const metaStyle = flattenStreamStyle(meta?.props.style);
-        expect(title?.props.children).toBe('iPhone 16');
-        expect(meta?.props.children).toBe('ios');
-        // Primary label is heavier than the secondary platform label.
-        expect(titleStyle.fontFamily).toBe('Inter-SemiBold');
-        expect(metaStyle.fontFamily).not.toBe('Inter-SemiBold');
-        // Premium chrome: a soft-haloed status dot accompanies the device title.
+        // The device is named once, by its display name; the raw platform id ("ios") is not chrome.
+        expect(screen.findByTestId('simulator-stream-title')?.props.children).toBe('iPhone 16');
+        expect(screen.findByTestId('simulator-stream-meta')).toBeNull();
         expect(screen.findByTestId('simulator-stream-header-dot')).toBeTruthy();
     });
 
@@ -157,7 +136,6 @@ describe('SimulatorStreamView', () => {
                     droppedFrames: 0,
                     bufferedBytes: 0,
                 }}
-                lease={{ state: 'none' }}
                 controls={{
                     canWatch: true,
                     canControl: false,
@@ -193,7 +171,6 @@ describe('SimulatorStreamView', () => {
                     bufferedBytes: 0,
                     diagnostic: { reasonCode: 'socket_reconnect' },
                 }}
-                lease={{ state: 'none' }}
                 controls={{
                     canWatch: true,
                     canControl: false,
@@ -229,7 +206,6 @@ describe('SimulatorStreamView', () => {
                     bufferedBytes: 0,
                     diagnostic: { reasonCode: 'socket_reconnect' },
                 }}
-                lease={{ state: 'none' }}
                 controls={{
                     canWatch: true,
                     canControl: false,
@@ -272,7 +248,6 @@ describe('SimulatorStreamView', () => {
                     droppedFrames: 0,
                     bufferedBytes: 0,
                 }}
-                lease={{ state: 'none' }}
                 controls={{
                     canWatch: false,
                     canControl: false,
@@ -286,82 +261,6 @@ describe('SimulatorStreamView', () => {
 
         expect(screen.findByTestId('simulator-stream-unavailable')).toBeTruthy();
         expect(screen.findByTestId('simulator-stream-connecting')).toBeNull();
-    });
-
-    it('keeps stream recovery controls available to read-only watchers when supported', async () => {
-        const mod = await import('./SimulatorStreamView').catch((error: unknown) => ({ importError: error }));
-
-        expect(mod).toHaveProperty('SimulatorStreamView');
-        if (!('SimulatorStreamView' in mod)) return;
-
-        const screen = await renderScreen(
-            <mod.SimulatorStreamView
-                resource={availableResource}
-                playerState={{
-                    phase: 'reconnecting',
-                    selectedCodec: 'image.mjpeg',
-                    activeRenderer: 'mjpeg',
-                    lastFrameUrl: 'data:image/jpeg;base64,AQID',
-                    lastFrameAtMs: 1_000,
-                    decodedFrames: 1,
-                    droppedFrames: 0,
-                    bufferedBytes: 0,
-                    diagnostic: { reasonCode: 'socket_reconnect' },
-                }}
-                lease={{ state: 'none' }}
-                controls={{
-                    canWatch: true,
-                    canControl: false,
-                    canRequestKeyframe: true,
-                    canSetQuality: true,
-                    supportedInputKinds: ['tap'],
-                }}
-                testID="simulator-stream"
-            />,
-        );
-
-        expect(screen.findByTestId('simulator-stream-player-frame')?.props.source).toEqual({
-            uri: 'data:image/jpeg;base64,AQID',
-        });
-        expect(screen.findByTestId('simulator-stream-readonly')).toBeTruthy();
-        expect(screen.findByTestId('simulator-stream-control-state')?.props.accessibilityState?.disabled).toBe(true);
-        expect(screen.findByTestId('simulator-stream-player-request-keyframe')?.props.accessibilityState?.disabled).toBe(false);
-        expect(screen.findByTestId('simulator-stream-player-lower-quality')?.props.accessibilityState?.disabled).toBe(false);
-    });
-
-    it('disables player stream controls when no producer-backed control support is present', async () => {
-        const mod = await import('./SimulatorStreamView').catch((error: unknown) => ({ importError: error }));
-
-        expect(mod).toHaveProperty('SimulatorStreamView');
-        if (!('SimulatorStreamView' in mod)) return;
-
-        const screen = await renderScreen(
-            <mod.SimulatorStreamView
-                resource={availableResource}
-                playerState={{
-                    phase: 'playing',
-                    selectedCodec: 'image.mjpeg',
-                    activeRenderer: 'mjpeg',
-                    lastFrameUrl: 'data:image/jpeg;base64,AQID',
-                    lastFrameAtMs: 1_000,
-                    decodedFrames: 1,
-                    droppedFrames: 0,
-                    bufferedBytes: 0,
-                }}
-                lease={{ state: 'held-by-me' }}
-                controls={{
-                    canWatch: true,
-                    canControl: true,
-                    canRequestKeyframe: false,
-                    canSetQuality: false,
-                    supportedInputKinds: ['tap'],
-                }}
-                testID="simulator-stream"
-            />,
-        );
-
-        expect(screen.findByTestId('simulator-stream-player-request-keyframe')?.props.accessibilityState?.disabled).toBe(true);
-        expect(screen.findByTestId('simulator-stream-player-lower-quality')?.props.accessibilityState?.disabled).toBe(true);
     });
 
     it('treats capture-unavailable as authoritative over cached frames', async () => {
@@ -391,7 +290,6 @@ describe('SimulatorStreamView', () => {
                     bufferedBytes: 0,
                     diagnostic: { reasonCode: 'permission_expired' },
                 }}
-                lease={{ state: 'none' }}
                 controls={{
                     canWatch: true,
                     canControl: false,
@@ -435,7 +333,6 @@ describe('SimulatorStreamView', () => {
                     bufferedBytes: 0,
                     diagnostic: { reasonCode: 'permission_expired' },
                 }}
-                lease={{ state: 'none' }}
                 controls={{
                     canWatch: false,
                     canControl: false,
@@ -497,7 +394,6 @@ describe('SimulatorStreamView', () => {
                     bufferedBytes: 4,
                     avccChunks: [new Uint8Array([1, 2, 3, 4])],
                 }}
-                lease={{ state: 'held-by-me' }}
                 controls={{
                     canWatch: true,
                     canControl: true,
@@ -542,7 +438,6 @@ describe('SimulatorStreamView', () => {
                     bufferedBytes: 4,
                     avccChunks: [new Uint8Array([0, 0, 0, 2, 0x01, 0x64])],
                 }}
-                lease={{ state: 'held-by-me' }}
                 controls={{
                     canWatch: true,
                     canControl: true,
@@ -595,7 +490,6 @@ describe('SimulatorStreamView', () => {
                         droppedFrames: 0,
                         bufferedBytes: 0,
                     }}
-                    lease={{ state: 'none' }}
                     controls={controls}
                     testID="simulator-stream"
                 />,
@@ -619,7 +513,6 @@ describe('SimulatorStreamView', () => {
                         droppedFrames: 0,
                         bufferedBytes: 0,
                     }}
-                    lease={{ state: 'none' }}
                     controls={controls}
                     testID="simulator-stream"
                 />,

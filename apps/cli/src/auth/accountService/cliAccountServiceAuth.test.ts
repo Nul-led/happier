@@ -5,6 +5,32 @@ import {
   parseCliAccountServiceRecoveryKey,
 } from './cliAccountServiceAuth';
 
+const openBrowserMock = vi.hoisted(() => vi.fn(async () => false));
+
+vi.mock('@/ui/openBrowser', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/ui/openBrowser')>()),
+  openBrowser: openBrowserMock,
+}));
+
+vi.mock('@/cloud/loopbackOauthPkce', () => ({
+  captureLoopbackOauthRedirect: vi.fn(async (opts: Readonly<{
+    resolveAuthorizationUrl(callbackOrigin: string): Promise<string>;
+    openAuthorizationUrl(url: string): Promise<void>;
+  }>) => {
+    // The real owner starts its listener, resolves the authorization URL and
+    // hands it to the browser before it waits for the callback.
+    await opts.openAuthorizationUrl(await opts.resolveAuthorizationUrl('http://127.0.0.1:34567'));
+    return {
+      pending: 'pending_headless',
+      purpose: 'account_directory',
+      credentialTarget: 'account_directory',
+      endpointUrl: 'https://accounts.example.test',
+      endpointServerIdentityId: 'srv_accounts',
+      canonicalServerUrl: 'https://accounts.example.test',
+    };
+  }),
+}));
+
 const selection = {
   endpoint: 'https://accounts.example.test',
   serverIdentityId: 'srv_accounts',
@@ -219,5 +245,31 @@ describe('CLI Account Service authentication', () => {
 
     expect(result).toEqual({ kind: 'cancelled' });
     expect(request).not.toHaveBeenCalled();
+  });
+
+  it('prints the authorization link and keeps waiting when no browser can be opened', async () => {
+    openBrowserMock.mockResolvedValue(false);
+    const request = vi.fn(async (path: string) => {
+      if (path.includes('/params?')) return new Response(JSON.stringify({
+        url: 'https://github.example.test/authorize?state=abc',
+        purpose: 'account_directory',
+        credentialTarget: 'account_directory',
+        endpointUrl: selection.endpoint,
+        endpointServerIdentityId: selection.serverIdentityId,
+        canonicalServerUrl: selection.canonicalServerUrl,
+        expiresAt: new Date(Date.now() + 60_000).toISOString(),
+      }), { status: 200 });
+      return new Response(JSON.stringify({ success: true, token: 'headless-directory-token' }), { status: 200 });
+    });
+    const written: string[] = [];
+
+    const result = await authenticateCliAccountService({
+      service: selection,
+      method: { kind: 'provider', providerId: 'github', action: 'login', mode: 'keyless' },
+    }, { request, randomBytes: () => new Uint8Array(32).fill(3), write: (line) => { written.push(line); } });
+
+    expect(result).toEqual({ kind: 'authenticated', credential: { token: 'headless-directory-token' } });
+    expect(written).toContain('https://github.example.test/authorize?state=abc');
+    expect(written.some((line) => line.includes('Copy this link'))).toBe(true);
   });
 });

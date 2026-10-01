@@ -73,38 +73,46 @@ describe('ExternalUrlTarget (web)', () => {
         expect(screen.findByTestId('external-url')).toBeTruthy();
     });
 
-    it('renders an always-present open-in-browser escape over the web iframe (verdict-independent) and opens the system browser when pressed', async () => {
+    it('keeps a slow page loading with a quiet hint and an escape, and drops the hint when it loads (E-OE F07)', async () => {
+        vi.useFakeTimers();
         const screen = await renderScreen(
             <ExternalUrlTarget testID="external-url" view={createExternalUrlView()} />,
         );
+        // Nothing covers the page while it loads normally.
+        expect(screen.findByTestId('external-url-slow-hint')).toBeNull();
 
-        // The iframe renders (pending/framable verdict) AND an always-present escape is shown:
-        // cross-origin framability is not reliably detectable (an X-Frame-Options frame can fire
-        // onLoad against a blank document → a false "framable" verdict and a silent blank frame),
-        // so this escape is NOT gated on the verdict — it is the guaranteed exit on every web frame.
-        expect(screen.findByTestId('external-url')).toBeTruthy();
-        const escape = screen.findByTestId('external-url-external-escape');
+        await act(async () => {
+            vi.advanceTimersByTime(5000);
+        });
+
+        // Slow is not "refuses to be embedded": the frame stays, a hint names the escape.
+        expect(screen.findByType('iframe')).toBeTruthy();
+        expect(screen.findByTestId('external-url-non-framable')).toBeNull();
+        const escape = screen.findByTestId('external-url-slow-hint-action');
         expect(escape).toBeTruthy();
-
         await act(async () => {
             (escape?.props as { onPress?: () => void }).onPress?.();
         });
         await vi.waitFor(() => {
             expect(openExternalUrlMock).toHaveBeenCalledWith('https://example.com/');
         });
+
+        await act(async () => {
+            (screen.findByType('iframe').props as { onLoad?: () => void }).onLoad?.();
+        });
+        expect(screen.findByTestId('external-url-slow-hint')).toBeNull();
     });
 
-    it('shows the non-framable fallback and opens the system browser when the load times out', async () => {
-        vi.useFakeTimers();
+    it('shows the non-framable fallback and opens the system browser when the frame reports an error', async () => {
         const screen = await renderScreen(
             <ExternalUrlTarget testID="external-url" view={createExternalUrlView()} />,
         );
 
         await act(async () => {
-            vi.advanceTimersByTime(5000);
+            (screen.findByType('iframe').props as { onError?: () => void }).onError?.();
         });
 
-        const action = screen.findByTestId('external-url-non-framable-open');
+        const action = screen.findByTestId('external-url-non-framable-action');
         expect(action).toBeTruthy();
 
         await act(async () => {

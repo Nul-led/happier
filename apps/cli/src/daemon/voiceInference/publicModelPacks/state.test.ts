@@ -92,7 +92,7 @@ describe('daemon public voice model-pack durable state', () => {
       ...metadata,
       artifactBinding: {
         kind: 'materialization',
-        immutableGenerationId: 'generation-local-1',
+        sourceCustody: { kind: 'development', registeredRootId: 'generation-local-1' },
       },
     };
     const localArtifactBinding = localMetadata.artifactBinding;
@@ -134,7 +134,7 @@ describe('daemon public voice model-pack durable state', () => {
       licenseTextDigest: localLicenseBinding.licenseTextDigest,
       artifactBinding: {
         kind: 'sourceIntegrity',
-        integrity: localArtifactBinding.immutableGenerationId,
+        integrity: localArtifactBinding.sourceCustody.registeredRootId,
       },
     })).resolves.toBeUndefined();
   });
@@ -351,6 +351,33 @@ describe('daemon public voice model-pack durable state', () => {
     }]);
     await expect(store.removeInstalled(metadata.identity)).resolves.toBe(true);
     await expect(store.read()).resolves.toMatchObject({ installed: [], unboundInstalled: [] });
+  });
+
+  it('forward-reads obsolete generation-bound development metadata as cleanup-only after restart', async () => {
+    const obsoleteGenerationBoundMetadata = {
+      ...metadata,
+      artifactBinding: {
+        kind: 'materialization',
+        immutableGenerationId: 'generation-local-1',
+      },
+    };
+    await writeFile(stateFilePath, JSON.stringify({
+      schemaVersion: 1,
+      accountId: 'account-a',
+      machineId: 'machine-a',
+      installed: [obsoleteGenerationBoundMetadata],
+      licenseAcceptances: [],
+    }), 'utf8');
+    const restarted = createDaemonPublicVoiceModelPackStateStore({
+      stateFilePath,
+      accountId: 'account-a',
+      machineId: 'machine-a',
+    });
+
+    await expect(restarted.read()).resolves.toMatchObject({
+      installed: [],
+      unboundInstalled: [{ identity: metadata.identity, directoryKey: metadata.directoryKey }],
+    });
   });
 
   it('rejects a persisted binding shape with an obsolete digest alias instead of silently accepting it', async () => {

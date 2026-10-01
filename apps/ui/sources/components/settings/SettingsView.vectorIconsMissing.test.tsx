@@ -53,7 +53,8 @@ installSettingsViewCommonModuleMocks({
     },
 });
 
-vi.mock('@/utils/platform/desktopHost', () => ({
+vi.mock('@/utils/platform/desktopHost', async (importOriginal) => ({
+    ...await importOriginal<typeof import('@/utils/platform/desktopHost')>(),
     isDesktopHost: () => tauriDesktopState.value,
 }));
 
@@ -107,12 +108,6 @@ vi.mock('expo-constants', () => ({
     default: { expoConfig: { version: '0.0.0-test' } },
 }));
 
-vi.mock('@/constants/Typography', () => ({
-    Typography: {
-        default: () => ({}),
-        mono: () => ({}),
-    },
-}));
 
 vi.mock('@/components/ui/lists/ItemList', () => ({
     ItemList: ({ children }: { children?: React.ReactNode }) => React.createElement('ItemList', null, children),
@@ -147,15 +142,6 @@ vi.mock('@/components/ui/text/Text', () => ({
     TextInput: (props: Record<string, unknown>) => React.createElement('TextInput', props),
 }));
 
-vi.mock('@/agents/catalog/catalog', () => ({
-    AGENT_IDS: ['codex', 'claude', 'gemini'],
-    DEFAULT_AGENT_ID: 'agent_default',
-    getAgentCore: () => ({ uiConnectedService: { serviceId: 'anthropic', labelKey: 'agentInput.agent.claude', connectRoute: null } }),
-    getAgentIconSource: () => null,
-    getAgentIconTintColor: () => null,
-    resolveAgentIdFromConnectedServiceId: () => null,
-}));
-
 describe('SettingsView (vector icons missing)', () => {
     beforeEach(() => {
         tauriDesktopState.value = true;
@@ -170,6 +156,7 @@ describe('SettingsView (vector icons missing)', () => {
         await expect(renderPromise).resolves.toBeTruthy();
         const screen = await renderPromise;
 
-        expect(screen.findRow('settings-desktop-entry')).toBeTruthy();
+        // The System section arrives in a deferred stage after the first paint.
+        await vi.waitFor(() => expect(screen.findRow('settings-desktop-entry')).toBeTruthy());
     });
 });

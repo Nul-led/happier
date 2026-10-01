@@ -84,6 +84,7 @@ type RuntimeCredentialResult = Awaited<ReturnType<typeof resolveRuntimeProviderC
 type RuntimeCredentialLease = Extract<RuntimeCredentialResult, { ok: true }>['lease'];
 
 export type ProviderConnectionCpxBridgeOpenInput = Readonly<{
+  retirementGroup?: TeamCredentialBrokerSourceOpenInput['retirementGroup'];
   application: ProviderConnectionOpenInput['application'];
   operation: ProviderConnectionOpenInput['operation'];
   endpoint: ProviderConnectionBrokerSourceSnapshot['endpoint'];
@@ -636,17 +637,13 @@ export function createProviderConnectionBrokerSourceOpen(input: Readonly<{
       signal: AbortSignal = request.signal,
     ): Promise<boolean> => {
       if (signal.aborted) return false;
-      try {
-        const resource = await input.readResource(request.resourceId, signal);
-        // Enabled, placement and source identity; never the policy revision,
-        // which the Home rechecks per request (`04-private-iroh-broker-transport.md:272`).
-        return resource !== null
-          && resource.enabled
-          && teamCredentialBrokerPlacementAcceptsMachine(resource.brokerPlacement, request.brokerMachineId)
-          && sameSource(resource.source, request.source);
-      } catch {
-        return false;
-      }
+      const resource = await input.readResource(request.resourceId, signal);
+      // Enabled, placement and source identity; never the policy revision,
+      // which the Home rechecks per request (`04-private-iroh-broker-transport.md:272`).
+      return resource !== null
+        && resource.enabled
+        && teamCredentialBrokerPlacementAcceptsMachine(resource.brokerPlacement, request.brokerMachineId)
+        && sameSource(resource.source, request.source);
     };
     if (!await readsResourceCurrent()) return null;
 
@@ -772,7 +769,7 @@ export function createProviderConnectionBrokerSourceOpen(input: Readonly<{
             : {}),
           getAccountSettingsSnapshot: input.getAccountSettingsSnapshot,
         });
-      }).catch(() => false);
+      });
     };
     const acquireRequestCredential = async (): Promise<RuntimeCredentialLease | null> => {
       if (!await isCurrent()) return null;
@@ -800,6 +797,7 @@ export function createProviderConnectionBrokerSourceOpen(input: Readonly<{
       }
     };
     const projection = await input.openCpxProviderConnection({
+      ...(request.retirementGroup ? { retirementGroup: request.retirementGroup } : {}),
       application: request.application,
       operation: request.operation,
       endpoint: expected.endpoint,
@@ -813,9 +811,9 @@ export function createProviderConnectionBrokerSourceOpen(input: Readonly<{
         : {}),
       acquireRequestCredential,
     }).catch(() => null);
-    if (!projection || !await isCurrent() || !projection.isCurrent()) {
+    if (!projection || request.signal.aborted || !await isCurrent() || !projection.isCurrent()) {
       if (projection) {
-        await projection.retire().catch(() => undefined);
+        if (!request.signal.aborted) await projection.retire().catch(() => undefined);
         await Promise.resolve(projection.cleanup()).catch(() => undefined);
       }
       return null;

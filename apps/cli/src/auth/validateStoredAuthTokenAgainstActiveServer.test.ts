@@ -132,6 +132,24 @@ describe('validateStoredAuthTokenAgainstActiveServer', () => {
     );
   });
 
+  it('returns a readable account label from the same profile read (username, else display name, never email)', async () => {
+    const { validateStoredAuthTokenAgainstServer } = await import('./validateStoredAuthTokenAgainstActiveServer');
+    const respond = (body: unknown) => vi.fn(async () => new Response(JSON.stringify(body), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    })) as typeof fetch;
+
+    await expect(validateStoredAuthTokenAgainstServer({
+      token: 't', baseUrl: 'https://h.example.test', fetchImpl: respond({ id: 'a1', username: 'alice', firstName: 'Alice', lastName: 'Liddell' }),
+    })).resolves.toMatchObject({ state: 'valid', accountLabel: 'alice' });
+    await expect(validateStoredAuthTokenAgainstServer({
+      token: 't', baseUrl: 'https://h.example.test', fetchImpl: respond({ id: 'a1', username: null, firstName: ' Alice ', lastName: 'Liddell' }),
+    })).resolves.toMatchObject({ state: 'valid', accountLabel: 'Alice Liddell' });
+    await expect(validateStoredAuthTokenAgainstServer({
+      token: 't', baseUrl: 'https://h.example.test', fetchImpl: respond({ id: 'a1', email: 'alice@example.test' }),
+    })).resolves.toMatchObject({ state: 'valid', accountLabel: null });
+  });
+
   it('validates an active descriptor Home through its authenticated carrier and closes it once', async () => {
     const descriptor = {
       v: 1 as const,

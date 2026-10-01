@@ -1,7 +1,7 @@
 import * as React from 'react';
 import { act, ReactTestRenderer } from 'react-test-renderer';
 import { describe, expect, it, vi } from 'vitest';
-import { createDeferred, flushHookEffects, pressTestInstanceAsync, renderScreen } from '@/dev/testkit';
+import { flushHookEffects, pressTestInstanceAsync, renderScreen } from '@/dev/testkit';
 import {
     installSettingsViewCommonModuleMocks,
     settingsViewScanProcessAuthUrlSpy,
@@ -122,7 +122,8 @@ vi.mock('@/components/ui/lists/ItemGroup', () => ({
 }));
 
 vi.mock('@/components/ui/lists/Item', () => ({
-    Item: (props: any) => React.createElement('Item', props),
+    // The row's actions (its right element) render inside it, as the real row does.
+    Item: (props: any) => React.createElement('Item', props, props.rightElement ?? null),
 }));
 
 vi.mock('@/hooks/session/useConnectTerminal', () => ({
@@ -182,15 +183,6 @@ vi.mock('@/components/sessions/new/components/MachineCliGlyphs', () => ({
     MachineCliGlyphs: 'MachineCliGlyphs',
 }));
 
-vi.mock('@/agents/catalog/catalog', () => ({
-    AGENT_IDS: ['codex', 'claude', 'gemini'],
-    DEFAULT_AGENT_ID: 'agent_default',
-    getAgentCore: () => ({ uiConnectedService: { serviceId: 'anthropic', labelKey: 'agentInput.agent.claude', connectRoute: null } }),
-    getAgentIconSource: () => null,
-    getAgentIconTintColor: () => null,
-    resolveAgentIdFromConnectedServiceId: () => null,
-}));
-
 vi.mock('@/components/settings/supportUsBehavior', () => ({
     resolveSupportUsAction: () => 'github',
 }));
@@ -216,7 +208,8 @@ vi.mock('@/hooks/server/useFeatureDecision', () => ({
     useFeatureDecision: () => null,
 }));
 
-vi.mock('@/sync/domains/server/serverProfiles', () => ({
+vi.mock('@/sync/domains/server/serverProfiles', async (importOriginal) => ({
+    ...await importOriginal<typeof import('@/sync/domains/server/serverProfiles')>(),
     getActiveServerSnapshot: () => ({ serverId: 'server-1', serverUrl: 'https://local.example.test', generation: 0 }),
     loadHomeViewState: () => null,
     listServerProfiles: () => [],
@@ -225,6 +218,11 @@ vi.mock('@/sync/domains/server/serverProfiles', () => ({
         return () => {};
     },
 }));
+
+/** The connect actions are setup tiles: the pressable that carries the tile's test id. */
+function findPressableByTestId(tree: ReactTestRenderer, testID: string) {
+    return tree.root.findAll((node: any) => node?.props?.testID === testID && typeof node.props.onPress === 'function')[0];
+}
 
 function findItemByTitle(tree: ReactTestRenderer, title: string) {
     return tree.findAllByType('Item' as any).find((item: any) => item?.props?.title === title);
@@ -241,12 +239,6 @@ async function flushDeferredSettingsDelay(delayMs = 0): Promise<void> {
     await flushHookEffects({ cycles: 1 });
 }
 
-async function flushAllDeferredSettingsSections(): Promise<void> {
-    await flushDeferredSettingsDelay();
-    await flushDeferredSettingsDelay(20);
-    await flushDeferredSettingsDelay(20);
-    await flushDeferredSettingsDelay(20);
-}
 
 describe('SettingsView (native connect terminal)', () => {
     it('shows terminal connect actions on native platforms', async () => {
@@ -256,9 +248,8 @@ describe('SettingsView (native connect terminal)', () => {
         let tree!: ReactTestRenderer;
         tree = (await renderScreen(<SettingsView />)).tree;
 
-        const items = tree.findAllByType('Item' as any);
-        const scanItem = items.find((item: any) => item?.props?.testID === 'settings-connect-terminal-scan');
-        const manualItem = items.find((item: any) => item?.props?.testID === 'settings-connect-terminal-enter-url');
+        const scanItem = findPressableByTestId(tree, 'settings-connect-terminal-scan');
+        const manualItem = findPressableByTestId(tree, 'settings-connect-terminal-enter-url');
 
         expect(scanItem).toBeTruthy();
         expect(manualItem).toBeTruthy();
@@ -280,8 +271,7 @@ describe('SettingsView (native connect terminal)', () => {
         const { SettingsView } = await import('./SettingsView');
         const tree = (await renderScreen(<SettingsView />)).tree;
 
-        const items = tree.findAllByType('Item' as any);
-        const manualItem = items.find((item: any) => item?.props?.testID === 'settings-connect-terminal-enter-url');
+        const manualItem = findPressableByTestId(tree, 'settings-connect-terminal-enter-url');
         expect(manualItem).toBeTruthy();
 
         await act(async () => {
@@ -358,44 +348,6 @@ describe('SettingsView (native connect terminal)', () => {
             expect(findItemByTitle(screen.tree, 'settings.github')).toBeTruthy();
         } finally {
             vi.useRealTimers();
-        }
-    });
-
-    it('keeps unaffected settings row props stable when rate-us availability updates', async () => {
-        const rateUsAvailability = createDeferred<boolean>();
-        requestReviewMockState.canRequestReview.mockReset();
-        requestReviewMockState.canRequestReview.mockReturnValue(rateUsAvailability.promise);
-
-        vi.resetModules();
-        const { SettingsView } = await import('./SettingsView');
-
-        const screen = await renderScreen(<SettingsView />, { flushOptions: { cycles: 0 } });
-        await flushAllDeferredSettingsSections();
-
-        const stableRowTitles = [
-            'settings.account',
-            'settings.appearance',
-            'settingsAgents.title',
-            'settings.sessions',
-            'settings.servers',
-        ];
-        const iconsBefore = new Map<string, unknown>();
-        for (const title of stableRowTitles) {
-            const item = findItemByTitle(screen.tree, title);
-            expect(item).toBeTruthy();
-            iconsBefore.set(title, item!.props.icon);
-        }
-
-        await act(async () => {
-            rateUsAvailability.resolve(true);
-        });
-        await flushHookEffects();
-
-        expect(findItemByTitle(screen.tree, 'settings.rateUs')).toBeTruthy();
-        for (const title of stableRowTitles) {
-            const item = findItemByTitle(screen.tree, title);
-            expect(item).toBeTruthy();
-            expect(item!.props.icon).toBe(iconsBefore.get(title));
         }
     });
 });

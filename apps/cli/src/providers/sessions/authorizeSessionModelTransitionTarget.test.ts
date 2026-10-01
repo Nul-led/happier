@@ -23,7 +23,7 @@ type ExternalRuntimeBindingBasis = Extract<
 >;
 
 const native = (modelId: string): ProviderBoundModelRef => ({
-  agentTargetKey: 'backend:codex',
+  agentTargetKey: 'agent:happier.agent.codex/codex',
   providerConnectionId: null,
   modelId,
 });
@@ -32,7 +32,7 @@ const provider = (
   connectionId: string,
   modelId: string,
 ): ProviderBoundModelRef & Readonly<{ providerConnectionId: string }> => ({
-  agentTargetKey: 'backend:codex',
+  agentTargetKey: 'agent:happier.agent.codex/codex',
   providerConnectionId: ProviderConnectionIdSchema.parse(connectionId),
   modelId,
 });
@@ -138,6 +138,20 @@ function active(
 }
 
 describe('createSessionModelTransitionAuthorizer routing', () => {
+  it('refuses a caller-disallowed native model and does not constrain another caller', async () => {
+    const modelA = native('A');
+    const modelB = native('B');
+    const authorize = createSessionModelTransitionAuthorizer({
+      sessionId: 'session-a', machineId: 'machine-a', agentId: 'codex',
+      agentTargetKey: modelA.agentTargetKey, nativeModelApplyPolicy: 'live',
+      readActiveTarget: () => active(modelA),
+    });
+    const constraints = { models: [modelA], permissionModes: null };
+    await expect(authorize(modelB, constraints)).rejects.toThrow('model_not_granted');
+    await expect(authorize(modelA, constraints)).resolves.toMatchObject({ selection: modelA });
+    await expect(authorize(modelB)).resolves.toMatchObject({ selection: modelB });
+  });
+
   it('retains the active Provider materialization when restart-only reauthorization proves the exact active selection and runtime basis', async () => {
     const selection = provider('pc_restart_only', 'model-active');
     const basis = externalRuntimeBindingBasis(
@@ -565,7 +579,7 @@ describe('createSessionModelTransitionAuthorizer routing', () => {
       sessionId: 'session-restarted',
       machineId: 'machine-a',
       agentId: 'codex',
-      agentTargetKey: 'backend:codex',
+      agentTargetKey: 'agent:happier.agent.codex/codex',
       nativeModelApplyPolicy: 'live',
       readActiveTarget: () => activeTarget,
       authorizeProviderTarget,
@@ -622,7 +636,7 @@ describe('createSessionModelTransitionAuthorizer routing', () => {
       sessionId: 'session-1',
       machineId: 'machine-a',
       agentId: 'codex',
-      agentTargetKey: 'backend:codex',
+      agentTargetKey: 'agent:happier.agent.codex/codex',
       nativeModelApplyPolicy: 'live',
       readActiveTarget: () => activeTarget,
     });
@@ -641,12 +655,12 @@ describe('createSessionModelTransitionAuthorizer routing', () => {
       sessionId: 'session-1',
       machineId: 'machine-a',
       agentId: 'gemini',
-      agentTargetKey: 'backend:gemini',
+      agentTargetKey: 'agent:happier.agent.gemini/gemini',
       nativeModelApplyPolicy: 'restart_session',
       readActiveTarget: () => activeTarget,
     });
     const selection = {
-      agentTargetKey: 'backend:gemini',
+      agentTargetKey: 'agent:happier.agent.gemini/gemini',
       providerConnectionId: null,
       modelId: 'native-next',
     } as const;
@@ -711,7 +725,7 @@ describe('createSessionModelTransitionAuthorizer routing', () => {
         },
         purposeBindings: purposes,
       },
-      agentTargetKey: 'backend:codex',
+      agentTargetKey: 'agent:happier.agent.codex/codex',
       connectionId: selection.providerConnectionId!,
       contributionKey: 'provider.test',
       endpoint: {

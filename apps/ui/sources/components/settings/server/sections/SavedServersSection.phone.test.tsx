@@ -20,7 +20,6 @@ vi.mock('react-native-unistyles', async () => {
     const { createUnistylesMock } = await import('@/dev/testkit/mocks/unistyles');
     return createUnistylesMock({ theme: { colors: { text: { secondary: '#666' } } } });
 });
-vi.mock('@/hooks/server/useServerRetentionPolicies', () => ({ useServerRetentionPolicies: () => ({}) }));
 vi.mock('@/components/ui/lists/ItemGroup', () => ({
     ItemGroup: ({ children }: { children?: React.ReactNode }) => React.createElement(React.Fragment, null, children),
 }));
@@ -37,7 +36,8 @@ async function renderHomeRow() {
             { id: 'server-b', name: 'Home B', serverUrl: 'https://b.example.test', createdAt: 0, updatedAt: 0, lastUsedAt: 0 },
         ],
         activeServerId: 'server-a',
-        deviceDefaultServerId: 'server-a',
+        // The default is another Home than the one in use, so its row states it.
+        deviceDefaultServerId: 'server-b',
         authStatusByServerId: { 'server-a': 'signedIn', 'server-b': 'signedIn' },
         onSwitch: vi.fn(),
         onRename: vi.fn(),
@@ -50,9 +50,9 @@ describe('SavedServersSection on a phone', () => {
         viewport.width = 390;
         const screen = await renderHomeRow();
 
-        const row = screen.findByTestId('saved-server-row-server-a')!;
+        const row = screen.findByTestId('saved-server-row-server-b')!;
         // The connection status first, then the Home's facts, on one line under the name.
-        expect(row.props.subtitle).toMatch(/^\S+ · server\.default$/);
+        expect(row.props.subtitle).toMatch(/^\S+ · homesHub\.opensFirst$/);
         expect(row.props.detail).toBeUndefined();
         // Every action, the switch included, is in the overflow menu on a phone.
         expect(screen.root.findAll((node) => node.props?.testID === 'saved-server-switch-server-b')).toHaveLength(0);

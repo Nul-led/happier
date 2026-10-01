@@ -14,7 +14,7 @@ import {
 } from "@/persistence";
 import { generateWebAuthUrl } from "@/api/webAuth";
 import { sanitizeServerIdForFilesystem } from "@/server/serverId";
-import { openBrowser } from '@/ui/openBrowser';
+import { openBrowser, BROWSER_NOT_OPENED_NOTE, COPY_LINK_INTO_BROWSER_PROMPT } from '@/ui/openBrowser';
 import { AuthSelector, AuthMethod } from "./ink/AuthSelector";
 import { render } from 'ink';
 import React from 'react';
@@ -26,7 +26,7 @@ import { createStepPrinter } from '@happier-dev/cli-common/output';
 import { tailscaleServeHttpsUrlForInternalServerUrl } from '@/integrations/tailscale/tailscaleServe';
 import { isLoopbackHttpServerUrl, isLoopbackServerHost } from '@/server/serverUrlClassification';
 import { buildServerUrlReachabilityHintLines } from '@/server/reachability/serverUrlReachabilityHint';
-import { decodeJwtPayload } from '@/cloud/decodeJwtPayload';
+import { readAccountIdFromToken } from '@/cloud/decodeJwtPayload';
 import {
     createTerminalPairingAuthentication,
     openTerminalProvisioningResponse,
@@ -45,7 +45,9 @@ import { initialMachineMetadata } from '@/daemon/machine/metadata';
 import {
     claimTerminalAuthRequest,
     createTerminalAuthRequest,
+    HomeFeaturesUnreadableError,
     readTerminalAuthRequestStatus,
+    resolveAuthenticatedExactHomeConnectionDescriptorObservation,
     verifyTerminalAuthEnrollmentRuntime,
     type TerminalAuthEnrollmentRuntime,
 } from '@/auth/terminalAuthEnrollmentClient';
@@ -277,23 +279,16 @@ export async function doAuth(options: Readonly<{
             runtime: acquiredRuntime.runtime,
             snapshot: featuresSnapshot,
         });
-    } catch {
+    } catch (error) {
         console.log(
-            `Unable to verify the selected Home identity at ${configuration.apiServerUrl}; `
-            + 'the authentication request was not created.',
+            error instanceof HomeFeaturesUnreadableError
+                ? `${error.message} The authentication request was not created.`
+                : `Unable to verify the selected Home identity at ${configuration.apiServerUrl}; `
+                    + 'the authentication request was not created.',
         );
         return null;
     }
-    const serverIdentityId = featuresSnapshot.status === 'ready'
-        ? featuresSnapshot.features.capabilities.serverIdentity.serverIdentityId?.trim() ?? ''
-        : '';
-    if (!serverIdentityId) {
-        console.log(
-            `Unable to verify the selected Home identity at ${configuration.apiServerUrl}; `
-            + 'the authentication request was not created.',
-        );
-        return null;
-    }
+    const serverIdentityId = verifiedRuntime.homeServerIdentityId;
 
     // Generating ephemeral key
     const secret = new Uint8Array(randomBytes(32));
@@ -333,7 +328,9 @@ export async function doAuth(options: Readonly<{
     }
 
     // Handle authentication based on selected method
-    const authenticatedFeaturesSnapshot: { current: CliServerFeaturesSnapshot | null } = { current: null };
+    const authenticatedExactDescriptorObservation: {
+        current: ReturnType<typeof resolveAuthenticatedExactHomeConnectionDescriptorObservation> | null;
+    } = { current: null };
     const authContext: InteractiveTerminalAuthContext = {
         callerIntent: options.callerIntent ?? 'standalone',
         keypair,
@@ -353,7 +350,11 @@ export async function doAuth(options: Readonly<{
                 ...(options.signal ? { signal: options.signal } : {}),
             });
             verifyTerminalAuthEnrollmentRuntime({ target, runtime: acquiredRuntime.runtime, snapshot });
-            authenticatedFeaturesSnapshot.current = snapshot;
+            const exactDescriptorObservation = resolveAuthenticatedExactHomeConnectionDescriptorObservation({
+                snapshot,
+                expectedHomeServerIdentityId: serverIdentityId,
+            });
+            authenticatedExactDescriptorObservation.current = exactDescriptorObservation;
             return snapshot;
         },
     };
@@ -362,19 +363,12 @@ export async function doAuth(options: Readonly<{
         : authMethod === 'web'
             ? await doWebAuth(authContext)
             : await doBothAuth(authContext);
-    const authenticatedSnapshot = authenticatedFeaturesSnapshot.current;
-    const descriptor = authenticatedSnapshot?.status === 'ready'
-        ? authenticatedSnapshot.features.homeConnectionDescriptor
-        : undefined;
-    if (descriptor) {
-        const observedIdentity = authenticatedSnapshot?.status === 'ready'
-            ? authenticatedSnapshot.features.capabilities.serverIdentity.serverIdentityId
-            : undefined;
-        if (!observedIdentity || observedIdentity !== serverIdentityId || descriptor.homeServerIdentityId !== observedIdentity) {
-            throw new Error('Authenticated Home descriptor identity does not match the selected Home');
-        }
+    const exactDescriptorObservation = authenticatedExactDescriptorObservation.current
+        ?? { kind: 'unavailable' as const };
+    if (exactDescriptorObservation.kind === 'available') {
+        const descriptor = exactDescriptorObservation.descriptor;
         const target = await resolveCurrentCliHomeTarget();
-        assertResolvedHomeTargetIdentity(target, observedIdentity);
+        assertResolvedHomeTargetIdentity(target, serverIdentityId);
         // Env-only manual targets remain usable without manufacturing a profile.
         // Persisted targets adopt at their immutable profile/credential owner.
         if (target.profileId) {
@@ -614,7 +608,7 @@ async function doWebAuth(params: InteractiveTerminalAuthContext): Promise<Stored
         if (browserOpened) {
             console.log('✓ Browser opened');
         } else {
-            console.log('No browser opened. This is normal on a headless or remote computer.');
+            console.log(BROWSER_NOT_OPENED_NOTE);
         }
     } else {
         console.log('Browser opening is disabled; use the link below from any browser.');
@@ -624,7 +618,7 @@ async function doWebAuth(params: InteractiveTerminalAuthContext): Promise<Stored
     // someone running happy inside the dev-box container image that they saw the
     // "Complete authentication in your browser window." but nothing opened.
     // https://github.com/slopus/happy/issues/19
-    console.log('\nCopy this link into any browser:');
+    console.log(`\n${COPY_LINK_INTO_BROWSER_PROMPT}`);
     console.log(webUrl);
     console.log('');
     console.log('Sign in to the same Happier account you use on your other devices, then approve this computer.');
@@ -741,14 +735,8 @@ async function waitForAuthentication(
                     const retainedCredential = params.retainedCredentialForMaterialRecovery;
                     const persistedToken = retainedCredential
                         ? (() => {
-                            const retainedAccountId = decodeJwtPayload(retainedCredential.token)?.sub;
-                            const approvedAccountId = decodeJwtPayload(token)?.sub;
-                            if (
-                                typeof retainedAccountId !== 'string'
-                                || !retainedAccountId.trim()
-                                || typeof approvedAccountId !== 'string'
-                                || approvedAccountId.trim() !== retainedAccountId.trim()
-                            ) {
+                            const retainedAccountId = readAccountIdFromToken(retainedCredential.token);
+                            if (!retainedAccountId || readAccountIdFromToken(token) !== retainedAccountId) {
                                 return null;
                             }
                             return retainedCredential.token;
@@ -1002,13 +990,7 @@ export async function ensureMachineIdForCredentials(
     credentials: StoredCredentials,
     opts?: { forceNew?: boolean },
 ): Promise<{ machineId: string }> {
-    let tokenPayload: Record<string, unknown> | null = null;
-    try {
-        tokenPayload = decodeJwtPayload(credentials.token);
-    } catch {
-        tokenPayload = null;
-    }
-    const accountId = typeof tokenPayload?.sub === 'string' ? tokenPayload.sub.trim() : null;
+    const accountId = readAccountIdFromToken(credentials.token);
 
     let previousAccountId: string | null = null;
     let activeServerIdForLog: string | null = null;
@@ -1041,15 +1023,18 @@ export async function ensureMachineIdForCredentials(
 }
 
 
-/**
- * Ensure authentication and machine setup
- * This replaces the onboarding flow and ensures everything is ready
- */
-export async function authAndSetupMachineIfNeeded(opts: Readonly<{
+type AuthAndMachineSetupOptions = Readonly<{
     callerIntent?: AuthCallerIntent;
     requireAccountMaterial?: boolean;
     signal?: AbortSignal;
-}> = {}): Promise<{
+}>;
+
+type MachineRegistrationMode = 'immediate' | 'deferred-to-daemon-runtime';
+
+async function authAndPrepareMachineIfNeeded(
+    opts: AuthAndMachineSetupOptions,
+    machineRegistrationMode: MachineRegistrationMode,
+): Promise<{
     credentials: StoredCredentials;
     machineId: string;
 }> {
@@ -1058,7 +1043,7 @@ export async function authAndSetupMachineIfNeeded(opts: Readonly<{
 
     // Step 1: Handle authentication
     let credentials: StoredCredentials | null = await readStoredCredentials();
-    let registration: Awaited<ReturnType<typeof registerMachineWithAuthenticatedHomeRuntime>> | null = null;
+    let machineSetup: Readonly<{ machineId: string }> | null = null;
     let accountMaterialRecoveryRequired = false;
 
     if (credentials && opts.requireAccountMaterial === true) {
@@ -1109,11 +1094,13 @@ export async function authAndSetupMachineIfNeeded(opts: Readonly<{
             ...(opts.signal ? { signal: opts.signal } : {}),
             ...(retainedCredentialForMaterialRecovery ? { retainedCredentialForMaterialRecovery } : {}),
             onAuthenticated: async ({ credentials: issuedCredentials, runtime }) => {
-                registration = await registerMachineWithAuthenticatedHomeRuntime({
-                    credentials: issuedCredentials,
-                    forceNew: true,
-                    runtimeOrigin: runtime.runtimeOrigin,
-                });
+                machineSetup = machineRegistrationMode === 'immediate'
+                    ? await registerMachineWithAuthenticatedHomeRuntime({
+                        credentials: issuedCredentials,
+                        forceNew: true,
+                        runtimeOrigin: runtime.runtimeOrigin,
+                    })
+                    : await ensureMachineIdForCredentials(issuedCredentials, { forceNew: true });
             },
         });
         if (!authResult) {
@@ -1123,47 +1110,61 @@ export async function authAndSetupMachineIfNeeded(opts: Readonly<{
     } else {
         logger.debug('[AUTH] Using existing credentials');
         const authenticatedCredentials = credentials;
-        const target = await resolveCurrentCliHomeTarget().catch(() => null);
-        if (target?.descriptor) {
-            const acquired = await acquireTerminalAuthEnrollmentRuntime(
-                target.descriptor,
-                target.preferredTransport,
-                opts.signal,
-            );
-            if (!acquired.ok) {
-                throw new Error('Unable to reach the selected Home through an authenticated enrollment carrier');
-            }
-            try {
-                const snapshot = await fetchServerFeaturesSnapshot({
-                    serverUrl: acquired.runtime.runtimeOrigin,
-                    token: authenticatedCredentials.token,
-                    ...(opts.signal ? { signal: opts.signal } : {}),
-                });
-                verifyTerminalAuthEnrollmentRuntime({
-                    target,
-                    runtime: acquired.runtime,
-                    snapshot,
-                });
-                registration = await registerMachineWithAuthenticatedHomeRuntime({
-                    credentials: authenticatedCredentials,
-                    runtimeOrigin: acquired.runtime.runtimeOrigin,
-                });
-            } finally {
-                await acquired.close();
-            }
+        if (machineRegistrationMode === 'deferred-to-daemon-runtime') {
+            machineSetup = await ensureMachineIdForCredentials(authenticatedCredentials);
         } else {
-            registration = await registerMachineWithAuthenticatedHomeRuntime({
-                credentials: authenticatedCredentials,
-                runtimeOrigin: resolveServerHttpBaseUrl(),
-            });
+            const target = await resolveCurrentCliHomeTarget().catch(() => null);
+            if (target?.descriptor) {
+                const acquired = await acquireTerminalAuthEnrollmentRuntime(
+                    target.descriptor,
+                    target.preferredTransport,
+                    opts.signal,
+                );
+                if (!acquired.ok) {
+                    throw new Error('Unable to reach the selected Home through an authenticated enrollment carrier');
+                }
+                try {
+                    const snapshot = await fetchServerFeaturesSnapshot({
+                        serverUrl: acquired.runtime.runtimeOrigin,
+                        token: authenticatedCredentials.token,
+                        ...(opts.signal ? { signal: opts.signal } : {}),
+                    });
+                    verifyTerminalAuthEnrollmentRuntime({
+                        target,
+                        runtime: acquired.runtime,
+                        snapshot,
+                    });
+                    machineSetup = await registerMachineWithAuthenticatedHomeRuntime({
+                        credentials: authenticatedCredentials,
+                        runtimeOrigin: acquired.runtime.runtimeOrigin,
+                    });
+                } finally {
+                    await acquired.close();
+                }
+            } else {
+                machineSetup = await registerMachineWithAuthenticatedHomeRuntime({
+                    credentials: authenticatedCredentials,
+                    runtimeOrigin: resolveServerHttpBaseUrl(),
+                });
+            }
         }
     }
 
-    if (!registration) {
-        throw new Error('Machine registration did not complete');
+    if (!machineSetup) {
+        throw new Error(
+            machineRegistrationMode === 'immediate'
+                ? 'Machine registration did not complete'
+                : 'Machine identity preparation did not complete',
+        );
+    }
+
+    if (machineRegistrationMode === 'deferred-to-daemon-runtime') {
+        rehydrateRelayScopeEnvFromConfiguration();
     }
 
     if (
+      machineRegistrationMode === 'immediate'
+      &&
       shouldAutoStartDaemonAfterAuth({
         env: process.env,
         isDaemonProcess: configuration.isDaemonProcess,
@@ -1179,7 +1180,29 @@ export async function authAndSetupMachineIfNeeded(opts: Readonly<{
       }
     }
 
-    return { credentials, machineId: registration.machineId };
+    return { credentials, machineId: machineSetup.machineId };
+}
+
+/**
+ * Ensure terminal authentication and synchronous machine registration.
+ * This replaces the onboarding flow and ensures everything is ready.
+ */
+export async function authAndSetupMachineIfNeeded(opts: AuthAndMachineSetupOptions = {}): Promise<{
+    credentials: StoredCredentials;
+    machineId: string;
+}> {
+    return await authAndPrepareMachineIfNeeded(opts, 'immediate');
+}
+
+/**
+ * Prepare local daemon identity without registering it over the network.
+ * Daemon registration and retry ownership begins after bootstrap state is published.
+ */
+export async function authAndPrepareDaemonMachineIfNeeded(): Promise<{
+    credentials: StoredCredentials;
+    machineId: string;
+}> {
+    return await authAndPrepareMachineIfNeeded({}, 'deferred-to-daemon-runtime');
 }
 
 export async function registerMachineWithAuthenticatedHomeRuntime(input: Readonly<{

@@ -15,13 +15,15 @@ vi.mock('@/auth/accountDirectory/accountDirectoryAuthClient', async (importOrigi
 }));
 vi.mock('@/auth/entry/authEntryClient', () => ({ fetchHomeAuthEntry }));
 vi.mock('@/sync/domains/features/featureDecisionRuntime', () => ({ useServerFeaturesSnapshotForServerId }));
-vi.mock('@/sync/domains/server/serverProfiles', () => ({
+vi.mock('@/sync/domains/server/serverProfiles', async (importOriginal) => ({
+    ...await importOriginal<typeof import('@/sync/domains/server/serverProfiles')>(),
     resolveServerProfileForPortableIdentity: () => ({
         kind: 'resolved',
         profile: {
             id: 'profile-home-a',
             serverUrl: 'https://home-a.example.test',
             canonicalServerUrl: 'https://home-a.example.test',
+            serverIdentityId: 'home-a',
         },
     }),
     resolveServerProfileScopeId: () => 'home-a',

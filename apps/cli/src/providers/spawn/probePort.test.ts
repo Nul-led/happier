@@ -10,7 +10,6 @@ import {
   accountSettingsParse,
   assessProviderEndpoint,
   createProviderProbeRequestFingerprintV1,
-  createProviderSavedSecretRecordFingerprintV1,
   encryptSecretStringV1,
 } from '@happier-dev/protocol';
 
@@ -18,6 +17,7 @@ import { resolveProviderConnectionForMachine } from '../registry';
 import type { ResolvedProviderContribution } from '@/plugins/projection/registry/types';
 import { readProviderSettingsForCli } from '../settings/read';
 import { createProviderOperationLifetime } from '../operationLifetime';
+import { createSavedSecretMaterializerV1 } from '@/settings/secrets/savedSecretCatalog';
 
 import {
   createRuntimeProviderModelLoadAuthorizationPort,
@@ -476,15 +476,20 @@ describe('provider probe authorization port', () => {
         (length) => new Uint8Array(length).fill(3),
       ),
     };
-    const secretRecordFingerprint = createProviderSavedSecretRecordFingerprintV1({
-      secretId: 'secret-a',
-      persistedEncryptedEnvelope: encryptedValue.encryptedValue,
-    });
+    const settings = AccountSettingsSchema.parse({ secrets: [{
+      id: 'secret-a', name: 'Probe key', kind: 'apiKey', encryptedValue, createdAt: 1, updatedAt: 1,
+    }] });
+    const inspected = createSavedSecretMaterializerV1({
+      accountSettings: settings,
+      settingsSecretsReadKeys: [key],
+    }).inspect('secret-a');
+    if (inspected.status !== 'ready') throw new Error('Expected ready personal secret');
+    const secretRecordFingerprint = inspected.fingerprint;
     const port = createRuntimeProviderProbeAuthorizationPort({
       registry: { providersByContributionKey: new Map() },
       getAccountSettingsSnapshot: () => ({
         source: 'network',
-        settings: accountSettingsParse({ secrets: [{ id: 'secret-a', encryptedValue }] }),
+        settings,
         settingsVersion: 1,
         loadedAtMs: 1,
         settingsSecretsReadKeys: [key],
@@ -524,17 +529,20 @@ describe('provider probe authorization port', () => {
         (length) => new Uint8Array(length).fill(3),
       ),
     };
-    const secretRecordFingerprint = createProviderSavedSecretRecordFingerprintV1({
-      secretId: 'secret-a',
-      persistedEncryptedEnvelope: encryptedValue.encryptedValue,
-    });
+    const accountBSettings = AccountSettingsSchema.parse({ secrets: [{
+      id: 'secret-a', name: 'Account B key', kind: 'apiKey', encryptedValue, createdAt: 1, updatedAt: 1,
+    }] });
+    const inspected = createSavedSecretMaterializerV1({
+      accountSettings: accountBSettings,
+      settingsSecretsReadKeys: [key],
+    }).inspect('secret-a');
+    if (inspected.status !== 'ready') throw new Error('Expected ready personal secret');
+    const secretRecordFingerprint = inspected.fingerprint;
     const port = createRuntimeProviderProbeAuthorizationPort({
       registry: { providersByContributionKey: new Map() },
       getAccountSettingsSnapshot: () => ({
         source: 'network',
-        settings: accountSettingsParse(scopeKey === 'account-b'
-          ? { secrets: [{ id: 'secret-a', encryptedValue }] }
-          : {}),
+        settings: scopeKey === 'account-b' ? accountBSettings : accountSettingsParse({}),
         settingsVersion: 1,
         loadedAtMs: 1,
         settingsSecretsReadKeys: scopeKey === 'account-b' ? [key] : [],
@@ -667,17 +675,20 @@ describe('provider model-load authorization port', () => {
         (length) => new Uint8Array(length).fill(4),
       ),
     };
-    const secretRecordFingerprint = createProviderSavedSecretRecordFingerprintV1({
-      secretId: 'secret-a',
-      persistedEncryptedEnvelope: encryptedValue.encryptedValue,
-    });
+    const accountBSettings = AccountSettingsSchema.parse({ secrets: [{
+      id: 'secret-a', name: 'Account B key', kind: 'apiKey', encryptedValue, createdAt: 1, updatedAt: 1,
+    }] });
+    const inspected = createSavedSecretMaterializerV1({
+      accountSettings: accountBSettings,
+      settingsSecretsReadKeys: [key],
+    }).inspect('secret-a');
+    if (inspected.status !== 'ready') throw new Error('Expected ready personal secret');
+    const secretRecordFingerprint = inspected.fingerprint;
     const port = createRuntimeProviderModelLoadAuthorizationPort({
       registry: { providersByContributionKey: new Map() },
       getAccountSettingsSnapshot: () => ({
         source: 'network',
-        settings: accountSettingsParse(scopeKey === 'account-b'
-          ? { secrets: [{ id: 'secret-a', encryptedValue }] }
-          : {}),
+        settings: scopeKey === 'account-b' ? accountBSettings : accountSettingsParse({}),
         settingsVersion: 1,
         loadedAtMs: 1,
         settingsSecretsReadKeys: scopeKey === 'account-b' ? [key] : [],

@@ -1,17 +1,18 @@
 import * as React from 'react';
 import { View } from 'react-native';
-import { useNavigation, useRouter } from 'expo-router';
-import { StyleSheet, useUnistyles } from 'react-native-unistyles';
+import { useNavigation, useRouter } from '@/components/appShell/workspace/destinationRoute';
+import { StyleSheet } from 'react-native-unistyles';
 
 import type { CodeEditorHandle } from '@/components/ui/code/editor/codeEditorTypes';
 import { MarkdownCodeEditorField } from '@/components/ui/markdown/editor/MarkdownCodeEditorField';
 import { useSetting } from '@/sync/domains/state/storage';
-import { SETTINGS_TEXT_INPUT_METRICS } from '@/components/ui/forms/settingsTextInputMetrics';
+import { RoundButton } from '@/components/ui/buttons/RoundButton';
+import { FieldTextInput } from '@/components/ui/forms/FieldTextInput';
+import { Item } from '@/components/ui/lists/Item';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
 import { ItemList } from '@/components/ui/lists/ItemList';
-import { useLayoutMaxWidthStyle } from '@/components/ui/layout/layout';
-import { SettingsActionFooter } from '@/components/ui/settingsSurface/SettingsActionFooter';
-import { Text, TextInput } from '@/components/ui/text/Text';
+import { SectionContentRow } from '@/components/ui/lists/SectionContentRow';
+import { PageHeader } from '@/components/ui/layout/PageHeader';
 import { Modal } from '@/modal';
 import { updateSkillPromptBundleWithEntry, readPromptBundleUtf8Entry } from '@/sync/ops/promptLibrary/promptBundles';
 import { t } from '@/text';
@@ -20,32 +21,8 @@ import { safeRouterBack } from '@/utils/navigation/safeRouterBack';
 import { readSkillBundleArtifactState } from './readSkillBundleArtifactState';
 
 const styles = StyleSheet.create((theme) => ({
-    container: {
-        flex: 1,
-        backgroundColor: theme.colors.background.canvas,
-    },
-    content: {
-        padding: 16,
-        paddingBottom: 64,
-        width: '100%',
-        alignSelf: 'center',
-    },
-    input: {
-        backgroundColor: theme.colors.input.background,
-        color: theme.colors.input.text,
-        borderRadius: 10,
-        paddingHorizontal: 12,
-        paddingVertical: 10,
-        ...SETTINGS_TEXT_INPUT_METRICS,
-        marginBottom: 12,
-    },
-    fieldLabel: {
-        color: theme.colors.text.secondary,
-        fontSize: 14,
-        marginBottom: 8,
-    },
     editorContainer: {
-        borderRadius: 12,
+        borderRadius: 10,
         overflow: 'hidden',
         borderWidth: 1,
         borderColor: theme.colors.border.default,
@@ -53,15 +30,11 @@ const styles = StyleSheet.create((theme) => ({
     },
 }));
 
+/** One file of a skill bundle beside its SKILL.md: its path and its text. Saving returns to the skill. */
 export const SkillBundleSupportingFileEditorScreen = React.memo(function SkillBundleSupportingFileEditorScreen(props: Readonly<{
     artifactId: string;
     path: string | null;
 }>) {
-    // Composed at render time: the module-scope stylesheet evaluates once, so a
-    // baked-in `layout.maxWidth` would freeze the user's content-width preference.
-    const contentMaxWidthStyle = useLayoutMaxWidthStyle();
-    const contentStyle = React.useMemo(() => [styles.content, contentMaxWidthStyle], [contentMaxWidthStyle]);
-    const { theme } = useUnistyles();
     const router = useRouter();
     const navigation = useNavigation();
     const artifactState = React.useMemo(() => readSkillBundleArtifactState(props.artifactId), [props.artifactId]);
@@ -106,51 +79,63 @@ export const SkillBundleSupportingFileEditorScreen = React.memo(function SkillBu
     }, [artifactState, canSave, content, navigation, path, props.artifactId, router]);
 
     return (
-        <View style={styles.container}>
-            <ItemList containerStyle={contentStyle} keyboardShouldPersistTaps="handled">
-                <ItemGroup title={t('promptLibrary.general')}>
-                    <View style={{ paddingHorizontal: 16, paddingTop: 12 }}>
-                        <Text style={styles.fieldLabel}>{t('promptLibrary.supportingFilePathLabel')}</Text>
-                        <TextInput
+        <ItemList presentation="page" keyboardShouldPersistTaps="handled">
+            <PageHeader
+                testID="skillSupportingFile.header"
+                alwaysShowTitle
+                title={props.path ?? t('promptLibrary.newSupportingFile')}
+                description={artifactState?.title
+                    ? t('promptLibrary.surface.supportingFileDescription', { skill: artifactState.title })
+                    : undefined}
+                actions={(
+                    <RoundButton
+                        testID="skillSupportingFile.save"
+                        size="small"
+                        title={t('common.save')}
+                        disabled={!canSave}
+                        loading={saving}
+                        onPress={() => { void save(); }}
+                    />
+                )}
+            />
+
+            <ItemGroup title={t('promptLibrary.surface.fileSection')}>
+                <Item
+                    title={t('promptLibrary.supportingFilePathLabel')}
+                    subtitle={t('promptLibrary.surface.filePathDescription')}
+                    accessoryLayout="adaptive"
+                    showChevron={false}
+                    rightElement={(
+                        <FieldTextInput
                             testID="skillSupportingFile.path"
-                            placeholder={t('promptLibrary.supportingFilePathPlaceholder')}
-                            placeholderTextColor={theme.colors.input.placeholder}
                             value={path}
                             onChangeText={setPath}
-                            style={styles.input}
+                            accessibilityLabel={t('promptLibrary.supportingFilePathLabel')}
+                            placeholder={t('promptLibrary.supportingFilePathPlaceholder')}
                             autoCapitalize="none"
-                            autoCorrect={false}
+                            autoFocus={!props.path}
+                            monospace
+                        />
+                    )}
+                />
+            </ItemGroup>
+
+            <ItemGroup title={t('promptLibrary.supportingFileContent')}>
+                <SectionContentRow>
+                    <View style={styles.editorContainer}>
+                        <MarkdownCodeEditorField
+                            resetKey={`${props.artifactId}:${props.path ?? 'new'}`}
+                            testID="skillSupportingFile.editor"
+                            value={content}
+                            filePath={path}
+                            onChange={setContent}
+                            readOnly={false}
+                            editorRef={editorRef}
+                            wrapLines={wrapLinesInDiffs !== false}
                         />
                     </View>
-                </ItemGroup>
-
-                <ItemGroup title={t('promptLibrary.supportingFileContent')}>
-                    <View style={{ padding: 12 }}>
-                        <View style={styles.editorContainer}>
-                            <MarkdownCodeEditorField
-                                resetKey={`${props.artifactId}:${props.path ?? 'new'}`}
-                                testID="skillSupportingFile.editor"
-                                value={content}
-                                filePath={path}
-                                onChange={setContent}
-                                readOnly={false}
-                                editorRef={editorRef}
-                                wrapLines={wrapLinesInDiffs !== false}
-                            />
-                        </View>
-                    </View>
-                </ItemGroup>
-
-                <SettingsActionFooter
-                    primaryLabel={t('common.save')}
-                    onPrimaryPress={() => { void save(); }}
-                    primaryDisabled={!canSave}
-                    primaryTestID="skillSupportingFile.save"
-                    secondaryLabel={t('common.cancel')}
-                    onSecondaryPress={() => safeRouterBack({ router, navigation, fallbackHref: `/settings/prompts/skills/${props.artifactId}` })}
-                    secondaryTestID="skillSupportingFile.cancel"
-                />
-            </ItemList>
-        </View>
+                </SectionContentRow>
+            </ItemGroup>
+        </ItemList>
     );
 });

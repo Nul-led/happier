@@ -23,10 +23,12 @@ describe('personalHomeBootstrapBlockedTranslations', () => {
                 flattenTranslationLeaves(copy).map((leaf) => leaf.key).sort(),
                 `${locale} blocked-state shape`,
             ).toEqual(expectedKeys);
-            expect(
-                localizedCopy.join(' '),
-                `${locale} blocked-state terminology`,
-            ).not.toMatch(/\b(?:Home|Personal Home)\b/);
+            // Product decision: the Home product noun stays English in every locale; no native noun for the object.
+            for (const value of localizedCopy) {
+                expect(value, `${locale} blocked-state terminology`).toMatch(/\bHome\b/);
+                expect(value, `${locale} blocked-state terminology`)
+                    .not.toMatch(/zuhause|maison|foyer|hogar|\bcas[ae]\b|\bllar|\bdom(u|em|ie)?\b|(^|[^а-яё])дом(а|ом|е|у)?([^а-яё]|$)|ホーム|之家|家庭/i);
+            }
         }
     });
 });

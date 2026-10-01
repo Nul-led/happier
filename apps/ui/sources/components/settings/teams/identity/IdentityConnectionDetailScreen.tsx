@@ -1,6 +1,6 @@
 import * as React from 'react';
-import { useRouter } from 'expo-router';
-import { useFocusEffect } from '@react-navigation/native';
+import { useRouter } from '@/components/appShell/workspace/destinationRoute';
+import { useFocusEffect } from '@/components/appShell/workspace/destinationRoute';
 import { AppState } from 'react-native';
 import type { IdentityConnectionTestDiagnosticsV1 } from '@happier-dev/protocol';
 import type { TeamIdentityConnectionV1 } from '@happier-dev/protocol/teams';
@@ -9,10 +9,11 @@ import { runTeamIdentityProviderTestReturn } from '@/components/settings/home/id
 import { useManagedIdentityProviders } from '@/components/settings/home/identity/useManagedIdentityProviders';
 import { IdentityTestDiagnosticsGroup } from '@/components/settings/identity/IdentityTestDiagnosticsGroup';
 import { ActivitySpinner } from '@/components/ui/feedback/ActivitySpinner';
-import { FieldItem } from '@/components/ui/forms/FieldItem';
+import { FieldTextInput } from '@/components/ui/forms/FieldTextInput';
 import { Item } from '@/components/ui/lists/Item';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
-import { TextInput } from '@/components/ui/text/Text';
+import { SettingAnchor, SettingRow, SettingSection } from '@/components/settings/shell/SettingRow';
+import { TEAM_IDENTITY_CONNECTION_SETTINGS } from './teamAuthenticationSettings';
 import { Modal } from '@/modal';
 import { identityAdministrationFailure, identityAdministrationFailureMessage, identityAdministrationFailureRecoveryLabel } from '@/components/settings/identity/identityAdministrationFailure';
 import { announceAccessibilityMessage } from '@/components/ui/accessibility/announceAccessibilityMessage';
@@ -24,6 +25,7 @@ import { TeamSection } from '../TeamSection';
 import { teamDirectoryPath, teamIdentityConnectionPath, teamIdentityConnectionProviderEditPath } from '../teamsRoutes';
 import {
     createIdentityAdministrationClient,
+    executeIdentityAdministrationRead,
     type IdentityAdministrationActionResult,
     type TeamIdentityActionOutput,
 } from './identityAdministrationClient';
@@ -46,6 +48,7 @@ import {
     revisionedSettingsDraftTransition,
     type RevisionedSettingsDraftOrigin,
 } from '@/components/settings/identity/revisionedSettingsDraft';
+import { Icon } from '@/components/ui/icons/Icon';
 
 const TeamManagedProviderEditItem = React.memo(function TeamManagedProviderEditItem(props: Readonly<{
     scope: Parameters<typeof useManagedIdentityProviders>[0];
@@ -53,14 +56,16 @@ const TeamManagedProviderEditItem = React.memo(function TeamManagedProviderEditI
     connectionId: string;
     providerId: string;
     disabled: boolean;
+    requestApproval: (registration: ActionApprovalRegistration) => void;
 }>) {
     const router = useRouter();
     const owner = React.useMemo(() => ({ kind: 'team' as const, teamId: props.address.teamId }), [props.address.teamId]);
-    const providers = useManagedIdentityProviders(props.scope, owner);
+    const providers = useManagedIdentityProviders(props.scope, owner, props.requestApproval);
     if (providers.state.kind !== 'ready' || !providers.state.items.some((provider) => provider.id === props.providerId)) return null;
-    return <Item
+    return <SettingRow
+        setting={TEAM_IDENTITY_CONNECTION_SETTINGS.settings.edit}
         testID="team-identity-provider-edit"
-        title={t('identityAdministration.edit')}
+        icon={<Icon name="pencil-simple" />}
         disabled={props.disabled}
         onPress={() => router.push(teamIdentityConnectionProviderEditPath(props.address, props.connectionId, props.providerId))}
         showChevron
@@ -70,7 +75,7 @@ const TeamManagedProviderEditItem = React.memo(function TeamManagedProviderEditI
 /**
  * A WorkOS connection whose organization exists but whose SSO setup has not been
  * confirmed yet: the Admin Portal may have just finished it, so arriving on the
- * route is the moment to check. A connected row has nothing to check.
+ * route is the moment to check. A connected row needs an explicit Portal return.
  */
 function isWorkosSetupAwaitingCheck(connection: TeamIdentityConnectionV1): boolean {
     return connection.provider.kind === 'workos_sso'
@@ -86,9 +91,10 @@ const AuthorizedConnectionDetail = React.memo(function AuthorizedConnectionDetai
     mutationsAvailable: boolean;
     requestApproval: (registration: ActionApprovalRegistration) => void;
     testReturn?: Readonly<{ purpose: string | null; resultHandle: string | null; error: string | null }>;
+    workosPortalReturn?: boolean;
 }>) {
     const router = useRouter();
-    const { state, refresh } = useIdentityAdministration(props.scope, props.teamId);
+    const { state, refresh } = useIdentityAdministration(props.scope, props.teamId, props.requestApproval);
     const client = React.useMemo(
         () => createIdentityAdministrationClient(props.scope, {
             onApprovalPending: props.requestApproval,
@@ -97,6 +103,15 @@ const AuthorizedConnectionDetail = React.memo(function AuthorizedConnectionDetai
     );
     const [pending, setPending] = React.useState<string | null>(null);
     const [actionFailure, setActionFailure] = React.useState<string | null>(null);
+    const readLifetime = React.useRef<AbortController | null>(null);
+    React.useEffect(() => {
+        const controller = new AbortController();
+        readLifetime.current = controller;
+        return () => {
+            controller.abort();
+            if (readLifetime.current === controller) readLifetime.current = null;
+        };
+    }, [props.scope.serverId, props.scope.accountId, props.teamId, props.connectionId]);
 
     // A typed Home outcome becomes one localized sentence, announced as well as
     // shown because it lands away from the control that was pressed.
@@ -112,7 +127,9 @@ const AuthorizedConnectionDetail = React.memo(function AuthorizedConnectionDetai
     // Both refresh the authoritative projection first and then check setup; only
     // the portal intent reports a refusal, because an ordinary route focus of a
     // connection that has nothing to check must stay silent.
-    const [workosReturn, setWorkosReturn] = React.useState<'portal' | 'route' | null>(null);
+    const [workosReturn, setWorkosReturn] = React.useState<'portal' | 'route' | null>(
+        props.workosPortalReturn ? 'portal' : null,
+    );
     const portalReturnController = React.useRef(createWorkosPortalReturnController()).current;
     const handledTestReturnRef = React.useRef<string | null>(null);
     const connection = state.kind === 'ready'
@@ -420,9 +437,16 @@ const AuthorizedConnectionDetail = React.memo(function AuthorizedConnectionDetai
     };
 
     const remove = async () => {
+        const signal = readLifetime.current?.signal;
+        if (!signal || signal.aborted) return;
         setPending('remove'); setActionFailure(null);
         try {
-            const preflight = await client.execute('teams.identity.connections.remove.preview', { v: 1, teamId: props.teamId, connectionId: connection.id, expectedRevision: connection.revision });
+            const preflight = await executeIdentityAdministrationRead<TeamIdentityActionOutput<'teams.identity.connections.remove.preview'>>((options) => client.execute(
+                'teams.identity.connections.remove.preview',
+                { v: 1, teamId: props.teamId, connectionId: connection.id, expectedRevision: connection.revision },
+                options,
+            ), signal);
+            if (signal.aborted) return;
             if (!preflight.ok) { reportActionFailure(preflight.failure.code); return; }
             const impact = t('identityAdministration.teamRemoveImpact', { accounts: preflight.value.impact.linkedAccounts, alternateLogins: preflight.value.impact.accountsRequiringAlternateLogin, directories: preflight.value.impact.directorySources, groups: preflight.value.impact.externalGroupBindings, memberships: preflight.value.impact.managedMemberships });
             if (!preflight.value.canRemove) {
@@ -437,6 +461,7 @@ const AuthorizedConnectionDetail = React.memo(function AuthorizedConnectionDetai
                 return;
             }
             if (!await Modal.confirm(t('identityAdministration.removeTitle', { name: connection.provider.displayName }), impact, { cancelText: t('common.cancel'), confirmText: t('identityAdministration.remove'), destructive: true })) return;
+            if (signal.aborted) return;
             const finishRemoval = () => router.back();
             const result = await client.execute(
                 'teams.identity.connections.remove',
@@ -447,13 +472,13 @@ const AuthorizedConnectionDetail = React.memo(function AuthorizedConnectionDetai
                 if ('approvalPending' in result) return;
                 reportActionFailure(result.failure.code);
             } else finishRemoval();
-        } finally { setPending(null); }
+        } finally { if (!signal.aborted) setPending(null); }
     };
 
     return <>
-        {state.stale ? <ItemGroup footer={t('teams.stale.label')}><Item title={t('teams.unavailable.offline')} detail={t('common.retry')} onPress={refresh} showChevron={false} /></ItemGroup> : null}
+        {state.stale ? <ItemGroup description={t('teams.stale.label')}><Item title={t('teams.unavailable.offline')} detail={t('common.retry')} onPress={refresh} showChevron={false} /></ItemGroup> : null}
         {workosReturnRefreshing ? <ItemGroup><Item testID="identity-workos-return-checking" title={t('identityAdministration.workosCheckSetup')} detail={t('common.loading')} loading accessibilityLiveRegion="polite" showChevron={false} /></ItemGroup> : null}
-        <ItemGroup title={connection.provider.displayName}>
+        <SettingSection section={TEAM_IDENTITY_CONNECTION_SETTINGS.sectionRefs.configuration} answersFor={[TEAM_IDENTITY_CONNECTION_SETTINGS.sectionRefs.groupMappings]}><ItemGroup title={connection.provider.displayName}>
             <Item testID="identity-connection-status" title={t('teams.authentication.detail.status')} detail={connectionStateLabel(connection.state)} showChevron={false} />
             <Item testID="identity-connection-mode" title={t('teams.authentication.detail.mode')} detail={mode} showChevron={false} />
             <Item testID="identity-connection-provider" title={t('teams.authentication.detail.provider')} detail={identityProviderKindLabel(connection.provider.kind)} showChevron={false} />
@@ -471,24 +496,24 @@ const AuthorizedConnectionDetail = React.memo(function AuthorizedConnectionDetai
                 accessibilityLiveRegion={pending === 'test:return' ? 'polite' : undefined}
                 showChevron={false}
             />
-        </ItemGroup>
+        </ItemGroup></SettingSection>
         {testDiagnostics ? <IdentityTestDiagnosticsGroup diagnostics={testDiagnostics} groupMappings /> : null}
-        {settingsConflict ? <ItemGroup footer={t('identityAdministration.settingsChangedElsewhere')}>{settingsOrigin?.resourceId !== connection.id || connection.revision > settingsOrigin.revision ? <Item testID="identity-settings-reload-conflict" title={t('common.refresh')} disabled={pending !== null || !props.mutationsAvailable} onPress={reloadConnectionSettings} showChevron={false} /> : <Item testID="identity-settings-refresh-conflict" title={t('common.retry')} disabled={pending !== null} onPress={refresh} showChevron={false} />}</ItemGroup> : null}
+        {settingsConflict ? <ItemGroup description={t('identityAdministration.settingsChangedElsewhere')}>{settingsOrigin?.resourceId !== connection.id || connection.revision > settingsOrigin.revision ? <Item testID="identity-settings-reload-conflict" title={t('common.refresh')} disabled={pending !== null || !props.mutationsAvailable} onPress={reloadConnectionSettings} showChevron={false} /> : <Item testID="identity-settings-refresh-conflict" title={t('common.retry')} disabled={pending !== null} onPress={refresh} showChevron={false} />}</ItemGroup> : null}
         {connection.settings.kind === 'oidc' ? <ItemGroup title={t('teams.authentication.detail.restrictions')}>
-            <FieldItem label={t('teams.authentication.detail.allowedUsers')}><TextInput testID="identity-settings-allowed-users" accessibilityLabel={t('teams.authentication.detail.allowedUsers')} value={oidcSettings.allowedUsers} editable={projectionCurrent && props.mutationsAvailable && can('teams.identity.connections.settings.update')} multiline onChangeText={(value) => editOidcSettings({ allowedUsers: value })} /></FieldItem>
-            <FieldItem label={t('teams.authentication.detail.allowedDomains')}><TextInput testID="identity-settings-allowed-domains" accessibilityLabel={t('teams.authentication.detail.allowedDomains')} value={oidcSettings.allowedEmailDomains} editable={projectionCurrent && props.mutationsAvailable && can('teams.identity.connections.settings.update')} multiline autoCapitalize="none" onChangeText={(value) => editOidcSettings({ allowedEmailDomains: value })} /></FieldItem>
-            <FieldItem label={t('identityAdministration.groupsAny')}><TextInput testID="identity-settings-groups-any" accessibilityLabel={t('identityAdministration.groupsAny')} value={oidcSettings.groupsAny} editable={projectionCurrent && props.mutationsAvailable && can('teams.identity.connections.settings.update')} multiline onChangeText={(value) => editOidcSettings({ groupsAny: value })} /></FieldItem>
-            <FieldItem label={t('identityAdministration.groupsAll')}><TextInput testID="identity-settings-groups-all" accessibilityLabel={t('identityAdministration.groupsAll')} value={oidcSettings.groupsAll} editable={projectionCurrent && props.mutationsAvailable && can('teams.identity.connections.settings.update')} multiline onChangeText={(value) => editOidcSettings({ groupsAll: value })} /></FieldItem>
-            {can('teams.identity.connections.settings.update') ? <Item testID="identity-settings-save" title={t('identityAdministration.save')} loading={pending === 'settings'} disabled={mutationBusy || settingsConflict || !settingsDirty || !props.mutationsAvailable} onPress={() => void saveSettings()} showChevron={false} /> : null}
+            <SettingRow setting={TEAM_IDENTITY_CONNECTION_SETTINGS.settings.allowedUsers} accessoryLayout="stacked" showChevron={false} rightElement={<FieldTextInput testID="identity-settings-allowed-users" accessibilityLabel={t('teams.authentication.detail.allowedUsers')} value={oidcSettings.allowedUsers} editable={projectionCurrent && props.mutationsAvailable && can('teams.identity.connections.settings.update')} multiline onChangeText={(value) => editOidcSettings({ allowedUsers: value })} />} />
+            <SettingRow setting={TEAM_IDENTITY_CONNECTION_SETTINGS.settings.allowedDomains} accessoryLayout="stacked" showChevron={false} rightElement={<FieldTextInput testID="identity-settings-allowed-domains" accessibilityLabel={t('teams.authentication.detail.allowedDomains')} value={oidcSettings.allowedEmailDomains} editable={projectionCurrent && props.mutationsAvailable && can('teams.identity.connections.settings.update')} multiline autoCapitalize="none" onChangeText={(value) => editOidcSettings({ allowedEmailDomains: value })} />} />
+            <SettingRow setting={TEAM_IDENTITY_CONNECTION_SETTINGS.settings.groupsAny} accessoryLayout="stacked" showChevron={false} rightElement={<FieldTextInput testID="identity-settings-groups-any" accessibilityLabel={t('identityAdministration.groupsAny')} value={oidcSettings.groupsAny} editable={projectionCurrent && props.mutationsAvailable && can('teams.identity.connections.settings.update')} multiline onChangeText={(value) => editOidcSettings({ groupsAny: value })} />} />
+            <SettingRow setting={TEAM_IDENTITY_CONNECTION_SETTINGS.settings.groupsAll} accessoryLayout="stacked" showChevron={false} rightElement={<FieldTextInput testID="identity-settings-groups-all" accessibilityLabel={t('identityAdministration.groupsAll')} value={oidcSettings.groupsAll} editable={projectionCurrent && props.mutationsAvailable && can('teams.identity.connections.settings.update')} multiline onChangeText={(value) => editOidcSettings({ groupsAll: value })} />} />
+            {can('teams.identity.connections.settings.update') ? <SettingRow setting={TEAM_IDENTITY_CONNECTION_SETTINGS.settings.save} testID="identity-settings-save" loading={pending === 'settings'} disabled={mutationBusy || settingsConflict || !settingsDirty || !props.mutationsAvailable} onPress={() => void saveSettings()} showChevron={false} /> : null}
         </ItemGroup> : null}
         {connection.settings.kind === 'github_app_identity' ? <ItemGroup title={t('teams.authentication.detail.configuration')}>
-            <FieldItem label={t('teams.authentication.detail.organization')}><TextInput testID="identity-settings-organization" accessibilityLabel={t('teams.authentication.detail.organization')} value={organizationLogin} editable={projectionCurrent && props.mutationsAvailable && can('teams.identity.connections.settings.update')} autoCapitalize="none" autoCorrect={false} onChangeText={editOrganizationLogin} /></FieldItem>
-            {can('teams.identity.connections.settings.update') ? <Item testID="identity-settings-save" title={t('identityAdministration.save')} loading={pending === 'settings'} disabled={mutationBusy || settingsConflict || !settingsDirty || !props.mutationsAvailable} onPress={() => void saveSettings()} showChevron={false} /> : null}
+            <SettingRow setting={TEAM_IDENTITY_CONNECTION_SETTINGS.settings.organization} accessoryLayout="adaptive" showChevron={false} rightElement={<FieldTextInput testID="identity-settings-organization" accessibilityLabel={t('teams.authentication.detail.organization')} value={organizationLogin} editable={projectionCurrent && props.mutationsAvailable && can('teams.identity.connections.settings.update')} autoCapitalize="none" onChangeText={editOrganizationLogin} />} />
+            {can('teams.identity.connections.settings.update') ? <SettingRow setting={TEAM_IDENTITY_CONNECTION_SETTINGS.settings.save} testID="identity-settings-save" loading={pending === 'settings'} disabled={mutationBusy || settingsConflict || !settingsDirty || !props.mutationsAvailable} onPress={() => void saveSettings()} showChevron={false} /> : null}
         </ItemGroup> : null}
         {connection.lastObservation?.kind === 'workos_sso' && connection.lastObservation.presentation ? <ItemGroup title={t('teams.authentication.detail.configuration')}><Item testID="identity-workos-current-connection" title={t('teams.authentication.detail.connection')} detail={connection.lastObservation.presentation.displayName} subtitle={`${workosConnectionStrategyLabel(connection.lastObservation.presentation.strategy)} · ${workosConnectionStatusLabel(connection.lastObservation.presentation.status)}`} showChevron={false} /></ItemGroup> : null}
         {connection.provider.kind === 'oidc' || connection.provider.kind === 'github_app_identity' ? <IdentityConnectionGroupMappings scope={props.scope} address={{ serverId: props.scope.serverId, teamId: props.teamId }} connectionId={connection.id} mutationsAvailable={props.mutationsAvailable && projectionCurrent} requestApproval={props.requestApproval} /> : null}
         {workosCandidates.length > 0 ? (
-            <ItemGroup
+            <SettingAnchor setting={TEAM_IDENTITY_CONNECTION_SETTINGS.settings.workosConnection}><ItemGroup
                 title={t('identityAdministration.workosChooseConnection')}
                 accessibilityRole="radiogroup"
                 accessibilityLabel={t('identityAdministration.workosChooseConnection')}
@@ -514,18 +539,18 @@ const AuthorizedConnectionDetail = React.memo(function AuthorizedConnectionDetai
                         />
                     );
                 })}
-            </ItemGroup>
+            </ItemGroup></SettingAnchor>
         ) : null}
         {actionFailure ? <ItemGroup><Item testID="identity-connection-failure" title={actionFailure} showChevron={false} /></ItemGroup> : null}
-        <ItemGroup title={t('identityAdministration.actions')}>
-            {connection.provider.kind === 'oidc' ? <TeamManagedProviderEditItem scope={props.scope} address={{ serverId: props.scope.serverId, teamId: props.teamId }} connectionId={connection.id} providerId={connection.provider.id} disabled={mutationBusy || !props.mutationsAvailable} /> : null}
-            {can('teams.identity.connections.test.start') ? <Item testID="team-identity-test" title={t('identityAdministration.test')} loading={pending === 'test'} disabled={mutationBusy || !props.mutationsAvailable} onPress={() => void test()} showChevron={false} /> : null}
-            {can('teams.identity.connections.enable') ? <Item testID="team-identity-enable" title={t('identityAdministration.enable')} loading={pending === 'teams.identity.connections.enable'} disabled={mutationBusy || !props.mutationsAvailable} onPress={() => void runLifecycle('teams.identity.connections.enable')} showChevron={false} /> : null}
-            {can('teams.identity.connections.disable') ? <Item testID="team-identity-disable" title={t('identityAdministration.disable')} loading={pending === 'teams.identity.connections.disable'} disabled={mutationBusy || !props.mutationsAvailable} onPress={() => void runLifecycle('teams.identity.connections.disable')} showChevron={false} /> : null}
-            {can('teams.identity.workos.adminPortalLink.create') ? <><Item testID="team-identity-workos-sso" title={t('identityAdministration.workosSetupSso')} disabled={mutationBusy || !props.mutationsAvailable} onPress={() => void openWorkosPortal()} showChevron={false} /><Item testID="team-identity-workos-directory" title={t('identityAdministration.workosSetupDirectory')} disabled={mutationBusy || !props.mutationsAvailable} onPress={() => router.push(teamDirectoryPath({ serverId: props.scope.serverId, teamId: props.teamId }))} showChevron /></> : null}
-            {can('teams.identity.workos.reconcile') ? <Item testID="team-identity-workos-reconcile" title={t('identityAdministration.workosCheckSetup')} disabled={mutationBusy || !props.mutationsAvailable} onPress={() => void reconcileWorkos()} showChevron={false} /> : null}
-            {can('teams.identity.connections.remove') ? <Item testID="team-identity-remove" title={t('identityAdministration.remove')} destructive disabled={mutationBusy || !props.mutationsAvailable} onPress={() => void remove()} showChevron={false} /> : null}
-        </ItemGroup>
+        <SettingSection section={TEAM_IDENTITY_CONNECTION_SETTINGS.sectionRefs.actions}><ItemGroup title={t('identityAdministration.actions')}>
+            {connection.provider.kind === 'oidc' ? <TeamManagedProviderEditItem scope={props.scope} address={{ serverId: props.scope.serverId, teamId: props.teamId }} connectionId={connection.id} providerId={connection.provider.id} disabled={mutationBusy || !props.mutationsAvailable} requestApproval={props.requestApproval} /> : null}
+            {can('teams.identity.connections.test.start') ? <SettingRow setting={TEAM_IDENTITY_CONNECTION_SETTINGS.settings.test} testID="team-identity-test" loading={pending === 'test'} disabled={mutationBusy || !props.mutationsAvailable} onPress={() => void test()} showChevron={false} /> : null}
+            {can('teams.identity.connections.enable') ? <SettingRow setting={TEAM_IDENTITY_CONNECTION_SETTINGS.settings.enable} testID="team-identity-enable" loading={pending === 'teams.identity.connections.enable'} disabled={mutationBusy || !props.mutationsAvailable} onPress={() => void runLifecycle('teams.identity.connections.enable')} showChevron={false} /> : null}
+            {can('teams.identity.connections.disable') ? <SettingRow setting={TEAM_IDENTITY_CONNECTION_SETTINGS.settings.disable} testID="team-identity-disable" loading={pending === 'teams.identity.connections.disable'} disabled={mutationBusy || !props.mutationsAvailable} onPress={() => void runLifecycle('teams.identity.connections.disable')} showChevron={false} /> : null}
+            {can('teams.identity.workos.adminPortalLink.create') ? <><SettingRow setting={TEAM_IDENTITY_CONNECTION_SETTINGS.settings.workosSetupSso} testID="team-identity-workos-sso" disabled={mutationBusy || !props.mutationsAvailable} onPress={() => void openWorkosPortal()} showChevron={false} /><SettingRow setting={TEAM_IDENTITY_CONNECTION_SETTINGS.settings.workosSetupDirectory} testID="team-identity-workos-directory" icon={<Icon name="users" />} disabled={mutationBusy || !props.mutationsAvailable} onPress={() => router.push(teamDirectoryPath({ serverId: props.scope.serverId, teamId: props.teamId }))} showChevron /></> : null}
+            {can('teams.identity.workos.reconcile') ? <SettingRow setting={TEAM_IDENTITY_CONNECTION_SETTINGS.settings.workosCheckSetup} testID="team-identity-workos-reconcile" disabled={mutationBusy || !props.mutationsAvailable} onPress={() => void reconcileWorkos()} showChevron={false} /> : null}
+            {can('teams.identity.connections.remove') ? <SettingRow setting={TEAM_IDENTITY_CONNECTION_SETTINGS.settings.remove} testID="team-identity-remove" destructive disabled={mutationBusy || !props.mutationsAvailable} onPress={() => void remove()} showChevron={false} /> : null}
+        </ItemGroup></SettingSection>
     </>;
 });
 
@@ -534,6 +559,17 @@ export const IdentityConnectionDetailScreen = React.memo(function IdentityConnec
     teamId: string;
     connectionId: string;
     testReturn?: Readonly<{ purpose: string | null; resultHandle: string | null; error: string | null }>;
+    workosPortalReturn?: boolean;
 }>) {
-    return <TeamSection serverId={props.serverId} teamId={props.teamId} title={t('teams.tabs.authentication')}>{({ team, scope, canMutate, requestApproval }) => team.capabilities.manageAuthentication ? <AuthorizedConnectionDetail scope={scope} teamId={team.id} connectionId={props.connectionId} mutationsAvailable={canMutate} requestApproval={requestApproval} testReturn={props.testReturn} /> : <ItemGroup><Item title={t('teams.errors.forbidden')} showChevron={false} /></ItemGroup>}</TeamSection>;
+    return (
+        <TeamSection serverId={props.serverId} teamId={props.teamId} title={t('teams.tabs.authentication')}>
+            {({ team, scope, canMutate, requestApproval }) => team.capabilities.manageAuthentication ? (
+                <AuthorizedConnectionDetail key={props.connectionId} scope={scope} teamId={team.id} connectionId={props.connectionId} mutationsAvailable={canMutate} requestApproval={requestApproval} testReturn={props.testReturn} workosPortalReturn={props.workosPortalReturn} />
+            ) : (
+                <SettingSection section={TEAM_IDENTITY_CONNECTION_SETTINGS.sectionRefs.actions} answersFor={Object.values(TEAM_IDENTITY_CONNECTION_SETTINGS.sectionRefs)}>
+                    <ItemGroup><Item title={t('teams.errors.forbidden')} showChevron={false} /></ItemGroup>
+                </SettingSection>
+            )}
+        </TeamSection>
+    );
 });

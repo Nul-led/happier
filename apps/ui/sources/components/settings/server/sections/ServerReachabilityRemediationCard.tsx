@@ -39,10 +39,8 @@ const stylesheet = StyleSheet.create((theme) => ({
     iconWrap: {
         width: 28,
         height: 28,
-        borderRadius: 999,
         alignItems: 'center',
         justifyContent: 'center',
-        backgroundColor: theme.colors.surface.elevated,
     },
     textColumn: {
         flex: 1,

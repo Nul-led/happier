@@ -1,12 +1,14 @@
 import * as React from 'react';
-import { Pressable, type StyleProp, type ViewStyle } from 'react-native';
+import { Platform } from 'react-native';
 import { useUnistyles } from 'react-native-unistyles';
 
 import type { BrowserSurfaceUnavailableReason } from '@/components/browser/surfaces/BrowserSurfaceFallback';
 import { useFeatureDecision } from '@/hooks/server/useFeatureDecision';
 import { resolveReasonCopy } from '@/sync/domains/surfaces/copy';
 import { t } from '@/text';
-import { Icon } from '@/components/ui/icons/Icon';
+import { IconButton } from '@/components/ui/buttons/IconButton';
+import { Icon, ICON_SIZE } from '@/components/ui/icons/Icon';
+import { resolveMinimumInteractiveTargetSize } from '@/components/ui/interactiveTargetSize';
 
 function decisionEnabled(decision: ReturnType<typeof useFeatureDecision>): boolean {
     return decision?.state === 'enabled';
@@ -27,11 +29,17 @@ function resolveDisabledReason(params: Readonly<{
     return null;
 }
 
+/**
+ * Opens the browser's launchpad in Details. The canonical `IconButton` (plain), so it has the
+ * tooltip, hover, pressed and keyboard focus ring every neighbouring header action has, and its
+ * disabled state says why (H-UX F-7). Callers choose only the size of their row and, in coloured
+ * chrome, the glyph colour.
+ */
 export function BrowserSurfaceOpenButton(props: Readonly<{
     onPress: () => void;
     testID: string;
-    style?: StyleProp<ViewStyle>;
-    disabledStyle?: StyleProp<ViewStyle>;
+    size: number;
+    /** The chrome's own glyph colour (the session header); omitted, the button's default tint. */
     iconColor?: string;
 }>): React.ReactElement {
     const { theme } = useUnistyles();
@@ -42,31 +50,25 @@ export function BrowserSurfaceOpenButton(props: Readonly<{
         viewTargetsEnabled: decisionEnabled(viewTargetsDecision),
     });
     const disabled = disabledReason !== null;
+    const label = disabled ? t('browserSurface.openDisabledA11y') : t('browserSurface.openA11y');
+    const glyphProps = props.iconColor
+        ? { icon: <Icon name="globe" size={ICON_SIZE.sm} color={disabled ? theme.colors.text.disabled : props.iconColor} /> }
+        : { iconName: 'globe' as const, iconSize: ICON_SIZE.sm };
 
     return (
-        <Pressable
+        <IconButton
             testID={props.testID}
-            accessibilityRole="button"
-            accessibilityLabel={disabled
-                ? t('browserSurface.openDisabledA11y')
-                : t('browserSurface.openA11y')}
-            accessibilityHint={disabled && disabledReason
-                ? resolveReasonCopy({ reasonCode: disabledReason, kind: 'browserSurface' }).message
-                : t('browserSurface.openHint')}
-            accessibilityState={{ disabled }}
+            variant="plain"
+            size={props.size}
+            minimumInteractiveTargetSize={resolveMinimumInteractiveTargetSize(Platform.OS)}
+            accessibilityLabel={label}
+            tooltip={t('browserSurface.openHint')}
             disabled={disabled}
-            onPress={() => {
-                if (!disabled) {
-                    props.onPress();
-                }
-            }}
-            style={[props.style, disabled ? props.disabledStyle : null]}
-        >
-            <Icon
-                name="globe"
-                size={16}
-                color={disabled ? theme.colors.text.disabled : props.iconColor ?? theme.colors.text.secondary}
-            />
-        </Pressable>
+            disabledReason={disabled && disabledReason
+                ? resolveReasonCopy({ reasonCode: disabledReason, kind: 'browserSurface' }).message
+                : undefined}
+            onPress={props.onPress}
+            {...glyphProps}
+        />
     );
 }

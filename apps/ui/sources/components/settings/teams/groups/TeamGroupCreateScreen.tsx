@@ -1,18 +1,21 @@
 import * as React from 'react';
-import { useRouter } from 'expo-router';
+import { useNavigation, useRouter } from '@/components/appShell/workspace/destinationRoute';
 import {
     TEAM_GROUP_NAME_MAX_LENGTH_V1,
     validateTeamGroupDescriptionV1,
     validateTeamGroupNameV1,
 } from '@happier-dev/protocol/teams';
 
+import { RoundButton } from '@/components/ui/buttons/RoundButton';
+import { FieldTextInput } from '@/components/ui/forms/FieldTextInput';
 import { Item } from '@/components/ui/lists/Item';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
-import { TextInput } from '@/components/ui/text/Text';
+import { SectionButtonRow } from '@/components/ui/lists/SectionButtonRow';
 import { randomUUID } from '@/platform/randomUUID';
 import { createTeamGroup } from '@/sync/ops/teams/teamGroupOperations';
 import { isTeamActionApprovalPendingError } from '@/sync/ops/teams/teamActionClient';
 import { t } from '@/text';
+import { useUnsavedDraftNavigationGuard } from '@/utils/navigation/useUnsavedDraftNavigationGuard';
 
 import { TeamSection } from '../TeamSection';
 import type { TeamSectionContext } from '../teamSectionContext';
@@ -23,14 +26,15 @@ const CreateGroupForm = React.memo(function CreateGroupForm(props: Readonly<{
     context: TeamSectionContext;
 }>) {
     const router = useRouter();
+    const navigation = useNavigation();
     const { context } = props;
     const [name, setName] = React.useState('');
     const [description, setDescription] = React.useState('');
     const [submitting, setSubmitting] = React.useState(false);
     const [error, setError] = React.useState<string | null>(null);
     const submitInFlightRef = React.useRef(false);
-    const nameInputRef = React.useRef<{ focus(): void } | null>(null);
-    const descriptionInputRef = React.useRef<{ focus(): void } | null>(null);
+    const nameInputRef = React.useRef<React.ComponentRef<typeof FieldTextInput> | null>(null);
+    const descriptionInputRef = React.useRef<React.ComponentRef<typeof FieldTextInput> | null>(null);
 
     React.useEffect(() => () => {
         submitInFlightRef.current = false;
@@ -45,6 +49,11 @@ const CreateGroupForm = React.memo(function CreateGroupForm(props: Readonly<{
 
     const nameValidation = validateTeamGroupNameV1(name);
     const descriptionValidation = validateTeamGroupDescriptionV1(description);
+    const { allowSavedNavigation } = useUnsavedDraftNavigationGuard({
+        navigation,
+        isDirty: name.length > 0 || description.length > 0,
+        tag: 'TeamGroupCreateScreen.beforeRemove',
+    });
 
     /**
      * One settlement for the immediate answer and the approved one. The Group's
@@ -52,8 +61,9 @@ const CreateGroupForm = React.memo(function CreateGroupForm(props: Readonly<{
      * Group it actually produced rather than degrading into "something changed".
      */
     const openCreatedGroup = React.useCallback((group: Readonly<{ id: string }>) => {
+        allowSavedNavigation();
         router.replace(teamGroupDetailPath(context.address, group.id));
-    }, [context.address, router]);
+    }, [allowSavedNavigation, context.address, router]);
 
     const submit = React.useCallback(async () => {
         if (submitInFlightRef.current) return;
@@ -113,61 +123,76 @@ const CreateGroupForm = React.memo(function CreateGroupForm(props: Readonly<{
 
     if (!context.team.capabilities.manageGroups) {
         return (
-            <ItemGroup footer={t('teams.errors.forbidden')}>
-                <Item testID="team-group-create-forbidden" title={t('homeGovernance.forbiddenTitle')} showChevron={false} />
+            <ItemGroup>
+                <Item
+                    testID="team-group-create-forbidden"
+                    title={t('homeGovernance.forbiddenTitle')}
+                    subtitle={t('teams.errors.forbidden')}
+                    subtitleLines={0}
+                    mode="info"
+                    showChevron={false}
+                />
             </ItemGroup>
         );
     }
 
     return (
         <>
-            <ItemGroup
-                title={t('teams.groups.nameLabel')}
-                footer={t('teams.groups.emptyBody')}
-            >
-                <TextInput
-                    ref={nameInputRef}
-                    testID="team-group-create-name"
-                    value={name}
-                    onChangeText={setName}
-                    placeholder={t('teams.groups.namePlaceholder')}
-                    accessibilityLabel={t('teams.groups.nameLabel')}
-                    maxLength={TEAM_GROUP_NAME_MAX_LENGTH_V1}
-                />
-            </ItemGroup>
-
-            <ItemGroup
-                title={t('teams.create.descriptionLabel')}
-                footer={descriptionValidation.status !== 'ok'
-                    ? t('teams.errors.invalidDescription')
-                    : undefined}
-            >
-                <TextInput
-                    ref={descriptionInputRef}
-                    testID="team-group-create-description"
-                    value={description}
-                    onChangeText={setDescription}
-                    placeholder={t('teams.create.descriptionPlaceholder')}
-                    accessibilityLabel={t('teams.create.descriptionLabel')}
-                    multiline
-                />
-            </ItemGroup>
-
-            <ItemGroup footer={error ?? undefined}>
+            <ItemGroup title={t('teams.groups.detailsSection')}>
                 <Item
-                    testID="team-group-create-submit"
-                    title={t('teams.groups.submit')}
-                    loading={submitting}
-                    // The description is as much a reason to withhold Create as
-                    // the name: the text is preserved, the field says what is
-                    // wrong, and no request is issued that the Home would refuse.
-                    disabled={nameValidation.status !== 'ok'
-                        || descriptionValidation.status !== 'ok'
-                        || submitting
-                        || !context.canMutate}
-                    onPress={() => void submit()}
+                    title={t('teams.groups.nameLabel')}
+                    accessoryLayout="adaptive"
                     showChevron={false}
+                    rightElement={(
+                        <FieldTextInput
+                            ref={nameInputRef}
+                            testID="team-group-create-name"
+                            value={name}
+                            onChangeText={setName}
+                            placeholder={t('teams.groups.namePlaceholder')}
+                            accessibilityLabel={t('teams.groups.nameLabel')}
+                            maxLength={TEAM_GROUP_NAME_MAX_LENGTH_V1}
+                            autoFocus
+                        />
+                    )}
                 />
+                <Item
+                    title={t('teams.create.descriptionLabel')}
+                    accessoryLayout="stacked"
+                    showChevron={false}
+                    rightElement={(
+                        <FieldTextInput
+                            ref={descriptionInputRef}
+                            testID="team-group-create-description"
+                            value={description}
+                            onChangeText={setDescription}
+                            placeholder={t('teams.groups.descriptionPlaceholder')}
+                            accessibilityLabel={t('teams.create.descriptionLabel')}
+                            multiline
+                            minLines={2}
+                            error={descriptionValidation.status !== 'ok' ? t('teams.errors.invalidDescription') : null}
+                        />
+                    )}
+                />
+            </ItemGroup>
+
+            <ItemGroup surface="none">
+                <SectionButtonRow footnote={error} footnoteTone="danger" footnoteTestID="team-group-create-error">
+                    <RoundButton
+                        testID="team-group-create-submit"
+                        size="small"
+                        title={t('teams.groups.submit')}
+                        loading={submitting}
+                        // The description is as much a reason to withhold Create as
+                        // the name: the text is preserved, the field says what is
+                        // wrong, and no request is issued that the Home would refuse.
+                        disabled={nameValidation.status !== 'ok'
+                            || descriptionValidation.status !== 'ok'
+                            || submitting
+                            || !context.canMutate}
+                        onPress={() => void submit()}
+                    />
+                </SectionButtonRow>
             </ItemGroup>
         </>
     );
@@ -178,7 +203,12 @@ export const TeamGroupCreateScreen = React.memo(function TeamGroupCreateScreen(p
     teamId: string;
 }>) {
     return (
-        <TeamSection serverId={props.serverId} teamId={props.teamId} title={t('teams.groups.create')}>
+        <TeamSection
+            serverId={props.serverId}
+            teamId={props.teamId}
+            title={t('teams.groups.create')}
+            description={t('teams.pages.newGroup')}
+        >
             {(context) => <CreateGroupForm context={context} />}
         </TeamSection>
     );

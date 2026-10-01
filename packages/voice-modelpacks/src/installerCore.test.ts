@@ -71,7 +71,10 @@ describe('installModelPackWithHost (shared core)', () => {
     expect(deriveModelPackStagingPlan(manifest, { ...source, pluginId: 'plugin.other' }).key).not.toBe(original.key);
     expect(deriveModelPackStagingPlan(manifest, {
       ...source,
-      artifactBinding: { kind: 'materialization', immutableGenerationId: 'generation-local-1' },
+      artifactBinding: {
+        kind: 'materialization',
+        sourceCustody: { kind: 'development', registeredRootId: 'development-root-1' },
+      },
     }).key).not.toBe(original.key);
   });
 

@@ -18,6 +18,7 @@ import { installSettingsViewCommonModuleMocks } from '../../settingsViewTestHelp
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 const routerPush = vi.hoisted(() => vi.fn());
+const languageMock = vi.hoisted(() => ({ current: 'en' }));
 const virtualizedBoundary = vi.hoisted(() => ({
     props: null as Record<string, unknown> | null,
     mountLimit: Number.POSITIVE_INFINITY,
@@ -60,6 +61,10 @@ vi.mock('@react-navigation/native', async () => {
 });
 
 installSettingsViewCommonModuleMocks({
+    text: async () => {
+        const { createTextModuleMock } = await import('@/dev/testkit/mocks/text');
+        return createTextModuleMock({ getPreferredLanguage: () => languageMock.current });
+    },
     router: async () => ({
         useRouter: () => ({ push: routerPush, back: vi.fn() }),
         useNavigation: () => ({ setOptions: vi.fn() }),
@@ -107,6 +112,7 @@ beforeEach(async () => {
     await harness.reset();
     await harness.selectHomes([]);
     routerPush.mockReset();
+    languageMock.current = 'en';
     navigationState.focusEffects = [];
     virtualizedBoundary.props = null;
     virtualizedBoundary.mountLimit = Number.POSITIVE_INFINITY;
@@ -117,6 +123,19 @@ afterEach(() => {
 });
 
 describe('TeamMembersScreen', () => {
+    it('formats the joined date in the selected app language', async () => {
+        languageMock.current = 'de';
+        const joinedAt = Date.parse('2025-02-03T12:00:00Z');
+        const serverId = await addHome(teamSummaryFixture({ viewerRole: 'member' }));
+        harness.answer(serverId, MEMBERS_LIST_PATH, {
+            body: { items: [teamMembershipFixture({ joinedAt })], nextCursor: null },
+        });
+
+        const screen = await renderMembers(serverId);
+        await waitForTestId(screen, 'team-members-row:membership-1');
+        expect(screen.findByTestId('team-members-row:membership-1')?.props.subtitle)
+            .toContain(new Intl.DateTimeFormat('de', { dateStyle: 'medium' }).format(joinedAt));
+    });
     it('renders a large roster as stable chunks in the canonical virtualized list', async () => {
         // Search box, filter group, then the member chunks.
         virtualizedBoundary.mountLimit = 3;
@@ -315,6 +334,20 @@ describe('TeamMembersScreen', () => {
         expect(harness.requestsFor(MEMBERS_LIST_PATH)).toHaveLength(0);
     });
 
+    it('does not offer retry after the Home authoritatively refuses the Members read', async () => {
+        const serverId = await addHome(teamSummaryFixture({
+            viewerRole: 'member',
+            capabilities: teamCapabilitiesFixture({}),
+        }));
+        harness.answer(serverId, MEMBERS_LIST_PATH, { status: 403, body: { error: 'forbidden' } });
+
+        const screen = await renderMembers(serverId);
+        await waitForTestId(screen, 'team-members-unavailable');
+
+        expect(collectRenderedTestIds(screen.tree.toJSON())).not.toContain('team-members-retry');
+        expect(screen.getTextContent()).toContain('teams.errors.forbidden');
+    });
+
     it('shows the owner-required notice from the Team condition, not from a local owner count', async () => {
         const serverId = await addHome(teamSummaryFixture({
             recovery: { kind: 'owner_required', canAppointOwner: true },
@@ -331,6 +364,7 @@ describe('TeamMembersScreen', () => {
                     // The one capability the recovery path projects.
                     capabilities: {
                         setRole: true,
+                        assignableRoles: ['owner'],
                         suspend: false,
                         reactivate: false,
                         remove: false,

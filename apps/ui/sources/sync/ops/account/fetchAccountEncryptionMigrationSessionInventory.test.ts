@@ -4,6 +4,11 @@ import {
     fetchAccountEncryptionMigrationSessionInventory,
 } from './fetchAccountEncryptionMigrationSessionInventory';
 
+const scope = {
+    scope: { serverId: 'home-a', accountId: 'account-a' },
+    isCurrent: () => true,
+};
+
 function buildSessionRow(params: Readonly<{
     id: string;
     layout?: 0 | 1;
@@ -99,6 +104,7 @@ describe('fetchAccountEncryptionMigrationSessionInventory', () => {
             fetchAccountEncryptionMigrationSessionInventory({
                 token: 'token',
                 request,
+                scope,
             }),
         ).resolves.toEqual([
             {
@@ -139,6 +145,7 @@ describe('fetchAccountEncryptionMigrationSessionInventory', () => {
             fetchAccountEncryptionMigrationSessionInventory({
                 token: 'token',
                 request,
+                scope,
             }),
         ).rejects.toThrow('repeated cursor');
     });
@@ -154,6 +161,7 @@ describe('fetchAccountEncryptionMigrationSessionInventory', () => {
             fetchAccountEncryptionMigrationSessionInventory({
                 token: 'token',
                 request,
+                scope,
             }),
         ).rejects.toThrow('pagination is incomplete');
     });
@@ -174,6 +182,7 @@ describe('fetchAccountEncryptionMigrationSessionInventory', () => {
         await expect(fetchAccountEncryptionMigrationSessionInventory({
             token: 'token',
             request,
+            scope,
         })).resolves.toHaveLength(501);
         expect(request).toHaveBeenCalledTimes(2);
     });
@@ -189,6 +198,7 @@ describe('fetchAccountEncryptionMigrationSessionInventory', () => {
             fetchAccountEncryptionMigrationSessionInventory({
                 token: 'token',
                 request,
+                scope,
             }),
         ).rejects.toThrow('Duplicate Session migration inventory row');
         expect(request).toHaveBeenCalledTimes(2);
@@ -226,7 +236,7 @@ describe('fetchAccountEncryptionMigrationSessionInventory', () => {
             nextCursor: null,
         }));
 
-        await expect(fetchAccountEncryptionMigrationSessionInventory({ token: 'token', request }))
+        await expect(fetchAccountEncryptionMigrationSessionInventory({ token: 'token', request, scope }))
             .resolves.toEqual([]);
     });
 
@@ -238,7 +248,33 @@ describe('fetchAccountEncryptionMigrationSessionInventory', () => {
             nextCursor: null,
         }));
 
-        await expect(fetchAccountEncryptionMigrationSessionInventory({ token: 'token', request }))
+        await expect(fetchAccountEncryptionMigrationSessionInventory({ token: 'token', request, scope }))
             .rejects.toThrow();
+    });
+
+    it('fails closed when the captured Home/Account scope retires during a page', async () => {
+        let releasePage!: () => void;
+        const pageReleased = new Promise<void>((resolve) => { releasePage = resolve; });
+        let current = true;
+        const request = vi.fn(async () => {
+            await pageReleased;
+            return jsonResponse({
+                sessions: [buildSessionRow({ id: 'stale-owner' })],
+                hasNext: false,
+                nextCursor: null,
+            });
+        });
+        const pending = fetchAccountEncryptionMigrationSessionInventory({
+            token: 'token',
+            request,
+            scope: {
+                scope: { serverId: 'home-a', accountId: 'account-a' },
+                isCurrent: () => current,
+            },
+        });
+
+        current = false;
+        releasePage();
+        await expect(pending).rejects.toThrow('Account Settings request scope changed');
     });
 });

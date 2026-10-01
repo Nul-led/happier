@@ -1,5 +1,7 @@
 import * as React from 'react';
-import { Pressable, View } from 'react-native';
+import { View } from 'react-native';
+
+import { RoundButton } from '@/components/ui/buttons/RoundButton';
 import { StyleSheet } from 'react-native-unistyles';
 import type {
     BrowserPermissionGrantV1,
@@ -45,24 +47,6 @@ const stylesheet = StyleSheet.create((theme) => ({
         alignItems: 'center',
         gap: 6,
         minWidth: 0,
-    },
-    actionButton: {
-        minHeight: 28,
-        justifyContent: 'center',
-        borderRadius: 6,
-        borderWidth: 1,
-        borderColor: theme.colors.border.default,
-        backgroundColor: theme.colors.surface.base,
-        paddingHorizontal: 8,
-    },
-    actionButtonDisabled: {
-        backgroundColor: theme.colors.surface.inset,
-    },
-    actionLabel: {
-        color: theme.colors.text.primary,
-    },
-    actionLabelDisabled: {
-        color: theme.colors.text.disabled,
     },
     separator: {
         color: theme.colors.text.disabled,
@@ -151,6 +135,7 @@ function Segment(props: Readonly<{
     );
 }
 
+/** A profile operation: the canonical small secondary button (pressed, hover, focus and disabled). */
 function ActionButton(props: Readonly<{
     label: string;
     testID: string;
@@ -158,27 +143,14 @@ function ActionButton(props: Readonly<{
     onPress?: () => void;
 }>): React.ReactElement {
     return (
-        <Pressable
-            accessibilityRole="button"
-            accessibilityState={{ disabled: props.disabled === true }}
-            disabled={props.disabled}
-            testID={props.testID}
-            style={[
-                stylesheet.actionButton,
-                props.disabled ? stylesheet.actionButtonDisabled : null,
-            ]}
+        <RoundButton
+            size="small"
+            display="secondary"
+            title={props.label}
+            disabled={props.disabled === true || !props.onPress}
             onPress={props.onPress}
-        >
-            <Text
-                numberOfLines={1}
-                style={[
-                    stylesheet.actionLabel,
-                    props.disabled ? stylesheet.actionLabelDisabled : null,
-                ]}
-            >
-                {props.label}
-            </Text>
-        </Pressable>
+            testID={props.testID}
+        />
     );
 }
 

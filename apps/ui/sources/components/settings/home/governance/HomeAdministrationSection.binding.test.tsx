@@ -110,6 +110,7 @@ function readyBinding(serverId: string, accountId: string): Extract<HomeAdminist
     return {
         kind: 'bound',
         scope,
+        lifetime: null,
         homeName: 'Home One',
         state: {
             kind: 'ready',
@@ -117,6 +118,8 @@ function readyBinding(serverId: string, accountId: string): Extract<HomeAdminist
             projection: homeGovernanceProjectionFixture(),
             refreshing: false,
             stale: false,
+            readFailed: false,
+            updating: false,
             lastObservedAt: 1,
             mutationsAvailable: true,
             error: null,

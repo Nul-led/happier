@@ -9,6 +9,7 @@ import {
 } from './bounds.js';
 import { TriageSourceDescriptorV1Schema } from './descriptor.js';
 import { TriageDetailSurfaceInputV1Schema } from './detail.js';
+import { TriagePullRequestStatusResultV1Schema } from './pullRequestStatus.js';
 import {
     TriageListInstancesInputV1Schema,
     TriageListInstancesResultV1Schema,
@@ -29,7 +30,7 @@ import {
 /**
  * The V1 source role contract.
  *
- * The three provider-read roles are `safe`; `prepareReviewWorkspace` is the one
+ * The provider-read roles, including optional PR status, are `safe`; `prepareReviewWorkspace` is the one
  * optional source-owned local materialization and is therefore `writesLocal`.
  * There is no generic search, mutation, decorate, credential, or
  * provider-operation role: other source writes remain ordinary named source
@@ -56,6 +57,12 @@ export const TriageSourcesContributionProtocolV1 = defineContributionProtocol({
             required: true,
             input: { kind: 'protocolDefined', schema: TriageGetInputV1Schema },
             resultSchema: TriageGetResultV1Schema,
+            action: { surfaces: ['plugin', 'ui'], dangerLevel: 'safe' },
+        },
+        readPullRequestStatus: {
+            required: false,
+            input: { kind: 'protocolDefined', schema: TriageGetInputV1Schema },
+            resultSchema: TriagePullRequestStatusResultV1Schema,
             action: { surfaces: ['plugin', 'ui'], dangerLevel: 'safe' },
         },
         prepareReviewWorkspace: {

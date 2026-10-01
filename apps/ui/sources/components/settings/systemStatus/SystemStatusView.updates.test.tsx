@@ -138,6 +138,11 @@ vi.mock('@/sync/domains/state/storage', async () => {
         useRealtimeStatus: () => 'connected',
         useSocketStatus: () => ({ status: 'connected', lastError: null, lastErrorAt: null }),
         useLastSyncAt: () => null,
+        // The active Home connection health reads these (another program's `useConnectionHealth` change).
+        useEndpointConnectivity: () => ({ status: 'online', reason: null, attempt: 1, nextRetryAt: null, lastConnectedAt: null, lastDisconnectedAt: null, lastErrorMessage: null }),
+        useSyncError: () => null,
+        useMachineListForServer: () => [],
+        useMachineListStatusForServer: () => 'loaded',
         useMachineListByServerId: () => ({}),
         useMachineListStatusByServerId: () => ({}),
     });
@@ -156,35 +161,8 @@ vi.mock('@/hooks/ui/useNativeUpdate', () => ({
 }));
 
 describe('SystemStatusView OTA section', () => {
-    it('shows a manual OTA check action when no update is pending', async () => {
-        useNativeUpdateMock.mockReturnValue(null);
-        useUpdatesMock.mockReturnValue({
-            otaUpdatesEnabled: true,
-            otaRuntimeSupported: true,
-            updateAvailable: false,
-            isChecking: false,
-            isDownloading: false,
-            isRestarting: false,
-            isUpdateAvailable: false,
-            isUpdatePending: false,
-            downloadProgress: undefined,
-            checkError: undefined,
-            downloadError: undefined,
-            lastCheckForUpdateTimeSinceRestart: undefined,
-            checkForUpdates: checkForUpdatesMock,
-            reloadApp: reloadAppMock,
-            currentlyRunning: { isEmbeddedLaunch: true },
-        });
-
-        const { SystemStatusView } = await import('./SystemStatusView');
-        const screen = await renderScreen(<SystemStatusView />);
-
-        expect(screen.findAllByProps({ title: 'updateBanner.checkNowTitle' }).length).toBeGreaterThan(0);
-        expect(screen.findAllByProps({ title: 'settingsAgents.authentication.checkNowTitle' })).toHaveLength(0);
-    });
-
-    it('shows an apply action and reloads when an OTA update is pending', async () => {
-        useNativeUpdateMock.mockReturnValue(null);
+    it('is diagnostics only: it reports the OTA state and sends the person to the one Updates entry (plan R13 (e))', async () => {
+        useNativeUpdateMock.mockReturnValue('https://example.test/update');
         useUpdatesMock.mockReturnValue({
             otaUpdatesEnabled: true,
             otaRuntimeSupported: true,
@@ -206,39 +184,16 @@ describe('SystemStatusView OTA section', () => {
         const { SystemStatusView } = await import('./SystemStatusView');
         const screen = await renderScreen(<SystemStatusView />);
 
-        const applyRow = screen.find((node) => (
-            node.props?.title === 'updateBanner.updateAvailable' &&
+        // No second place applies, checks or opens the store: those actions live in Settings › Updates.
+        expect(screen.findAll((node) => (
             typeof node.props?.onPress === 'function'
-        ));
-        await pressTestInstanceAsync(applyRow, 'apply OTA update');
-
-        expect(reloadAppMock).toHaveBeenCalledTimes(1);
-    });
-
-    it('shows the native store update row when a store update URL exists', async () => {
-        useNativeUpdateMock.mockReturnValue('https://example.test/update');
-        useUpdatesMock.mockReturnValue({
-            otaUpdatesEnabled: false,
-            otaRuntimeSupported: false,
-            updateAvailable: false,
-            isChecking: false,
-            isDownloading: false,
-            isRestarting: false,
-            isUpdateAvailable: false,
-            isUpdatePending: false,
-            downloadProgress: undefined,
-            checkError: undefined,
-            downloadError: undefined,
-            lastCheckForUpdateTimeSinceRestart: undefined,
-            checkForUpdates: checkForUpdatesMock,
-            reloadApp: reloadAppMock,
-            currentlyRunning: { isEmbeddedLaunch: true },
-        });
-
-        const { SystemStatusView } = await import('./SystemStatusView');
-        const screen = await renderScreen(<SystemStatusView />);
-
-        expect(screen.findAllByProps({ title: 'updateBanner.nativeUpdateAvailable' }).length).toBeGreaterThan(0);
+            && (node.props?.title === 'updateBanner.updateAvailable' || node.props?.title === 'updateBanner.checkNowTitle' || node.props?.title === 'updateBanner.nativeUpdateAvailable')
+        ))).toHaveLength(0);
+        expect(screen.findAllByProps({ title: 'updateBanner.lastCheckedTitle' }).length).toBeGreaterThan(0);
+        await pressTestInstanceAsync(screen.findByTestId('system-status-open-updates'), 'open Updates');
+        const { router } = await import('expo-router');
+        expect(router.push).toHaveBeenCalledWith('/settings/updates');
+        expect(reloadAppMock).not.toHaveBeenCalled();
     });
 
     it('hides OTA action rows when OTA runtime support is unavailable', async () => {

@@ -2,6 +2,8 @@ import { join } from 'node:path';
 
 import {
   projectAgentSessionProviderBindingV1,
+  isModelRefGrantedV1,
+  type CallerInputConstraintsV1,
   ProviderConnectionIdSchema,
   type ModelSelectionApplyPolicy,
   type ProviderBoundModelRef,
@@ -46,6 +48,7 @@ export type SessionModelTransitionAuthorizationRoute =
 
 export type SessionModelTransitionAuthorizer = ((
   selection: ProviderBoundModelRef,
+  callerInputConstraints?: CallerInputConstraintsV1,
 ) => Promise<AuthorizedSessionModelTransitionTarget>) & Readonly<{
   bindCurrentAuthorizationProof: (
     target: AuthorizedSessionModelTransitionTarget,
@@ -323,7 +326,10 @@ export function createSessionModelTransitionAuthorizer(params: Readonly<{
     };
   };
 
-  const authorizeSelection = async (selection: ProviderBoundModelRef) => {
+  const authorizeSelection = async (selection: ProviderBoundModelRef, callerInputConstraints?: CallerInputConstraintsV1) => {
+    if (callerInputConstraints && !isModelRefGrantedV1(callerInputConstraints, selection)) {
+      throw new Error('model_not_granted');
+    }
     const active = params.readActiveTarget();
     const restartTarget = (): AuthorizedSessionModelTransitionTarget => ({
       selection,

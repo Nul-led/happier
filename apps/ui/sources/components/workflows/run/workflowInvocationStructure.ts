@@ -7,6 +7,11 @@ import type {
     WorkflowProgressEnvelopeV1,
     WorkflowRunInvocationIndexV1,
 } from '@happier-dev/protocol/workflows/workflowProgressV1';
+import type { WorkflowInvocationCoverageKind } from '@/components/workflows/presentation/workflowLifecyclePresentation';
+import {
+    indexWorkflowFlowRunStates,
+    type WorkflowFlowNodeRunState,
+} from '@/components/workflows/flow/workflowFlowProjection';
 
 /**
  * Navigable identity for invocation rows that have not been opened.
@@ -27,6 +32,7 @@ import type {
 
 export type WorkflowOccurrenceCoordinate =
     | Readonly<{ kind: 'branch'; blockId: string; branchId: string }>
+    | Readonly<{ kind: 'workflow'; blockId: string }>
     | Readonly<{ kind: 'item'; blockId: string; index: number }>
     | Readonly<{ kind: 'iteration'; blockId: string; index: number }>;
 
@@ -43,6 +49,8 @@ export type WorkflowInvocationStructureEntry = Readonly<{
     occurrence: readonly WorkflowOccurrenceCoordinate[];
     /** True for a structural frame row (root, parallel branch body, loop iteration body). */
     isFrame: boolean;
+    /** Structural success is not a completed executable leaf. */
+    coverageKind: WorkflowInvocationCoverageKind;
 }>;
 
 type Scope = WorkflowInvocationPathV1['scope'];
@@ -79,7 +87,10 @@ function toIndex(decimal: string): number | null {
 
 function childContextForBlock(block: WorkflowBlock, scope: Scope): MemberContext | null {
     switch (block.kind) {
-        case 'step': return null;
+        case 'step':
+        case 'action':
+        case 'workflow':
+        case 'wait': return null;
         case 'parallel': return { kind: 'branchFrames', block, scope };
         case 'loop': return { kind: 'memberFrames', block, scope };
         case 'if': return { kind: 'conditionalBlocks', block, scope };
@@ -170,6 +181,9 @@ export function resolveWorkflowFlowNodeIdForInvocation(params: Readonly<{
     isFrame: boolean;
 }>): string | null {
     if (params.blockId === null || params.blockId === '$root') return null;
+    // This Flow contains the parent definition, not a called workflow's blocks.
+    // A coincidentally equal child id must not attach to a parent node.
+    if (params.scope.some((entry) => entry.kind === 'workflow')) return null;
     if (params.isFrame) {
         const tail = params.scope[params.scope.length - 1];
         if (tail !== undefined && tail.kind === 'branch' && tail.blockId === params.blockId) {
@@ -179,30 +193,27 @@ export function resolveWorkflowFlowNodeIdForInvocation(params: Readonly<{
     return params.blockId;
 }
 
-function findWorkflowBlockById(blocks: readonly WorkflowBlock[], id: string): WorkflowBlock | null {
+function collectWorkflowBlocksById(blocks: readonly WorkflowBlock[], into: Map<string, WorkflowBlock>): void {
     for (const block of blocks) {
-        if (block.id === id) return block;
+        into.set(block.id, block);
         switch (block.kind) {
-            case 'step': break;
+            case 'step':
+            case 'action':
+            case 'workflow':
+            case 'wait': break;
             case 'parallel':
-                for (const branch of block.branches) {
-                    const found = findWorkflowBlockById(branch.blocks, id);
-                    if (found !== null) return found;
-                }
+                for (const branch of block.branches) collectWorkflowBlocksById(branch.blocks, into);
                 break;
-            case 'loop': {
-                const found = findWorkflowBlockById(block.body, id);
-                if (found !== null) return found;
+            case 'loop':
+                collectWorkflowBlocksById(block.body, into);
+                if (block.repetition.kind === 'evaluate') into.set(block.repetition.evaluator.id, block.repetition.evaluator);
                 break;
-            }
-            case 'if': {
-                const found = findWorkflowBlockById(block.then, id) ?? findWorkflowBlockById(block.otherwise, id);
-                if (found !== null) return found;
+            case 'if':
+                collectWorkflowBlocksById(block.then, into);
+                collectWorkflowBlocksById(block.otherwise, into);
                 break;
-            }
         }
     }
-    return null;
 }
 
 /**
@@ -213,11 +224,12 @@ function findWorkflowBlockById(blocks: readonly WorkflowBlock[], id: string): Wo
 function childContextFromProgress(
     progress: WorkflowProgressEnvelopeV1,
     definition: WorkflowDefinitionV1,
+    blocksById: ReadonlyMap<string, WorkflowBlock>,
 ): MemberContext | null {
     const path = progress.invocationPath;
     if (path.blockId === '$root') return { kind: 'list', blocks: definition.blocks, scope: [] };
-    const block = findWorkflowBlockById(definition.blocks, path.blockId);
-    if (block === null) return null;
+    const block = blocksById.get(path.blockId);
+    if (block === undefined) return null;
     if (progress.frame !== undefined) {
         if (block.kind === 'parallel') {
             const tail = path.scope[path.scope.length - 1];
@@ -238,28 +250,6 @@ function childContextFromProgress(
     return childContextForBlock(block, path.scope);
 }
 
-function collectLoopBlocksById(
-    blocks: readonly WorkflowBlock[],
-    into: Map<string, LoopBlock>,
-): void {
-    for (const block of blocks) {
-        switch (block.kind) {
-            case 'step': break;
-            case 'parallel':
-                for (const branch of block.branches) collectLoopBlocksById(branch.blocks, into);
-                break;
-            case 'loop':
-                into.set(block.id, block);
-                collectLoopBlocksById(block.body, into);
-                break;
-            case 'if':
-                collectLoopBlocksById(block.then, into);
-                collectLoopBlocksById(block.otherwise, into);
-                break;
-        }
-    }
-}
-
 /**
  * Scope coordinates carry the authored distinction between an item occurrence
  * and a plain iteration, which the private path alone does not record.
@@ -274,7 +264,7 @@ function describeOccurrence(
     frameHint?: WorkflowProgressEnvelopeV1['frame'],
 ): readonly WorkflowOccurrenceCoordinate[] {
     return scope.map((entry) => {
-        if (entry.kind === 'branch') return entry;
+        if (entry.kind === 'branch' || entry.kind === 'workflow') return entry;
         const loop = loopsById.get(entry.blockId);
         const isItem = loop !== undefined
             ? loop.repetition.kind === 'items'
@@ -295,20 +285,31 @@ export function projectWorkflowInvocationStructure(params: Readonly<{
     const definition = params.definition;
     if (definition === null) return entries;
 
+    const blocksById = new Map<string, WorkflowBlock>();
+    collectWorkflowBlocksById(definition.blocks, blocksById);
     const loopsById = new Map<string, LoopBlock>();
-    collectLoopBlocksById(definition.blocks, loopsById);
+    for (const block of blocksById.values()) if (block.kind === 'loop') loopsById.set(block.id, block);
 
     const record = (
         invocationId: string,
-        resolved: Readonly<{ blockId: string | null; scope: Scope; isFrame: boolean }>,
+        resolved: Readonly<{ blockId: string | null; scope: Scope; isFrame: boolean; blockKind?: WorkflowProgressEnvelopeV1['blockKind'] }>,
         frameHint?: WorkflowProgressEnvelopeV1['frame'],
     ): void => {
+        const block = resolved.blockId === null ? undefined : blocksById.get(resolved.blockId);
+        // An opened row states its own kind, including inside a called workflow.
+        // The parent definition can explain only unopened parent-definition rows.
+        const blockKind = resolved.blockKind ?? block?.kind;
         entries.set(invocationId, {
             invocationId,
             nodeId: resolveWorkflowFlowNodeIdForInvocation(resolved),
             blockId: resolved.blockId,
             occurrence: describeOccurrence(resolved.scope, loopsById, frameHint),
             isFrame: resolved.isFrame,
+            coverageKind: resolved.isFrame || resolved.blockId === '$root'
+                ? 'structural'
+                : blockKind === undefined
+                    ? 'unknown'
+                    : blockKind === 'step' || blockKind === 'action' || blockKind === 'wait' ? 'executable' : 'structural',
         });
     };
 
@@ -323,6 +324,7 @@ export function projectWorkflowInvocationStructure(params: Readonly<{
             // which describes where it ran — not that it is a container.
             record(invocation.id, {
                 blockId: progress.invocationPath.blockId,
+                blockKind: progress.blockKind,
                 scope: progress.invocationPath.scope,
                 isFrame: progress.blockKind === 'root'
                     || (progress.frame !== undefined
@@ -364,7 +366,7 @@ export function projectWorkflowInvocationStructure(params: Readonly<{
         for (const child of children) {
             const progress = progressById?.get(child.id);
             if (progress !== undefined) {
-                queue.push({ invocationId: child.id, children: childContextFromProgress(progress, definition) });
+                queue.push({ invocationId: child.id, children: childContextFromProgress(progress, definition, blocksById) });
                 continue;
             }
             const ordinal = toIndex(child.memberOrdinal);
@@ -381,4 +383,33 @@ export function projectWorkflowInvocationStructure(params: Readonly<{
     }
 
     return entries;
+}
+
+/**
+ * The run state Flow draws on each authored node: exactly the lifecycles the
+ * invocation owner supplied, placed by this structure owner. It never derives a
+ * lifecycle from structure or timing, and structural frames are scopes, not
+ * executions of their block, so they are left out. Run detail and a Work row's
+ * compact map both read it, so the two cannot place a row differently.
+ */
+export function projectWorkflowFlowRunStates(params: Readonly<{
+    invocations: readonly WorkflowRunInvocationIndexV1[];
+    structure: ReadonlyMap<string, WorkflowInvocationStructureEntry>;
+    /** Names a row's occurrence ("Item 3"); omitted where only the state is drawn. */
+    formatOccurrence?: (occurrence: readonly WorkflowOccurrenceCoordinate[]) => string | undefined;
+}>): ReadonlyMap<string, readonly WorkflowFlowNodeRunState[]> {
+    const states: WorkflowFlowNodeRunState[] = [];
+    for (const invocation of params.invocations) {
+        const entry = params.structure.get(invocation.id);
+        if (entry === undefined || entry.nodeId === null || entry.isFrame) continue;
+        const occurrenceLabel = params.formatOccurrence?.(entry.occurrence);
+        states.push({
+            nodeId: entry.nodeId,
+            invocationId: invocation.id,
+            lifecycle: invocation.lifecycle,
+            attempt: invocation.attempt,
+            ...(occurrenceLabel === undefined ? {} : { occurrenceLabel }),
+        });
+    }
+    return indexWorkflowFlowRunStates(states);
 }

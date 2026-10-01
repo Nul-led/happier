@@ -3,6 +3,7 @@ import tweetnacl from 'tweetnacl';
 import {
   AccountApiTokensCreateActionInputV1Schema,
   AccountApiTokensCreateActionOutputV1Schema,
+  AccountApiTokensListActionOutputV1Schema,
   AccountApiTokensRevokeActionInputV1Schema,
   AccountApiTokensServerErrorV1Schema,
   computeAccountEncryptionMigrateKeyFingerprintV1,
@@ -10,8 +11,10 @@ import {
   formatAccountApiTokenCredentialV1,
   openApiTokenEncryptionAccessV1,
   parseAccountApiTokenBearerV1,
+  isApiTokenGrantRestrictedV1,
   wrapApiTokenEncryptionAccessV1,
   type ActionExecuteResult,
+  type AccountApiTokenSummaryV1,
 } from '@happier-dev/protocol';
 import { encodeBase64 } from '@happier-dev/protocol/crypto/base64';
 
@@ -78,6 +81,30 @@ function unwrap(result: ActionExecuteResult): unknown {
   return result.result;
 }
 
+function formatTokenAccess(token: AccountApiTokenSummaryV1): string {
+  const grant = token.grant;
+  const parts = [isApiTokenGrantRestrictedV1(grant) ? 'Limited' : 'Full access'];
+  if (grant.actions) parts.push(`${grant.actions.ids.length} Actions, ${grant.actions.families.length} families`);
+  if (grant.targets) parts.push(`${grant.targets.sessions.length} sessions, ${grant.targets.machines.length} computers`);
+  if (grant.models) parts.push(`${grant.models.length} models`);
+  if (grant.permissionModes) parts.push(`${grant.permissionModes.length} permission modes`);
+  if (grant.create) parts.push('managed creation');
+  parts.push(grant.approve ? 'approvals on' : 'approvals off');
+  if (grant.origins.length) parts.push(`${grant.origins.length} websites`);
+  if (token.hasEncryptionAccess) parts.push('content access');
+  return parts.join('; ');
+}
+
+function printTokenList(tokens: readonly AccountApiTokenSummaryV1[]): void {
+  const rows = [
+    ['Label', 'Token', 'Access', 'Expires'],
+    ...tokens.map((token) => [token.label.replace(/\s+/gu, ' '), token.tokenId,
+      formatTokenAccess(token), token.expiresAt ?? 'Never']),
+  ];
+  const widths = rows[0]!.map((_, index) => rows.reduce((width, row) => Math.max(width, row[index]!.length), 0));
+  console.log(rows.map((row) => row.map((cell, index) => cell.padEnd(widths[index]!)).join('  ').trimEnd()).join('\n'));
+}
+
 async function prepareEncryption(
   credentials: StoredCredentials,
   serverUrl: string,
@@ -128,6 +155,7 @@ export async function handleAuthApiTokens(args: string[], signal?: AbortSignal):
   const kind = `auth_api_tokens_${args[0] ?? 'help'}`;
   let requestedTokenId: string | undefined;
   let outcomeUnknown = false;
+  let createRequestStarted = false;
   try {
     args = await applyServerSelectionFromArgs(args);
     if (signal?.aborted) throw new ApiTokenCommandError('cancelled');
@@ -160,10 +188,14 @@ export async function handleAuthApiTokens(args: string[], signal?: AbortSignal):
     if (signal?.aborted) throw new ApiTokenCommandError('cancelled');
     const serverId = configuration.activeServerId;
     const serverUrl = configuration.apiServerUrl;
-    const executor = createCliActionExecutorFromCredentials({ credentials, serverId, serverApiUrl: serverUrl });
+    const executor = createCliActionExecutorFromCredentials({
+      credentials,
+      serverId,
+      serverApiUrl: serverUrl,
+      onAccountServerRequestIssued: () => { createRequestStarted = true; },
+    });
     const context = {
       surface: 'cli' as const,
-      authority: 'present_user' as const,
       actionCaller: { kind: 'host' as const },
       serverId,
       ...(command === 'create'
@@ -219,19 +251,20 @@ export async function handleAuthApiTokens(args: string[], signal?: AbortSignal):
         // Known Action settlements are pre-effect or otherwise explicit. Only
         // canonical transport uncertainty or a mismatched post-effect success
         // acknowledgement makes creation unknowable to this process.
-        outcomeUnknown = !(error instanceof ApiTokenCommandError)
+        outcomeUnknown = createRequestStarted && (!(error instanceof ApiTokenCommandError)
           || error.code === 'outcome_unknown'
-          || error.code === 'api_token_response_mismatch';
+          || error.code === 'api_token_response_mismatch');
         throw error;
       } finally { prepared?.wrappingSecret.fill(0); }
     } else if (command === 'list') {
-      data = unwrap(await executor.execute('account.apiTokens.list', {}, context));
+      data = AccountApiTokensListActionOutputV1Schema.parse(unwrap(await executor.execute('account.apiTokens.list', {}, context)));
     } else if (command === 'revoke') {
       const input = AccountApiTokensRevokeActionInputV1Schema.safeParse({ tokenId: readCommandPositionals(args, { startIndex: 1 })[0] });
       if (!input.success) throw new ApiTokenCommandError('invalid_arguments', USAGE);
       data = unwrap(await executor.execute('account.apiTokens.revoke', input.data, context));
     } else data = unwrap(await executor.execute('account.apiTokens.revokeAll', {}, context));
     if (wantsJson(args)) await printJsonEnvelope({ ok: true, kind, data });
+    else if (command === 'list') printTokenList(AccountApiTokensListActionOutputV1Schema.parse(data).tokens);
     else await writeJsonStdout(data, { pretty: true });
   } catch (error) {
     const code = outcomeUnknown ? 'api_token_creation_outcome_unknown' : error instanceof ApiTokenCommandError ? error.code : isAuthenticationError(error) ? 'not_authenticated' : 'api_token_operation_failed';

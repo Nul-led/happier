@@ -36,6 +36,8 @@ export function createAccountServiceReturn(pending: Readonly<{
     return {
         pathname,
         params: {
+            // A pending sign-in stored before account entry moved to `/homes/sign-in` still names the
+            // wizard path; it keeps the mode that path's redirect recognizes.
             ...(pathname === '/setup/wizard' ? { mode: 'account-entry' } : {}),
             ...(accountEntryReturnTo ? { accountEntryReturnTo } : {}),
             accountServiceEndpoint: endpoint,

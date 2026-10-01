@@ -1,6 +1,7 @@
 import * as React from 'react';
+import { useIsFocused } from '@/components/appShell/workspace/destinationRoute';
 import type { TextInput } from 'react-native';
-import { useNavigation, useRouter } from 'expo-router';
+import { useNavigation, useRouter } from '@/components/appShell/workspace/destinationRoute';
 import { useUnistyles } from 'react-native-unistyles';
 import {
     areProviderContributionKeysEqualV1,
@@ -40,6 +41,7 @@ import {
 } from '@/providers/rpc/client';
 import { useAllMachines, useSetting } from '@/sync/domains/state/storage';
 import { t } from '@/text';
+import { getMachineDisplayName } from '@/utils/sessions/machineDisplayNames';
 import { ProviderFeatureAvailabilityNotice, useProviderFeatureAvailability } from './ProviderFeatureAvailability';
 import { useActiveUnsavedChangesGuard } from '@/utils/navigation/useActiveUnsavedChangesGuard';
 import { useUnsavedChangesBeforeRemoveGuard } from '@/utils/navigation/useUnsavedChangesBeforeRemoveGuard';
@@ -47,6 +49,11 @@ import { promptUnsavedChangesAlert } from '@/utils/ui/promptUnsavedChangesAlert'
 import { BuiltInProviderAuthoringView } from './authoring/BuiltInProviderAuthoringView';
 import { CustomProviderAuthoringView } from './authoring/CustomProviderAuthoringView';
 import { useSavedSecretCatalog } from '@/components/secrets/useSavedSecretCatalog';
+import { MachineAdministrationContextBar } from '@/components/settings/machines/MachineAdministrationContextBar';
+import { openExternalUrl } from '@/utils/url/openExternalUrl';
+import { runGuardedNavigation } from '@/utils/navigation/runGuardedNavigation';
+import { fireAndForget } from '@/utils/system/fireAndForget';
+import { publishProviderDraftTitle } from './collection/providerDraftTitle';
 
 const PRESETS: readonly CustomProviderPreset[] = ['openai-responses', 'openai-chat', 'anthropic'];
 
@@ -144,7 +151,8 @@ export const ProviderConnectionAuthoringScreen = React.memo(function ProviderCon
         selectedTargetServerMatchesActiveAccount,
         serverId,
     } = providerTarget;
-    const query = useProviderConnections({ enabled, machineId, serverId });
+    const focused = useIsFocused();
+    const query = useProviderConnections({ enabled, active: focused, machineId, serverId });
     const refreshConnections = React.useCallback(async (): Promise<void> => {
         await query.refresh();
     }, [query.refresh]);
@@ -181,7 +189,12 @@ export const ProviderConnectionAuthoringScreen = React.memo(function ProviderCon
     const isDirtyRef = React.useRef(false);
     const probeGenerationRef = React.useRef(0);
     const authoringPreviewGenerationRef = React.useRef(0);
-    const candidateMachineRef = React.useRef(machineId);
+    const candidateContextRef = React.useRef({
+        machineId,
+        serverId,
+        candidateId: props.candidateId ?? null,
+        displayName: props.displayName ?? null,
+    });
     const secretPickerModalIdRef = React.useRef<string | null>(null);
     const closeSecretPicker = React.useCallback(() => {
         if (!secretPickerModalIdRef.current) return;
@@ -264,14 +277,18 @@ export const ProviderConnectionAuthoringScreen = React.memo(function ProviderCon
     // same Account keeps full route continuity. Dispatch-time fencing is owned
     // independently by the target resolver, so a buffer captured under A can
     // reach neither this screen's state nor B's daemon.
-    const discardAccountScopedAuthoringState = React.useCallback(() => {
+    const discardAuthoringDraft = React.useCallback(() => {
         const freshDraft = createCustomProviderDraft('openai-responses');
+        const resetCandidateContext = candidateContextRef.current.machineId === machineId
+            && candidateContextRef.current.serverId === serverId
+            ? candidateContextRef.current
+            : { machineId, serverId, candidateId: null, displayName: null };
         const resetStateKey = buildAuthoringStateKey({
             draft: freshDraft,
             secretId: null,
             enableAfterSaving: true,
-            selectedCandidateId: props.candidateId ?? null,
-            contributionDisplayName: props.displayName ?? null,
+            selectedCandidateId: resetCandidateContext.candidateId,
+            contributionDisplayName: resetCandidateContext.displayName,
             contributionEndpointValues: {},
         });
         closeSecretPicker();
@@ -284,8 +301,8 @@ export const ProviderConnectionAuthoringScreen = React.memo(function ProviderCon
         setLocalError(null);
         setManualModelsError(null);
         setInvalidField(null);
-        setSelectedCandidateId(props.candidateId ?? null);
-        setContributionDisplayName(props.displayName ?? null);
+        setSelectedCandidateId(resetCandidateContext.candidateId);
+        setContributionDisplayName(resetCandidateContext.displayName);
         setContributionEndpointValues({});
         setAuthoringPreview(null);
         setAuthoringPreviewLoading(false);
@@ -298,11 +315,17 @@ export const ProviderConnectionAuthoringScreen = React.memo(function ProviderCon
         mutation.clearError();
         ignoreUnsavedGuardRef.current = false;
         isDirtyRef.current = false;
-        candidateMachineRef.current = machineId;
+        candidateContextRef.current = resetCandidateContext;
         // The reset form is pristine again, so the guard must not claim
         // unsaved Account A work on Account B's behalf.
         initialAuthoringStateKeyRef.current = resetStateKey;
-    }, [closeSecretPicker, machineId, mutation.clearError, props.candidateId, props.displayName]);
+    }, [closeSecretPicker, machineId, mutation.clearError, serverId]);
+    const discardAccountScopedAuthoringState = React.useCallback(() => {
+        // Discovery defaults came from the retiring Account, even when its
+        // successor restores the same server and machine identifiers.
+        candidateContextRef.current = { machineId, serverId, candidateId: null, displayName: null };
+        discardAuthoringDraft();
+    }, [discardAuthoringDraft, machineId, serverId]);
     // One incumbent lifetime owns both synchronous form retirement and every
     // callback fence; there is no Provider-local Account epoch.
     const accountLifetime = useRetireProviderStateOnAccountChange(discardAccountScopedAuthoringState);
@@ -316,11 +339,20 @@ export const ProviderConnectionAuthoringScreen = React.memo(function ProviderCon
     }, [probeObservationKey]);
 
     React.useEffect(() => {
-        if (candidateMachineRef.current === machineId) return;
-        candidateMachineRef.current = machineId;
+        if (candidateContextRef.current.machineId === machineId && candidateContextRef.current.serverId === serverId) return;
+        candidateContextRef.current = { machineId, serverId, candidateId: null, displayName: null };
+        // Discovery route seeds belong to the old machine. Retiring them from
+        // a pristine (including just-discarded) form is not a user edit.
+        if (!isDirtyRef.current) {
+            initialAuthoringStateKeyRef.current = buildAuthoringStateKey({
+                draft, secretId: effectiveSecretId, enableAfterSaving,
+                selectedCandidateId: null, contributionDisplayName: null,
+                contributionEndpointValues,
+            });
+        }
         setSelectedCandidateId(null);
         setContributionDisplayName(null);
-    }, [machineId]);
+    }, [contributionEndpointValues, draft, effectiveSecretId, enableAfterSaving, machineId, serverId]);
 
     React.useEffect(() => {
         const generation = authoringPreviewGenerationRef.current + 1;
@@ -563,6 +595,7 @@ export const ProviderConnectionAuthoringScreen = React.memo(function ProviderCon
         isDirty: isDirtyRef.current,
         isDirtyRef,
         requestDecision: requestUnsavedChangesDecision,
+        onDiscard: discardAuthoringDraft,
         onSave: save,
         continueOnSave: false,
         onContinue: continueNavigation,
@@ -574,10 +607,11 @@ export const ProviderConnectionAuthoringScreen = React.memo(function ProviderCon
             isDirtyRef,
             ignoreRef: ignoreUnsavedGuardRef,
             requestDecision: requestUnsavedChangesDecision,
+            onDiscard: discardAuthoringDraft,
             onSave: save,
             continueOnSave: false,
             tag: 'ProviderConnectionAuthoringScreen.shellGuard',
-        }), [requestUnsavedChangesDecision, save]),
+        }), [discardAuthoringDraft, requestUnsavedChangesDecision, save]),
     });
 
     const presets = React.useMemo<readonly DropdownMenuItem[]>(() => PRESETS.map((id) => ({
@@ -592,16 +626,51 @@ export const ProviderConnectionAuthoringScreen = React.memo(function ProviderCon
         { id: 'custom-header', title: t('settingsProviders.authoring.credentialStyle.customHeader') },
         { id: 'custom-header-bearer', title: t('settingsProviders.authoring.credentialStyle.customHeaderBearer') },
     ], []);
+    const leaveDraft = React.useCallback(() => {
+        discardAuthoringDraft();
+        const result = runGuardedNavigation(() => router.replace('/(app)/settings/providers' as never));
+        if (result !== true) fireAndForget(result, { tag: 'ProviderConnectionAuthoringScreen.discard' });
+    }, [discardAuthoringDraft, router]);
+    const openWebsite = React.useCallback(async (url: string) => {
+        let opened = false;
+        try {
+            opened = await openExternalUrl(url);
+        } catch {
+            opened = false;
+        }
+        if (!opened) await Modal.alert(t('common.error'), t('settingsProviders.links.failedToOpen'));
+    }, []);
+    // The collection's draft row shows the name being written here.
+    const draftTitle = props.contributionKey
+        ? contributionDisplayName ?? contribution?.name ?? ''
+        : draft.name;
+    React.useEffect(() => {
+        publishProviderDraftTitle(draftTitle);
+    }, [draftTitle]);
+    React.useEffect(() => () => publishProviderDraftTitle(''), []);
     const retryMutation = React.useCallback(async (): Promise<void> => {
         if (!accountStillCurrent() || !mutation.retry) return;
         await mutation.retry();
     }, [accountStillCurrent, mutation.retry]);
 
-    if (availabilityPresentation) {
-        return <ItemList><ItemGroup><ProviderFeatureAvailabilityNotice presentation={availabilityPresentation} /></ItemGroup></ItemList>;
-    }
-    if (!machineId) {
-        return <ItemList><ItemGroup><Item mode="info" title={t('settingsProviders.noMachine')} subtitle={t('settingsProviders.noMachineDescription')} /></ItemGroup></ItemList>;
+    const contextBar = (
+        <MachineAdministrationContextBar
+            label={t('settingsProvidersCollection.machineScopeLabel')}
+            selection={providerTarget.selection}
+            testIDPrefix="settings.providers.administration.target"
+        />
+    );
+    if (availabilityPresentation || !machineId) {
+        return (
+            <ItemList presentation="page">
+                {contextBar}
+                <ItemGroup>
+                    {availabilityPresentation
+                        ? <ProviderFeatureAvailabilityNotice presentation={availabilityPresentation} />
+                        : <Item mode="info" title={t('settingsProviders.noMachine')} subtitle={t('settingsProviders.noMachineDescription')} />}
+                </ItemGroup>
+            </ItemList>
+        );
     }
 
     const displayError = mutation.error ?? authoringPreviewError ?? localError;
@@ -612,16 +681,17 @@ export const ProviderConnectionAuthoringScreen = React.memo(function ProviderCon
             : undefined;
     const localEndpoint = localEndpointHint(draft);
     const targetMachine = machines.find((machine) => machine.id === machineId);
-    const currentMachineName = targetMachine?.metadata?.displayName || targetMachine?.metadata?.host || machineId;
+    const currentMachineName = getMachineDisplayName(targetMachine) ?? machineId;
 
     if (props.contributionKey) {
         const previewCredential = authoringPreview?.credential ?? contribution?.credential ?? null;
         return (
             <BuiltInProviderAuthoringView
-                targetSelection={providerTarget.selection}
+                contextBar={contextBar}
                 machineId={machineId}
                 currentMachineName={currentMachineName}
                 providerName={contribution?.name ?? null}
+                icon={contribution?.icon ?? null}
                 provenance={contribution?.provenance ?? null}
                 websiteUrl={contribution?.websiteUrl}
                 keyUrl={contribution?.credential?.keyUrl}
@@ -652,14 +722,16 @@ export const ProviderConnectionAuthoringScreen = React.memo(function ProviderCon
                     if (accountStillCurrent()) setEnableAfterSaving(enable);
                 }}
                 onSave={() => { void save(); }}
+                onOpenWebsite={(url) => { void openWebsite(url); }}
+                onDiscard={leaveDraft}
             />
         );
     }
 
     return (
         <CustomProviderAuthoringView
+            contextBar={contextBar}
             model={{
-                targetSelection: providerTarget.selection,
                 machineId,
                 currentMachineName,
                 draft,
@@ -731,6 +803,7 @@ export const ProviderConnectionAuthoringScreen = React.memo(function ProviderCon
                 onReviewConnection: reviewConnectionDraft,
                 onTest: () => { void testDraft(); },
                 onSave: () => { void save(); },
+                onDiscard: leaveDraft,
             }}
         />
     );

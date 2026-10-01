@@ -16,7 +16,9 @@ import {
 import qrcode from 'qrcode-terminal';
 
 import { buildCurrentAccountStoredContentCompatibilityHttpHeaders } from '@/api/clientCompatibility/cliClientCompatibility';
+import { buildTerminalAuthorityCeilingHttpHeaders } from '@/settings/accountSettings/resolveEffectiveTerminalPresentUserPolicy';
 import { acquireTerminalAuthEnrollmentRuntime } from '@/auth/terminalAuthEnrollmentRuntime';
+import { resolveAuthenticatedExactHomeConnectionDescriptorObservation } from '@/auth/terminalAuthEnrollmentClient';
 import { observeServerFeaturesSnapshot } from '@/features/serverFeaturesClient';
 import { readStoredCredentialsForServerId } from '@/persistence';
 import {
@@ -177,11 +179,21 @@ export async function runCliDirectHomeQr(input: Readonly<{
     await acquired.close().catch(() => undefined);
     return { kind: 'failed', status: 503 };
   }
-  const observedDescriptor = observed.features.homeConnectionDescriptor;
-  if (!observedDescriptor || observedDescriptor.homeServerIdentityId !== storedDescriptor.homeServerIdentityId) {
+  let exactObservation;
+  try {
+    exactObservation = resolveAuthenticatedExactHomeConnectionDescriptorObservation({
+      snapshot: observed,
+      expectedHomeServerIdentityId: storedDescriptor.homeServerIdentityId,
+    });
+  } catch {
     await acquired.close().catch(() => undefined);
     return { kind: 'failed', status: 412 };
   }
+  if (exactObservation.kind === 'unavailable') {
+    await acquired.close().catch(() => undefined);
+    return { kind: 'update_required' };
+  }
+  const observedDescriptor = exactObservation.descriptor;
   // Admission owns whether this flow may mutate state at all. The lifecycle
   // repeats the same canonical check immediately before starting the pairing.
   if (admitDirectHomeQrV2(observed.features).kind !== 'admitted') {
@@ -209,6 +221,7 @@ export async function runCliDirectHomeQr(input: Readonly<{
   let qrOutput: string | null = null;
   const authHeaders = () => ({
     ...buildCurrentAccountStoredContentCompatibilityHttpHeaders(),
+    ...buildTerminalAuthorityCeilingHttpHeaders({ token: credentials.token, serverHttpBaseUrl: origin }),
     Authorization: `Bearer ${credentials.token}`,
   });
   const adapters: DirectHomeQrLifecycleAdapters = {
@@ -300,7 +313,7 @@ export async function runCliDirectHomeQr(input: Readonly<{
             pairId: context.pairId,
             publicKey: Buffer.from(requesterPublicKey).toString('base64'),
             response: Buffer.from(sealed).toString('base64'),
-            homeServerIdentityId: context.descriptor.homeServerIdentityId,
+            homeServerIdentityId: context.homeServerIdentityId,
             responseKind,
           }),
           signal,

@@ -61,6 +61,7 @@ function enrolledPlainProjection(revision: number) {
     return {
         v: 1 as const,
         encryptionMode: 'plain' as const,
+        terminalPresentUserPolicy: 'allowed' as const,
         nativeEmail: 'person@example.test',
         password: { status: 'enrolled' as const, revision },
     };
@@ -76,6 +77,7 @@ function createClient(overrides: Partial<Record<string, unknown>> = {}) {
         changeE2eePassword: vi.fn(),
         removePlainPassword: vi.fn(),
         removeE2eePassword: vi.fn(),
+        setTerminalPresentUserPolicy: vi.fn(async (terminalPresentUserPolicy: 'allowed' | 'disallowed') => ({ v: 1 as const, terminalPresentUserPolicy })),
         requestEmailChange: vi.fn(),
         ...overrides,
     };
@@ -99,7 +101,7 @@ function readFormError(): unknown {
 
 it('reports an unconfirmed outcome instead of blaming the credential when a change loses its verdict', async () => {
     const client = createClient({
-        changePlainPassword: vi.fn(async () => { throw new TypeError('Network request failed'); }),
+        changePlainPassword: vi.fn(async () => { throw new HappyError('unknown', false, { code: 'outcome_unknown' }); }),
     });
     await openChangePasswordForm(client);
 
@@ -112,7 +114,7 @@ it('reports an unconfirmed outcome instead of blaming the credential when a chan
 
 it('reconciles the authoritative projection after an unconfirmed change so the form is not left stale', async () => {
     const client = createClient({
-        changePlainPassword: vi.fn(async () => { throw new TypeError('Network request failed'); }),
+        changePlainPassword: vi.fn(async () => { throw new HappyError('unknown', false, { code: 'outcome_unknown' }); }),
     });
     await openChangePasswordForm(client);
     const readsBeforeSubmit = client.read.mock.calls.length;

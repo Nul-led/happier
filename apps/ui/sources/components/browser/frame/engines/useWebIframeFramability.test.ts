@@ -33,9 +33,9 @@ describe('useWebIframeFramability', () => {
         expect(result.getCurrent().verdict).toBe('framable');
     });
 
-    it('concludes non-framable when the timeout elapses with no onLoad (X-Frame-Options/CSP refusal)', async () => {
+    it('never concludes non-framable on a timer: a slow page only earns a hint and recovers when it loads (E-OE F07)', async () => {
         const result = await renderHook(() => useWebIframeFramability({
-            url: 'https://refuses-embedding.test/',
+            url: 'https://slow-but-framable.test/',
             timeoutMs: 4000,
         }));
 
@@ -43,7 +43,12 @@ describe('useWebIframeFramability', () => {
         await act(async () => {
             vi.advanceTimersByTime(4000);
         });
-        expect(result.getCurrent().verdict).toBe('nonFramable');
+        expect(result.getCurrent().verdict).toBe('slow');
+
+        await act(async () => {
+            result.getCurrent().onLoad();
+        });
+        expect(result.getCurrent().verdict).toBe('framable');
     });
 
     it('concludes non-framable immediately when onError fires', async () => {

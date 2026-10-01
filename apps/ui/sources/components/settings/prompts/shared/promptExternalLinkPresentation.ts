@@ -1,4 +1,5 @@
 import type { PromptExternalLinkEntryV1 } from '@happier-dev/protocol';
+import { getMachineDisplayName } from '@/utils/sessions/machineDisplayNames';
 
 type MachineEntry = Readonly<{
     id: string;
@@ -24,7 +25,8 @@ export function describePromptExternalLinkSubtitle(args: Readonly<{
     scopeLabel: string;
 }>): string {
     const machine = args.machines.find((entry) => entry.id === args.link.machineId) ?? null;
-    const machineTitle = machine?.metadata?.displayName || machine?.metadata?.host || args.link.machineId;
+    // A machine missing from the inventory has no name to show; its id is the only identity.
+    const machineTitle = getMachineDisplayName(machine) ?? args.link.machineId;
     const workspacePath = typeof args.link.workspacePath === 'string' && args.link.workspacePath.length > 0
         ? args.link.workspacePath
         : null;

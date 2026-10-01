@@ -1,3 +1,4 @@
+import { API_TOKEN_FULL_GRANT_V1 } from '@happier-dev/protocol';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ActionExecuteResult } from '@happier-dev/protocol';
 
@@ -25,6 +26,10 @@ const TOKEN_A = {
     expiresAt: null,
     hasEncryptionAccess: false,
     hasUnattendedTeamAccess: false,
+    grant: API_TOKEN_FULL_GRANT_V1,
+    parentTokenId: null,
+    activeChildCount: 0,
+    embedConfig: null,
 } as const;
 
 const TOKEN_B = {
@@ -36,15 +41,19 @@ const TOKEN_B = {
     expiresAt: '2026-08-29T12:00:00.000Z',
     hasEncryptionAccess: true,
     hasUnattendedTeamAccess: false,
+    grant: API_TOKEN_FULL_GRANT_V1,
+    parentTokenId: null,
+    activeChildCount: 0,
+    embedConfig: null,
 } as const;
 
 type TestLifetime = ActiveServerAccountScopeLifetime & Readonly<{ retire(): void }>;
 
-function createLifetime(): TestLifetime {
+function createLifetime(accountId = 'account-a'): TestLifetime {
     let current = true;
     const callbacks = new Set<() => void>();
     return {
-        scope: { serverId: 'server-a', accountId: 'account-a' },
+        scope: { serverId: 'server-a', accountId },
         isCurrent: () => current,
         onRetire(callback) {
             if (!current) {
@@ -81,6 +90,46 @@ function createHarness(results: readonly (ActionExecuteResult | Promise<ActionEx
 
 describe('createApiTokenSettingsController', () => {
     beforeEach(() => { uuid.next = TOKEN_A.tokenId; });
+
+    it('adopts an approved creation into the existing show-once lifecycle without minting again', async () => {
+        const harness = createHarness([]);
+        const token = `hap_v1_${TOKEN_A.tokenId}_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA`;
+        expect(harness.controller.adoptCreatedToken({ result: { token, apiToken: TOKEN_A },
+            tokenId: TOKEN_A.tokenId, target: harness.lifetime })).toBe(true);
+        expect(harness.controller.getState()).toMatchObject({
+            phase: 'ready', tokens: [TOKEN_A], reveal: { token, apiToken: TOKEN_A, acknowledged: false },
+        });
+        expect(harness.execute).not.toHaveBeenCalled();
+        await expect(harness.controller.requestRevealDismiss(async () => false, 'shared')).resolves.toBe(false);
+        harness.controller.acknowledgeReveal();
+        await expect(harness.controller.requestRevealDismiss(async () => false, 'action')).resolves.toBe(true);
+        expect(harness.controller.getState().reveal).toBeNull();
+        expect(harness.controller.adoptCreatedToken({ result: { token, apiToken: TOKEN_A },
+            tokenId: TOKEN_A.tokenId, target: harness.lifetime })).toBe(true);
+        harness.lifetime.retire();
+        expect(harness.controller.getState().reveal).toBeNull();
+    });
+
+    it('refuses an invalid or stale approved creation instead of falling back to the current Account', () => {
+        const oldLifetime = createLifetime();
+        let currentLifetime = oldLifetime;
+        const execute = vi.fn<ApiTokenSettingsExecute>(async () => ok({ tokens: [] }));
+        const controller = createApiTokenSettingsController({ execute,
+            captureActiveAccountScopeLifetime: () => currentLifetime, now: () => NOW });
+        const token = `hap_v1_${TOKEN_A.tokenId}_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA`;
+        for (const result of [{ token, apiToken: TOKEN_A, unexpected: true }, { token, apiToken: TOKEN_B }]) {
+            expect(controller.adoptCreatedToken({ result, tokenId: TOKEN_A.tokenId, target: oldLifetime })).toBe(false);
+            expect(controller.getState().reveal).toBeNull();
+        }
+        expect(controller.adoptCreatedToken({ result: { token, apiToken: TOKEN_A },
+            tokenId: TOKEN_B.tokenId, target: oldLifetime })).toBe(false);
+        oldLifetime.retire();
+        currentLifetime = createLifetime('account-b');
+        expect(controller.adoptCreatedToken({ result: { token, apiToken: TOKEN_A },
+            tokenId: TOKEN_A.tokenId, target: oldLifetime })).toBe(false);
+        expect(controller.getState().reveal).toBeNull();
+        expect(execute).not.toHaveBeenCalled();
+    });
 
     it('loads summaries through the UI Action front door and preserves them during refresh', async () => {
         let finishRefresh!: (value: ActionExecuteResult) => void;
@@ -495,6 +544,24 @@ describe('createApiTokenSettingsController', () => {
         ]);
     });
 
+    it('never applies a destructive confirmation opened for one Account to the Account active at confirm', async () => {
+        let active = createLifetime('account-a');
+        const execute = vi.fn<ApiTokenSettingsExecute>(async () => ok({ revoked: true, revokedCount: 1, status: 'signed_out' }));
+        const controller = createApiTokenSettingsController({ execute, captureActiveAccountScopeLifetime: () => active, now: () => NOW });
+
+        const target = controller.captureDestructiveTarget();
+        expect(target?.scope.accountId).toBe('account-a');
+        // The person switches Account while the confirmation is open.
+        active.retire();
+        active = createLifetime('account-b');
+
+        await expect(controller.revokeToken(TOKEN_A.tokenId, target!)).resolves.toBe(false);
+        await expect(controller.revokeAllTokens(target!)).resolves.toBeNull();
+        await expect(controller.signOutEverywhere(target!)).resolves.toBe(false);
+        expect(execute).not.toHaveBeenCalled();
+        expect(controller.getState().operationError).toBe('account_changed');
+    });
+
     it('drops content, draft, secret, and stale results when the Account/server scope retires', async () => {
         let finish!: (value: ActionExecuteResult) => void;
         const deferred = new Promise<ActionExecuteResult>((resolve) => { finish = resolve; });
@@ -511,6 +578,108 @@ describe('createApiTokenSettingsController', () => {
             tokens: [],
             createDraft: { label: '', expiryPreset: '90d' },
             reveal: null,
+        });
+    });
+    describe('scoped grants', () => {
+        const LIMITED_GRANT = {
+            ...API_TOKEN_FULL_GRANT_V1,
+            actions: { families: ['messaging' as const, 'session_transcripts' as const], ids: ['session.user_action.answer'] },
+            targets: { sessions: ['session-1'], machines: [] },
+            approve: true,
+            origins: ['http://localhost:5173'],
+            models: [{ agentTargetKey: 'claude', providerConnectionId: null, modelId: 'claude-sonnet-4-5' }],
+        };
+
+        it('creates a limited token with the exact grant it was given, models included', async () => {
+            const harness = createHarness([ok({
+                token: `hap_v1_${TOKEN_A.tokenId}_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA`,
+                apiToken: { ...TOKEN_A, grant: LIMITED_GRANT },
+            })]);
+            harness.controller.setCreateDraft({ label: TOKEN_A.label, expiryPreset: '30d', access: 'limited', grant: LIMITED_GRANT });
+
+            await harness.controller.createToken();
+
+            expect(harness.execute).toHaveBeenNthCalledWith(
+                1,
+                'account.apiTokens.create',
+                { tokenId: TOKEN_A.tokenId, label: TOKEN_A.label, expiresAt: '2026-09-21T12:00:00.000Z', grant: LIMITED_GRANT },
+                expect.objectContaining({ surface: 'ui' }),
+            );
+            expect(harness.controller.getState().reveal?.apiToken.grant).toEqual(LIMITED_GRANT);
+        });
+
+        it('sends no grant for full access even when a limited draft was prepared earlier', async () => {
+            const harness = createHarness([ok({
+                token: `hap_v1_${TOKEN_A.tokenId}_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA`,
+                apiToken: TOKEN_A,
+            })]);
+            harness.controller.setCreateDraft({ label: TOKEN_A.label, expiryPreset: '90d', access: 'full', grant: LIMITED_GRANT });
+
+            await harness.controller.createToken();
+
+            expect(harness.execute.mock.calls[0]?.[1]).not.toHaveProperty('grant');
+        });
+
+        it('refuses to send a limited grant that the protocol schema rejects', async () => {
+            const harness = createHarness([]);
+            harness.controller.setCreateDraft({
+                label: TOKEN_A.label,
+                expiryPreset: '90d',
+                access: 'limited',
+                grant: { ...LIMITED_GRANT, actions: { families: [], ids: [] } },
+            });
+
+            await harness.controller.createToken();
+
+            expect(harness.execute).not.toHaveBeenCalled();
+            expect(harness.controller.getState().createError).toBe('grant_incomplete');
+        });
+
+        it('saves edited access through account.apiTokens.update and adopts the returned summary', async () => {
+            const updated = { ...TOKEN_A, grant: LIMITED_GRANT, activeChildCount: 0 };
+            const harness = createHarness([
+                ok({ tokens: [{ ...TOKEN_A, activeChildCount: 2 }, TOKEN_B] }),
+                ok({ apiToken: updated }),
+            ]);
+            await harness.controller.refresh();
+
+            harness.controller.beginAccessEdit(TOKEN_A.tokenId);
+            expect(harness.controller.getState().accessEdit).toMatchObject({
+                tokenId: TOKEN_A.tokenId,
+                grant: API_TOKEN_FULL_GRANT_V1,
+                signsOutEmbeddedCredentials: true,
+            });
+            harness.controller.setAccessEditGrant(LIMITED_GRANT);
+            const saved = await harness.controller.saveAccessEdit();
+
+            expect(saved).toBe(true);
+            expect(harness.execute).toHaveBeenNthCalledWith(
+                2,
+                'account.apiTokens.update',
+                { tokenId: TOKEN_A.tokenId, grant: LIMITED_GRANT },
+                expect.objectContaining({ surface: 'ui', actionCaller: { kind: 'host' } }),
+            );
+            expect(harness.controller.getState()).toMatchObject({
+                tokens: [updated, TOKEN_B],
+                accessEdit: null,
+            });
+        });
+
+        it('keeps every edited choice and the error when saving access fails', async () => {
+            const harness = createHarness([
+                ok({ tokens: [TOKEN_A] }),
+                { ok: false, errorCode: 'network_error', error: 'network_error' },
+            ]);
+            await harness.controller.refresh();
+            harness.controller.beginAccessEdit(TOKEN_A.tokenId);
+            harness.controller.setAccessEditGrant(LIMITED_GRANT);
+
+            expect(await harness.controller.saveAccessEdit()).toBe(false);
+
+            expect(harness.controller.getState()).toMatchObject({
+                tokens: [TOKEN_A],
+                accessEdit: { tokenId: TOKEN_A.tokenId, grant: LIMITED_GRANT, pending: false, error: 'network_error' },
+            });
         });
     });
 });

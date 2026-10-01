@@ -1,16 +1,16 @@
 import * as React from 'react';
-import { useRouter } from 'expo-router';
+import { useRouter } from '@/components/appShell/workspace/destinationRoute';
 import type { ManagedIdentityProviderV1 } from '@happier-dev/protocol';
 
 import {
     ManagedOidcProviderEditorContent,
+    type ManagedIdentityProviderSaveCallbacks,
 } from '@/components/settings/home/identity/ManagedIdentityProviderEditorScreen';
 import { useManagedIdentityProviders } from '@/components/settings/home/identity/useManagedIdentityProviders';
 import { ManagedGitHubAppEditorContent } from '@/components/settings/home/githubApps/ManagedGitHubAppEditorScreen';
-import { FieldItem } from '@/components/ui/forms/FieldItem';
+import { FieldTextInput } from '@/components/ui/forms/FieldTextInput';
 import { Item } from '@/components/ui/lists/Item';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
-import { TextInput } from '@/components/ui/text/Text';
 import { t } from '@/text';
 import type { ActionApprovalRegistration } from '@/components/approvals/actionApprovalContinuation';
 
@@ -51,7 +51,7 @@ const OidcSetupContent = React.memo(function OidcSetupContent(props: Readonly<{
     const finishConnectionCreation = React.useCallback((connectionId: string) => {
         router.replace(teamIdentityConnectionPath(props.address, connectionId));
     }, [props.address, router]);
-    const onSaved = React.useCallback(async (provider: ManagedIdentityProviderV1) => {
+    const onSaved = React.useCallback(async (provider: ManagedIdentityProviderV1, callbacks?: ManagedIdentityProviderSaveCallbacks) => {
         const connection = await identityClient.execute('teams.identity.connections.create', {
             v: 1,
             teamId: props.address.teamId,
@@ -60,6 +60,7 @@ const OidcSetupContent = React.memo(function OidcSetupContent(props: Readonly<{
             settings: connectionSettingsFromDraft(connectionSettings),
         }, {
             onApprovalSucceeded: (value) => finishConnectionCreation(value.connection.id),
+            onApprovalFailed: callbacks?.onApprovalFailed,
         });
         if (!connection.ok) {
             return 'approvalPending' in connection
@@ -79,10 +80,10 @@ const OidcSetupContent = React.memo(function OidcSetupContent(props: Readonly<{
             testIdPrefix="team-oidc"
             saveTestId="team-oidc-create"
             additionalFields={<ItemGroup title={t('teams.authentication.detail.restrictions')}>
-                <FieldItem label={t('teams.authentication.detail.allowedUsers')}><TextInput testID="team-oidc-allowed-users" accessibilityLabel={t('teams.authentication.detail.allowedUsers')} value={connectionSettings.allowedUsers} editable={props.mutationsAvailable} multiline onChangeText={(value) => updateConnectionSettings('allowedUsers', value)} /></FieldItem>
-                <FieldItem label={t('teams.authentication.detail.allowedDomains')}><TextInput testID="team-oidc-allowed-domains" accessibilityLabel={t('teams.authentication.detail.allowedDomains')} value={connectionSettings.allowedEmailDomains} editable={props.mutationsAvailable} multiline autoCapitalize="none" onChangeText={(value) => updateConnectionSettings('allowedEmailDomains', value)} /></FieldItem>
-                <FieldItem label={t('identityAdministration.groupsAny')}><TextInput testID="team-oidc-groups-any" accessibilityLabel={t('identityAdministration.groupsAny')} value={connectionSettings.groupsAny} editable={props.mutationsAvailable} multiline onChangeText={(value) => updateConnectionSettings('groupsAny', value)} /></FieldItem>
-                <FieldItem label={t('identityAdministration.groupsAll')}><TextInput testID="team-oidc-groups-all" accessibilityLabel={t('identityAdministration.groupsAll')} value={connectionSettings.groupsAll} editable={props.mutationsAvailable} multiline onChangeText={(value) => updateConnectionSettings('groupsAll', value)} /></FieldItem>
+                <Item title={t('teams.authentication.detail.allowedUsers')} accessoryLayout="stacked" showChevron={false} rightElement={<FieldTextInput testID="team-oidc-allowed-users" accessibilityLabel={t('teams.authentication.detail.allowedUsers')} value={connectionSettings.allowedUsers} editable={props.mutationsAvailable} multiline onChangeText={(value) => updateConnectionSettings('allowedUsers', value)} />} />
+                <Item title={t('teams.authentication.detail.allowedDomains')} accessoryLayout="stacked" showChevron={false} rightElement={<FieldTextInput testID="team-oidc-allowed-domains" accessibilityLabel={t('teams.authentication.detail.allowedDomains')} value={connectionSettings.allowedEmailDomains} editable={props.mutationsAvailable} multiline autoCapitalize="none" onChangeText={(value) => updateConnectionSettings('allowedEmailDomains', value)} />} />
+                <Item title={t('identityAdministration.groupsAny')} accessoryLayout="stacked" showChevron={false} rightElement={<FieldTextInput testID="team-oidc-groups-any" accessibilityLabel={t('identityAdministration.groupsAny')} value={connectionSettings.groupsAny} editable={props.mutationsAvailable} multiline onChangeText={(value) => updateConnectionSettings('groupsAny', value)} />} />
+                <Item title={t('identityAdministration.groupsAll')} accessoryLayout="stacked" showChevron={false} rightElement={<FieldTextInput testID="team-oidc-groups-all" accessibilityLabel={t('identityAdministration.groupsAll')} value={connectionSettings.groupsAll} editable={props.mutationsAvailable} multiline onChangeText={(value) => updateConnectionSettings('groupsAll', value)} />} />
             </ItemGroup>}
             onSaved={onSaved}
             onApprovalPending={props.requestApproval}
@@ -95,7 +96,7 @@ export const TeamIdentityProviderSetupScreen = React.memo(function TeamIdentityP
     teamId: string;
     providerKind: 'oidc' | 'github_app_identity';
 }>) {
-    return <TeamSection serverId={props.serverId} teamId={props.teamId} title={t('identityAdministration.add')}>
+    return <TeamSection serverId={props.serverId} teamId={props.teamId} title={t('identityAdministration.add')} description={t('teams.pages.identityProviderNew')}>
         {(context) => {
             if (!context.team.capabilities.manageAuthentication) {
                 return <ItemGroup><Item testID="team-provider-setup-forbidden" title={t('teams.errors.forbidden')} showChevron={false} /></ItemGroup>;
@@ -127,7 +128,7 @@ const TeamManagedOidcProviderEditorAdapter = React.memo(function TeamManagedOidc
 }>) {
     const router = useRouter();
     const owner = React.useMemo(() => ({ kind: 'team' as const, teamId: props.address.teamId }), [props.address.teamId]);
-    const providers = useManagedIdentityProviders(props.scope, owner);
+    const providers = useManagedIdentityProviders(props.scope, owner, props.requestApproval);
     const provider = providers.state.kind === 'ready'
         ? providers.state.items.find((item) => item.id === props.providerId) ?? null
         : null;
@@ -136,7 +137,7 @@ const TeamManagedOidcProviderEditorAdapter = React.memo(function TeamManagedOidc
         return { kind: 'completed' } as const;
     }, [props.address.serverId, props.address.teamId, props.connectionId, router]);
     if (providers.state.kind === 'unavailable') {
-        return <ItemGroup footer={providers.state.failure.retryable ? t('teams.unavailable.offline') : t('identityAdministration.error')}><Item title={t('identityAdministration.error')} detail={providers.state.failure.retryable ? t('common.retry') : undefined} onPress={providers.state.failure.retryable ? providers.refresh : undefined} showChevron={false} /></ItemGroup>;
+        return <ItemGroup description={providers.state.failure.retryable ? t('teams.unavailable.offline') : t('identityAdministration.error')}><Item title={t('identityAdministration.error')} detail={providers.state.failure.retryable ? t('common.retry') : undefined} onPress={providers.state.failure.retryable ? providers.refresh : undefined} showChevron={false} /></ItemGroup>;
     }
     if (providers.state.kind === 'ready' && !provider) {
         return <ItemGroup><Item title={t('identityAdministration.error')} showChevron={false} /></ItemGroup>;
@@ -146,6 +147,8 @@ const TeamManagedOidcProviderEditorAdapter = React.memo(function TeamManagedOidc
         owner={owner}
         provider={provider}
         loading={providers.state.kind === 'loading'}
+        refreshing={providers.state.kind === 'ready' && providers.state.refreshing}
+        refreshFailure={providers.state.kind === 'ready' ? providers.state.failure : null}
         mutationsAvailable={props.mutationsAvailable
             && providers.state.kind === 'ready'
             && !providers.state.refreshing
@@ -162,7 +165,7 @@ export const TeamManagedIdentityProviderEditorScreen = React.memo(function TeamM
     connectionId: string;
     providerId: string;
 }>) {
-    return <TeamSection serverId={props.serverId} teamId={props.teamId} title={t('identityAdministration.editTitle')}>
+    return <TeamSection serverId={props.serverId} teamId={props.teamId} title={t('identityAdministration.editTitle')} description={t('teams.pages.identityProviderEdit')}>
         {(context) => context.team.capabilities.manageAuthentication
             ? <TeamManagedOidcProviderEditorAdapter
                 key={`${context.address.serverId}:${context.address.teamId}:${props.connectionId}:${props.providerId}`}

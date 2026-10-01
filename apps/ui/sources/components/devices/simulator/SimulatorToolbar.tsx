@@ -3,7 +3,10 @@ import { View } from 'react-native';
 import type { MachineLiveStreamControlSidebandV1 } from '@happier-dev/protocol';
 
 import { IconButton, type IconButtonIconName } from '@/components/ui/buttons/IconButton';
-import { Popover } from '@/components/ui/popover';
+import {
+    MODAL_AWARE_FLOATING_POPOVER_PORTAL_OPTIONS,
+    Popover,
+} from '@/components/ui/popover';
 import { Text } from '@/components/ui/text/Text';
 import { t } from '@/text';
 import type { SimulatorPreviewActions } from '@/sync/domains/devices/simulator/useSimulatorPreview';
@@ -152,6 +155,7 @@ export function SimulatorToolbar(props: Readonly<{
                         anchorRef={overflowAnchorRef}
                         placement="top"
                         onRequestClose={() => setOverflowOpen(false)}
+                        portal={MODAL_AWARE_FLOATING_POPOVER_PORTAL_OPTIONS}
                     >
                         {() => (
                             <View testID={`${props.testID}-overflow-panel`} style={simulatorStreamStyles.toolbarOverflowPanel}>

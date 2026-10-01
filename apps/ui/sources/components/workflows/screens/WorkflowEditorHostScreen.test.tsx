@@ -2,50 +2,75 @@ import * as React from 'react';
 import { act } from 'react-test-renderer';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { createDeferred, renderScreen, standardCleanup } from '@/dev/testkit';
+import { createDeferred } from '@/dev/testkit/hooks/createDeferred';
+import { renderScreen } from '@/dev/testkit/render/renderScreen';
+import { standardCleanup } from '@/dev/testkit/cleanup/standardCleanup';
 import type { IModal } from '@/modal';
 import type { WorkflowDefinitionGetResultV1 } from '@happier-dev/protocol';
 import type { WorkflowRunNowRequest } from '../run/useWorkflowRunNowController';
+import { getStorage } from '@/sync/domains/state/storageStore';
+import { settingsDefaults } from '@/sync/domains/settings/settings';
+import { createMachineFixture } from '@/dev/testkit/fixtures/machineFixtures';
+import { createWorkflowDefinitionFixture, createWorkflowRunSummaryFixture } from '@/dev/testkit/fixtures/workflowRunFixtures';
+import { buildWorkflowReviewedRunSeed, storeWorkflowReviewedRunSeed } from '@/sync/domains/workflows/workflowReviewedRunSeed';
+import type { Machine } from '@/sync/domains/state/storageTypes';
+// Resolve the real screen/store graph during collection, outside a behavioral
+// test's timeout; Vitest hoists the system-boundary fixture declarations below.
+import { WorkflowEditorHostScreen } from './WorkflowEditorHostScreen';
 
 type WorkflowEditorBodyProps = React.ComponentProps<
     typeof import('./WorkflowEditorBody').WorkflowEditorBody
 >;
 
-const modalShowSpy = vi.fn<IModal['show']>(() => 'workflow-run-input-modal');
-const modalHideSpy = vi.fn<IModal['hide']>();
-const modalUpdateSpy = vi.fn<IModal['update']>();
+const modalShowSpy = vi.hoisted(() => vi.fn<IModal['show']>(() => 'workflow-run-input-modal'));
+const modalHideSpy = vi.hoisted(() => vi.fn<IModal['hide']>());
+const modalUpdateSpy = vi.hoisted(() => vi.fn<IModal['update']>());
 let latestBodyProps: WorkflowEditorBodyProps | null = null;
 const focusPromptSpy = vi.fn<(blockId: string) => void>();
 
-const editorAccountScope = vi.hoisted(() => {
-    const listeners = new Set<() => void>();
-    const state = {
+function requireDefined<T>(value: T | undefined, message: string): T {
+    if (value === undefined) throw new Error(message);
+    return value;
+}
+
+const editorAccountScope = vi.hoisted(() => ({
+    state: {
         current: { serverId: 'server-a', accountId: 'account-a' } as { serverId: string; accountId: string } | null,
-    };
-    return {
-        state,
-        subscribe(listener: () => void) {
-            listeners.add(listener);
-            return () => listeners.delete(listener);
+    },
+}));
+
+function switchEditorAccountScope(next: { serverId: string; accountId: string } | null): void {
+    editorAccountScope.state.current = next;
+    getStorage().setState({ profileScope: next });
+}
+
+function setEditorMachines(machines: Machine[]): void {
+    getStorage().setState({ machines: Object.fromEntries(machines.map((machine) => [machine.id, machine])), machineListByServerId: {} });
+}
+
+function storeReviewedCopyFixture(): string {
+    return storeWorkflowReviewedRunSeed(buildWorkflowReviewedRunSeed({
+        run: createWorkflowRunSummaryFixture(),
+        definition: createWorkflowDefinitionFixture({ inputs: [{ name: 'topic', valueType: 'string', required: true }] }),
+        acceptedContext: {
+            source: { kind: 'inline' }, machineId: 'machine-1', origin: { kind: 'direct' },
+            metadata: { title: 'Accepted title', description: 'Accepted description' },
+            inputs: { topic: 'Private accepted input' }, executionTarget: { kind: 'session' },
+            workspaceTarget: { project: { machineId: 'machine-1', directory: '/repo/project', checkoutRootPath: '/repo/project' } },
         },
-        switchTo(next: { serverId: string; accountId: string } | null) {
-            state.current = next;
-            for (const listener of listeners) listener();
-        },
-    };
-});
+    }));
+}
 
 const routerSpy = vi.hoisted(() => ({ push: vi.fn(), back: vi.fn() }));
 
 const definitionActions = vi.hoisted(() => ({
     get: vi.fn(),
 }));
+// Trigger transport responses; the client, schemas and shared-store publication stay real.
+const triggerActions = vi.hoisted(() => ({ list: vi.fn(async (_input: unknown) => []), add: vi.fn(), update: vi.fn(), remove: vi.fn() }));
+const SAVED_TRIGGER_WORKFLOW_ID = '00000000-0000-4000-8000-000000000005';
+const TRIGGER_SET_ID = '00000000-0000-4000-8000-000000000009';
 const workflowDocumentPicker = vi.hoisted(() => ({ pick: vi.fn() }));
-const projectBrowser = vi.hoisted(() => ({ open: vi.fn() }));
-
-const editorMachines = vi.hoisted(() => ({
-    current: [] as Array<{ id: string; metadata?: { homeDir?: string; platform?: string } }>,
-}));
 
 /** What the route guard was told about unsaved changes, in order. */
 const guardedDirtyStates = vi.hoisted(() => [] as boolean[]);
@@ -93,27 +118,6 @@ vi.mock('@/modal', async () => {
         spies: { show: modalShowSpy, hide: modalHideSpy, update: modalUpdateSpy },
     }).module;
 });
-vi.mock('@/sync/domains/state/storage', async (importOriginal) => {
-    const actual = await importOriginal<typeof import('@/sync/domains/state/storage')>();
-    const { settingsDefaults } = await import('@/sync/domains/settings/settings');
-    return {
-        // Only the reads this screen steers are substituted. Everything else —
-        // the store handle the shared authoring controls reach for — stays the
-        // real module rather than growing a hand-maintained stub surface.
-        ...actual,
-        useAllMachines: () => editorMachines.current,
-        useSetting: (name: keyof typeof settingsDefaults) => settingsDefaults[name],
-        // The Connected Services control reads the whole Account settings
-        // record for its label/default-auth facts, the same way New Session
-        // does. Defaults keep that boundary inert here.
-        useSettings: () => settingsDefaults,
-        useActiveServerAccountScope: () => React.useSyncExternalStore(
-            editorAccountScope.subscribe,
-            () => editorAccountScope.state.current,
-            () => editorAccountScope.state.current,
-        ),
-    };
-});
 // The exact Machine's daemon projection is a transport boundary; the Agent
 // catalog projection beneath the host adapter stays real. The stub keeps the
 // real enablement contract — no selected Machine means no projection — because
@@ -125,17 +129,11 @@ vi.mock('@/agents/backendCatalog/useDaemonMergedProjectionInputs', () => ({
             : { phase: 'idle', inputs: null }
     ),
 }));
-vi.mock('@/sync/domains/scope/activeServerAccountScope', async (importOriginal) => ({
-    ...(await importOriginal<typeof import('@/sync/domains/scope/activeServerAccountScope')>()),
-    // Only the lifetime capture this screen steers is substituted; the scope
-    // reads the shared authoring controls make stay real.
-    captureActiveServerAccountScopeLifetime: () => {
-        const captured = editorAccountScope.state.current;
-        return captured === null ? null : {
-            isCurrent: () => editorAccountScope.state.current?.serverId === captured.serverId
-                && editorAccountScope.state.current?.accountId === captured.accountId,
-        };
-    },
+// The applied Account host is a system boundary; its lifetime stays real so
+// returning to an identity cannot bypass retirement.
+vi.mock('@/sync/runtime/orchestration/connectionManager', () => ({
+    getAppliedActiveServerSnapshot: () => ({ serverId: editorAccountScope.state.current?.serverId }),
+    isAppliedActiveServerRuntimeAvailable: () => editorAccountScope.state.current !== null,
 }));
 vi.mock('@/sync/domains/workflows/workflowDefinitionActions', () => ({
     createWorkflowDefinition: vi.fn(),
@@ -143,17 +141,20 @@ vi.mock('@/sync/domains/workflows/workflowDefinitionActions', () => ({
     isWorkflowDefinitionConflictError: () => false,
     updateWorkflowDefinition: vi.fn(),
 }));
-vi.mock('@/sync/domains/workflows/workflowScheduleSeed', () => ({
-    buildWorkflowScheduleSeed: () => ({ kind: 'unavailable' }),
-    storeWorkflowScheduleSeed: () => 'seed-id',
+vi.mock('@/sync/ops/actions/frontDoorRuntimeActionExecutor', () => ({
+    createFrontDoorActionExecute: () => async (actionId: string, input: unknown) => {
+        if (actionId === 'workflow.trigger.list') return { ok: true, result: { sets: await triggerActions.list(input) } };
+        const writer = actionId === 'workflow.trigger.add' ? triggerActions.add
+            : actionId === 'workflow.trigger.update' ? triggerActions.update
+                : actionId === 'workflow.trigger.remove' ? triggerActions.remove : null;
+        if (writer === null) return { ok: false, errorCode: 'unsupported_action', error: 'unsupported_action' };
+        return { ok: true, result: await writer(input) };
+    },
 }));
 vi.mock('@/sync/domains/workflows/workflowDocumentFile', () => ({
     pickWorkflowDocumentText: workflowDocumentPicker.pick,
     saveWorkflowDocument: vi.fn(),
     workflowDocumentFileName: () => 'workflow.json',
-}));
-vi.mock('@/components/ui/pathBrowser/openMachinePathBrowserModal', () => ({
-    openMachinePathBrowserModal: projectBrowser.open,
 }));
 const runNowSpy = vi.hoisted(() => vi.fn<(request: WorkflowRunNowRequest) => Promise<null>>(async () => null));
 vi.mock('../run/useWorkflowRunNowController', () => ({
@@ -182,7 +183,7 @@ vi.mock('./WorkflowEditorBody', async () => {
             ReactModule.useImperativeHandle(props.commandsRef, () => ({
                 runNow: () => props.onRunNow?.(),
                 save: () => props.onSave?.(),
-                schedule: () => props.onSchedule?.(),
+                schedule: () => undefined,
                 exportJson: () => props.onExportJson?.(),
                 focusPrompt: (blockId: string) => { focusPromptSpy(blockId); },
             }), [props]);
@@ -195,7 +196,9 @@ vi.mock('./WorkflowEditorBody', async () => {
 beforeEach(() => {
     latestBodyProps = null;
     focusPromptSpy.mockClear();
-    editorMachines.current = [];
+    setEditorMachines([]);
+    getStorage().setState({ settings: settingsDefaults });
+    getStorage().setState({ workflowTriggerSetsById: {}, workflowTriggerSetIdsByQuery: {} });
     guardedDirtyStates.length = 0;
     issuedIds.next = 0;
     routerSpy.push.mockClear();
@@ -206,9 +209,8 @@ beforeEach(() => {
     modalUpdateSpy.mockClear();
     definitionActions.get.mockReset();
     workflowDocumentPicker.pick.mockReset();
-    projectBrowser.open.mockReset();
     daemonProjection.resolves = false;
-    editorAccountScope.switchTo({ serverId: 'server-a', accountId: 'account-a' });
+    switchEditorAccountScope({ serverId: 'server-a', accountId: 'account-a' });
 });
 
 afterEach(async () => {
@@ -216,43 +218,15 @@ afterEach(async () => {
 });
 
 describe('WorkflowEditorHostScreen composition', () => {
-    it('threads captured Session context and its exact project target into the canonical editor', async () => {
-        const { WorkflowEditorHostScreen } = await import('./WorkflowEditorHostScreen');
-        const draft = {
-            draftId: 'captured-draft',
-            name: 'Captured workflow',
-            description: '',
-            inputs: [],
-            defaults: {},
-            blocks: [{
-                kind: 'step' as const,
-                id: 'captured-step',
-                document: { text: '', references: [], attachments: [] },
-                input: [],
-                result: { kind: 'text' as const },
-            }],
-        };
-        const project = { machineId: 'machine-1', directory: '/repo/project' };
-
-        await renderScreen(<WorkflowEditorHostScreen source={{
-            kind: 'capturedSession',
-            sessionId: 'session-1',
-            serverId: 'server-1',
-            draft,
-            project,
-        }} />);
-
-        expect(latestBodyProps).toMatchObject({
-            draft,
-            projectTarget: project,
-            // A captured Session keeps its own live scope; it is never replaced
-            // by the Machine the project happens to sit on.
-            composerScope: {
-                kind: 'session',
-                sessionId: 'session-1',
-                serverId: 'server-1',
-            },
-        });
+    it('keeps an unavailable saved trigger in its known query after removal instead of inventing inline membership', async () => {
+        const set = { automationId: TRIGGER_SET_ID, revision: 3, enabled: true,
+            health: 'source_unavailable' as const, triggers: [] };
+        getStorage().getState().applyWorkflowTriggerSetPage({ queryKey: `workflow:${SAVED_TRIGGER_WORKFLOW_ID}`, sets: [set] });
+        triggerActions.remove.mockResolvedValueOnce({ set });
+        const { removeWorkflowTrigger } = await import('@/sync/domains/workflows/workflowTriggerActions');
+        await removeWorkflowTrigger({ automationId: TRIGGER_SET_ID, triggerId: 'trigger-1' });
+        expect(getStorage().getState().workflowTriggerSetIdsByQuery[`workflow:${SAVED_TRIGGER_WORKFLOW_ID}`]).toEqual([TRIGGER_SET_ID]);
+        expect(getStorage().getState().workflowTriggerSetIdsByQuery.account_inline).toBeUndefined();
     });
 
     /**
@@ -262,7 +236,10 @@ describe('WorkflowEditorHostScreen composition', () => {
      * every step prompt is scoped to that same Machine and project folder.
      */
     it('contributes the incumbent Agent catalog and the Machine composer scope to the editor', async () => {
-        editorMachines.current = [{ id: 'machine-1', metadata: { homeDir: '/Users/me', platform: 'darwin' } }];
+        setEditorMachines([createMachineFixture({ metadata: {
+            host: 'tester.local', happyCliVersion: '0.0.0-test', happyHomeDir: '/Users/tester/.happy-dev',
+            homeDir: '/Users/me', platform: 'darwin',
+        } })]);
         const { WorkflowEditorHostScreen } = await import('./WorkflowEditorHostScreen');
         await renderScreen(<WorkflowEditorHostScreen source={{ kind: 'new' }} />);
 
@@ -311,16 +288,17 @@ describe('WorkflowEditorHostScreen composition', () => {
         await screen.update(host());
 
         expect(latestBodyProps?.draft.draftId).toBe(initialDraft.draftId);
-        expect(latestBodyProps?.draft.blocks[0]?.document.text).toBe('Analyze the repository');
+        const firstBlock = latestBodyProps?.draft.blocks[0];
+        if (firstBlock?.kind !== 'step') throw new Error('Expected the first Workflow block to be a step');
+        expect(firstBlock.document.text).toBe('Analyze the repository');
     });
 
     /**
      * UX §2.2 J1: a neutral new workflow opens with its first prompt focused.
      * The intent is source-scoped and consumed exactly once through the page's
-     * focus owner; a rerender does not replay it, and an opened saved
-     * definition or a captured Session never claims it.
+     * focus owner, so a rerender or an ordinary edit does not replay it.
      */
-    it('focuses the first prompt of a neutral new draft once, and never for another source', async () => {
+    it('focuses the first prompt of a neutral new draft exactly once', async () => {
         const { WorkflowEditorHostScreen } = await import('./WorkflowEditorHostScreen');
         const host = () => <WorkflowEditorHostScreen source={{ kind: 'new' }} />;
         const screen = await renderScreen(host());
@@ -334,30 +312,6 @@ describe('WorkflowEditorHostScreen composition', () => {
         await screen.update(host());
         expect(focusPromptSpy).toHaveBeenCalledTimes(1);
         await screen.unmount();
-
-        focusPromptSpy.mockClear();
-        const captured = await renderScreen(<WorkflowEditorHostScreen source={{
-            kind: 'capturedSession',
-            sessionId: 'session-1',
-            serverId: 'server-1',
-            draft: {
-                draftId: 'captured-draft',
-                name: 'Captured workflow',
-                inputs: [],
-                defaults: {},
-                blocks: [{
-                    kind: 'step' as const,
-                    id: 'captured-step',
-                    document: { text: '', references: [], attachments: [] },
-                    input: [],
-                    result: { kind: 'text' as const },
-                }],
-            },
-            project: { machineId: 'machine-1', directory: '/repo/project' },
-        }} />);
-        await act(async () => {});
-        expect(focusPromptSpy).not.toHaveBeenCalled();
-        await captured.unmount();
     });
 
     /**
@@ -392,7 +346,10 @@ describe('WorkflowEditorHostScreen composition', () => {
         };
 
         beforeEach(() => {
-            editorMachines.current = [{ id: 'machine-1', metadata: { homeDir: '/Users/me', platform: 'darwin' } }];
+            setEditorMachines([createMachineFixture({ metadata: {
+                host: 'tester.local', happyCliVersion: '0.0.0-test', happyHomeDir: '/Users/tester/.happy-dev',
+                homeDir: '/Users/me', platform: 'darwin',
+            } })]);
         });
 
         it('adopts the contextual Agent once the exact Machine projection resolves, without becoming dirty', async () => {
@@ -447,34 +404,6 @@ describe('WorkflowEditorHostScreen composition', () => {
             expect(validation.valid).toBe(false);
             expect(validation.issues.some((issue) => issue.code === 'target_unavailable')).toBe(true);
 
-            await screen.unmount();
-        });
-
-        it('never re-seeds a captured Session draft, which names its own Agent', async () => {
-            daemonProjection.resolves = true;
-            const { WorkflowEditorHostScreen } = await import('./WorkflowEditorHostScreen');
-            const screen = await renderScreen(<WorkflowEditorHostScreen source={{
-                kind: 'capturedSession',
-                sessionId: 'session-1',
-                serverId: 'server-1',
-                draft: {
-                    draftId: 'captured-draft',
-                    name: 'Captured workflow',
-                    inputs: [],
-                    defaults: {},
-                    blocks: [{
-                        kind: 'step' as const,
-                        id: 'captured-step',
-                        document: { text: '', references: [], attachments: [] },
-                        input: [],
-                        result: { kind: 'text' as const },
-                    }],
-                } as never,
-                project: { machineId: 'machine-1', directory: '/repo/project' },
-            }} />);
-            await act(async () => {});
-
-            expect(latestBodyProps?.draft.defaults.agentTarget).toBeUndefined();
             await screen.unmount();
         });
 
@@ -540,6 +469,34 @@ describe('WorkflowEditorHostScreen composition', () => {
      * Account's private workflow as another's.
      */
     describe('private seed custody across an Account change', () => {
+        it('opens accepted metadata and run inputs for review without saving or starting', async () => {
+            const seedId = storeReviewedCopyFixture();
+            await renderScreen(<WorkflowEditorHostScreen source={{ kind: 'new', reviewedRunSeedId: seedId }} />);
+            expect(latestBodyProps?.draft.name).toBe('Accepted title');
+            expect(latestBodyProps?.description).toBe('Accepted description');
+            await act(async () => {
+                latestBodyProps?.onChangeDescription?.('Edited description');
+            });
+            expect(latestBodyProps?.description).toBe('Edited description');
+            expect(runNowSpy).not.toHaveBeenCalled();
+            const { createWorkflowDefinition } = await import('@/sync/domains/workflows/workflowDefinitionActions');
+            expect(createWorkflowDefinition).not.toHaveBeenCalled();
+            await act(async () => latestBodyProps?.onRunNow?.());
+            const modalProps = modalShowSpy.mock.calls.at(-1)?.[0].props as { values?: Record<string, unknown> } | undefined;
+            expect(modalProps?.values).toEqual({ topic: 'Private accepted input' });
+            expect(runNowSpy).not.toHaveBeenCalled();
+        });
+
+        it('offers reviewed-copy disclosures and Back to its source Run without writing', async () => {
+            await renderScreen(<WorkflowEditorHostScreen source={{ kind: 'new', reviewedRunSeedId: storeReviewedCopyFixture() }} />);
+            expect(latestBodyProps).toHaveProperty('reviewNotice');
+            act(() => latestBodyProps?.onBackToRun?.());
+            expect(routerSpy.push).toHaveBeenLastCalledWith({ pathname: '/workflows/runs/[runId]', params: { runId: 'run-1' } });
+            expect(runNowSpy).not.toHaveBeenCalled();
+            const { createWorkflowDefinition } = await import('@/sync/domains/workflows/workflowDefinitionActions');
+            expect(createWorkflowDefinition).not.toHaveBeenCalled();
+        });
+
         it('withdraws a reviewed Run copy instead of re-presenting it to the next Account', async () => {
             const { storeWorkflowReviewedRunSeed } = await import(
                 '@/sync/domains/workflows/workflowReviewedRunSeed'
@@ -558,8 +515,8 @@ describe('WorkflowEditorHostScreen composition', () => {
                 },
                 project: { machineId: 'machine-1', directory: '/repo/project' },
                 executionTarget: { kind: 'session' },
-            } as never);
-            const { WorkflowEditorHostScreen } = await import('./WorkflowEditorHostScreen');
+                inputs: {}, sourceRunId: 'run-1',
+            });
             const screen = await renderScreen(
                 <WorkflowEditorHostScreen source={{ kind: 'new', reviewedRunSeedId: seedId }} />,
             );
@@ -567,46 +524,39 @@ describe('WorkflowEditorHostScreen composition', () => {
             expect(latestBodyProps?.draft).toMatchObject({ name: 'Account A reviewed run' });
 
             await act(async () => {
-                editorAccountScope.switchTo({ serverId: 'server-a', accountId: 'account-b' });
+                switchEditorAccountScope({ serverId: 'server-a', accountId: 'account-b' });
             });
 
             expect(screen.findByTestId('workflow-editor-account-changed')).toBeTruthy();
             expect(screen.findByTestId('workflow-editor-body')).toBeNull();
-            await screen.unmount();
-        });
-
-        it('withdraws a captured Session draft instead of re-presenting it to the next Account', async () => {
-            const { WorkflowEditorHostScreen } = await import('./WorkflowEditorHostScreen');
-            const screen = await renderScreen(<WorkflowEditorHostScreen source={{
-                kind: 'capturedSession',
-                sessionId: 'session-1',
-                serverId: 'server-a',
-                draft: {
-                    draftId: 'captured-draft',
-                    name: 'Account A captured workflow',
-                    inputs: [],
-                    defaults: {},
-                    blocks: [{
-                        kind: 'step' as const,
-                        id: 'captured-step',
-                        document: { text: 'Account A private prompt', references: [], attachments: [] },
-                        input: [],
-                        result: { kind: 'text' as const },
-                    }],
-                } as never,
-                project: { machineId: 'machine-1', directory: '/repo/project' },
-            }} />);
-            await act(async () => {});
-            expect(latestBodyProps?.draft).toMatchObject({ name: 'Account A captured workflow' });
-
             await act(async () => {
-                editorAccountScope.switchTo({ serverId: 'server-a', accountId: 'account-b' });
+                switchEditorAccountScope({ serverId: 'server-a', accountId: 'account-a' });
             });
-
-            expect(screen.findByTestId('workflow-editor-account-changed')).toBeTruthy();
+            // Returning to the same identity is a replacement Account lifetime,
+            // not permission to resurrect a previously withdrawn private copy.
             expect(screen.findByTestId('workflow-editor-body')).toBeNull();
             await screen.unmount();
         });
+
+        it('withdraws an already opened private draft when the same Account lifetime retires', async () => {
+            const { buildWorkflowReviewedRunSeed, storeWorkflowReviewedRunSeed } = await import('@/sync/domains/workflows/workflowReviewedRunSeed');
+            const { createWorkflowDefinitionFixture, createWorkflowRunSummaryFixture } = await import('@/dev/testkit/fixtures/workflowRunFixtures');
+            const seedId = storeWorkflowReviewedRunSeed(buildWorkflowReviewedRunSeed({
+                run: createWorkflowRunSummaryFixture(), definition: createWorkflowDefinitionFixture(),
+                acceptedContext: {
+                    source: { kind: 'inline' }, machineId: 'machine-1', origin: { kind: 'direct' },
+                    inputs: {}, executionTarget: { kind: 'session' },
+                    workspaceTarget: { project: { machineId: 'machine-1', directory: '/repo/project', checkoutRootPath: '/repo/project' } },
+                },
+            }));
+            const screen = await renderScreen(<WorkflowEditorHostScreen source={{ kind: 'new', reviewedRunSeedId: seedId }} />);
+            expect(screen.findByTestId('workflow-editor-body')).toBeTruthy();
+            const { retireActiveServerAccountScopeLifetime } = await import('@/sync/domains/scope/activeServerAccountScope');
+            await act(async () => retireActiveServerAccountScopeLifetime());
+            expect(screen.findByTestId('workflow-editor-body')).toBeNull();
+            await screen.unmount();
+        });
+
     });
 
     /**
@@ -637,6 +587,7 @@ describe('WorkflowEditorHostScreen composition', () => {
                 project: { machineId, directory: `/repo/${machineId}` },
                 executionTarget: { kind: 'session' as const },
                 inputs: {},
+                sourceRunId: `run-${machineId}`,
                 supersededRunId: `run-${machineId}`,
                 reasonCode: 'workspace_missing',
             });
@@ -689,48 +640,6 @@ describe('WorkflowEditorHostScreen composition', () => {
             await screen.unmount();
         });
 
-        it('does not let a project browser opened by source A retarget source B', async () => {
-            const directorySelection = createDeferred<string | null>();
-            projectBrowser.open.mockImplementationOnce(() => directorySelection.promise);
-            const { WorkflowEditorHostScreen } = await import('./WorkflowEditorHostScreen');
-            const screen = await renderScreen(<WorkflowEditorHostScreen source={{ kind: 'new' }} />);
-            await act(async () => latestBodyProps?.onChangeProjectTarget({
-                machineId: 'machine-a',
-                directory: '/repo/a',
-            }));
-            await act(async () => latestBodyProps?.onBrowseProjectDirectory?.());
-
-            await screen.update(<WorkflowEditorHostScreen source={{
-                kind: 'capturedSession',
-                sessionId: 'session-b',
-                serverId: 'server-a',
-                draft: {
-                    draftId: 'captured-b',
-                    name: 'Source B',
-                    inputs: [],
-                    defaults: {},
-                    blocks: [{
-                        kind: 'step',
-                        id: 'review',
-                        document: { text: 'Prompt B', references: [], attachments: [] },
-                        input: [],
-                        result: { kind: 'text' },
-                    }],
-                } as never,
-                project: { machineId: 'machine-b', directory: '/repo/b' },
-            }} />);
-            await act(async () => {});
-
-            directorySelection.resolve('/repo/a-picked');
-            await act(async () => {});
-
-            expect(latestBodyProps?.projectTarget).toEqual({
-                machineId: 'machine-b',
-                directory: '/repo/b',
-            });
-            await screen.unmount();
-        });
-
         it('resets collected Run inputs, the open input sheet and Run as when the source changes', async () => {
             definitionActions.get.mockResolvedValue({
                 definitionId: 'definition-b',
@@ -756,8 +665,11 @@ describe('WorkflowEditorHostScreen composition', () => {
                 ...draft,
                 inputs: [{ name: 'topic', valueType: 'string', required: true }],
             } as never));
-            await act(async () => latestBodyProps?.onChangeExecutionTarget('attached_run'));
-            await act(async () => latestBodyProps?.onRunNow());
+            await act(async () => requireDefined(
+                latestBodyProps?.onChangeExecutionTarget,
+                'Expected an execution-target change handler',
+            )('detached_run'));
+            await act(async () => requireDefined(latestBodyProps?.onRunNow, 'Expected a Run now handler')());
             expect(modalShowSpy).toHaveBeenCalledTimes(1);
             modalHideSpy.mockClear();
 
@@ -834,7 +746,97 @@ describe('WorkflowEditorHostScreen composition', () => {
 
             // Source B is showing its own hydrated revision, not the one source
             // A's save just created.
-            expect(latestBodyProps?.savedRevision).toEqual({ headerVersion: 9, bodyVersion: 9 });
+            // (A leaked save would have stamped B as "saved just now".)
+            expect(latestBodyProps?.saveStatus).toEqual({ kind: 'saved', savedAtMs: null });
+            await screen.unmount();
+        });
+
+        it('saves the definition first, then the trigger delta, and keeps the edits when the trigger write fails', async () => {
+            const { createWorkflowDefinition } = await import('@/sync/domains/workflows/workflowDefinitionActions');
+            const order: string[] = [];
+            (createWorkflowDefinition as unknown as ReturnType<typeof vi.fn>).mockImplementationOnce(async () => {
+                order.push('definition');
+                return { definitionId: SAVED_TRIGGER_WORKFLOW_ID, revision: { headerVersion: 1, bodyVersion: 1 } };
+            });
+            triggerActions.add.mockImplementationOnce(async () => {
+                order.push('trigger');
+                throw Object.assign(new Error('target_unavailable'), { code: 'target_unavailable' });
+            });
+            const { WorkflowEditorHostScreen } = await import('./WorkflowEditorHostScreen');
+            const screen = await renderScreen(<WorkflowEditorHostScreen source={{ kind: 'new' }} />);
+            const draft = latestBodyProps?.draft;
+            if (draft === undefined) throw new Error('Expected the new Workflow draft');
+            await act(async () => latestBodyProps?.onChange({
+                ...draft,
+                name: 'Nightly release',
+                defaults: { ...draft.defaults, agentTarget: { kind: 'agent', identity: { pluginId: 'happier.agent.claude', localId: 'claude' } } },
+                blocks: [{ kind: 'step', id: 'analyze', document: { text: 'Prepare the release', references: [], attachments: [] }, input: [], result: { kind: 'text' } }],
+            } as never));
+            // The first trigger's set runs on the editor's Where.
+            await act(async () => latestBodyProps?.onChangeProjectTarget?.({ machineId: 'machine-1', directory: '/repo' } as never));
+            // Adding a trigger edits the draft only: nothing is written yet.
+            const section = latestBodyProps?.triggersSection as React.ReactElement<{ draft: unknown; onChangeDraft: (next: unknown) => void }>;
+            const trigger = { kind: 'schedule', enabled: true, schedule: { kind: 'cron', scheduleExpr: '0 2 * * *', everyMs: null, timezone: 'UTC' } };
+            await act(async () => section.props.onChangeDraft({ adds: [{ clientId: 'c1', trigger }], updates: {}, removes: [] }));
+            expect(triggerActions.add).not.toHaveBeenCalled();
+            expect(latestBodyProps?.triggersSummary).toBe('workflows.triggers.summary.everyDayAt(time=02:00)');
+
+            await act(async () => latestBodyProps?.onSave?.());
+            await act(async () => {});
+
+            expect(order).toEqual(['definition', 'trigger']);
+            expect(triggerActions.add).toHaveBeenCalledWith(expect.objectContaining({ workflow: SAVED_TRIGGER_WORKFLOW_ID, project: { machineId: 'machine-1', directory: '/repo' }, trigger }));
+            // "Workflow saved · Triggers not updated", with the pending trigger still in the draft.
+            expect(latestBodyProps?.saveStatus).toEqual({ kind: 'failed', reason: 'workflows.triggers.editor.partialSave' });
+            expect((latestBodyProps?.triggersSection as React.ReactElement<{ draft: { adds: unknown[] } }>).props.draft.adds).toHaveLength(1);
+            await screen.unmount();
+        });
+
+        it('Save as workflow: the first Save writes the definition, then points the trigger at it, with the partial state when that fails', async () => {
+            const { createWorkflowDefinition } = await import('@/sync/domains/workflows/workflowDefinitionActions');
+            const { storeTriggerWorkflowSeed } = await import('../triggers/triggerWorkflowSeed');
+            (createWorkflowDefinition as unknown as ReturnType<typeof vi.fn>)
+                .mockResolvedValue({ definitionId: SAVED_TRIGGER_WORKFLOW_ID, revision: { headerVersion: 1, bodyVersion: 1 } });
+            triggerActions.update.mockRejectedValueOnce(Object.assign(new Error('currentness_conflict'), { code: 'currentness_conflict' }));
+            const definition = {
+                version: 1, inputs: [],
+                defaults: { agentTarget: { kind: 'agent', identity: { pluginId: 'happier.agent.claude', localId: 'claude' } } },
+                blocks: [{ kind: 'step', id: 'digest', document: { text: 'Morning digest', references: [], attachments: [] }, input: [], result: { kind: 'text' } }],
+            };
+            const seedId = storeTriggerWorkflowSeed({
+                definition: definition as never,
+                retarget: { scope: 'account', automationId: TRIGGER_SET_ID, triggerId: 'trigger-1', expectedRevision: 3 },
+            });
+            const { WorkflowEditorHostScreen } = await import('./WorkflowEditorHostScreen');
+            const screen = await renderScreen(<WorkflowEditorHostScreen source={{ kind: 'new', triggerWorkflowSeedId: seedId }} />);
+            // The trigger's own steps open as the draft; nothing is written yet.
+            expect(latestBodyProps?.draft.blocks[0]).toMatchObject({ id: 'digest' });
+            expect(triggerActions.update).not.toHaveBeenCalled();
+            const draft = latestBodyProps?.draft;
+            if (draft === undefined) throw new Error('Expected the seeded draft');
+            await act(async () => latestBodyProps?.onChange({ ...draft, name: 'Morning digest' } as never));
+
+            await act(async () => latestBodyProps?.onSave?.());
+            await act(async () => {});
+            const retarget = {
+                automationId: TRIGGER_SET_ID, triggerId: 'trigger-1', expectedRevision: 3,
+                patch: { target: { kind: 'workflow', ref: SAVED_TRIGGER_WORKFLOW_ID } },
+            };
+            expect(triggerActions.update).toHaveBeenCalledWith(retarget);
+            // "Workflow saved · Trigger not updated": the trigger keeps its own steps until it lands.
+            expect(latestBodyProps?.saveStatus).toEqual({ kind: 'failed', reason: 'workflows.triggers.editor.retargetFailed' });
+
+            // Try again: Save retries the retarget, which now lands.
+            const { updateWorkflowDefinition } = await import('@/sync/domains/workflows/workflowDefinitionActions');
+            (updateWorkflowDefinition as unknown as ReturnType<typeof vi.fn>)
+                .mockResolvedValueOnce({ definitionId: SAVED_TRIGGER_WORKFLOW_ID, revision: { headerVersion: 1, bodyVersion: 2 } });
+            triggerActions.update.mockResolvedValueOnce({ set: { automationId: TRIGGER_SET_ID,
+                revision: 4, enabled: true, health: 'available', triggers: [],
+                target: { kind: 'workflow', ref: SAVED_TRIGGER_WORKFLOW_ID } } });
+            await act(async () => latestBodyProps?.onSave?.());
+            await act(async () => {});
+            expect(triggerActions.update).toHaveBeenCalledTimes(2);
+            expect(latestBodyProps?.saveStatus?.kind).not.toBe('failed');
             await screen.unmount();
         });
 
@@ -868,11 +870,14 @@ describe('WorkflowEditorHostScreen composition', () => {
                     result: { kind: 'text' },
                 }],
             }));
-            await act(async () => latestBodyProps?.onChangeProjectTarget({
+            await act(async () => requireDefined(
+                latestBodyProps?.onChangeProjectTarget,
+                'Expected a project-target change handler',
+            )({
                 machineId: 'machine-1',
                 directory: '/Users/me/project',
             }));
-            await act(async () => latestBodyProps?.onRunNow());
+            await act(async () => requireDefined(latestBodyProps?.onRunNow, 'Expected a Run now handler')());
             expect(runNowSpy).toHaveBeenCalledTimes(1);
 
             await screen.unmount();
@@ -909,7 +914,7 @@ describe('WorkflowEditorHostScreen composition', () => {
             ...initialDraft,
             inputs: [{ name: 'topic', valueType: 'string', required: true }],
         }));
-        await act(async () => latestBodyProps?.onRunNow());
+        await act(async () => requireDefined(latestBodyProps?.onRunNow, 'Expected a Run now handler')());
 
         expect(screen.findByTestId('workflow-editor-body')).not.toBeNull();
         expect(modalShowSpy).toHaveBeenCalledTimes(1);
@@ -924,7 +929,7 @@ describe('WorkflowEditorHostScreen composition', () => {
         await renderScreen(<WorkflowEditorHostScreen source={{ kind: 'new' }} />);
         expect(latestBodyProps?.executionTarget).toBe('session');
         expect(latestBodyProps?.runAsTargets).toEqual(expect.arrayContaining([
-            expect.objectContaining({ kind: 'attached_run', available: true }),
+            expect.objectContaining({ kind: 'session', available: true }),
             expect.objectContaining({ kind: 'detached_run', available: false }),
         ]));
 
@@ -945,16 +950,22 @@ describe('WorkflowEditorHostScreen composition', () => {
                 result: { kind: 'text' },
             }],
         }));
-        await act(async () => latestBodyProps?.onChangeProjectTarget({
+        await act(async () => requireDefined(
+            latestBodyProps?.onChangeProjectTarget,
+            'Expected a project-target change handler',
+        )({
             machineId: 'machine-1',
             directory: '/Users/me/project',
         }));
-        await act(async () => latestBodyProps?.onChangeExecutionTarget('attached_run'));
-        await act(async () => latestBodyProps?.onRunNow());
+        await act(async () => requireDefined(
+            latestBodyProps?.onChangeExecutionTarget,
+            'Expected an execution-target change handler',
+        )('session'));
+        await act(async () => requireDefined(latestBodyProps?.onRunNow, 'Expected a Run now handler')());
 
         expect(runNowSpy).toHaveBeenCalledTimes(1);
         expect(runNowSpy.mock.calls[0]?.[0]).toMatchObject({
-            executionTarget: { kind: 'attached_run' },
+            executionTarget: { kind: 'session' },
         });
     });
 
@@ -984,16 +995,19 @@ describe('WorkflowEditorHostScreen composition', () => {
             }],
         };
         await act(async () => latestBodyProps?.onChange({ ...authored, name: '   ' }));
-        await act(async () => latestBodyProps?.onChangeProjectTarget({
+        await act(async () => requireDefined(
+            latestBodyProps?.onChangeProjectTarget,
+            'Expected a project-target change handler',
+        )({
             machineId: 'machine-1',
             directory: '/Users/me/project',
         }));
-        await act(async () => latestBodyProps?.onRunNow());
+        await act(async () => requireDefined(latestBodyProps?.onRunNow, 'Expected a Run now handler')());
         expect(runNowSpy).toHaveBeenCalledTimes(1);
         expect(runNowSpy.mock.calls[0]?.[0]).not.toHaveProperty('metadata');
 
         await act(async () => latestBodyProps?.onChange({ ...authored, name: '  Review  ' }));
-        await act(async () => latestBodyProps?.onRunNow());
+        await act(async () => requireDefined(latestBodyProps?.onRunNow, 'Expected a Run now handler')());
         expect(runNowSpy).toHaveBeenCalledTimes(2);
         expect(runNowSpy.mock.calls[1]?.[0]).toMatchObject({ metadata: { title: 'Review' } });
     });
@@ -1037,6 +1051,42 @@ describe('WorkflowEditorHostScreen composition', () => {
         expect(latestBodyProps?.draft).toMatchObject({ name: 'Recovered workflow' });
     });
 
+    it('offers Share for a saved workflow, opening the one document share sheet with its Artifact', async () => {
+        definitionActions.get.mockResolvedValueOnce({
+            definitionId: 'shared-definition-id',
+            revision: { headerVersion: 1, bodyVersion: 1 },
+            metadata: { title: 'Nightly review' },
+            definition: {
+                version: 1, inputs: [], defaults: {},
+                blocks: [{ kind: 'step', id: 'review', document: { text: 'Review', references: [], attachments: [] }, input: [], result: { kind: 'text' } }],
+            },
+        } satisfies WorkflowDefinitionGetResultV1);
+        const { WorkflowEditorHostScreen } = await import('./WorkflowEditorHostScreen');
+        await renderScreen(<WorkflowEditorHostScreen source={{ kind: 'saved', definitionId: 'shared-definition-id' }} />);
+        await act(async () => {});
+
+        const ids = (latestBodyProps?.menuActions ?? []).map((action) => action.id);
+        expect(ids.indexOf('share')).toBeGreaterThanOrEqual(0);
+        expect(ids.indexOf('share')).toBeLessThan(ids.indexOf('export'));
+
+        modalShowSpy.mockClear();
+        await act(async () => { latestBodyProps?.menuActions?.find((action) => action.id === 'share')?.onSelect(); });
+        expect(modalShowSpy).toHaveBeenCalledTimes(1);
+        expect(modalShowSpy.mock.calls[0]?.[0]).toMatchObject({
+            props: { kind: 'workflow-definition.v1', artifactId: 'shared-definition-id', linkPath: '/workflows/shared-definition-id' },
+            chrome: { testID: 'document-share-modal' },
+        });
+        // "Send a copy instead" is the editor's existing JSON export.
+        expect(typeof modalShowSpy.mock.calls[0]?.[0]?.props?.onSendCopy).toBe('function');
+    });
+
+    it('offers no Share for a draft that has never been saved', async () => {
+        const { WorkflowEditorHostScreen } = await import('./WorkflowEditorHostScreen');
+        await renderScreen(<WorkflowEditorHostScreen source={{ kind: 'new' }} />);
+        await act(async () => {});
+        expect((latestBodyProps?.menuActions ?? []).some((action) => action.id === 'share')).toBe(false);
+    });
+
     it('retires a saved private draft immediately and refetches it on Account switch', async () => {
         const accountB = createDeferred<WorkflowDefinitionGetResultV1>();
         const definition = (text: string): WorkflowDefinitionGetResultV1 => ({
@@ -1063,7 +1113,7 @@ describe('WorkflowEditorHostScreen composition', () => {
         expect(latestBodyProps?.draft).toMatchObject({ name: 'Account A private prompt' });
 
         await act(async () => {
-            editorAccountScope.switchTo({ serverId: 'server-a', accountId: 'account-b' });
+            switchEditorAccountScope({ serverId: 'server-a', accountId: 'account-b' });
         });
         expect(screen.findByTestId('workflow-editor-loading')).toBeTruthy();
         expect(screen.findByTestId('workflow-editor-body')).toBeNull();

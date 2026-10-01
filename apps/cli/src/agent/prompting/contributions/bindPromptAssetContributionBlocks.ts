@@ -1,6 +1,7 @@
 import type { PromptBlockV1 } from '@happier-dev/protocol';
 
 import type { ResolvedPromptAssetContribution } from '@/plugins/projection/registry/types';
+import type { PluginRuntimeOccurrenceId } from '@/plugins/runtime/runtimeSlots';
 import type { StablePluginResourcesOwner } from '@/plugins/runtime/invocation/services/resources';
 import {
   evaluateContributionAvailability,
@@ -19,26 +20,27 @@ function failResource(message: string): never {
 
 export async function bindPromptAssetContributionBlocks(params: Readonly<{
   promptAssets: readonly ResolvedPromptAssetContribution[];
-  resolveContributionGeneration(pluginId: string): string | null;
+  resolveContributionOccurrence(pluginId: string): PluginRuntimeOccurrenceId | null;
+  isContributionOccurrenceCurrent(pluginId: string, occurrenceId: PluginRuntimeOccurrenceId): boolean;
   resources: StablePluginResourcesOwner | undefined;
   agent: Readonly<{ pluginId: string; localId: string }>;
   selectedAsset?: Readonly<{ pluginId: string; localId: string }>;
   signal: AbortSignal;
-  isGenerationCurrent(): boolean;
+  isOccurrenceCurrent(): boolean;
   facts: ContributionPolicyFacts;
 }>): Promise<readonly PromptBlockV1[]> {
-  if (!params.isGenerationCurrent()) {
-    return failResource('Prompt asset generation is stale');
+  if (!params.isOccurrenceCurrent()) {
+    return failResource('Prompt asset occurrence is stale');
   }
   return await resolvePromptAssetContributionBlocks({
     agent: params.agent,
     ...(params.selectedAsset ? { selectedAsset: params.selectedAsset } : {}),
     contributions: params.promptAssets.flatMap((asset) => {
-      const generationId = params.resolveContributionGeneration(asset.pluginId);
-      return generationId
+      const occurrenceId = params.resolveContributionOccurrence(asset.pluginId);
+      return occurrenceId
         ? [Object.freeze({
           pluginId: asset.pluginId,
-          generationId,
+          occurrenceId,
           definition: asset.definition,
         })]
         : [];
@@ -57,16 +59,20 @@ export async function bindPromptAssetContributionBlocks(params: Readonly<{
       };
     },
     async readResourceText(request) {
-      if (!params.isGenerationCurrent() || params.signal.aborted) {
-        return failResource('Prompt asset generation is stale');
+      if (
+        !params.isOccurrenceCurrent()
+        || !params.isContributionOccurrenceCurrent(request.pluginId, request.occurrenceId)
+        || params.signal.aborted
+      ) {
+        return failResource('Prompt asset occurrence is stale');
       }
       if (!params.resources?.hasPlugin(request.resourcePluginId)) {
-        return failResource('Prompt asset resource generation is unavailable');
+        return failResource('Prompt asset resource occurrence is unavailable');
       }
       const service = params.resources.bind({
         pluginId: request.resourcePluginId,
         signal: params.signal,
-        isGenerationCurrent: params.isGenerationCurrent,
+        isOccurrenceCurrent: params.isOccurrenceCurrent,
       });
       const descriptor = service.describe(request.resourceLocalId);
       if (descriptor.kind !== 'prompt' || !descriptor.contentType.toLowerCase().startsWith('text/')) {
@@ -76,6 +82,13 @@ export async function bindPromptAssetContributionBlocks(params: Readonly<{
         maxBytes: MAX_PLUGIN_PROMPT_ASSET_BYTES,
         signal: params.signal,
       });
+      if (
+        !params.isOccurrenceCurrent()
+        || !params.isContributionOccurrenceCurrent(request.pluginId, request.occurrenceId)
+        || params.signal.aborted
+      ) {
+        return failResource('Prompt asset occurrence is stale');
+      }
       if (result.kind !== descriptor.kind
         || result.contentType !== descriptor.contentType
         || result.digest !== descriptor.digest) {

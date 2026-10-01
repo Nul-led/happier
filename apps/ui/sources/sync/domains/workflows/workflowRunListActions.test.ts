@@ -17,7 +17,7 @@ describe('workflow Run list Action client', () => {
         const { listWorkflowRuns } = await import('./workflowRunListActions');
         executeMock.mockResolvedValueOnce({
             ok: true,
-            result: { runs: [createWorkflowRunSummaryFixture({ id: 'run-1' })], nextCursor: 'cursor-2' },
+            result: { runs: [createWorkflowRunSummaryFixture({ id: 'run-1' })], metadataByRunId: {}, nextCursor: 'cursor-2' },
         });
 
         const page = await listWorkflowRuns({ cursor: 'cursor-1', limit: 20 });
@@ -29,7 +29,49 @@ describe('workflow Run list Action client', () => {
         expect(page.nextCursor).toBe('cursor-2');
     });
 
-    it('materializes unavailable metadata for every Run returned by an older host', async () => {
+    it('preserves a readable untitled Run as sparse metadata instead of densifying it into unavailable', async () => {
+        const { listWorkflowRuns } = await import('./workflowRunListActions');
+        executeMock.mockResolvedValueOnce({
+            ok: true,
+            result: {
+                runs: [
+                    createWorkflowRunSummaryFixture({ id: 'run-1' }),
+                    createWorkflowRunSummaryFixture({ id: 'run-2' }),
+                ],
+                metadataByRunId: {
+                    'run-1': { kind: 'available', value: { title: 'Review 500 files' } },
+                },
+            },
+        });
+
+        const page = await listWorkflowRuns();
+
+        // The producer omits the key when the accepted snapshot opened
+        // cleanly but carries no authored title. That absence is a readable
+        // untitled Run — the canonical display projector names it Untitled —
+        // while only an explicit `unavailable` earns the lock treatment.
+        expect(page.metadataByRunId).toEqual({
+            'run-1': { kind: 'available', value: { title: 'Review 500 files' } },
+            'run-2': null,
+        });
+    });
+
+    it('keeps explicit unavailable metadata unavailable', async () => {
+        const { listWorkflowRuns } = await import('./workflowRunListActions');
+        executeMock.mockResolvedValueOnce({
+            ok: true,
+            result: {
+                runs: [createWorkflowRunSummaryFixture({ id: 'run-1' })],
+                metadataByRunId: { 'run-1': { kind: 'unavailable' } },
+            },
+        });
+
+        const page = await listWorkflowRuns();
+
+        expect(page.metadataByRunId).toEqual({ 'run-1': { kind: 'unavailable' } });
+    });
+
+    it('rejects an incomplete current list response without its metadata map', async () => {
         const { listWorkflowRuns } = await import('./workflowRunListActions');
         executeMock.mockResolvedValueOnce({
             ok: true,
@@ -41,21 +83,26 @@ describe('workflow Run list Action client', () => {
             },
         });
 
-        const page = await listWorkflowRuns();
-
-        expect(page.metadataByRunId).toEqual({
-            'run-1': { kind: 'unavailable' },
-            'run-2': { kind: 'unavailable' },
-        });
+        await expect(listWorkflowRuns()).rejects.toThrow();
     });
 
     it('asks the server for attention rather than scanning a cached page', async () => {
         const { buildWorkflowRunListFilter, listWorkflowRuns } = await import('./workflowRunListActions');
-        executeMock.mockResolvedValueOnce({ ok: true, result: { runs: [] } });
+        executeMock.mockResolvedValueOnce({ ok: true, result: { runs: [], metadataByRunId: {} } });
 
         await listWorkflowRuns({ filter: buildWorkflowRunListFilter('attention') });
 
         expect(executeMock.mock.calls[0]![1]).toEqual({ attention: 'required' });
+    });
+
+    it('lists Triggered history by the run\'s frozen cause, so a deleted trigger\'s runs stay findable', async () => {
+        const { buildWorkflowRunListFilter, listWorkflowRuns } = await import('./workflowRunListActions');
+        executeMock.mockResolvedValueOnce({ ok: true, result: { runs: [], metadataByRunId: {} } });
+
+        await listWorkflowRuns({ filter: buildWorkflowRunListFilter('triggered') });
+
+        // Membership is the retained run's origin, not whether a trigger still exists.
+        expect(executeMock.mock.calls[0]![1]).toEqual({ origin: 'automation' });
     });
 
     it('raises the one canonical workflow error with its closed code, not a generic Error', async () => {
@@ -100,5 +147,62 @@ describe('workflow Run list Action client', () => {
         expect(active.states).not.toContain('succeeded');
         expect(active.states).not.toContain('cancelled');
         expect(buildWorkflowRunListFilter('all')).toEqual({});
+    });
+
+    it('reads one exact Run summary through the list owner without touching detail', async () => {
+        const { getWorkflowRunSummary } = await import('./workflowRunListActions');
+        executeMock.mockResolvedValueOnce({
+            ok: true,
+            result: {
+                runs: [createWorkflowRunSummaryFixture({ id: 'run-1' })],
+                metadataByRunId: { 'run-1': { kind: 'available', value: { title: 'Review 500 files' } } },
+            },
+        });
+
+        const summary = await getWorkflowRunSummary('run-1');
+
+        const [actionId, input] = executeMock.mock.calls[0]!;
+        expect(actionId).toBe('workflow.run.list');
+        expect(input).toEqual({ runId: 'run-1', limit: 1 });
+        expect(summary.run.id).toBe('run-1');
+        expect(summary.metadata).toEqual({ kind: 'available', value: { title: 'Review 500 files' } });
+    });
+
+    it('reports a deleted exact Run as run_not_found so the row is removed', async () => {
+        const { getWorkflowRunSummary } = await import('./workflowRunListActions');
+        const { WorkflowActionError } = await import('./workflowActionError');
+        executeMock.mockResolvedValueOnce({ ok: true, result: { runs: [] } });
+
+        const failure = await getWorkflowRunSummary('run-1').then(() => null, (error: unknown) => error);
+
+        expect(failure).toBeInstanceOf(WorkflowActionError);
+        expect((failure as InstanceType<typeof WorkflowActionError>).code).toBe('run_not_found');
+    });
+
+    it('keeps an exact readable untitled Run unnamed rather than unavailable', async () => {
+        const { getWorkflowRunSummary } = await import('./workflowRunListActions');
+        executeMock.mockResolvedValueOnce({
+            ok: true,
+            result: { runs: [createWorkflowRunSummaryFixture({ id: 'run-1' })], metadataByRunId: {} },
+        });
+
+        const summary = await getWorkflowRunSummary('run-1');
+
+        expect(summary.metadata).toBeNull();
+    });
+
+    it('keeps an exact unavailable Run unavailable', async () => {
+        const { getWorkflowRunSummary } = await import('./workflowRunListActions');
+        executeMock.mockResolvedValueOnce({
+            ok: true,
+            result: {
+                runs: [createWorkflowRunSummaryFixture({ id: 'run-1' })],
+                metadataByRunId: { 'run-1': { kind: 'unavailable' } },
+            },
+        });
+
+        const summary = await getWorkflowRunSummary('run-1');
+
+        expect(summary.metadata).toEqual({ kind: 'unavailable' });
     });
 });

@@ -73,12 +73,14 @@ export type TeamCredentialBrokerOperation = Readonly<
   | {
       kind: 'external_api_key';
       externalApiKeyId: string;
+      operationId: string;
       assignedAccountId: string;
       assignedTeamMembershipId: string;
     }
 >;
 
 type ExactSourceOpenInput<TSource extends TeamCredentialSourceBindingV1> = Readonly<{
+  retirementGroup?: import('@/providers/connections/publicManagedRuntimeStart').ManagedProviderExplicitStartCustodyRequest['retirementGroup'];
   source: TSource;
   resourceId: string;
   resourceRevision: number;
@@ -164,7 +166,8 @@ function validOperation(operation: TeamCredentialBrokerOperation): boolean {
       && operation.actorAccountId.trim().length > 0
       && operation.requestId.trim().length > 0;
   }
-  return Object.keys(operation).length === 4
+  return Object.keys(operation).length === 5
+    && operation.operationId.trim().length > 0
     && operation.externalApiKeyId.trim().length > 0
     && operation.assignedAccountId.trim().length > 0
     && operation.assignedTeamMembershipId.trim().length > 0;
@@ -261,6 +264,7 @@ export function createTeamCredentialBrokerSourceOwner(input: Readonly<{
       }
 
       const exactInput = Object.freeze({
+        ...(rawInput.retirementGroup ? { retirementGroup: rawInput.retirementGroup } : {}),
         source: source.data,
         resourceId: rawInput.resourceId,
         resourceRevision: rawInput.resourceRevision,
@@ -310,7 +314,7 @@ export function createTeamCredentialBrokerSourceOwner(input: Readonly<{
       if (rawInput.signal.aborted || !sourceCurrent || !readsCurrent(projection)) {
         // Only a source that is not current retires the operation this open
         // would have joined; a caller that went away releases nothing shared.
-        if (!sourceCurrent || !readsCurrent(projection)) {
+        if (!rawInput.signal.aborted && (!sourceCurrent || !readsCurrent(projection))) {
           await opened.retire().catch(() => undefined);
         }
         await Promise.resolve(projection.cleanup()).catch(() => undefined);
@@ -398,14 +402,16 @@ export function createTeamCredentialBrokerSourceOwner(input: Readonly<{
               }
               sourceCurrent = await sourceCurrentness.isCurrent().catch(() => false);
               if (
-                rawInput.signal.aborted
+                retired
+                || rawInput.signal.aborted
                 || !sourceCurrent
                 || !readsCurrent(projection)
               ) {
                 // A source that stopped being current invalidates the whole
                 // operation's gateway, so it is retired. A caller that merely
                 // went away releases only its own view.
-                const invalid = !sourceCurrent || !readsCurrent(projection);
+                const invalid = !retired && !rawInput.signal.aborted
+                  && (!sourceCurrent || !readsCurrent(projection));
                 await (invalid ? retireAndCleanup() : cleanup()).catch(() => undefined);
                 return Object.freeze({
                   ok: false,

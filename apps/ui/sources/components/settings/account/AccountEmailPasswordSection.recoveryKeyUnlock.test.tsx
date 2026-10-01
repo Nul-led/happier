@@ -93,6 +93,7 @@ function e2eeProjection(status: 'enrolled' | 'not_enrolled') {
     return {
         v: 1 as const,
         encryptionMode: 'e2ee' as const,
+        terminalPresentUserPolicy: 'allowed' as const,
         nativeEmail: 'person@example.test',
         password: status === 'enrolled'
             ? { status: 'enrolled' as const, revision: 5 }
@@ -110,6 +111,7 @@ function createClient(status: 'enrolled' | 'not_enrolled' = 'enrolled') {
         changeE2eePassword: vi.fn(async () => ({ v: 1 as const, status: 'updated' as const })),
         removePlainPassword: vi.fn(),
         removeE2eePassword: vi.fn(async () => ({ v: 1 as const, status: 'removed' as const })),
+        setTerminalPresentUserPolicy: vi.fn(async (terminalPresentUserPolicy: 'allowed' | 'disallowed') => ({ v: 1 as const, terminalPresentUserPolicy })),
         requestEmailChange: vi.fn(),
     };
 }

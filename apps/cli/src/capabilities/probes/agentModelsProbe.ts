@@ -1,3 +1,5 @@
+import type { RuntimeDescriptorV1 } from '@happier-dev/protocol';
+import type { AgentCatalogEntry } from '@/agent/catalog/types';
 import type { AcpProbeBackend } from '@/agent/acp/runtime/acpRuntimeBackendContract';
 import type { CatalogAgentLookupId } from '@/agent/catalog/ids';
 import { resolveAgentCliLaunchSpec } from '@/packagedRuntime/managedTools/requireAgentCliLaunchSpec';
@@ -20,6 +22,7 @@ import { resolveProviderOwnedPreflightControlsProbeDecision } from './providerOw
 import { resolvePreflightSessionControlsProbeAdapter } from './resolvePreflightSessionControlsProbeAdapter';
 import { runPreflightSessionControlsProbe } from './runPreflightSessionControlsProbe';
 import { withPreflightSessionControlsProbeEnvironment } from './preflightSessionControlsProbeEnvironment';
+import { isDynamicModelProbeEnabled } from '@/providers/probe/nativeCatalogCredential';
 import { z } from 'zod';
 
 type ProbedAgentModelOptionValue = ProbedCatalogOptionValue;
@@ -40,6 +43,9 @@ export type ProbedAgentModelsResult = Readonly<{
   availableModels: ReadonlyArray<ProbedAgentModel>;
   supportsFreeform: boolean;
   source: 'dynamic' | 'static' | 'unavailable';
+  observedAt?: number;
+  refreshError?: boolean;
+  cacheable?: boolean;
 }>;
 
 const DEFAULT_PROBE_MODELS_TIMEOUT_MS = 15_000;
@@ -50,6 +56,12 @@ const agentModelsProbeCache = new AsyncTtlCache<ProbedAgentModelsResult>({
   errorTtlMs: PROBE_MODELS_FAILURE_TTL_MS,
 });
 
+const ProbeModelsObservationSchema = z.object({
+  availableModels: z.array(z.unknown()),
+  observedAt: z.number().finite().nonnegative().optional(),
+  refreshError: z.boolean().optional(),
+  source: z.enum(['dynamic', 'static']).optional(),
+});
 const ProbeNonEmptyStringSchema = z.string().trim().min(1);
 const ProbeDescriptionSchema = z.string();
 const ProbeModelOptionChoiceInputSchema = z.object({
@@ -157,6 +169,7 @@ function tryResolveAgentCliLaunchSpec(agentId: CatalogAgentLookupId) {
 function shouldFailClosedForMissingCli(params: {
   agentId: CatalogAgentLookupId;
   backendTarget?: BackendTargetRefV1;
+  runtimeDescriptorV1?: RuntimeDescriptorV1;
 }): boolean {
   if (params.backendTarget?.kind === 'configuredAcpBackend') return false;
   if (!hasStaticAgentModelsFallback(params.agentId)) return false;
@@ -388,7 +401,7 @@ function normalizeModelsFromConfigOptions(configOptionsRaw: unknown): ProbedAgen
     })
     .filter((model): model is ProbedAgentModel => model !== null);
 
-  if (parsed.length === 0) return null;
+  if (optionsRaw.length > 0 && parsed.length === 0) return null;
 
   const withDefault: ProbedAgentModel[] = [
     { id: 'default', name: 'Default' },
@@ -437,8 +450,14 @@ export async function probeModelsFromAcpBackend(params: {
 }
 
 export async function probeAgentModelsBestEffort(params: {
+  bypassCache?: boolean;
   agentId: CatalogAgentLookupId;
+  catalogEntry?: AgentCatalogEntry | null;
+  runtimeCacheKey?: string;
+  signal?: AbortSignal;
   backendTarget?: BackendTargetRefV1;
+  runtimeDescriptorV1?: RuntimeDescriptorV1;
+  runtimeKindOverride?: string;
   cwd: string;
   timeoutMs?: number;
   accountSettings?: Readonly<Record<string, unknown>> | null;
@@ -448,10 +467,22 @@ export async function probeAgentModelsBestEffort(params: {
   connectedServiceSelectionCacheKey?: string | null;
   profileCacheKey?: string | null;
 }): Promise<ProbedAgentModelsResult> {
-  const nowMs = Date.now();
   const cwd = typeof params.cwd === 'string' && params.cwd.trim().length > 0 ? params.cwd.trim() : process.cwd();
+  const modelConfig = resolveAgentModelConfigForLookupId(params.agentId);
+  if (!isDynamicModelProbeEnabled({
+    modelConfig,
+    accountSettings: params.accountSettings ?? null,
+    environment: params.env ?? process.env,
+  })) {
+    return { ...resolveStaticFallback(params.agentId), refreshError: false };
+  }
+  const nowMs = Date.now();
   const probeVariant = await resolveAgentProbeVariant({
     agentId: params.agentId,
+    catalogEntry: params.catalogEntry,
+    runtimeCacheKey: params.runtimeCacheKey,
+    runtimeDescriptorV1: params.runtimeDescriptorV1,
+    runtimeKindOverride: params.runtimeKindOverride,
     probeKind: 'models',
     backendTarget: params.backendTarget,
     accountSettings: params.accountSettings,
@@ -467,23 +498,23 @@ export async function probeAgentModelsBestEffort(params: {
   });
 
   const cached = agentModelsProbeCache.get(cacheKey);
-  if (cached?.kind === 'success' && agentModelsProbeCache.isFresh(cached, nowMs)) return cached.value;
+  if (!params.bypassCache && cached?.kind === 'success' && agentModelsProbeCache.isFresh(cached, nowMs)) return cached.value;
 
   return await agentModelsProbeCache.runDedupe(cacheKey, async () => {
     const cached2 = agentModelsProbeCache.get(cacheKey);
     const nowMs2 = Date.now();
-    if (cached2?.kind === 'success' && agentModelsProbeCache.isFresh(cached2, nowMs2)) return cached2.value;
+    if (!params.bypassCache && cached2?.kind === 'success' && agentModelsProbeCache.isFresh(cached2, nowMs2)) return cached2.value;
 
     const fallback = resolveStaticFallback(params.agentId);
+    const failedResult = (cold: ProbedAgentModelsResult, ttlMs = PROBE_MODELS_FAILURE_TTL_MS): ProbedAgentModelsResult => {
+      const lastGood = cached2?.kind === 'success' && cached2.value.source === 'dynamic' ? cached2.value : null;
+      const result = { ...(lastGood ?? cold), refreshError: true, cacheable: false };
+      agentModelsProbeCache.setSuccess(cacheKey, result, { nowMs: Date.now(), ttlMs });
+      return result;
+    };
     if (shouldFailClosedForMissingCli(params)) {
       const unavailable = buildUnavailable(params.agentId);
-      agentModelsProbeCache.setError(cacheKey, { nowMs: nowMs2, ttlMs: PROBE_MODELS_FAILURE_TTL_MS });
-      return unavailable;
-    }
-    const modelConfig = resolveAgentModelConfigForLookupId(params.agentId);
-    if (modelConfig?.dynamicProbe === 'static-only') {
-      agentModelsProbeCache.setSuccess(cacheKey, fallback, { nowMs: nowMs2, ttlMs: PROBE_MODELS_SUCCESS_TTL_MS });
-      return fallback;
+      return failedResult(unavailable);
     }
     const timeoutMs = typeof params.timeoutMs === 'number' ? params.timeoutMs : DEFAULT_PROBE_MODELS_TIMEOUT_MS;
 
@@ -500,30 +531,44 @@ export async function probeAgentModelsBestEffort(params: {
       if (configuredAcpProbe.kind === 'present') {
         const models = configuredAcpProbe.result;
         if (models) {
-          const res: ProbedAgentModelsResult = { ...fallback, availableModels: models, source: 'dynamic' };
+          const res: ProbedAgentModelsResult = { ...fallback, availableModels: models, source: 'dynamic', observedAt: Date.now() };
           agentModelsProbeCache.setSuccess(cacheKey, res, { nowMs: nowMs2, ttlMs: PROBE_MODELS_SUCCESS_TTL_MS });
           return res;
         }
-        agentModelsProbeCache.setSuccess(cacheKey, fallback, { nowMs: nowMs2, ttlMs: PROBE_MODELS_FAILURE_TTL_MS });
-        return fallback;
+        return failedResult(fallback);
       }
 
-      const preflightModelsAdapter = await resolvePreflightSessionControlsProbeAdapter(params.agentId);
+      const preflightModelsAdapter = await resolvePreflightSessionControlsProbeAdapter(params.agentId, params.catalogEntry);
       const probeModelsRaw = preflightModelsAdapter?.probeModelsRaw;
       if (probeModelsRaw) {
+        let provenance: Partial<Pick<ProbedAgentModelsResult, 'observedAt' | 'refreshError' | 'source'>> = {};
         const probePreflightModelsOnce = async (): Promise<ProbedAgentModel[] | null> => {
+          provenance = {};
           const modelsRaw = await withPreflightSessionControlsProbeEnvironment({
             agentId: params.agentId,
             processEnv: params.env ?? process.env,
             materializedEnv: params.materializedEnv,
           }, async ({ env }) => await probeModelsRaw({
             backendTarget: params.backendTarget,
+            ...(params.signal ? { signal: params.signal } : {}),
+            runtimeDescriptorV1: params.runtimeDescriptorV1,
+            runtimeKindOverride: params.runtimeKindOverride,
             probeKind: 'models',
+            bypassCache: params.bypassCache,
             cwd,
             timeoutMs,
             accountSettings: params.accountSettings ?? null,
             env,
           })).catch(() => null);
+          const envelope = ProbeModelsObservationSchema.safeParse(modelsRaw);
+          if (envelope.success) {
+            provenance = {
+              ...(envelope.data.observedAt !== undefined ? { observedAt: envelope.data.observedAt } : {}),
+              ...(envelope.data.refreshError !== undefined ? { refreshError: envelope.data.refreshError } : {}),
+              ...(envelope.data.source ? { source: envelope.data.source } : {}),
+            };
+            return normalizePreflightDynamicModels(envelope.data.availableModels);
+          }
           return normalizePreflightDynamicModels(modelsRaw);
         };
 
@@ -533,23 +578,31 @@ export async function probeAgentModelsBestEffort(params: {
         });
         const decision = resolveProviderOwnedPreflightControlsProbeDecision({
           probeResult,
-          emptySuccess: 'unavailable',
+          emptySuccess: 'success',
         });
         if (decision.kind === 'success') {
-          const res: ProbedAgentModelsResult = { ...fallback, availableModels: decision.value, source: 'dynamic' };
-          agentModelsProbeCache.setSuccess(cacheKey, res, { nowMs: nowMs2, ttlMs: PROBE_MODELS_SUCCESS_TTL_MS });
+          if (provenance.source === 'static' && provenance.refreshError
+            && cached2?.kind === 'success' && cached2.value.source === 'dynamic') {
+            return failedResult(fallback);
+          }
+          const res: ProbedAgentModelsResult = {
+            ...fallback, availableModels: decision.value, source: 'dynamic',
+            ...(provenance.source !== 'static' ? { observedAt: Date.now() } : {}),
+            ...provenance,
+            ...(provenance.refreshError ? { cacheable: false } : {}),
+          };
+          agentModelsProbeCache.setSuccess(cacheKey, res, {
+            nowMs: nowMs2, ttlMs: provenance.refreshError ? PROBE_MODELS_FAILURE_TTL_MS : PROBE_MODELS_SUCCESS_TTL_MS,
+          });
           return res;
         }
         const res = buildUnavailable(params.agentId);
-        agentModelsProbeCache.setError(cacheKey, { nowMs: nowMs2, ttlMs: PROBE_MODELS_FAILURE_TTL_MS });
-        return res;
+        return failedResult(res, preflightModelsAdapter.failureCacheStrategy === 'retry' ? 0 : PROBE_MODELS_FAILURE_TTL_MS);
       }
 
-      agentModelsProbeCache.setSuccess(cacheKey, fallback, { nowMs: nowMs2, ttlMs: PROBE_MODELS_FAILURE_TTL_MS });
-      return fallback;
+      return failedResult(fallback);
     } catch {
-      agentModelsProbeCache.setSuccess(cacheKey, fallback, { nowMs: nowMs2, ttlMs: PROBE_MODELS_FAILURE_TTL_MS });
-      return fallback;
+      return failedResult(fallback);
     }
   });
 }

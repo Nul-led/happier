@@ -75,3 +75,55 @@ export async function authenticateSelectedAccountServiceWithGeneratedKey(input: 
         secret.fill(0);
     }
 }
+
+/**
+ * Email and password sign-in to the selected account service. It reaches the same session and
+ * post-auth continuation as key sign-in: the only difference is how the Directory credential is
+ * obtained. An E2EE Account's unlocked key is held by the session exactly as a typed key is; a
+ * Plain Account's session has none (the keyless OAuth shape).
+ */
+export async function authenticateSelectedAccountServiceWithPassword(input: Readonly<{
+    service: VerifiedAccountServiceAuthority;
+    email: string;
+    password: string;
+    signal?: AbortSignal;
+    transport?: AccountDirectoryAuthTransport;
+}>): Promise<AccountServiceKeyAuthOutcome> {
+    if (input.signal?.aborted) return { kind: 'cancelled' };
+    const { service } = input;
+    let keyAuthSecret: Uint8Array | null = null;
+    try {
+        const signedIn = await accountDirectoryAuthClient.loginWithPassword({
+            endpointUrl: service.endpointUrl,
+            endpointServerIdentityId: service.serverIdentityId,
+            canonicalServerUrl: service.canonicalServerUrl,
+            email: input.email,
+            password: input.password,
+            signal: input.signal,
+            ...input.transport,
+            verifiedServerFeaturesSnapshot: service.snapshot,
+        });
+        keyAuthSecret = signedIn.keyAuthSecret;
+        if (input.signal?.aborted) return { kind: 'cancelled' };
+        const target = { endpoint: service.endpointUrl, serverIdentityId: service.serverIdentityId };
+        const session = createAccountDirectorySession(target, {
+            capability: service.capability,
+            ...(keyAuthSecret ? { keyAuthSecret } : {}),
+            transport: input.transport,
+        });
+        input.signal?.addEventListener('abort', () => { session.takeKeyAuthSecret()?.fill(0); }, { once: true });
+        return {
+            kind: 'authenticated',
+            serviceKey: createAccountDirectoryServiceKey(target),
+            service,
+            session,
+            credentialTokenDigest: await digestAccountDirectoryCredentialToken(signedIn.credentials.token),
+        };
+    } catch (error) {
+        if (input.signal?.aborted) return { kind: 'cancelled' };
+        if (isAccountDirectoryRelinkConflict(error)) return { kind: 'relink_required', error };
+        return { kind: 'failed', error };
+    } finally {
+        keyAuthSecret?.fill(0);
+    }
+}

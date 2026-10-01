@@ -7,6 +7,7 @@ import {
 } from '@happier-dev/protocol/plugins/availability';
 
 import { renderScreen, standardCleanup } from '@/dev/testkit';
+import { createMachineAdministrationTargetSelectionFixture } from '@/dev/testkit/mocks/machineAdministrationTargetSelection';
 import {
     createActivePluginAccountAvailabilityProjectionHydrator,
 } from '@/sync/api/plugins/availability/pluginAvailabilityProjection';
@@ -15,9 +16,27 @@ import {
     type PluginAccountAvailabilityReader,
 } from '@/sync/domains/plugins/availability/reader';
 
+import type { InstalledPluginEntry } from './model/pluginMarketplaceModel';
+import { PluginDetailLeaveActions } from './detail/PluginDetailLeaveActions';
+
 type GenericSettingsSectionProps = React.ComponentProps<
     typeof import('./detail/PluginDetailGenericSettingsSection').PluginDetailGenericSettingsSection
 >;
+
+type RenderedScreen = Awaited<ReturnType<typeof renderScreen>>;
+
+// The real erase recovery section is the outermost instance carrying its
+// testID, so this reads the plugin id the screen hands the section.
+function eraseEntry(screen: RenderedScreen, testID: string) {
+    return screen.findAllByTestId(testID)[0] ?? null;
+}
+
+// A plugin page ends with its leave actions; the erase control there is bound
+// to the plugin id those actions receive (usePluginAccountDataErase(pluginId)).
+function detailEraseOwner(screen: RenderedScreen) {
+    expect(screen.findByTestId('settings.plugins.detail.example.installed-plugin.accountDataErase')).not.toBeNull();
+    return screen.findAllByType(PluginDetailLeaveActions)[0] ?? null;
+}
 
 const state = vi.hoisted<{ value: Record<string, unknown> }>(() => ({ value: {} }));
 const genericSettingsProps = vi.hoisted(() => vi.fn());
@@ -33,16 +52,17 @@ vi.mock('react-native', async () => {
     });
 });
 
+vi.mock('@react-navigation/native', async () => (await import('@/dev/testkit/mocks/reactNavigation')).createReactNavigationNativeMock());
+
 vi.mock('react-native-unistyles', async () => {
     const { createUnistylesMock } = await import('@/dev/testkit/mocks/unistyles');
     return createUnistylesMock();
 });
 
-vi.mock('expo-router', () => ({
-    Redirect: 'Redirect',
-    useNavigation: () => ({ setOptions: vi.fn() }),
-    useRouter: () => ({ push: vi.fn() }),
-}));
+vi.mock('expo-router', async () => {
+    const { createExpoRouterMock } = await import('@/dev/testkit/mocks/router');
+    return createExpoRouterMock().module;
+});
 
 vi.mock('@/components/ui/lists/Item', () => ({ Item: 'Item' }));
 vi.mock('@/components/ui/lists/ItemGroup', () => ({
@@ -52,9 +72,6 @@ vi.mock('@/components/ui/lists/ItemList', () => ({
     ItemList: (props: React.PropsWithChildren) => React.createElement('ItemList', props, props.children),
 }));
 vi.mock('@/components/ui/navigation/SegmentedTabBar', () => ({ SegmentedTabBar: 'SegmentedTabBar' }));
-vi.mock('@/components/ui/text/Text', () => ({ Text: 'Text', TextInput: 'TextInput' }));
-vi.mock('@/components/ui/interactiveTargetSize', () => ({ resolveMinimumInteractiveTargetSize: () => 44 }));
-vi.mock('@/components/ui/icons/Icon', () => ({ Icon: 'Icon' }));
 vi.mock('@/components/settings/machines/MachineAdministrationTargetSelector', () => ({ MachineAdministrationTargetSelector: 'MachineAdministrationTargetSelector' }));
 vi.mock('@/components/settings/machines/PluginMachineExecutionOriginSelector', () => ({
     PluginMachineExecutionOriginSelectorView: 'PluginMachineExecutionOriginSelectorView',
@@ -86,20 +103,13 @@ vi.mock('./PluginMarketplaceSections', () => ({
     DevelopmentPluginsSection: 'DevelopmentPluginsSection',
     InstalledPluginsSection: 'InstalledPluginsSection',
     PendingPluginChangesSection: 'PendingPluginChangesSection',
+    PluginRoutineOperationSettlementRow: 'PluginRoutineOperationSettlementRow',
     PluginDiagnosticsSnapshotSection: 'PluginDiagnosticsSnapshotSection',
 }));
-vi.mock('./model/pluginDetailRoute', () => ({ buildPluginDetailRoute: (pluginId: string) => `/settings/plugins/${pluginId}` }));
-vi.mock('./model/pluginMarketplaceModel', () => ({ createPluginSettingsViews: () => [] }));
 vi.mock('./model/usePluginSettingsScreenState', () => ({ usePluginSettingsScreenState: () => state.value }));
 vi.mock('./NpmRegistryProfilesSection', () => ({ NpmRegistryProfilesSection: 'NpmRegistryProfilesSection' }));
 vi.mock('./NativeAppPluginPanelsSettingsEntry', () => ({ NativeAppPluginPanelsSettingsEntry: 'NativeAppPluginPanelsSettingsEntry' }));
 vi.mock('./PluginAppPagesSettingsEntry', () => ({ PluginAppPagesSettingsEntry: 'PluginAppPagesSettingsEntry' }));
-vi.mock('./PluginAccountDataEraseRecoverySection', () => ({
-    PluginAccountDataEraseRecoverySection: (props: { pluginId?: string; testID: string }) => React.createElement(
-        'PluginAccountDataEraseRecoverySection',
-        props,
-    ),
-}));
 
 vi.mock('./detail/PluginDetailActionsSection', () => ({ PluginDetailActionsSection: 'PluginDetailActionsSection' }));
 vi.mock('./detail/PluginDetailContributionsSection', () => ({ PluginDetailContributionsSection: 'PluginDetailContributionsSection' }));
@@ -115,7 +125,10 @@ vi.mock('./detail/PluginDetailSummaryGrid', () => ({ PluginDetailSummaryGrid: 'P
 function createState() {
     return {
         activeView: 'installed',
-        administrationTargetSelection: {},
+        administrationTargetSelection: createMachineAdministrationTargetSelectionFixture({
+            machines: [],
+            selectedMachineId: null,
+        }),
         accountServerIdentityId: null,
         selectedServerIdentityId: null,
         executionServerIdentityId: null,
@@ -126,12 +139,24 @@ function createState() {
         installedPluginById: new Map([['example.installed-plugin', {
             pluginId: 'example.installed-plugin',
             title: 'Installed plugin',
+            description: null,
+            version: '1.0.0',
             enabled: true,
-        }]]),
+            source: { kind: 'npm', locator: 'example-installed-plugin' },
+            install: { mode: 'managed', manifestVersion: '2' },
+            compatibility: { status: 'compatible', diagnostics: [] },
+            diagnostics: [],
+        } satisfies InstalledPluginEntry]]),
+        discoverSources: [],
+        selectedDiscoverSourceId: null,
+        discoverSearchText: '',
         pluginProjectionById: {},
         registryDiagnostics: [],
         isPluginActionInFlight: () => false,
         canRefreshInstalledPlugins: false,
+        // The selected daemon has answered; a cold deep link that has not yet
+        // settled stays on its loading pane instead (accountHosting suite).
+        pluginTruthSettled: true,
         daemonOperationsAvailable: false,
         refreshPluginTruth: vi.fn(),
         developmentCreateAvailable: false,
@@ -264,7 +289,7 @@ async function hydrateAccountRecoveryReaderAfterReset(
         entityId: `pluginDomain/${pluginId}/availability`,
         changedAt: 42,
         hint: { pluginDomain: 'availability', pluginId },
-    }])).toBe(true);
+    }])).toEqual([pluginId]);
     await hydrator.refresh();
     hydrator.reset();
     const afterReset = await hydrator.refresh();
@@ -288,6 +313,14 @@ function createAccountAvailabilityReader(input: Pick<
             code: 'account_availability_not_loaded',
         }),
         readCurrentHostedPublicationTarget: () => ({
+            kind: 'unavailable',
+            code: 'account_availability_not_loaded',
+        }),
+        readCurrentHostedPackageAssetPublicationTarget: () => ({
+            kind: 'unavailable',
+            code: 'account_availability_not_loaded',
+        }),
+        readCurrentHostedArtifactAdministration: () => ({
             kind: 'unavailable',
             code: 'account_availability_not_loaded',
         }),
@@ -337,18 +370,22 @@ afterEach(() => {
 });
 
 describe('Account plugin data erase Settings entries', () => {
-    it('keeps the orphaned-ID recovery entry reachable from the plugin Settings home', async () => {
-        const { PluginSettingsHomeScreen } = await import('./PluginSettingsHomeScreen');
-        const screen = await renderScreen(<PluginSettingsHomeScreen />);
+    it('keeps the orphaned-ID recovery entry reachable from the plugin Diagnostics page', async () => {
+        // The configuration-surfaces redesign moved the orphaned-id erase off
+        // the Plugins home onto Diagnostics, where the id is already in view.
+        const { PluginDiagnosticsScreen } = await import('./diagnostics/PluginDiagnosticsScreen');
+        const screen = await renderScreen(<PluginDiagnosticsScreen />);
 
-        expect(screen.findByTestId('settings.plugins.accountDataErase')?.props.pluginId).toBeUndefined();
+        const entry = eraseEntry(screen, 'settings.plugins.accountDataErase');
+        expect(entry).not.toBeNull();
+        expect(entry?.props.pluginId).toBeUndefined();
     });
 
     it('presents the installed-plugin recovery entry with its canonical plugin id', async () => {
         const { PluginDetailScreen } = await import('./detail/PluginDetailScreen');
         const screen = await renderScreen(<PluginDetailScreen pluginId="example.installed-plugin" />);
 
-        expect(screen.findByTestId('settings.plugins.detail.example.installed-plugin.accountDataErase')?.props.pluginId)
+        expect(detailEraseOwner(screen)?.props.pluginId)
             .toBe('example.installed-plugin');
     });
 
@@ -363,23 +400,26 @@ describe('Account plugin data erase Settings entries', () => {
         const screen = await renderScreen(<PluginDetailScreen pluginId="example.installed-plugin" />);
 
         expect(screen.findAllByType('Redirect')).toHaveLength(0);
-        expect(screen.findByTestId('settings.plugins.detail.example.installed-plugin.accountDataErase')?.props.pluginId)
+        expect(detailEraseOwner(screen)?.props.pluginId)
             .toBe('example.installed-plugin');
         const recoveryHeader = screen.findByTestId('settings.plugins.detail.example.installed-plugin.recoveryHeader');
         expect(recoveryHeader).not.toBeNull();
-        expect(recoveryHeader?.findAllByType('Text').find((node) => (
+        // The recovery header is the shared entity PageHeader now; it owns the
+        // title's presentation (no bespoke two-line clamp), and the plugin name
+        // stays the page's accessible header.
+        expect(recoveryHeader?.findAll((node) => (node.type as unknown) === 'Text').find((node) => (
             node.props.children === 'Installed plugin'
         ))?.props).toMatchObject({
             accessibilityRole: 'header',
-            numberOfLines: 2,
         });
-        const recoveryNotice = screen.findByTestId('settings.plugins.detail.example.installed-plugin.accountRecovery');
-        expect(recoveryNotice?.props.accessibilityLabel)
-            .toBe('settingsPlugins.readOnlyAccountRecovery');
-        expect(recoveryNotice?.findByType('Item').props).toMatchObject({
-            subtitle: 'settingsPlugins.readOnlyAccountRecovery',
-            mode: 'info',
-        });
+        // The notice is the shared AttentionBanner now, whose info row states
+        // the Account-recovery reason as its description (the bespoke notice's
+        // row-level accessibilityLabel is gone with it).
+        expect(screen.findHostByTestId('settings.plugins.detail.example.installed-plugin.accountRecovery')?.props)
+            .toMatchObject({
+                subtitle: 'settingsPlugins.readOnlyAccountRecovery',
+                mode: 'info',
+            });
         expect(screen.findByTestId('settings.plugins.detail.example.installed-plugin.accountRecovery-retry')).toBeNull();
         expect(genericSettingsProps).toHaveBeenCalledWith(expect.objectContaining({
             pluginId: 'example.installed-plugin',
@@ -398,6 +438,7 @@ describe('Account plugin data erase Settings entries', () => {
             readMaterializations: () => ({
                 kind: 'available',
                 availabilityCursor: 42,
+                intentReads: [],
                 materializations: [{ ...EXAMPLE_MATERIALIZATION, enabled: false }],
                 snapshots: [],
             }),
@@ -438,6 +479,7 @@ describe('Account plugin data erase Settings entries', () => {
             readMaterializations: () => ({
                 kind: 'available',
                 availabilityCursor: 42,
+                intentReads: [],
                 materializations: [{ ...EXAMPLE_MATERIALIZATION, enabled: false }],
                 snapshots: [],
             }),
@@ -476,6 +518,7 @@ describe('Account plugin data erase Settings entries', () => {
             readMaterializations: () => ({
                 kind: 'available',
                 availabilityCursor: 42,
+                intentReads: [],
                 materializations: [EXAMPLE_MATERIALIZATION],
                 snapshots: [],
             }),
@@ -506,6 +549,7 @@ describe('Account plugin data erase Settings entries', () => {
             readMaterializations: () => ({
                 kind: 'available',
                 availabilityCursor: 42,
+                intentReads: [],
                 materializations: [EXAMPLE_MATERIALIZATION],
                 snapshots: [],
             }),
@@ -518,7 +562,7 @@ describe('Account plugin data erase Settings entries', () => {
         const screen = await renderScreen(<PluginDetailScreen pluginId="example.installed-plugin" />);
 
         expect(screen.findAllByType('Redirect')).toHaveLength(0);
-        expect(screen.findByTestId('settings.plugins.detail.example.installed-plugin.accountDataErase')?.props.pluginId)
+        expect(detailEraseOwner(screen)?.props.pluginId)
             .toBe('example.installed-plugin');
         expect(genericSettingsProps).not.toHaveBeenCalled();
     });
@@ -532,6 +576,7 @@ describe('Account plugin data erase Settings entries', () => {
             readMaterializations: () => ({
                 kind: 'available',
                 availabilityCursor: 42,
+                intentReads: [],
                 materializations: [EXAMPLE_MATERIALIZATION],
                 snapshots: [],
             }),
@@ -571,7 +616,13 @@ describe('Account plugin data erase Settings entries', () => {
         const { PluginDetailScreen } = await import('./detail/PluginDetailScreen');
         const screen = await renderScreen(<PluginDetailScreen pluginId="example.installed-plugin" />);
 
-        expect(screen.findByType('Redirect')?.props.href).toBe('/settings/plugins');
+        // Settled truth without the plugin keeps the deep link on the detail
+        // route's missing-plugin state (it no longer redirects home); it must
+        // still not become the Account recovery route.
+        expect(screen.findAllByType('Redirect')).toHaveLength(0);
+        expect(screen.findByTestId('settings.plugins.detail.example.installed-plugin.missing')).not.toBeNull();
+        expect(screen.findByTestId('settings.plugins.detail.example.installed-plugin.accountRecovery')).toBeNull();
+        expect(screen.findAllByType(PluginDetailLeaveActions)).toHaveLength(0);
     });
 
     it('passes the selected daemon target currentness guard to generic plugin Settings', async () => {

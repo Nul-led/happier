@@ -64,7 +64,7 @@ describe('happier auth status --json', () => {
     }
   });
 
-  it('prints an auth_status JSON envelope without including the bearer token', async () => {
+  it('prints the token account ID in an auth_status JSON envelope without including the bearer token', async () => {
     const prevExitCode = process.exitCode;
     process.exitCode = undefined;
     try {
@@ -80,8 +80,12 @@ describe('happier auth status --json', () => {
           })));
 
           const machineKey = new Uint8Array(32).fill(8);
+          const token = `header.${Buffer.from(JSON.stringify({
+            sub: 'account-1',
+            provenance: { v: 1, kind: 'terminal', authority: 'account_automation' },
+          })).toString('base64url')}.signature`;
           await writeCredentialsDataKey({
-            token: 'token_super_secret',
+            token,
             publicKey: deriveBoxPublicKeyFromSeed(machineKey),
             machineKey,
           });
@@ -100,14 +104,15 @@ describe('happier auth status --json', () => {
           const parsed = JSON.parse(raw) as {
             ok: boolean;
             kind: string;
-            data?: { authenticated?: boolean; machineId?: string; token?: string };
+            data?: { authenticated?: boolean; accountId?: string | null; machineId?: string; token?: string };
           };
           expect(parsed.ok).toBe(true);
           expect(parsed.kind).toBe('auth_status');
           expect(parsed.data?.authenticated).toBe(true);
+          expect(parsed.data?.accountId).toBe('account-1');
           expect(parsed.data?.machineId).toBe('mid_123');
           expect(parsed.data?.token).toBeUndefined();
-          expect(raw).not.toContain('token_super_secret');
+          expect(raw).not.toContain(token);
           expect(process.exitCode).toBe(0);
         } finally {
           output.restore();
@@ -146,6 +151,7 @@ describe('happier auth status --json', () => {
             kind: string;
             data?: {
               authenticated?: boolean;
+              accountId?: string | null;
               encryption?: { type?: string };
               token?: string;
             };
@@ -153,6 +159,7 @@ describe('happier auth status --json', () => {
           expect(parsed.ok).toBe(true);
           expect(parsed.kind).toBe('auth_status');
           expect(parsed.data?.authenticated).toBe(true);
+          expect(parsed.data?.accountId).toBeNull();
           expect(parsed.data?.encryption).toEqual({ type: 'none' });
           expect(parsed.data?.token).toBeUndefined();
           expect(raw).not.toContain('token_plain_account');

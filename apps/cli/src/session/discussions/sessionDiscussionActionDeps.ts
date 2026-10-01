@@ -113,7 +113,10 @@ function validateAgentDiscussionSessionBinding(params: Readonly<{
  * strict semantic plaintext: a plaintext Action input is never a valid
  * encrypted persistence request, and the Home never receives E2EE plaintext.
  */
-function sealDiscussionPayload(crypto: SessionStoredContentCryptoContext, payload: unknown) {
+function sealDiscussionPayload(
+  crypto: SessionStoredContentCryptoContext,
+  payload: Parameters<typeof sealSessionStoredContent>[0]['payload'],
+) {
   return sealSessionStoredContent({ ...crypto, payload });
 }
 

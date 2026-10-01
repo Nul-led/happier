@@ -1,16 +1,25 @@
 import * as React from 'react';
-import { PanResponder, Platform, Pressable, View } from 'react-native';
+import { PanResponder, Platform, View } from 'react-native';
 import type { GestureResponderEvent, PanResponderGestureState } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 import { DrawnLinePath } from '@/components/instrument';
-import { Text, TextInput } from '@/components/ui/text/Text';
+import { RoundButton } from '@/components/ui/buttons/RoundButton';
+import { FieldTextInput } from '@/components/ui/forms/FieldTextInput';
+import { Icon, ICON_SIZE } from '@/components/ui/icons/Icon';
+import { SegmentedTabBar } from '@/components/ui/navigation/SegmentedTabBar';
+import { Text } from '@/components/ui/text/Text';
+import { ESCAPE_LAYER_PRIORITIES, useEscapeLayer } from '@/keyboard';
 import { Typography } from '@/constants/Typography';
 import { t } from '@/text';
 import type {
     BrowserAnnotationCaptureCapability,
     BrowserAnnotationViewportRect,
 } from '@/sync/domains/browser/context';
+
+import { shadowLevelStyle } from '@/shadowElevation';
+
+import { BROWSER_CHROME_WIDTH } from '../browserChromeDensity';
 
 import {
     rectFromGesture,
@@ -108,122 +117,48 @@ const stylesheet = StyleSheet.create((theme) => ({
     strokeLayer: {
         ...StyleSheet.absoluteFillObject,
     },
-    panel: {
-        gap: 8,
-        borderTopWidth: 1,
-        borderTopColor: theme.colors.border.default,
-        backgroundColor: theme.colors.surface.base,
+    // The tray rises from the frame's bottom edge (lab `browser` N): the page stays in view above
+    // it, and it is the one place the marking tools live.
+    trayDock: {
+        alignItems: 'center',
         paddingHorizontal: 12,
-        paddingVertical: 10,
+        paddingBottom: 12,
     },
-    titleRow: {
+    tray: {
+        width: '100%',
+        maxWidth: BROWSER_CHROME_WIDTH.card,
+        gap: 10,
+        padding: 10,
+        borderRadius: 16,
+        backgroundColor: theme.colors.surface.base,
+        borderWidth: StyleSheet.hairlineWidth,
+        borderColor: theme.colors.border.default,
+        ...shadowLevelStyle(theme.colors.shadowLevels[4]),
+    },
+    trayRow: {
         flexDirection: 'row',
         alignItems: 'center',
-        justifyContent: 'space-between',
+        gap: 8,
     },
-    title: {
-        ...Typography.rowMeta(),
-        ...Typography.default('semiBold'),
-        color: theme.colors.text.primary,
+    grow: {
+        flex: 1,
+        minWidth: 0,
     },
     meta: {
         ...Typography.rowMeta(),
         color: theme.colors.text.secondary,
+        fontVariant: ['tabular-nums'],
     },
     warning: {
         ...Typography.rowMeta(),
-        ...Typography.default('semiBold'),
         // Q2 measured the theme's semantic FOREGROUNDS as text at 2.20–3.55:1 in light theme —
-        // they are fill colours, not text colours. The words carry their own meaning here, so
-        // they take `text.primary`; the hue stays on the border/glyph beside them, where it is a
-        // redundant cue rather than the only one.
+        // they are fill colours, not text colours; the words carry the meaning in `text.primary`.
         color: theme.colors.text.primary,
-    },
-    toolRow: {
-        flexDirection: 'row',
-        flexWrap: 'wrap',
-        gap: 6,
-    },
-    tool: {
-        borderRadius: 6,
-        borderWidth: 1,
-        borderColor: theme.colors.border.default,
-        backgroundColor: theme.colors.surface.inset,
-        paddingHorizontal: 10,
-        paddingVertical: 5,
-    },
-    toolActive: {
-        borderColor: theme.colors.button.primary.background,
-        backgroundColor: theme.colors.surface.base,
-    },
-    toolText: {
-        ...Typography.rowMeta(),
-        ...Typography.default('semiBold'),
-        color: theme.colors.text.primary,
-    },
-    toolDisabled: {
-        opacity: 0.5,
-    },
-    comment: {
-        ...Typography.rowMeta(),
-        borderRadius: 6,
-        borderWidth: 1,
-        borderColor: theme.colors.border.default,
-        backgroundColor: theme.colors.surface.inset,
-        paddingHorizontal: 10,
-        paddingVertical: 6,
-        color: theme.colors.text.primary,
-    },
-    actionRow: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        gap: 8,
     },
     markRow: {
         flexDirection: 'row',
         flexWrap: 'wrap',
         gap: 6,
-    },
-    markChip: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        gap: 4,
-        borderRadius: 12,
-        borderWidth: 1,
-        borderColor: theme.colors.border.default,
-        backgroundColor: theme.colors.surface.inset,
-        paddingHorizontal: 8,
-        paddingVertical: 3,
-    },
-    markChipText: {
-        ...Typography.rowMeta(),
-        color: theme.colors.text.secondary,
-    },
-    attach: {
-        borderRadius: 6,
-        backgroundColor: theme.colors.button.primary.background,
-        paddingHorizontal: 12,
-        paddingVertical: 6,
-    },
-    attachDisabled: {
-        opacity: 0.5,
-    },
-    attachText: {
-        ...Typography.rowMeta(),
-        ...Typography.default('semiBold'),
-        color: theme.colors.button.primary.tint,
-    },
-    cancel: {
-        borderRadius: 6,
-        borderWidth: 1,
-        borderColor: theme.colors.border.default,
-        paddingHorizontal: 12,
-        paddingVertical: 6,
-    },
-    cancelText: {
-        ...Typography.rowMeta(),
-        ...Typography.default('semiBold'),
-        color: theme.colors.text.primary,
     },
 }));
 
@@ -478,6 +413,7 @@ export type AnnotationEditorOverlayProps = Readonly<{
  * unbacked draft never produces a fabricated item (fail-closed).
  */
 export function AnnotationEditorOverlay(props: AnnotationEditorOverlayProps): React.ReactElement {
+    const { theme } = useUnistyles();
     const [tool, setTool] = React.useState<AnnotationEditorTool>('select');
     const captureAvailable = props.captureCapability.available;
     const selectAvailable = props.selectCapability?.available !== false;
@@ -503,6 +439,25 @@ export function AnnotationEditorOverlay(props: AnnotationEditorOverlayProps): Re
         return () => target.removeEventListener('keydown', onKeyDown as EventListener);
     }, [selectAvailable]);
 
+    // Escape cancels marking from anywhere, through the canonical escape stack (H-UX F-22), above the
+    // browser's own stop-loading layer and below popovers and modals.
+    const onCancel = props.onCancel;
+    useEscapeLayer({
+        priority: ESCAPE_LAYER_PRIORITIES.overlay,
+        onEscape: () => {
+            onCancel();
+            return true;
+        },
+    });
+
+    const tools = React.useMemo(() => TOOL_ORDER.map((candidate) => ({
+        id: candidate,
+        label: toolLabel(candidate),
+        ...(candidate === 'select' && !selectAvailable
+            ? { disabled: true, unavailableReason: t('browserContext.editor.selectUnavailable') }
+            : {}),
+    })), [selectAvailable]);
+
     return (
         <View testID={props.testID} style={stylesheet.root} pointerEvents="box-none">
             <AnnotationCaptureSurface
@@ -514,97 +469,81 @@ export function AnnotationEditorOverlay(props: AnnotationEditorOverlayProps): Re
                 onStroke={props.onAddStroke}
             />
             <AnnotationVisualMarks testID={props.testID} marks={props.marks} />
-            <View style={stylesheet.panel}>
-                <View style={stylesheet.titleRow}>
-                    <Text style={stylesheet.title}>{t('browserContext.editor.title')}</Text>
-                    <Text style={stylesheet.meta}>
-                        {t('browserContext.editor.marked', { count: String(props.markCount) })}
-                    </Text>
-                </View>
-
-                {captureAvailable ? null : (
-                    <Text testID={`${props.testID}-capture-unavailable`} style={stylesheet.warning}>
-                        {t('browserContext.editor.captureUnavailable')}
-                    </Text>
-                )}
-                {selectAvailable ? null : (
-                    <Text testID={`${props.testID}-select-unavailable`} style={stylesheet.warning}>
-                        {t('browserContext.editor.selectUnavailable')}
-                    </Text>
-                )}
-
-                <View style={stylesheet.toolRow}>
-                    {TOOL_ORDER.map((candidate) => {
-                        const active = candidate === tool;
-                        const disabled = candidate === 'select' && !selectAvailable;
-                        return (
-                            <Pressable
-                                key={candidate}
-                                testID={`${props.testID}-tool-${candidate}`}
-                                accessibilityRole="button"
-                                accessibilityState={{ selected: active, disabled }}
-                                disabled={disabled}
-                                onPress={() => {
-                                    if (!disabled) setTool(candidate);
-                                }}
-                                style={[
-                                    stylesheet.tool,
-                                    active ? stylesheet.toolActive : undefined,
-                                    disabled ? stylesheet.toolDisabled : undefined,
-                                ]}
-                            >
-                                <Text style={stylesheet.toolText}>{toolLabel(candidate)}</Text>
-                            </Pressable>
-                        );
-                    })}
-                </View>
-
-                {tool === 'erase' && props.marks.length > 0 ? (
-                    <View style={stylesheet.markRow}>
-                        {props.marks.map((mark) => (
-                            <Pressable
-                                key={mark.draftId}
-                                testID={`${props.testID}-erase-${mark.draftId}`}
-                                accessibilityRole="button"
-                                accessibilityLabel={t('browserContext.editor.removeMark', { label: mark.label })}
-                                onPress={() => props.onRemoveMark(mark.draftId)}
-                                style={stylesheet.markChip}
-                            >
-                                <Text style={stylesheet.markChipText}>{mark.label}</Text>
-                                <Text style={stylesheet.markChipText}>×</Text>
-                            </Pressable>
-                        ))}
+            <View style={stylesheet.trayDock} pointerEvents="box-none">
+                <View style={stylesheet.tray} accessibilityRole="toolbar" accessibilityLabel={t('browserContext.editor.title')}>
+                    <View style={stylesheet.trayRow}>
+                        <SegmentedTabBar<AnnotationEditorTool>
+                            tabs={tools}
+                            activeTabId={tool}
+                            onSelectTab={setTool}
+                            role="radiogroup"
+                            compact
+                            segmentSizing="content"
+                            slidingThumb
+                            accessibilityLabel={t('browserContext.editor.title')}
+                            testIDPrefix={`${props.testID}-tool`}
+                        />
+                        <View style={stylesheet.grow} />
+                        <Text style={stylesheet.meta}>
+                            {t('browserContext.editor.marked', { count: String(props.markCount) })}
+                        </Text>
                     </View>
-                ) : null}
 
-                <TextInput
-                    testID={`${props.testID}-comment`}
-                    value={props.comment}
-                    onChangeText={props.onCommentChange}
-                    placeholder={t('browserContext.editor.commentPlaceholder')}
-                    style={stylesheet.comment}
-                    multiline
-                />
+                    {captureAvailable ? null : (
+                        <Text testID={`${props.testID}-capture-unavailable`} style={stylesheet.warning}>
+                            {t('browserContext.editor.captureUnavailable')}
+                        </Text>
+                    )}
+                    {selectAvailable ? null : (
+                        <Text testID={`${props.testID}-select-unavailable`} style={stylesheet.warning}>
+                            {t('browserContext.editor.selectUnavailable')}
+                        </Text>
+                    )}
 
-                <View style={stylesheet.actionRow}>
-                    <Pressable
-                        testID={`${props.testID}-attach`}
-                        accessibilityRole="button"
-                        accessibilityState={{ disabled: attachDisabled }}
-                        disabled={attachDisabled}
-                        onPress={props.onAttach}
-                        style={[stylesheet.attach, attachDisabled ? stylesheet.attachDisabled : undefined]}
-                    >
-                        <Text style={stylesheet.attachText}>{t('browserContext.editor.attach')}</Text>
-                    </Pressable>
-                    <Pressable
-                        testID={`${props.testID}-cancel`}
-                        accessibilityRole="button"
-                        onPress={props.onCancel}
-                        style={stylesheet.cancel}
-                    >
-                        <Text style={stylesheet.cancelText}>{t('browserContext.editor.cancel')}</Text>
-                    </Pressable>
+                    {tool === 'erase' && props.marks.length > 0 ? (
+                        <View style={stylesheet.markRow}>
+                            {props.marks.map((mark) => (
+                                <RoundButton
+                                    key={mark.draftId}
+                                    testID={`${props.testID}-erase-${mark.draftId}`}
+                                    size="small"
+                                    display="secondary"
+                                    title={mark.label}
+                                    trailing={<Icon name="x" size={ICON_SIZE.xs} color={theme.colors.text.secondary} />}
+                                    accessibilityLabel={t('browserContext.editor.removeMark', { label: mark.label })}
+                                    onPress={() => props.onRemoveMark(mark.draftId)}
+                                />
+                            ))}
+                        </View>
+                    ) : null}
+
+                    <FieldTextInput
+                        testID={`${props.testID}-comment`}
+                        value={props.comment}
+                        onChangeText={props.onCommentChange}
+                        accessibilityLabel={t('browserContext.editor.commentPlaceholder')}
+                        placeholder={t('browserContext.editor.commentPlaceholder')}
+                        multiline
+                        minLines={1}
+                    />
+
+                    <View style={stylesheet.trayRow}>
+                        <View style={stylesheet.grow} />
+                        <RoundButton
+                            testID={`${props.testID}-cancel`}
+                            size="small"
+                            display="secondary"
+                            title={t('browserContext.editor.cancel')}
+                            onPress={props.onCancel}
+                        />
+                        <RoundButton
+                            testID={`${props.testID}-attach`}
+                            size="small"
+                            title={t('browserContext.editor.attach')}
+                            disabled={attachDisabled}
+                            onPress={props.onAttach}
+                        />
+                    </View>
                 </View>
             </View>
         </View>

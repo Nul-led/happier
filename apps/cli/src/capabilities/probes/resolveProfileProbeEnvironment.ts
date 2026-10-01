@@ -5,7 +5,7 @@ import {
   buildProfileEnvOverlay,
   expandProfileEnvOverlay,
 } from '@/settings/profiles/buildProfileEnvOverlay';
-import { readProfilesFromAccountSettings } from '@/settings/profiles/readProfilesFromAccountSettings';
+import { readAccountLaunchProfiles } from '@/settings/profiles/readProfilesFromAccountSettings';
 import { deriveSettingsSecretsReadKeysForCredentials } from '@/settings/secrets/settingsSecretsKey';
 
 export type ProfileProbeEnvironment = Readonly<{
@@ -26,7 +26,7 @@ export async function resolveProfileProbeEnvironment(params: Readonly<{
     throw new Error('The selected profile cannot be resolved for this preflight probe');
   }
 
-  const profileSnapshot = readProfilesFromAccountSettings(params.accountSettings);
+  const profileSnapshot = await readAccountLaunchProfiles(params.accountSettings, params.credentials);
   const profile = profileSnapshot.visibleProfiles.find((candidate) => candidate.id === profileId);
   if (!profile) {
     throw new Error(`Profile "${profileId}" is unavailable for this preflight probe`);

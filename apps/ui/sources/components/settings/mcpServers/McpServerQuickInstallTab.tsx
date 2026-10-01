@@ -12,6 +12,8 @@ import { t } from '@/text';
 
 import { McpInputMappingEditor } from './McpInputMappingEditor';
 import { Icon } from '@/components/ui/icons/Icon';
+import { View } from 'react-native';
+import { collectionListStyles } from '@/components/ui/lists/collection/CollectionList';
 
 export const McpServerQuickInstallTab = React.memo(function McpServerQuickInstallTab(props: Readonly<{
     canExecute: boolean;
@@ -37,7 +39,7 @@ export const McpServerQuickInstallTab = React.memo(function McpServerQuickInstal
 
     return (
         <>
-            <ItemGroup title={t('settings.mcpServersQuickInstallTitle')} footer={t('settings.mcpServersQuickInstallSubtitle')}>
+            <ItemGroup title={t('settings.mcpServersQuickInstallTitle')} description={t('settings.mcpServersQuickInstallSubtitle')}>
                 {presets.map((preset) => {
                     const selected = selectedPresetIdSet.has(preset.id);
                     return (
@@ -46,7 +48,6 @@ export const McpServerQuickInstallTab = React.memo(function McpServerQuickInstal
                             testID={`mcp.server.quickInstall.preset.${preset.id}`}
                             title={preset.title}
                             subtitle={preset.description}
-                            icon={<Icon name="lightning" size={29} color={theme.colors.state.success.foreground} />}
                             selected={selected}
                             rightElement={(
                                 <Icon
@@ -68,7 +69,6 @@ export const McpServerQuickInstallTab = React.memo(function McpServerQuickInstal
                         testID="mcp.server.quickInstall.empty"
                         title={t('settings.mcpServersQuickInstallEmptyTitle')}
                         subtitle={t('settings.mcpServersQuickInstallEmptySubtitle')}
-                        icon={<Icon name="lightning" size={29} color={theme.colors.text.secondary} />}
                         showChevron={false}
                         mode="info"
                     />
@@ -91,7 +91,7 @@ export const McpServerQuickInstallTab = React.memo(function McpServerQuickInstal
                                             key={`${draft.preset.id}:${warning}`}
                                             title={draft.preset.title}
                                             subtitle={warning}
-                                            icon={<Icon name="warning-circle" size={29} color={theme.colors.text.secondary} />}
+                                            subtitleLeading={<View style={collectionListStyles.troubleDot} />}
                                             showChevron={false}
                                             mode="info"
                                         />

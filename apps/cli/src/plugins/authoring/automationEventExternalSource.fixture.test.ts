@@ -46,6 +46,12 @@ const BACKGROUND_SERVICE_ID = 'ledger-source-observer';
  * plugin generation registry; a fixture cannot mint one for itself.
  */
 const IMMUTABLE_GENERATION_ID = 'external-ledger-immutable-generation';
+const OCCURRENCE_ID = 'external-ledger-occurrence';
+const SOURCE_CUSTODY = Object.freeze({
+  kind: 'managed' as const,
+  immutableGenerationId: IMMUTABLE_GENERATION_ID,
+  installSource: 'archive' as const,
+});
 const AUTOMATION_ID = 'automation-external-ledger';
 const TRIGGER_ID = AutomationTriggerIdSchema.parse('trigger-external-ledger');
 const TRIGGER_REVISION = 4;
@@ -238,13 +244,15 @@ describe('External plugin as a first-class Automation Event source', () => {
     const actionCaller = resolvePluginActionCaller({
       plugin: { id: PLUGIN_ID },
       contribution: { id: BACKGROUND_SERVICE_ID },
-      immutableGenerationId: IMMUTABLE_GENERATION_ID,
+      occurrenceId: OCCURRENCE_ID,
+      sourceCustody: SOURCE_CUSTODY,
       resolveCurrentPluginMaterializationRef: callerFixture.resolveCurrentPluginMaterializationRef,
     });
     expect(actionCaller).toMatchObject({
       kind: 'plugin',
       pluginId: PLUGIN_ID,
-      immutableGenerationId: IMMUTABLE_GENERATION_ID,
+      occurrenceId: OCCURRENCE_ID,
+      sourceCustody: SOURCE_CUSTODY,
       materialization: callerFixture.materialization,
     });
 
@@ -292,12 +300,13 @@ describe('External plugin as a first-class Automation Event source', () => {
     const adoptedSet = createAutomationEventAdoptedDefinitionSetHostV1({
       credentials,
       caller: callerFixture.materialization,
-      immutableGenerationId: IMMUTABLE_GENERATION_ID,
+      occurrenceId: OCCURRENCE_ID,
+      sourceCustody: SOURCE_CUSTODY,
       transport: { kind: 'checkpointedPull' },
-      generationSignal: new AbortController().signal,
-      isGenerationCurrent: () => true,
+      occurrenceSignal: new AbortController().signal,
+      isOccurrenceCurrent: () => true,
       revalidateCallerMaterialization: async () => true,
-      revalidateCallerImmutableGeneration: async () => true,
+      revalidateCallerOccurrence: async () => true,
       readStoredDefinitions: async ({ input }) => (input.knownRevision === ADOPTED_REVISION
         ? { kind: 'unchanged', revision: ADOPTED_REVISION, eventDeclarationRelease }
         : {
@@ -325,8 +334,8 @@ describe('External plugin as a first-class Automation Event source', () => {
       revalidateCallerMaterialization: async (reference) => (
         reference.materializationId === callerFixture.materialization.materializationId
       ),
-      revalidateCallerImmutableGeneration: async (caller) => (
-        caller.immutableGenerationId === IMMUTABLE_GENERATION_ID
+      revalidateCallerOccurrence: async (caller) => (
+        caller.occurrenceId === OCCURRENCE_ID
       ),
       resolveAdoptedDefinitionSet: () => adoptedSet,
       transport: {
@@ -364,13 +373,13 @@ describe('External plugin as a first-class Automation Event source', () => {
           id: BACKGROUND_SERVICE_ID,
           qualifiedId: `${PLUGIN_ID}/${BACKGROUND_SERVICE_ID}`,
         },
-        generation: 'external-ledger-generation',
-        immutableGenerationId: IMMUTABLE_GENERATION_ID,
+        occurrenceId: OCCURRENCE_ID,
+        sourceCustody: SOURCE_CUSTODY,
         surface: 'background',
         resolveCurrentPluginMaterializationRef:
           callerFixture.resolveCurrentPluginMaterializationRef,
         signal: invocationController.signal,
-        isGenerationCurrent: () => true,
+        isOccurrenceCurrent: () => true,
       },
       actionExecutor: hostActionExecutor,
       invokeContributedAction: async () => {
@@ -394,7 +403,7 @@ describe('External plugin as a first-class Automation Event source', () => {
       registrations: [{
         pluginId: PLUGIN_ID,
         pluginVersion: '1.0.0',
-        generation: 'external-ledger-generation',
+        occurrenceId: 'external-ledger-generation',
         localId: BACKGROUND_SERVICE_ID,
         runner: registeredRunner,
       }],
@@ -423,7 +432,8 @@ describe('External plugin as a first-class Automation Event source', () => {
     );
     expect(request.caller).toMatchObject({
       pluginId: PLUGIN_ID,
-      immutableGenerationId: IMMUTABLE_GENERATION_ID,
+      occurrenceId: OCCURRENCE_ID,
+      sourceCustody: SOURCE_CUSTODY,
       materialization: callerFixture.materialization,
     });
     expect(request.hostEvidence).toMatchObject({
@@ -523,11 +533,11 @@ describe('External plugin as a first-class Automation Event source', () => {
       registrations: [{
         pluginId: PLUGIN_ID,
         pluginVersion: '1.0.0',
-        generation: 'external-ledger-generation',
+        occurrenceId: 'external-ledger-generation',
         localId: 'observe-run-state-changed',
         handler: observerHandler,
       }],
-      isGenerationCurrent: () => true,
+      isOccurrenceCurrent: () => true,
       createContext: ({ signal }) => ({
         context: Object.freeze({
           signal,

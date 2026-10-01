@@ -63,7 +63,7 @@ describe('keyboardShortcutsSettingsModel', () => {
         expect(groupOf('sessions.selection.clear')).toBe('sessions');
         expect(groupOf('permission.cycle')).toBe('composer');
         expect(groupOf('transcript.scroll.top')).toBe('transcript');
-        expect(groupOf('splitCanvas.splitRight')).toBe('splitView');
+        expect(groupOf('workspace.splitRight')).toBe('splitView');
         expect(groupOf('browser.reload')).toBe('browser');
         const grouped = model.commandGroups.flatMap((group) => group.rows.map((row) => row.commandId));
         expect([...grouped].sort()).toEqual(model.commandRows.map((row) => row.commandId).sort());
@@ -158,7 +158,7 @@ describe('keyboardShortcutsSettingsModel', () => {
                 ...baseSettings,
                 keyboardShortcutOverridesV1: {
                     'session.visible.next': [{ binding: 'Alt+ArrowDown', conflictScope: 'sessionNavigation' }],
-                    'splitCanvas.focusDown': [{ binding: 'Alt+ArrowDown', conflictScope: 'splitCanvas' }],
+                    'workspace.focusDown': [{ binding: 'Alt+ArrowDown', conflictScope: 'workspace' }],
                 },
             },
             platform: 'macos',
@@ -173,8 +173,8 @@ describe('keyboardShortcutsSettingsModel', () => {
             settings: {
                 ...baseSettings,
                 keyboardShortcutOverridesV1: {
-                    'splitCanvas.focusDown': [{ binding: 'Alt+ArrowDown', conflictScope: 'splitCanvas' }],
-                    'splitCanvas.focusUp': [{ binding: 'Alt+ArrowDown', conflictScope: 'splitCanvas' }],
+                    'workspace.focusDown': [{ binding: 'Alt+ArrowDown', conflictScope: 'workspace' }],
+                    'workspace.focusUp': [{ binding: 'Alt+ArrowDown', conflictScope: 'workspace' }],
                 },
             },
             platform: 'macos',
@@ -183,9 +183,9 @@ describe('keyboardShortcutsSettingsModel', () => {
 
         expect(model.conflicts).toEqual([
             {
-                id: 'duplicate:splitCanvas.focusDown:splitCanvas.focusUp',
+                id: 'duplicate:workspace.focusDown:workspace.focusUp',
                 kind: 'duplicate',
-                commandIds: ['splitCanvas.focusDown', 'splitCanvas.focusUp'],
+                commandIds: ['workspace.focusDown', 'workspace.focusUp'],
             },
         ]);
     });

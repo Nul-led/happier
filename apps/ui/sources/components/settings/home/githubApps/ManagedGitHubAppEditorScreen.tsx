@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { useNavigation, useRouter } from 'expo-router';
+import { useNavigation, useRouter } from '@/components/appShell/workspace/destinationRoute';
 import { AppState } from 'react-native';
 import type {
     ManagedGitHubAppCreateOutputV1,
@@ -13,14 +13,15 @@ import {
     revisionedSettingsDraftTransition,
     type RevisionedSettingsDraftOrigin,
 } from '@/components/settings/identity/revisionedSettingsDraft';
-import { FieldItem } from '@/components/ui/forms/FieldItem';
 import { CopiedPill } from '@/components/ui/copy/CopiedPill';
 import { useTemporaryCopyFeedback } from '@/components/ui/copy/useTemporaryCopyFeedback';
 import { setClipboardStringSafe } from '@/utils/ui/clipboard';
 import { ActivitySpinner } from '@/components/ui/feedback/ActivitySpinner';
+import { FieldTextInput } from '@/components/ui/forms/FieldTextInput';
+import { SettingAnchor, SettingRow, SettingSection } from "@/components/settings/shell/SettingRow";
+import { HOME_GITHUB_APP_EDITOR_SETTINGS, TEAM_GITHUB_APP_EDITOR_SETTINGS } from "@/components/settings/identity/identitySettings";
 import { Item } from '@/components/ui/lists/Item';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
-import { TextInput } from '@/components/ui/text/Text';
 import { Modal } from '@/modal';
 import { t } from '@/text';
 import { useActiveUnsavedChangesGuard } from '@/utils/navigation/useActiveUnsavedChangesGuard';
@@ -97,6 +98,7 @@ export const ManagedGitHubAppEditorContent = React.memo(function ManagedGitHubAp
     const router = useRouter();
     const navigation = useNavigation();
     const { owner, scope } = props.surface;
+    const settings = owner.kind === "home" ? HOME_GITHUB_APP_EDITOR_SETTINGS : TEAM_GITHUB_APP_EDITOR_SETTINGS;
     const client = useManagedGitHubAppsClient(scope);
     const apps = useManagedGitHubApps(scope, owner);
     const refreshApps = apps.refresh;
@@ -351,24 +353,24 @@ export const ManagedGitHubAppEditorContent = React.memo(function ManagedGitHubAp
     const callbackUrl = registration?.callbackUrl ?? null;
     return (
         <>
-            {!edit ? <ItemGroup title={t('identityAdministration.githubManifestSetup')} footer={t('identityAdministration.githubManifestSetupSubtitle')}>
-                <FieldItem label={t('identityAdministration.githubAppName')}><TextInput testID="github-manifest-app-name" accessibilityLabel={t('identityAdministration.githubAppName')} value={manifestAppName} editable={props.surface.mutationsAvailable} onChangeText={setManifestAppName} /></FieldItem>
-                <Item testID="github-manifest-organization-toggle" title={t('identityAdministration.githubOrganizationOwner')} selected={manifestForOrganization} disabled={!props.surface.mutationsAvailable} onPress={() => setManifestForOrganization((value) => !value)} showChevron={false} />
-                {manifestForOrganization ? <FieldItem label={t('identityAdministration.githubOrganizationLogin')}><TextInput testID="github-manifest-organization" accessibilityLabel={t('identityAdministration.githubOrganizationLogin')} value={manifestOrganization} editable={props.surface.mutationsAvailable} autoCapitalize="none" autoCorrect={false} onChangeText={setManifestOrganization} /></FieldItem> : null}
-                <Item testID="github-manifest-start" title={saving ? t('identityAdministration.githubOpeningSetup') : t('identityAdministration.githubManifestSetup')} loading={saving} disabled={saving || !props.surface.mutationsAvailable} onPress={() => void startManifestSetup()} showChevron={false} />
-            </ItemGroup> : null}
-            <ItemGroup title={edit ? t('identityAdministration.configuration') : t('identityAdministration.githubManualSetup')}>
-                <FieldItem label={t('identityAdministration.githubHost')}><TextInput testID="github-app-host" accessibilityLabel={t('identityAdministration.githubHost')} value={draft.githubHost} editable={!edit && props.surface.mutationsAvailable} autoCapitalize="none" autoCorrect={false} onChangeText={(value) => update('githubHost', value)} /></FieldItem>
-                <FieldItem label={t('identityAdministration.githubAppId')}><TextInput testID="github-app-id" accessibilityLabel={t('identityAdministration.githubAppId')} value={draft.githubAppId} editable={!edit && props.surface.mutationsAvailable} keyboardType="number-pad" onChangeText={(value) => update('githubAppId', value)} /></FieldItem>
-                <FieldItem label={t('identityAdministration.githubClientId')}><TextInput testID="github-app-client-id" accessibilityLabel={t('identityAdministration.githubClientId')} value={draft.githubClientId} editable={props.surface.mutationsAvailable} autoCapitalize="none" autoCorrect={false} onChangeText={(value) => update('githubClientId', value)} /></FieldItem>
-                <FieldItem label={t('identityAdministration.githubAppSlug')}><TextInput testID="github-app-slug" accessibilityLabel={t('identityAdministration.githubAppSlug')} value={draft.githubAppSlug} editable={props.surface.mutationsAvailable} autoCapitalize="none" autoCorrect={false} onChangeText={(value) => update('githubAppSlug', value)} /></FieldItem>
-                <FieldItem label={t('identityAdministration.githubOwnerLogin')}><TextInput testID="github-app-owner" accessibilityLabel={t('identityAdministration.githubOwnerLogin')} value={draft.githubOwnerLogin} editable={props.surface.mutationsAvailable} autoCapitalize="none" autoCorrect={false} onChangeText={(value) => update('githubOwnerLogin', value)} /></FieldItem>
-            </ItemGroup>
+            {!edit ? <SettingSection section={settings.sectionRefs.setup}><ItemGroup title={t('identityAdministration.githubManifestSetup')} description={t('identityAdministration.githubManifestSetupSubtitle')}>
+                <SettingRow setting={settings.settings.manifestAppName} accessoryLayout="adaptive" showChevron={false} rightElement={<FieldTextInput testID="github-manifest-app-name" accessibilityLabel={t('identityAdministration.githubAppName')} value={manifestAppName} editable={props.surface.mutationsAvailable} onChangeText={setManifestAppName} />} />
+                <SettingRow setting={settings.settings.manifestForOrganization} testID="github-manifest-organization-toggle" selected={manifestForOrganization} disabled={!props.surface.mutationsAvailable} onPress={() => setManifestForOrganization((value) => !value)} showChevron={false} />
+                {manifestForOrganization ? <SettingRow setting={settings.settings.manifestOrganization} accessoryLayout="adaptive" showChevron={false} rightElement={<FieldTextInput testID="github-manifest-organization" accessibilityLabel={t('identityAdministration.githubOrganizationLogin')} value={manifestOrganization} editable={props.surface.mutationsAvailable} autoCapitalize="none" onChangeText={setManifestOrganization} />} /> : null}
+                <SettingAnchor setting={settings.settings.manifestSetup}><Item testID="github-manifest-start" title={saving ? t('identityAdministration.githubOpeningSetup') : t('identityAdministration.githubManifestSetup')} loading={saving} disabled={saving || !props.surface.mutationsAvailable} onPress={() => void startManifestSetup()} showChevron={false} /></SettingAnchor>
+            </ItemGroup></SettingSection> : null}
+            <SettingSection section={settings.sectionRefs.configuration}><SettingAnchor setting={settings.settings.manualSetup}><ItemGroup title={edit ? t('identityAdministration.configuration') : t('identityAdministration.githubManualSetup')}>
+                <SettingRow setting={settings.settings.githubHost} accessoryLayout="adaptive" showChevron={false} rightElement={<FieldTextInput testID="github-app-host" accessibilityLabel={t('identityAdministration.githubHost')} value={draft.githubHost} editable={!edit && props.surface.mutationsAvailable} autoCapitalize="none" onChangeText={(value) => update('githubHost', value)} />} />
+                <SettingRow setting={settings.settings.githubAppId} accessoryLayout="adaptive" showChevron={false} rightElement={<FieldTextInput testID="github-app-id" accessibilityLabel={t('identityAdministration.githubAppId')} value={draft.githubAppId} editable={!edit && props.surface.mutationsAvailable} keyboardType="number-pad" onChangeText={(value) => update('githubAppId', value)} />} />
+                <SettingRow setting={settings.settings.githubClientId} accessoryLayout="adaptive" showChevron={false} rightElement={<FieldTextInput testID="github-app-client-id" accessibilityLabel={t('identityAdministration.githubClientId')} value={draft.githubClientId} editable={props.surface.mutationsAvailable} autoCapitalize="none" onChangeText={(value) => update('githubClientId', value)} />} />
+                <SettingRow setting={settings.settings.githubAppSlug} accessoryLayout="adaptive" showChevron={false} rightElement={<FieldTextInput testID="github-app-slug" accessibilityLabel={t('identityAdministration.githubAppSlug')} value={draft.githubAppSlug} editable={props.surface.mutationsAvailable} autoCapitalize="none" onChangeText={(value) => update('githubAppSlug', value)} />} />
+                <SettingRow setting={settings.settings.githubOwnerLogin} accessoryLayout="adaptive" showChevron={false} rightElement={<FieldTextInput testID="github-app-owner" accessibilityLabel={t('identityAdministration.githubOwnerLogin')} value={draft.githubOwnerLogin} editable={props.surface.mutationsAvailable} autoCapitalize="none" onChangeText={(value) => update('githubOwnerLogin', value)} />} />
+            </ItemGroup></SettingAnchor></SettingSection>
             {callbackUrl ? (
-                <ItemGroup footer={t('identityAdministration.callbackUrlHint')}>
-                    <Item
+                <ItemGroup description={t('identityAdministration.callbackUrlHint')}>
+                    <SettingRow
+                        setting={settings.settings.callbackUrl}
                         testID="github-app-callback-url"
-                        title={t('identityAdministration.callbackUrl')}
                         subtitle={callbackUrl}
                         rightElement={<CopiedPill visible={copyFeedback.isCopied()} testID="github-app-callback-url-copied" />}
                         onPress={() => void copyCallbackUrl(callbackUrl)}
@@ -376,16 +378,16 @@ export const ManagedGitHubAppEditorContent = React.memo(function ManagedGitHubAp
                     />
                 </ItemGroup>
             ) : null}
-            <ItemGroup title={t('identityAdministration.advanced')} footer={edit ? t('identityAdministration.githubSecretsRetain') : undefined}>
-                <FieldItem label={t('identityAdministration.clientSecret')}><TextInput testID="github-app-client-secret" accessibilityLabel={t('identityAdministration.clientSecret')} value={draft.clientSecret} editable={props.surface.mutationsAvailable} secureTextEntry autoCapitalize="none" autoCorrect={false} onChangeText={(value) => update('clientSecret', value)} /></FieldItem>
-                <FieldItem label={t('identityAdministration.githubPrivateKey')}><TextInput testID="github-app-private-key" accessibilityLabel={t('identityAdministration.githubPrivateKey')} value={draft.privateKey} editable={props.surface.mutationsAvailable} secureTextEntry multiline autoCapitalize="none" autoCorrect={false} onChangeText={(value) => update('privateKey', value)} /></FieldItem>
-                <FieldItem label={t('identityAdministration.githubWebhookSecret')}><TextInput testID="github-app-webhook-secret" accessibilityLabel={t('identityAdministration.githubWebhookSecret')} value={draft.webhookSecret} editable={props.surface.mutationsAvailable} secureTextEntry autoCapitalize="none" autoCorrect={false} onChangeText={(value) => update('webhookSecret', value)} /></FieldItem>
+            <ItemGroup title={t('identityAdministration.advanced')} description={edit ? t('identityAdministration.githubSecretsRetain') : undefined}>
+                <SettingRow setting={settings.settings.clientSecret} accessoryLayout="adaptive" showChevron={false} rightElement={<FieldTextInput testID="github-app-client-secret" accessibilityLabel={t('identityAdministration.clientSecret')} value={draft.clientSecret} editable={props.surface.mutationsAvailable} secureTextEntry autoCapitalize="none" onChangeText={(value) => update('clientSecret', value)} />} />
+                <SettingRow setting={settings.settings.privateKey} accessoryLayout="stacked" showChevron={false} rightElement={<FieldTextInput testID="github-app-private-key" accessibilityLabel={t('identityAdministration.githubPrivateKey')} value={draft.privateKey} editable={props.surface.mutationsAvailable} secureTextEntry multiline autoCapitalize="none" onChangeText={(value) => update('privateKey', value)} />} />
+                <SettingRow setting={settings.settings.webhookSecret} accessoryLayout="adaptive" showChevron={false} rightElement={<FieldTextInput testID="github-app-webhook-secret" accessibilityLabel={t('identityAdministration.githubWebhookSecret')} value={draft.webhookSecret} editable={props.surface.mutationsAvailable} secureTextEntry autoCapitalize="none" onChangeText={(value) => update('webhookSecret', value)} />} />
             </ItemGroup>
-            {revisionConflict && registration ? <ItemGroup footer={t('identityAdministration.settingsChangedElsewhere')}>{draftOrigin?.resourceId !== registration.id || registration.revision > draftOrigin.revision
+            {revisionConflict && registration ? <ItemGroup description={t('identityAdministration.settingsChangedElsewhere')}>{draftOrigin?.resourceId !== registration.id || registration.revision > draftOrigin.revision
                 ? <Item testID="github-app-reload-conflict" title={t('common.refresh')} disabled={saving || !props.surface.mutationsAvailable} onPress={adoptRegistration} showChevron={false} />
                 : <Item testID="github-app-refresh-conflict" title={t('common.retry')} disabled={saving} onPress={refreshApps} showChevron={false} />}</ItemGroup> : null}
-            <ItemGroup footer={approvalNotice ?? (error ? managedGitHubAppFailureMessage(error) : undefined)}>
-                <Item testID="github-app-save" title={saving ? t('identityAdministration.saving') : t('identityAdministration.save')} loading={saving} disabled={saving || revisionConflict || !dirty || !props.surface.mutationsAvailable} onPress={() => void save()} showChevron={false} />
+            <ItemGroup description={approvalNotice ?? (error ? managedGitHubAppFailureMessage(error) : undefined)}>
+                <SettingAnchor setting={settings.settings.save}><Item testID="github-app-save" title={saving ? t('identityAdministration.saving') : t('identityAdministration.save')} loading={saving} disabled={saving || revisionConflict || !dirty || !props.surface.mutationsAvailable} onPress={() => void save()} showChevron={false} /></SettingAnchor>
                 {error ? <ManagedGitHubAppFailureRecovery code={error} surface={props.surface} /> : null}
             </ItemGroup>
         </>
@@ -393,5 +395,5 @@ export const ManagedGitHubAppEditorContent = React.memo(function ManagedGitHubAp
 });
 
 export const ManagedGitHubAppEditorScreen = React.memo(function ManagedGitHubAppEditorScreen(props: Readonly<{ serverId: string; registrationId?: string }>) {
-    return <HomeAdministrationSection serverId={props.serverId} title={t(props.registrationId ? 'identityAdministration.githubAppEditTitle' : 'identityAdministration.githubAppCreateTitle')}>{(context) => context.projection.capabilities.manageAuthentication ? <ManagedGitHubAppEditorContent key={`${serverAccountScopeKeySuffix(context.scope)}:${props.registrationId ?? 'create'}`} surface={homeManagedGitHubAppSurface(context)} manifestReturn={{ kind: 'home', serverId: context.scope.serverId }} {...(props.registrationId ? { registrationId: props.registrationId } : {})} /> : <ItemGroup><Item title={t('homeGovernance.forbiddenTitle')} showChevron={false} /></ItemGroup>}</HomeAdministrationSection>;
+    return <HomeAdministrationSection serverId={props.serverId} title={t(props.registrationId ? 'identityAdministration.githubAppEditTitle' : 'identityAdministration.githubAppCreateTitle')} description={t('homeGovernance.pages.githubAppEditor')}>{(context) => context.projection.capabilities.manageAuthentication ? <ManagedGitHubAppEditorContent key={`${serverAccountScopeKeySuffix(context.scope)}:${props.registrationId ?? 'create'}`} surface={homeManagedGitHubAppSurface(context)} manifestReturn={{ kind: 'home', serverId: context.scope.serverId }} {...(props.registrationId ? { registrationId: props.registrationId } : {})} /> : <ItemGroup><Item title={t('homeGovernance.forbiddenTitle')} showChevron={false} /></ItemGroup>}</HomeAdministrationSection>;
 });

@@ -33,6 +33,7 @@ const modalBoundary = vi.hoisted(() => ({
 }));
 
 const promptSpy = vi.hoisted(() => vi.fn(async () => modalChoice.promptAnswer));
+const languageMock = vi.hoisted(() => ({ current: 'en' }));
 const shareTextSafeMock = vi.hoisted(() => vi.fn(async () => 'shared' as const));
 const sharingAvailableMock = vi.hoisted(() => ({ current: true }));
 const virtualizedBoundary = vi.hoisted(() => ({
@@ -85,6 +86,10 @@ vi.mock('@react-navigation/native', async () => {
 });
 
 installSettingsViewCommonModuleMocks({
+    text: async () => {
+        const { createTextModuleMock } = await import('@/dev/testkit/mocks/text');
+        return createTextModuleMock({ getPreferredLanguage: () => languageMock.current });
+    },
     router: async () => ({
         useRouter: () => ({ push: vi.fn(), back: vi.fn() }),
         useNavigation: () => ({ setOptions: vi.fn() }),
@@ -164,6 +169,7 @@ beforeEach(async () => {
     modalBoundary.confirmations = [];
     modalBoundary.confirmed = true;
     promptSpy.mockClear();
+    languageMock.current = 'en';
     shareTextSafeMock.mockReset();
     shareTextSafeMock.mockResolvedValue('shared');
     sharingAvailableMock.current = true;
@@ -177,6 +183,66 @@ afterEach(() => {
 });
 
 describe('TeamInvitationsScreen', () => {
+    it('formats invitation expiry in the selected app language', async () => {
+        languageMock.current = 'de';
+        const expiresAt = Date.parse('2025-02-03T12:00:00Z');
+        const serverId = await addManagedHome();
+        harness.answer(serverId, INVITATIONS_LIST_PATH, {
+            body: {
+                items: [teamInvitationRowFixture({ expiresAt })],
+                nextCursor: null,
+                emailDelivery: 'available',
+                linkDelivery: 'available',
+            },
+        });
+
+        const screen = await renderInvitations(serverId);
+        await waitForTestId(screen, 'team-invitations-row:invitation-1');
+        expect(screen.findByTestId('team-invitations-row:invitation-1')?.props.detail)
+            .toContain(new Intl.DateTimeFormat('de', { dateStyle: 'medium' }).format(expiresAt));
+    });
+    it.each([
+        { status: 403, label: 'teams.errors.forbidden' },
+        { status: 404, label: 'teams.unavailable.updateRequired' },
+    ])('explains an invitation read refusal ($status) without offering an ineffective retry', async ({ status, label }) => {
+        const serverId = await addManagedHome();
+        harness.answer(serverId, INVITATIONS_LIST_PATH, { status });
+
+        const screen = await renderInvitations(serverId);
+        await waitForTestId(screen, 'team-invitations-unavailable');
+
+        expect(screen.getTextContent()).toContain(label);
+        expect(screen.getTextContent()).not.toContain('teams.unavailable.offline');
+        expect(collectRenderedTestIds(screen.tree.toJSON())).not.toContain('team-invitations-retry');
+    });
+
+    it('recovers an initial transient invitation read failure and retains loaded invitations when refresh fails', async () => {
+        const serverId = await addManagedHome();
+        harness.answer(serverId, INVITATIONS_LIST_PATH, { status: 503 });
+
+        const screen = await renderInvitations(serverId);
+        await waitForTestId(screen, 'team-invitations-retry');
+        expect(screen.getTextContent()).toContain('teams.unavailable.offline');
+
+        harness.answer(serverId, INVITATIONS_LIST_PATH, {
+            body: {
+                items: [teamInvitationRowFixture()],
+                nextCursor: null,
+                emailDelivery: 'available',
+                linkDelivery: 'available',
+            },
+        });
+        await screen.pressByTestIdAsync('team-invitations-retry');
+        await waitForTestId(screen, 'team-invitations-row:invitation-1');
+        expect(collectRenderedTestIds(screen.tree.toJSON())).not.toContain('team-invitations-unavailable');
+
+        harness.answer(serverId, INVITATIONS_LIST_PATH, { status: 503 });
+        await act(async () => { navigationState.focusEffects[0]?.(); });
+        await waitForTestId(screen, 'team-invitations-retry');
+        expect(collectRenderedTestIds(screen.tree.toJSON())).toContain('team-invitations-row:invitation-1');
+        expect(screen.getTextContent()).toContain('teams.unavailable.offline');
+    });
+
     it('opens only one row action while the first choice is still pending', async () => {
         let releaseChoice = (): void => {};
         modalBoundary.wait = new Promise<void>((resolve) => { releaseChoice = resolve; });

@@ -1,5 +1,6 @@
 import { listBuiltInHappierTools } from '@/agent/tools/happierTools/listBuiltInHappierTools';
 import { z } from 'zod';
+import type { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import type { RequestOptions } from '@modelcontextprotocol/sdk/shared/protocol.js';
 import type { ProgressNotification, RequestMeta } from '@modelcontextprotocol/sdk/types.js';
 import { logger } from '@/ui/logger';
@@ -15,6 +16,12 @@ export type HappierBridgeCallOptions = Readonly<{
   requestMetadata?: RequestMeta;
   onprogress?: RequestOptions['onprogress'];
 }>;
+
+export type HappierBridgeToolCaller = (
+  name: string,
+  args: unknown,
+  options?: HappierBridgeCallOptions,
+) => ReturnType<Client['callTool']>;
 
 // Tool registration for the host-owned Happier MCP bridge.
 type ToolRegistrar = Readonly<{
@@ -44,29 +51,17 @@ function toBridgeSchema(schema: unknown): z.ZodType {
   return adapter;
 }
 
-export function registerHappierBridgeTools(
-  server: ToolRegistrar,
-  deps: Readonly<{
-    callHttpTool: (
-      name: string,
-      args: unknown,
-      options?: HappierBridgeCallOptions,
-    ) => Promise<any>;
-    tools?: readonly Readonly<{
-      name: string;
-      title?: string;
-      description?: string;
-      inputSchema?: unknown;
-      outputSchema?: unknown;
-      annotations?: unknown;
-      _meta?: Record<string, unknown>;
-    }>[];
-  }>,
-): void {
-  const forward = (name: string) => async (
-    args: any,
-    extra?: BridgeRequestExtra,
-  ) => {
+export function forwardHappierBridgeTool(
+  name: string,
+  args: unknown,
+  extra: BridgeRequestExtra | undefined,
+  callHttpTool: HappierBridgeToolCaller,
+) {
+  return forwardTool(name, callHttpTool)(args, extra);
+}
+
+function forwardTool(name: string, callHttpTool: HappierBridgeToolCaller) {
+  return async (args: unknown, extra?: BridgeRequestExtra) => {
     const progressToken = extra?._meta?.progressToken;
     const pendingProgressNotifications: Promise<void>[] = [];
     const onprogress = (
@@ -90,14 +85,12 @@ export function registerHappierBridgeTools(
         ...(onprogress === undefined ? {} : { onprogress }),
       };
       const result = Object.keys(options).length === 0
-        ? await deps.callHttpTool(name, args)
-        : await deps.callHttpTool(name, args, options);
+        ? await callHttpTool(name, args)
+        : await callHttpTool(name, args, options);
       await Promise.all(pendingProgressNotifications);
       return result;
     } catch (error) {
-      if (extra?.signal?.aborted === true) {
-        throw error;
-      }
+      if (extra?.signal?.aborted === true) throw error;
       return {
         content: [
           { type: 'text', text: `Failed to call tool ${name}: ${error instanceof Error ? error.message : String(error)}` },
@@ -106,7 +99,23 @@ export function registerHappierBridgeTools(
       };
     }
   };
+}
 
+export function registerHappierBridgeTools(
+  server: ToolRegistrar,
+  deps: Readonly<{
+    callHttpTool: HappierBridgeToolCaller;
+    tools?: readonly Readonly<{
+      name: string;
+      title?: string;
+      description?: string;
+      inputSchema?: unknown;
+      outputSchema?: unknown;
+      annotations?: unknown;
+      _meta?: Record<string, unknown>;
+    }>[];
+  }>,
+): void {
   // Production bridges forward the upstream exact-runtime catalog. The local
   // fallback has no exact Home feature fact, so server-backed tools fail closed.
   const tools = deps.tools ?? listBuiltInHappierTools({
@@ -123,6 +132,6 @@ export function registerHappierBridgeTools(
       ...(tool._meta === undefined ? {} : { _meta: tool._meta }),
     };
 
-    server.registerTool(tool.name, meta, forward(tool.name));
+    server.registerTool(tool.name, meta, forwardTool(tool.name, deps.callHttpTool));
   }
 }

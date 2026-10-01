@@ -27,3 +27,11 @@ export function decodeJwtPayload(token: string): Record<string, unknown> | null 
     }
 }
 
+/**
+ * The account id a Happier credential token names: its trimmed `sub`, or null
+ * when the token is malformed or carries no subject. The one reader for it.
+ */
+export function readAccountIdFromToken(token: string): string | null {
+    const subject = decodeJwtPayload(token)?.sub;
+    return typeof subject === 'string' && subject.trim() ? subject.trim() : null;
+}

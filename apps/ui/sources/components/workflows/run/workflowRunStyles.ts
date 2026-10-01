@@ -102,6 +102,19 @@ export const workflowRunStyles = StyleSheet.create((theme) => ({
         minHeight: MINIMUM_TARGET_SIZE,
         justifyContent: 'center',
     },
+    /**
+     * Contact feedback for the controls this body owns directly.
+     *
+     * The canonical button primitives answer press-in themselves; a row or a
+     * text-labelled control built from a bare `Pressable` does not, so a
+     * delayed action felt inert until its result arrived. This is the same
+     * pressed-overlay role the existing prompt-card controls use, not a new
+     * press scale or token.
+     */
+    pressed: {
+        backgroundColor: theme.colors.surface.pressedOverlay,
+        borderRadius: theme.borderRadius.md,
+    },
     action: {
         ...Typography.default('semiBold'),
         color: theme.colors.button.secondary.tint,
@@ -112,6 +125,21 @@ export const workflowRunStyles = StyleSheet.create((theme) => ({
     sectionLabel: {
         ...Typography.default('regular'),
         color: theme.colors.text.secondary,
+    },
+    sectionHeading: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: theme.margins.sm,
+    },
+    /** A changing count, tabular so it cannot shift the label beside it. */
+    sectionCount: {
+        ...Typography.default('regular'),
+        ...Typography.tabular(),
+        color: theme.colors.text.secondary,
+    },
+    attentionStack: {
+        gap: theme.margins.xs,
+        paddingVertical: theme.margins.sm,
     },
     attentionRow: {
         flexDirection: 'row',

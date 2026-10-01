@@ -24,6 +24,9 @@ export async function createTestPluginSdkTarball(): Promise<Buffer> {
           '.': './index.js',
           './protocol': './protocol.js',
         },
+        bin: {
+          'happier-plugin-build-ui': './build-ui.js',
+        },
       }),
     },
     {
@@ -32,10 +35,12 @@ export async function createTestPluginSdkTarball(): Promise<Buffer> {
     },
     { name: 'package/index.js', body: DEFINE_PLUGIN_STUB_SOURCE },
     { name: 'package/protocol.js', body: PROTOCOL_STUB_SOURCE },
+    { name: 'package/build-ui.js', body: '#!/usr/bin/env node\n' },
   ]);
 }
 
 const DEFINE_PLUGIN_STUB_SOURCE = [
+  'export function defineUiSurfaceDefinition(definition) { return definition; }',
   'export function definePlugin(specification) {',
   '  const actions = Object.entries(specification.actions ?? {}).map(([id, action]) => {',
   '    const { run, ...declaration } = action;',

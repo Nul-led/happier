@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
     sealSavedSecretResourceStoredContentV1,
+    type SavedSecretCatalogEntryV1,
     type SavedSecretResourceMaterialV1,
 } from '@happier-dev/protocol';
 
@@ -12,11 +13,22 @@ const entry = {
     relationship: 'recipient',
     name: 'Team key',
     kind: 'apiKey',
+    encryptionMode: 'plain',
+    owner: {
+        kind: 'account',
+        accountId: 'owner-a',
+        firstName: 'Ada',
+        lastName: null,
+        username: null,
+        avatarUrl: null,
+    },
+    accessSources: [{ kind: 'account' }],
+    audience: null,
     ownerAccountId: 'owner-a',
     revision: 2,
     materialStatus: 'ready',
     capabilities: { use: true, rename: false, rotate: false, manageAccess: false, delete: false },
-} as const;
+} as const satisfies SavedSecretCatalogEntryV1;
 
 describe('materializeSavedSecretResources', () => {
     it('keeps healthy rows usable while excluding row-local corrupt records from the reference catalog', async () => {
@@ -72,7 +84,13 @@ describe('materializeSavedSecretResources', () => {
         } satisfies SavedSecretResourceMaterialV1;
         const encrypted = {
             resourceId: 'resource-b', encryptionMode: 'e2ee',
-            entry: { ...entry, ref: 'happier:shared-secret:v1:resource-b', name: 'Encrypted key', kind: 'token' },
+            entry: {
+                ...entry,
+                ref: 'happier:shared-secret:v1:resource-b',
+                name: 'Encrypted key',
+                kind: 'token',
+                encryptionMode: 'e2ee',
+            },
             storedContent: sealSavedSecretResourceStoredContentV1({
                 resourceId: 'resource-b', mode: 'e2ee', resourceDataKey: dataKey,
                 content: { v: 1, name: 'Encrypted key', kind: 'token', value: 'encrypted-value' },
@@ -102,7 +120,8 @@ describe('materializeSavedSecretResources', () => {
             recipientEnvelope: null,
         } satisfies SavedSecretResourceMaterialV1;
         const resource = {
-            resourceId: 'resource-a', encryptionMode: 'e2ee', entry,
+            resourceId: 'resource-a', encryptionMode: 'e2ee',
+            entry: { ...entry, encryptionMode: 'e2ee' },
             storedContent: { t: 'encrypted', c: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==' },
             recipientEnvelope: { encryptedDataKey: 'opaque-envelope', recipientContentPublicKeyFingerprint: 'fingerprint' },
         } satisfies SavedSecretResourceMaterialV1;

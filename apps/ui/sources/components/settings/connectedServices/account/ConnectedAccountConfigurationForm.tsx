@@ -1,6 +1,6 @@
 import * as React from 'react';
 import { View } from 'react-native';
-import { StyleSheet, useUnistyles } from 'react-native-unistyles';
+import { StyleSheet } from 'react-native-unistyles';
 
 import type {
     PluginConfigurationSettingFieldV2,
@@ -8,11 +8,12 @@ import type {
 } from '@happier-dev/protocol';
 
 import { RoundButton } from '@/components/ui/buttons/RoundButton';
+import { FieldTextInput } from '@/components/ui/forms/FieldTextInput';
 import { Switch } from '@/components/ui/forms/Switch';
 import { DropdownMenu, type DropdownMenuItem } from '@/components/ui/forms/dropdown/DropdownMenu';
 import { Item } from '@/components/ui/lists/Item';
-import { ItemGroup } from '@/components/ui/lists/ItemGroup';
-import { Text, TextInput } from '@/components/ui/text/Text';
+import { ConnectedAccountFormSection } from './ConnectedAccountFormSection';
+import { Text } from '@/components/ui/text/Text';
 import { Typography } from '@/constants/Typography';
 import { t } from '@/text';
 
@@ -31,36 +32,12 @@ import {
 import { useConnectedAccountDraftNavigationGuard } from './useConnectedAccountDraftNavigationGuard';
 
 const stylesheet = StyleSheet.create((theme) => ({
-    field: {
-        paddingHorizontal: 16,
-        paddingVertical: 12,
-    },
-    label: {
-        ...Typography.default('semiBold'),
-        color: theme.colors.text.primary,
-        fontSize: 14,
-        marginBottom: 4,
-    },
     description: {
         ...Typography.default(),
         color: theme.colors.text.secondary,
         fontSize: 13,
         lineHeight: 18,
         marginBottom: 8,
-    },
-    input: {
-        ...Typography.default(),
-        minHeight: 44,
-        borderRadius: 10,
-        borderCurve: 'continuous',
-        borderWidth: 1,
-        paddingHorizontal: 12,
-        paddingVertical: 10,
-        fontSize: 14,
-    },
-    multilineInput: {
-        minHeight: 88,
-        textAlignVertical: 'top',
     },
     actions: {
         alignItems: 'flex-end',
@@ -143,6 +120,8 @@ function ConfigurationSelectField(props: Readonly<{
 
 type ConnectedAccountConfigurationFormProps = Readonly<{
     title: string;
+    /** Inside the new-account draft, whose row already names the sign-in method. */
+    embedded?: boolean;
     localize?: (value: Parameters<typeof resolveProjectedLocalizedText>[0]) => string;
     fields: readonly PluginConfigurationSettingFieldV2[];
     values: Readonly<Record<string, PluginJsonValueV2>>;
@@ -156,7 +135,6 @@ type ConnectedAccountConfigurationFormProps = Readonly<{
 }>;
 
 function ConnectedAccountConfigurationFormBody(props: ConnectedAccountConfigurationFormProps) {
-    const { theme } = useUnistyles();
     const styles = stylesheet;
     const initialDraft = React.useMemo(() => (
         createConnectedAccountConfigurationDraft({ fields: props.fields, values: props.values })
@@ -218,9 +196,10 @@ function ConnectedAccountConfigurationFormBody(props: ConnectedAccountConfigurat
     });
 
     return (
-        <ItemGroup
-            title={props.title}
-            footer={invalidFieldIds.length > 0
+        <ConnectedAccountFormSection
+            embedded={props.embedded}
+            title={props.embedded ? undefined : props.title}
+            description={invalidFieldIds.length > 0
                 ? t('connectedServices.account.configurationInvalid')
                 : undefined}
         >
@@ -358,50 +337,32 @@ function ConnectedAccountConfigurationFormBody(props: ConnectedAccountConfigurat
                 const multiline = control === 'textarea' || control === 'json';
                 const fieldDraft = draft[field.id];
                 return (
-                    <View key={field.id} style={styles.field}>
-                        <Text style={styles.label}>{title}</Text>
-                        {description ? <Text style={styles.description}>{description}</Text> : null}
-                        <TextInput
-                            testID={`connected-account-configuration:${field.id}`}
-                            ref={registerInvalidFieldTarget(field.id)}
-                            nativeID={`connected-account-configuration:${field.id}`}
-                            accessibilityLabel={invalid
-                                ? `${title}: ${t('connectedServices.account.configurationInvalid')}`
-                                : title}
-                            accessibilityHint={invalid
-                                ? t('connectedServices.account.configurationInvalid')
-                                : description || undefined}
-                            value={typeof fieldDraft === 'string' ? fieldDraft : ''}
-                            onChangeText={(value) => updateDraft(field.id, value)}
-                            editable={!disabled}
-                            secureTextEntry={field.secret === true}
-                            multiline={multiline}
-                            autoCapitalize="none"
-                            autoCorrect={false}
-                            placeholder={resolveProjectedLocalizedText(field.presentation?.placeholder, props.localize)}
-                            placeholderTextColor={theme.colors.input.placeholder}
-                            style={[
-                                styles.input,
-                                multiline ? styles.multilineInput : undefined,
-                                {
-                                    color: theme.colors.input.text,
-                                    backgroundColor: theme.colors.input.background,
-                                    borderColor: theme.colors.border.default,
-                                },
-                            ]}
-                        />
-                        {invalid ? (
-                            <Text
-                                testID={errorId}
-                                nativeID={errorId}
-                                accessibilityRole="alert"
-                                accessibilityLiveRegion="assertive"
-                                style={styles.description}
-                            >
-                                {t('connectedServices.account.configurationInvalid')}
-                            </Text>
-                        ) : null}
-                    </View>
+                    <Item
+                        key={field.id}
+                        title={title}
+                        subtitle={description || undefined}
+                        subtitleLines={0}
+                        mode="info"
+                        showChevron={false}
+                        accessoryLayout={multiline ? 'stacked' : 'adaptive'}
+                        rightElement={(
+                            <FieldTextInput
+                                testID={`connected-account-configuration:${field.id}`}
+                                ref={registerInvalidFieldTarget(field.id)}
+                                accessibilityLabel={invalid
+                                    ? `${title}: ${t('connectedServices.account.configurationInvalid')}`
+                                    : title}
+                                error={invalid ? t('connectedServices.account.configurationInvalid') : null}
+                                value={typeof fieldDraft === 'string' ? fieldDraft : ''}
+                                onChangeText={(value) => updateDraft(field.id, value)}
+                                editable={!disabled}
+                                secureTextEntry={field.secret === true}
+                                multiline={multiline}
+                                monospace={control === 'json'}
+                                placeholder={resolveProjectedLocalizedText(field.presentation?.placeholder, props.localize)}
+                            />
+                        )}
+                    />
                 );
             })}
             <View style={styles.actions}>
@@ -414,7 +375,7 @@ function ConnectedAccountConfigurationFormBody(props: ConnectedAccountConfigurat
                     onPress={() => void submit()}
                 />
             </View>
-        </ItemGroup>
+        </ConnectedAccountFormSection>
     );
 }
 

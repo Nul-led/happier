@@ -83,8 +83,10 @@ it.each(['account', 'approval'])('%s Settings resumes exact Home authentication 
     await vi.waitFor(() => expect(getPendingDirectoryHomeEnrollment()).toBeNull(), { timeout: 3000 });
     linkMissing = true;
     await screen.pressByTestIdAsync('account-service-continuation-failure-action');
-    await vi.waitFor(() => expect(screen?.findByTestId('account-service-direct-home-auth')).not.toBeNull());
-    await screen.pressByTestIdAsync('account-service-direct-home-auth');
+    // The Home-auth recovery card leads with signing in to that exact Home as its own primary action.
+    await vi.waitFor(() => expect(screen?.findAll((node) => node.props.testID === 'account-service-continuation-failure-action'
+        && typeof node.props.title === 'string' && node.props.title.startsWith('Sign in to'))).not.toHaveLength(0));
+    await screen.pressByTestIdAsync('account-service-continuation-failure-action');
     await vi.waitFor(() => expect(screen?.findByTestId('home-auth-key_challenge-login-keyed'),
         `${screen?.getTextContent()} ${JSON.stringify(boundary.request.mock.calls.map(([endpoint, path]) => ({ endpoint, path })))}`).not.toBeNull());
     await screen.pressByTestIdAsync('home-auth-key_challenge-login-keyed');

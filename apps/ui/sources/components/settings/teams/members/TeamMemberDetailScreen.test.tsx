@@ -56,6 +56,7 @@ const ARTIFACT_CREATE_PATH = '/v1/artifacts';
 
 const NO_MEMBER_CAPABILITIES = {
     setRole: false,
+    assignableRoles: [],
     suspend: false,
     reactivate: false,
     remove: false,
@@ -393,6 +394,7 @@ describe('TeamMemberDetailScreen current membership', () => {
         expect(collectRenderedTestIds(screen.tree.toJSON())).not.toContain('team-member-retry');
         expect(screen.getTextContent()).toContain('teams.errors.forbidden');
     });
+
 });
 
 describe('TeamMemberDetailScreen role picker', () => {
@@ -403,7 +405,7 @@ describe('TeamMemberDetailScreen role picker', () => {
         harness.answer(serverId, MEMBER_GET_PATH, {
             body: teamMembershipFixture({
                 role: 'member',
-                capabilities: { ...NO_MEMBER_CAPABILITIES, setRole: true },
+                capabilities: { ...NO_MEMBER_CAPABILITIES, setRole: true, assignableRoles: ['owner', 'admin', 'member', 'guest'] },
             }),
         });
 
@@ -431,7 +433,7 @@ describe('TeamMemberDetailScreen role picker', () => {
         }));
         harness.answer(serverId, MEMBER_GET_PATH, {
             body: teamMembershipFixture({
-                capabilities: { ...NO_MEMBER_CAPABILITIES, setRole: true },
+                capabilities: { ...NO_MEMBER_CAPABILITIES, setRole: true, assignableRoles: ['admin', 'member', 'guest'] },
             }),
         });
 
@@ -455,7 +457,7 @@ describe('TeamMemberDetailScreen role picker', () => {
         }));
         harness.answer(serverId, MEMBER_GET_PATH, {
             body: teamMembershipFixture({
-                capabilities: { ...NO_MEMBER_CAPABILITIES, setRole: true },
+                capabilities: { ...NO_MEMBER_CAPABILITIES, setRole: true, assignableRoles: ['owner'] },
             }),
         });
 
@@ -468,7 +470,7 @@ describe('TeamMemberDetailScreen role picker', () => {
         expect(ids).not.toContain('team-member-role:guest');
     });
 
-    it('does not treat a target setRole projection as Home recovery authority', async () => {
+    it('offers no roles when the server projects an empty role choice', async () => {
         const serverId = await addHome(teamSummaryFixture({
             recovery: { kind: 'owner_required', canAppointOwner: false },
             viewerRole: 'member',
@@ -476,7 +478,7 @@ describe('TeamMemberDetailScreen role picker', () => {
         }));
         harness.answer(serverId, MEMBER_GET_PATH, {
             body: teamMembershipFixture({
-                capabilities: { ...NO_MEMBER_CAPABILITIES, setRole: true },
+                capabilities: { ...NO_MEMBER_CAPABILITIES, setRole: false },
             }),
         });
 
@@ -509,7 +511,7 @@ describe('TeamMemberDetailScreen role picker', () => {
         harness.answer(serverId, MEMBER_GET_PATH, {
             body: teamMembershipFixture({
                 role: 'owner',
-                capabilities: { ...NO_MEMBER_CAPABILITIES, setRole: true },
+                capabilities: { ...NO_MEMBER_CAPABILITIES, setRole: true, assignableRoles: ['owner', 'admin', 'member', 'guest'] },
             }),
         });
         harness.answer(serverId, MEMBER_ROLE_SET_PATH, {
@@ -561,6 +563,51 @@ describe('TeamMemberDetailScreen role picker', () => {
 });
 
 describe('TeamMemberDetailScreen effective Groups', () => {
+    it.each([
+        { status: 403, label: 'teams.errors.forbidden' },
+        { status: 404, label: 'teams.unavailable.updateRequired' },
+    ])('explains an initial Group read refusal ($status) without offering an ineffective retry', async ({ status, label }) => {
+        const serverId = await addHome(teamSummaryFixture({ capabilities: teamCapabilitiesFixture({}) }));
+        harness.answer(serverId, MEMBER_GET_PATH, {
+            body: teamMembershipFixture({ capabilities: NO_MEMBER_CAPABILITIES }),
+        });
+        harness.answer(serverId, MEMBER_GROUPS_PATH, { status });
+
+        const screen = await renderDetail(serverId);
+        await vi.waitFor(() => expect(screen.getTextContent()).toContain(label));
+
+        const ids = collectRenderedTestIds(screen.tree.toJSON());
+        expect(ids).toContain('team-member-identity');
+        expect(ids).not.toContain('team-member-groups-retry');
+        expect(ids).not.toContain('team-member-groups-empty');
+        expect(screen.getTextContent()).not.toContain('teams.unavailable.offline');
+    });
+
+    it('recovers an initial transient Group read failure and retains loaded Groups when the next page fails', async () => {
+        const serverId = await addHome(teamSummaryFixture({ capabilities: teamCapabilitiesFixture({}) }));
+        harness.answer(serverId, MEMBER_GET_PATH, {
+            body: teamMembershipFixture({ capabilities: NO_MEMBER_CAPABILITIES }),
+        });
+        harness.answer(serverId, MEMBER_GROUPS_PATH, { status: 503 });
+
+        const screen = await renderDetail(serverId);
+        await waitForTestId(screen, 'team-member-groups-retry');
+        expect(screen.getTextContent()).toContain('teams.unavailable.offline');
+
+        harness.answer(serverId, MEMBER_GROUPS_PATH, {
+            body: { items: [teamGroupFixture({ id: 'group-infra' })], nextCursor: 'next-page' },
+        });
+        await screen.pressByTestIdAsync('team-member-groups-retry');
+        await waitForTestId(screen, 'team-member-group:group-infra');
+        expect(collectRenderedTestIds(screen.tree.toJSON())).not.toContain('team-member-groups-retry');
+
+        harness.answer(serverId, MEMBER_GROUPS_PATH, { status: 503 });
+        await screen.pressByTestIdAsync('team-member-groups-load-more');
+        await waitForTestId(screen, 'team-member-groups-retry');
+        expect(collectRenderedTestIds(screen.tree.toJSON())).toContain('team-member-group:group-infra');
+        expect(screen.getTextContent()).toContain('teams.unavailable.offline');
+    });
+
     it('reads the membership\'s own Groups and opens one at its exact address', async () => {
         const serverId = await addHome(teamSummaryFixture({
             viewerRole: 'member',

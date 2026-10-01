@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import axios from 'axios';
 import fastify from 'fastify';
 import tweetnacl from 'tweetnacl';
-import { EXTERNAL_ACTION_EXECUTION_AUTHORIZATION_HEADER } from '@happier-dev/protocol';
+import { API_TOKEN_FULL_GRANT_V1, EXTERNAL_ACTION_EXECUTION_AUTHORIZATION_HEADER } from '@happier-dev/protocol';
 import type { ApprovalRequest } from '@happier-dev/protocol';
 import { NO_TEAM_CAPABILITIES_V1 } from '@happier-dev/protocol/teams';
 
@@ -304,6 +304,7 @@ describe('Home family CLI adapter', () => {
         accountId: 'account-1',
         principalId: 'principal-1',
         credentialId: 'credential-1',
+        grant: API_TOKEN_FULL_GRANT_V1,
         machineId: 'machine-1',
         actionId: 'teams.archive',
         requestId: 'request-1',

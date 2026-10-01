@@ -1,14 +1,15 @@
 import * as React from 'react';
-import { useIsFocused } from '@react-navigation/native';
-import { Redirect, useNavigation } from 'expo-router';
+import { useIsFocused } from '@/components/appShell/workspace/destinationRoute';
+import { Redirect } from '@/components/appShell/workspace/destinationRoute';
 import type { PluginPortableReleaseManifestV1 } from '@happier-dev/protocol/plugins/availability';
-import { useUnistyles } from 'react-native-unistyles';
 
 import type { PluginProjectionEntry } from '@/agents/backendCatalog/daemonContributionRegistryProjectionAdapters';
-import { MachineAdministrationTargetSelector } from '@/components/settings/machines/MachineAdministrationTargetSelector';
+import { MachineAdministrationContextBar } from '@/components/settings/machines/MachineAdministrationContextBar';
 import { PluginMachineExecutionOriginSelectorView } from '@/components/settings/machines/PluginMachineExecutionOriginSelector';
 import { ItemList } from '@/components/ui/lists/ItemList';
 import { PaneLoadingFallback } from '@/components/ui/panels/PaneLoadingFallback';
+import type { PageHeaderMenuAction } from '@/components/ui/layout/PageHeaderEntityParts';
+import { SurfaceStateCard } from '@/components/ui/surfaces/SurfaceStateCard';
 import { usePluginMachineExecutionOriginSelection } from '@/sync/domains/machines/administration/usePluginExecutionOriginSelection';
 import {
     useActivePluginAccountAvailabilityReader,
@@ -17,7 +18,6 @@ import {
 import type { PluginAccountAvailabilityReader } from '@/sync/domains/plugins/availability/reader';
 import { t } from '@/text';
 
-import { PluginDetailActionsSection } from './PluginDetailActionsSection';
 import { PluginDetailContributionsSection } from './PluginDetailContributionsSection';
 import { PluginDetailDiagnosticsSection } from './PluginDetailDiagnosticsSection';
 import { PluginDetailGenericSettingsSection } from './PluginDetailGenericSettingsSection';
@@ -26,29 +26,37 @@ import {
     PluginDetailInvocationLogsSection,
     PluginDetailInvocationLogsUnavailableSection,
 } from './PluginDetailInvocationLogsSection';
-import { PluginDetailSummaryGrid } from './PluginDetailSummaryGrid';
+import { PluginDetailLeaveActions } from './PluginDetailLeaveActions';
 import { PluginMachineMatrixSection } from '../machines/PluginMachineMatrixSection';
 import {
     usePluginSettingsScreenState,
+    type InstalledPluginActionId,
     type PluginSettingsScreenState,
 } from '../model/usePluginSettingsScreenState';
-import type { InstalledPluginEntry } from '../model/pluginMarketplaceModel';
-import { PluginAccountDataEraseRecoverySection } from '../PluginAccountDataEraseRecoverySection';
+import { buildPluginsHomeRoute, usePluginsSurfaceHost } from '../model/pluginsSurfaceRoutes';
+import {
+    isPluginIncludedWithHappier,
+    projectInstalledPluginLifecycleCapabilities,
+    type InstalledPluginEntry,
+} from '../model/pluginMarketplaceModel';
 import { PluginAccountReleaseSelectionSection } from '../PluginAccountReleaseSelectionSection';
 import { PluginReadOnlySnapshotNotice } from '../PluginReadOnlySnapshotNotice';
 import { PluginUpdatePolicySection } from './PluginUpdatePolicySection';
-
-type NavigationLike = Readonly<{
-    setOptions?: (options: Readonly<{ headerTitle?: string }>) => void;
-}>;
+import { PluginRoutineOperationSettlementRow } from '../PluginMarketplaceSections';
 
 /**
  * One screen-owned execution-origin controller feeds both its presentation and
  * the log reader. Installed-only management stays conditional without hiding a
  * current daemon projection or inventing installed metadata for it.
+ *
+ * Reading order: the machine this page manages, the plugin's identity with its
+ * state switch and rare operations, anything blocking it, its settings, where it
+ * runs and how it updates, what it adds and reports, and finally the actions
+ * that remove it.
  */
 function PluginDetailCurrentContent(props: Readonly<{
     pluginId: string;
+    presentation: PluginDetailPresentation;
     installed: InstalledPluginEntry | null;
     state: PluginSettingsScreenState;
     projection: PluginProjectionEntry | null;
@@ -56,109 +64,133 @@ function PluginDetailCurrentContent(props: Readonly<{
     accountAvailability: PluginAccountAvailabilityReader | null;
 }>) {
     const classifyRelease = useActivePluginAccountAvailabilityReleaseClassifier();
+    const includedWithHappier = isPluginIncludedWithHappier({ installed: props.installed, projection: props.projection });
     const selection = usePluginMachineExecutionOriginSelection({
         pluginId: props.pluginId,
         classifyRelease,
+        includedWithHappier,
     });
-    const accountReleaseVersion = props.installed?.version ?? props.projection?.version ?? null;
+    const { installed, state } = props;
+    const accountReleaseVersion = installed?.version ?? props.projection?.version ?? null;
+    const capabilities = installed ? projectInstalledPluginLifecycleCapabilities(installed) : null;
+    const actionsDisabled = !state.canRefreshInstalledPlugins
+        || (installed ? state.isPluginActionInFlight(installed.pluginId) : true);
+    const toggleAction = installed?.enabled ? 'disable' : 'enable';
+    const canToggle = installed?.enabled ? capabilities?.canDisable === true : capabilities?.canEnable === true;
+    const runAction = (action: InstalledPluginActionId) => {
+        if (installed) state.runInstalledPluginAction(action, installed.pluginId);
+    };
+    const menuActions: PageHeaderMenuAction[] = [
+        ...(capabilities?.canUpdate ? [{
+            id: 'update',
+            title: t('common.update'),
+            testID: `settings.plugins.detail.${props.pluginId}.action.update`,
+            disabled: actionsDisabled,
+            onSelect: () => runAction('update'),
+        }] : []),
+        ...(capabilities?.canRollback ? [{
+            id: 'rollback',
+            title: t('settingsPlugins.rollback'),
+            testID: `settings.plugins.detail.${props.pluginId}.action.rollback`,
+            disabled: actionsDisabled,
+            onSelect: () => runAction('rollback'),
+        }] : []),
+    ];
     return (
-        <ItemList style={{ paddingTop: 0 }}>
-            {props.state.readOnlySnapshotNotice ? (
-                <PluginReadOnlySnapshotNotice
-                    testID="settings.plugins.detail.readOnlySnapshot"
-                    reason={props.state.readOnlySnapshotNotice.reason}
-                    onRetry={props.state.refreshPluginTruth}
+        <ItemList style={{ paddingTop: 0 }} presentation="page">
+            {/*
+              * Two different facts, both true at once: the plugin EXECUTES on the
+              * origin chosen under "Run on", while its settings, secrets and
+              * lifecycle operations are ADMINISTERED on the machine named here.
+              * Beside the Plugins page the page's own chip names that machine.
+              */}
+            {props.presentation === 'page' ? (
+                <MachineAdministrationContextBar
+                    label={t('settingsPlugins.administrationMachineTitle')}
+                    selection={state.administrationTargetSelection}
+                    testIDPrefix="settings.plugins.detail.administration.target"
                 />
             ) : null}
-            {props.installed ? (
-                <>
-                    <PluginDetailHeader installed={props.installed} projection={props.projection} />
-                    <PluginDetailSummaryGrid
-                        installed={props.installed}
-                        projection={props.projection}
-                    />
-                </>
+            <PluginDetailHeader
+                pluginId={props.pluginId}
+                installed={installed}
+                projection={props.projection}
+                enabled={installed ? {
+                    value: installed.enabled,
+                    disabled: !canToggle || actionsDisabled,
+                    testID: `settings.plugins.detail.${props.pluginId}.action.${toggleAction}`,
+                    onChange: () => runAction(toggleAction),
+                } : null}
+                menuActions={menuActions}
+            />
+            {state.readOnlySnapshotNotice ? (
+                <PluginReadOnlySnapshotNotice
+                    testID="settings.plugins.detail.readOnlySnapshot"
+                    reason={state.readOnlySnapshotNotice.reason}
+                    onRetry={state.refreshPluginTruth}
+                />
             ) : null}
-            {/*
-              * Two different facts, both true at once, and neither derivable
-              * from the other: the plugin EXECUTES on the origin below, while
-              * its Settings, Secrets and lifecycle operations are ADMINISTERED
-              * on the machine selected here. Showing only the origin left the
-              * reader editing a machine the screen never named.
-              */}
-            <MachineAdministrationTargetSelector
-                selection={props.state.administrationTargetSelection}
-                groupTitle={t('settingsPlugins.administrationMachineTitle')}
-                testIDPrefix="settings.plugins.detail.administration.target"
+            <PluginRoutineOperationSettlementRow
+                settlement={state.routineOperationSettlement}
+                scope="installed"
+            />
+            <PluginDetailGenericSettingsSection
+                pluginId={props.pluginId}
+                projection={props.projection}
+                accountSettingsDeclaration={props.accountSettingsDeclaration}
+                machineId={state.executionMachineId}
+                serverId={state.executionServerId}
+                accountServerIdentityId={state.accountServerIdentityId}
+                daemonServerIdentityId={state.executionServerIdentityId}
+                perActiveServerIdentityId={state.selectedServerIdentityId}
+                daemonOperationsAvailable={state.daemonOperationsAvailable}
+                isDaemonTargetCurrent={state.isDaemonSettingsTargetCurrent}
             />
             <PluginMachineExecutionOriginSelectorView
                 selection={selection}
-                machineCandidates={props.state.administrationTargetSelection.candidates}
+                machineCandidates={state.administrationTargetSelection.candidates}
                 groupTitle={t('settingsPlugins.executionOriginTitle')}
                 testIDPrefix="settings.plugins.detail.executionOrigin"
             />
-            {/*
-              * Read-only Account-wide truth for this one plugin: where it is
-              * installed and where it is missing or broken. It selects nothing
-              * — the two selectors above remain the only target authorities.
-              */}
-            <PluginMachineMatrixSection
-                pluginId={props.pluginId}
-                testIDPrefix="settings.plugins.detail.machineMatrix"
-            />
-            {props.installed ? (
-                <>
-                    <PluginDetailActionsSection
-                        installed={props.installed}
-                        actionInFlight={props.state.isPluginActionInFlight(props.installed.pluginId)}
-                        canRunActions={props.state.canRefreshInstalledPlugins}
-                        onAction={props.state.runInstalledPluginAction}
-                    />
-                    <PluginUpdatePolicySection
-                        installed={props.installed}
-                        targetLabel={props.state.administrationTargetLabel}
-                        disabled={
-                            !props.state.daemonOperationsAvailable
-                            || props.state.isPluginActionInFlight(props.installed.pluginId)
-                        }
-                        onSelect={(policy) => props.state.setInstalledPluginUpdatePolicy(
-                            props.installed!.pluginId,
-                            policy,
-                        )}
-                    />
-                    <PluginAccountDataEraseRecoverySection
-                        pluginId={props.installed.pluginId}
-                        testID={`settings.plugins.detail.${props.installed.pluginId}.accountDataErase`}
-                    />
-                </>
+            {installed ? (
+                <PluginUpdatePolicySection
+                    installed={installed}
+                    targetLabel={state.administrationTargetLabel}
+                    disabled={
+                        !state.daemonOperationsAvailable
+                        || state.isPluginActionInFlight(installed.pluginId)
+                    }
+                    onSelect={(policy) => state.setInstalledPluginUpdatePolicy(
+                        installed.pluginId,
+                        policy,
+                    )}
+                />
             ) : null}
             {accountReleaseVersion || props.accountAvailability ? (
                 <PluginAccountReleaseSelectionSection
                     pluginId={props.pluginId}
                     version={accountReleaseVersion}
                     reader={props.accountAvailability}
-                    projection={props.state.pluginProjectionV2}
+                    projection={state.pluginProjectionV2}
                     daemon={{
-                        serverId: props.state.executionServerId,
-                        serverIdentityId: props.state.executionServerIdentityId,
-                        machineId: props.state.executionMachineId,
+                        serverId: state.executionServerId,
+                        serverIdentityId: state.executionServerIdentityId,
+                        machineId: state.executionMachineId,
                     }}
                     testID={`settings.plugins.detail.${props.pluginId}.accountRelease`}
                 />
             ) : null}
-            <PluginDetailGenericSettingsSection
-                pluginId={props.pluginId}
-                projection={props.projection}
-                accountSettingsDeclaration={props.accountSettingsDeclaration}
-                machineId={props.state.executionMachineId}
-                serverId={props.state.executionServerId}
-                accountServerIdentityId={props.state.accountServerIdentityId}
-                daemonServerIdentityId={props.state.executionServerIdentityId}
-                perActiveServerIdentityId={props.state.selectedServerIdentityId}
-                daemonOperationsAvailable={props.state.daemonOperationsAvailable}
-                isDaemonTargetCurrent={props.state.isDaemonSettingsTargetCurrent}
-            />
             <PluginDetailContributionsSection pluginId={props.pluginId} projection={props.projection} />
+            {/*
+              * Read-only Account-wide truth for this one plugin: where it is
+              * installed and where it is missing or broken. It selects nothing
+              * — the machine chip and "Run on" remain the only target authorities.
+              */}
+            <PluginMachineMatrixSection
+                pluginId={props.pluginId}
+                includedWithHappier={includedWithHappier}
+                testIDPrefix="settings.plugins.detail.machineMatrix"
+            />
             <PluginDetailInvocationLogsSection
                 pluginId={props.pluginId}
                 selection={selection}
@@ -166,20 +198,53 @@ function PluginDetailCurrentContent(props: Readonly<{
             <PluginDetailDiagnosticsSection
                 pluginId={props.pluginId}
                 projection={props.projection}
-                registryDiagnostics={props.state.registryDiagnostics}
-                machineId={props.state.executionMachineId}
+                registryDiagnostics={state.registryDiagnostics}
+                machineId={state.executionMachineId}
             />
+            {installed ? (
+                <PluginDetailLeaveActions
+                    pluginId={installed.pluginId}
+                    uninstall={capabilities?.canUninstall ? {
+                        disabled: actionsDisabled,
+                        onPress: () => runAction('uninstall'),
+                    } : null}
+                    forgetTrust={capabilities?.canForgetTrust ? {
+                        disabled: actionsDisabled,
+                        onPress: () => runAction('forgetTrust'),
+                    } : null}
+                />
+            ) : null}
         </ItemList>
     );
 }
+
+/** A plugin's own page (`page`), or its detail beside the Plugins page (`pane`). */
+export type PluginDetailPresentation = 'page' | 'pane';
 
 export const PluginDetailScreen = React.memo(function PluginDetailScreen(props: Readonly<{
     pluginId: string | null;
 }>) {
     const isFocused = useIsFocused();
-    const navigation = useNavigation() as NavigationLike;
-    const { theme } = useUnistyles();
+    // Settings or the app page: a missing plugin falls back to the Plugins home of the same host.
+    const host = usePluginsSurfaceHost();
     const state = usePluginSettingsScreenState({ focused: isFocused });
+    if (!props.pluginId) {
+        return <Redirect href={buildPluginsHomeRoute(host)} />;
+    }
+    return <PluginDetailView pluginId={props.pluginId} state={state} presentation="page" />;
+});
+
+/**
+ * One installed plugin's detail, for its own page and for the pane beside the Plugins page: the
+ * pane passes the page's screen state, so opening a plugin reads nothing twice.
+ */
+export const PluginDetailView = React.memo(function PluginDetailView(props: Readonly<{
+    pluginId: string;
+    state: PluginSettingsScreenState;
+    presentation: PluginDetailPresentation;
+}>) {
+    const host = usePluginsSurfaceHost();
+    const { state } = props;
     const accountAvailability = useActivePluginAccountAvailabilityReader();
     const installed = props.pluginId ? (state.installedPluginById.get(props.pluginId) ?? null) : null;
     const projection = props.pluginId ? (state.pluginProjectionById[props.pluginId] ?? null) : null;
@@ -206,17 +271,9 @@ export const PluginDetailScreen = React.memo(function PluginDetailScreen(props: 
             ? accountSettingsDeclaration.displayName
             : accountSettingsDeclaration?.displayName?.fallback ?? accountRecoveryPluginId ?? '');
 
-    React.useLayoutEffect(() => {
-        if (headerTitle) navigation.setOptions?.({ headerTitle });
-    }, [headerTitle, navigation]);
-
-    if (!props.pluginId) {
-        return <Redirect href="/settings/plugins" />;
-    }
-
     if (!installed && !projection && !accountRecoveryPluginId && !state.pluginTruthSettled) {
         return state.readOnlySnapshotNotice ? (
-            <ItemList style={{ paddingTop: 0 }}>
+            <ItemList style={{ paddingTop: 0 }} presentation="page">
                 <PluginReadOnlySnapshotNotice
                     testID="settings.plugins.detail.readOnlySnapshot"
                     reason={state.readOnlySnapshotNotice.reason}
@@ -224,18 +281,58 @@ export const PluginDetailScreen = React.memo(function PluginDetailScreen(props: 
                 />
             </ItemList>
         ) : (
-            <PaneLoadingFallback color={theme.colors.text.secondary} />
+            <PaneLoadingFallback />
         );
     }
 
     if (!installed && !projection && !accountRecoveryPluginId) {
-        return <Redirect href="/settings/plugins" />;
+        /*
+         * Truth has settled and this plugin is not here — uninstalled, never
+         * installed on the selected machine, or removed from the Account. The
+         * predecessor redirected to the Plugins home, which silently discarded
+         * the deep link the reader followed and left them to work out what had
+         * happened. The tombstone keeps the route and the plugin id, names what
+         * changed, and offers only what is actually true right now: re-read the
+         * selected machine, choose a different one, or go back.
+         */
+        return (
+            <ItemList style={{ paddingTop: 0 }} presentation="page">
+                {props.presentation === 'page' ? (
+                    <MachineAdministrationContextBar
+                        label={t('settingsPlugins.administrationMachineTitle')}
+                        selection={state.administrationTargetSelection}
+                        testIDPrefix="settings.plugins.detail.missing.target"
+                    />
+                ) : null}
+                <PluginDetailRecoveryHeader pluginId={props.pluginId} title={headerTitle} />
+                <SurfaceStateCard
+                    testID={`settings.plugins.detail.${props.pluginId}.missing`}
+                    kind="unavailable"
+                    title={t('settingsPlugins.detailMissingTitle')}
+                    reason={t('settingsPlugins.detailMissingBody', { pluginId: props.pluginId })}
+                    action={{
+                        label: t('settingsPlugins.detailMissingRetry'),
+                        onPress: state.refreshPluginTruth,
+                    }}
+                />
+                {/*
+                  * "Is it somewhere else?" is the reader's next question, and
+                  * this is the one Account-wide answer. Read-only, as on every
+                  * other plugin route.
+                  */}
+                <PluginMachineMatrixSection
+                    pluginId={props.pluginId}
+                    testIDPrefix="settings.plugins.detail.machineMatrix"
+                />
+            </ItemList>
+        );
     }
 
     if (installed || projection) {
         return (
             <PluginDetailCurrentContent
                 pluginId={props.pluginId}
+                presentation={props.presentation}
                 installed={installed}
                 state={state}
                 projection={projection}
@@ -246,9 +343,9 @@ export const PluginDetailScreen = React.memo(function PluginDetailScreen(props: 
     }
 
     const recoveryPluginId = accountRecoveryPluginId;
-    if (!recoveryPluginId) return <Redirect href="/settings/plugins" />;
+    if (!recoveryPluginId) return <Redirect href={buildPluginsHomeRoute(host)} />;
     return (
-        <ItemList style={{ paddingTop: 0 }}>
+        <ItemList style={{ paddingTop: 0 }} presentation="page">
             <PluginDetailRecoveryHeader
                 pluginId={recoveryPluginId}
                 title={headerTitle}
@@ -296,11 +393,8 @@ export const PluginDetailScreen = React.memo(function PluginDetailScreen(props: 
                 daemon={{ serverId: null, serverIdentityId: null, machineId: null }}
                 testID={`settings.plugins.detail.${recoveryPluginId}.accountRelease`}
             />
-            <PluginAccountDataEraseRecoverySection
-                pluginId={recoveryPluginId}
-                testID={`settings.plugins.detail.${recoveryPluginId}.accountDataErase`}
-            />
             <PluginDetailInvocationLogsUnavailableSection pluginId={recoveryPluginId} />
+            <PluginDetailLeaveActions pluginId={recoveryPluginId} />
         </ItemList>
     );
 });

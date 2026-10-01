@@ -44,7 +44,8 @@ installSettingsViewCommonModuleMocks({
     },
 });
 
-vi.mock('@/utils/platform/desktopHost', () => ({
+vi.mock('@/utils/platform/desktopHost', async (importOriginal) => ({
+    ...await importOriginal<typeof import('@/utils/platform/desktopHost')>(),
     isDesktopHost: () => tauriDesktopState.value,
 }));
 
@@ -98,12 +99,6 @@ vi.mock('expo-constants', () => ({
     default: { expoConfig: { version: '0.0.0-test' } },
 }));
 
-vi.mock('@/constants/Typography', () => ({
-    Typography: {
-        default: () => ({}),
-        mono: () => ({}),
-    },
-}));
 
 vi.mock('@/components/ui/lists/ItemList', () => ({
     ItemList: ({ children }: { children?: React.ReactNode }) => React.createElement('ItemList', null, children),
@@ -143,21 +138,16 @@ vi.mock('@/utils/system/bugReportActionTrail', () => ({
     recordBugReportUserAction: vi.fn(),
 }));
 
-vi.mock('@/agents/catalog/catalog', () => ({
-    AGENT_IDS: ['codex', 'claude', 'gemini'],
-    DEFAULT_AGENT_ID: 'agent_default',
-    getAgentCore: () => ({ uiConnectedService: { serviceId: 'anthropic', labelKey: 'agentInput.agent.claude', connectRoute: null } }),
-    getAgentIconSource: () => null,
-    getAgentIconTintColor: () => null,
-    resolveAgentIdFromConnectedServiceId: () => null,
-}));
-
 vi.mock('react-native-svg', () => ({
     __esModule: true,
     default: undefined,
     Svg: (props: Record<string, unknown> & { children?: React.ReactNode }) =>
         React.createElement('Svg', props, props.children),
     Path: (props: Record<string, unknown>) => React.createElement('Path', props),
+    Circle: (props: Record<string, unknown>) => React.createElement('Circle', props),
+    Rect: (props: Record<string, unknown>) => React.createElement('Rect', props),
+    G: (props: Record<string, unknown> & { children?: React.ReactNode }) => React.createElement('G', props, props.children),
+    SvgXml: (props: Record<string, unknown>) => React.createElement('SvgXml', props),
 }));
 
 describe('SettingsView (Dependabot icon fallback)', () => {
@@ -171,6 +161,7 @@ describe('SettingsView (Dependabot icon fallback)', () => {
         const screen = await renderSettingsView(<SettingsView />);
 
         expect(screen.findRowByTitle('subAgentGuidance.settings.groupTitle')).toBeTruthy();
-        expect(screen.findRow('settings-desktop-entry')).toBeTruthy();
+        // The System section arrives in a deferred stage after the first paint.
+        await vi.waitFor(() => expect(screen.findRow('settings-desktop-entry')).toBeTruthy());
     });
 });

@@ -1,6 +1,13 @@
+import {
+  BackendTargetKeyV2Schema,
+  parseBackendTargetKeyV2,
+  type PersistedBackendTargetRefV2,
+} from '@happier-dev/protocol';
+
 export type ExecutionRunsBackendSnapshotEntry = Readonly<{
   available?: boolean;
   intents?: readonly string[];
+  reviewScopes?: readonly string[];
   supportsVendorResume?: boolean;
   title?: string;
   label?: string;
@@ -8,6 +15,14 @@ export type ExecutionRunsBackendSnapshotEntry = Readonly<{
 }>;
 
 export type ReviewEngineOption = Readonly<{ id: string; label: string; disabled?: boolean }>;
+
+/** Review options use Agent ids for catalog Agents and exact target keys for configured backends. */
+export function resolveReviewEngineTarget(optionId: string): PersistedBackendTargetRefV2 {
+  const explicitTargetKey = BackendTargetKeyV2Schema.safeParse(optionId);
+  return explicitTargetKey.success
+    ? parseBackendTargetKeyV2(explicitTargetKey.data)
+    : { kind: 'backend', backendId: optionId };
+}
 
 function supportsReviewIntent(entry: ExecutionRunsBackendSnapshotEntry | null | undefined): boolean {
   const intents = Array.isArray(entry?.intents) ? entry.intents : null;
@@ -44,6 +59,7 @@ export function buildAvailableReviewEngineOptions(params: Readonly<{
   enabledAgentIds: readonly string[];
   resolveAgentLabel: (agentId: string) => string;
   executionRunsBackends: Readonly<Record<string, ExecutionRunsBackendSnapshotEntry>> | null | undefined;
+  scope?: 'paths';
 }>): readonly ReviewEngineOption[] {
   const backends = params.executionRunsBackends ?? null;
   const includedIds = new Set<string>();
@@ -51,6 +67,11 @@ export function buildAvailableReviewEngineOptions(params: Readonly<{
   const agentOptions: ReviewEngineOption[] = params.enabledAgentIds
     .map((id) => String(id ?? '').trim())
     .filter((id) => id.length > 0)
+    .filter((id) => {
+      const entry = backends?.[id];
+      return !entry || supportsReviewIntent(entry);
+    })
+    .filter((id) => params.scope !== 'paths' || backends?.[id]?.reviewScopes?.includes('paths') === true)
     .map((id) => {
       includedIds.add(id);
       if (!backends) return { id, label: params.resolveAgentLabel(id) };
@@ -68,6 +89,7 @@ export function buildAvailableReviewEngineOptions(params: Readonly<{
     .map(([rawId, entry]) => [String(rawId ?? '').trim(), entry] as const)
     .filter(([id]) => id.length > 0 && !includedIds.has(id))
     .filter(([, entry]) => supportsReviewIntent(entry))
+    .filter(([, entry]) => params.scope !== 'paths' || entry.reviewScopes?.includes('paths') === true)
     .map(([id, entry]) => buildReviewEngineOption(id, entry, params.resolveAgentLabel));
 
   return [...agentOptions, ...discoveredReviewOptions];

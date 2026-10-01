@@ -28,4 +28,5 @@ describe('resolveHomeAuthenticationTarget', () => {
     it('rejects URL-only targets that lack stable Home identity', () => {
         expect(resolveHomeAuthenticationTarget({ kind: 'https_url', url: 'https://unknown.example.test' })).toBeNull();
     });
+
 });

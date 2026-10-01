@@ -7,9 +7,9 @@ export const PETS_SETTINGS = defineSettingsPage({
         account: {
             titleKey: 'settingsPets.accountTitle',
             settings: {
-                enabled: { titleKey: 'settingsPets.enabledTitle', descriptionKey: 'settingsPets.enabledSubtitle' },
-                deviceOverride: { titleKey: 'settingsPets.deviceOverrideTitle', descriptionKey: 'settingsPets.deviceOverrideSubtitle' },
-                companionSize: { titleKey: 'settingsPets.companionSizeTitle', descriptionKey: 'settingsPets.companionSizeSubtitle' },
+                enabled: { storage: { scope: 'account', key: 'petsEnabled', access: 'read_write' }, titleKey: 'settingsPets.enabledTitle', descriptionKey: 'settingsPets.enabledSubtitle' },
+                deviceOverride: { storage: { scope: 'local', key: 'petsEnabledOverride', access: 'read_write' }, titleKey: 'settingsPets.deviceOverrideTitle', descriptionKey: 'settingsPets.deviceOverrideSubtitle' },
+                companionSize: { storage: { scope: 'local', key: 'petsCompanionSizeScale', access: 'read_write' }, titleKey: 'settingsPets.companionSizeTitle', descriptionKey: 'settingsPets.companionSizeSubtitle' },
             },
         },
         codexPets: {
@@ -22,9 +22,9 @@ export const PETS_SETTINGS = defineSettingsPage({
             titleKey: 'settingsPets.desktopOverlayTitle',
             host: settingsHosts.desktop,
             settings: {
-                desktopOverlayEnabled: { titleKey: 'settingsPets.desktopOverlayEnabledTitle', descriptionKey: 'settingsPets.desktopOverlayEnabledSubtitle' },
-                desktopOverlayDeviceOverride: { titleKey: 'settingsPets.desktopOverlayDeviceOverrideTitle' },
-                desktopOverlayVisibilityMode: { titleKey: 'settingsPets.desktopOverlayVisibilityModeTitle', descriptionKey: 'settingsPets.desktopOverlayVisibilityModeSubtitle' },
+                desktopOverlayEnabled: { storage: { scope: 'account', key: 'petsDesktopOverlayDefaultEnabled', access: 'read_write' }, titleKey: 'settingsPets.desktopOverlayEnabledTitle', descriptionKey: 'settingsPets.desktopOverlayEnabledSubtitle' },
+                desktopOverlayDeviceOverride: { storage: { scope: 'local', key: 'desktopPetOverlayEnabledOverride', access: 'read_write' }, titleKey: 'settingsPets.desktopOverlayDeviceOverrideTitle' },
+                desktopOverlayVisibilityMode: { storage: { scope: 'local', key: 'desktopPetOverlayVisibilityModeOverride', access: 'read_write' }, titleKey: 'settingsPets.desktopOverlayVisibilityModeTitle', descriptionKey: 'settingsPets.desktopOverlayVisibilityModeSubtitle' },
             },
         },
     },

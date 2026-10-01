@@ -22,6 +22,37 @@ vi.mock('@/utils/ui/clipboard', () => ({
 const TEST_ID = 'browser-address';
 
 describe('BrowserUrlField — toolbar address density', () => {
+    it('keeps Copy out of sight until the address is hovered or focused (lab browser Q)', async () => {
+        const screen = await renderScreen(
+            <BrowserUrlField
+                testID={TEST_ID}
+                density="toolbar"
+                trailingAction="copy"
+                formatWhileBlurred
+                value="https://www.example.com/docs"
+                onSubmitUrl={vi.fn()}
+            />,
+        );
+        await flushHookEffects({ cycles: 2, turns: 2 });
+        const slotOpacity = () => {
+            const style = screen.findHostByTestId(`${TEST_ID}-trailing`)?.props.style;
+            const flat = Array.isArray(style) ? Object.assign({}, ...style.filter(Boolean)) : (style ?? {});
+            return flat.opacity ?? 1;
+        };
+        expect(slotOpacity()).toBe(0);
+
+        await act(async () => {
+            screen.findHostByTestId(`${TEST_ID}-field-row`)?.props.onPointerEnter?.({});
+        });
+        expect(slotOpacity()).toBe(1);
+
+        await act(async () => {
+            screen.findHostByTestId(`${TEST_ID}-field-row`)?.props.onPointerLeave?.({});
+            screen.findByTestId(TEST_ID)?.props.onFocus?.({});
+        });
+        expect(slotOpacity()).toBe(1);
+    });
+
     it('shows the pretty display URL while blurred', async () => {
         const screen = await renderScreen(
             <BrowserUrlField
@@ -60,6 +91,28 @@ describe('BrowserUrlField — toolbar address density', () => {
         const field = screen.findByTestId(TEST_ID);
         expect(field?.props.value).toBe('https://www.example.com/docs');
         expect(field?.props.selection).toEqual({ start: 0, end: 'https://www.example.com/docs'.length });
+    });
+
+    it('does not add normal-mode focus chrome around the shared TextInput', async () => {
+        const screen = await renderScreen(
+            <BrowserUrlField
+                testID={TEST_ID}
+                density="toolbar"
+                trailingAction="copy"
+                formatWhileBlurred
+                value="https://www.example.com/docs"
+                onSubmitUrl={vi.fn()}
+            />,
+        );
+        await flushHookEffects({ cycles: 2, turns: 2 });
+
+        await act(async () => {
+            screen.findByTestId(TEST_ID)?.props.onFocus?.({});
+            await Promise.resolve();
+        });
+
+        // The parent row supplies structure and validation state, not a second focus treatment.
+        expect(screen.findByTestId(`${TEST_ID}-field-row`)?.props.style[2]).toBeNull();
     });
 
     it('reverts the draft and blurs on Escape without navigating', async () => {
@@ -201,7 +254,7 @@ describe('BrowserUrlField — toolbar address density', () => {
         expect(screen.findByTestId(`${TEST_ID}-invalid`)).toBeTruthy();
     });
 
-    it('says search is not configured instead of failing silently on a query', async () => {
+    it('searches a typed query with the default engine instead of failing (H-UX F-16)', async () => {
         const onNavigate = vi.fn();
         const screen = await renderScreen(
             <BrowserUrlField
@@ -228,10 +281,8 @@ describe('BrowserUrlField — toolbar address density', () => {
             await Promise.resolve();
         });
 
-        expect(onNavigate).not.toHaveBeenCalled();
-        const message = screen.findByTestId(`${TEST_ID}-invalid`);
-        expect(message).toBeTruthy();
-        expect(JSON.stringify(message?.props.children ?? '')).toContain('searchUnconfigured');
+        expect(onNavigate).toHaveBeenCalledWith('https://duckduckgo.com/?q=how%20do%20i%20ship%20this');
+        expect(screen.findByTestId(`${TEST_ID}-invalid`)).toBeNull();
     });
 
     it('navigates through a configured search template and clears the message', async () => {
@@ -284,7 +335,7 @@ describe('BrowserUrlField — toolbar address density', () => {
             await Promise.resolve();
         });
         await act(async () => {
-            screen.findByTestId(TEST_ID)?.props.onChangeText?.('not an address');
+            screen.findByTestId(TEST_ID)?.props.onChangeText?.('http://');
             await Promise.resolve();
         });
         await act(async () => {
@@ -380,7 +431,8 @@ describe('BrowserUrlField — panel launchpad density', () => {
         );
         await flushHookEffects({ cycles: 2, turns: 2 });
 
-        screen.changeTextByTestId(PANEL_ID, 'not a url at all');
+        // A typed query now searches (default engine); a malformed address is still refused.
+        screen.changeTextByTestId(PANEL_ID, 'https://');
         await screen.pressByTestIdAsync(`${PANEL_ID}-open`);
 
         expect(onSubmitUrl).not.toHaveBeenCalled();

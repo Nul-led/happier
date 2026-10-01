@@ -4,7 +4,7 @@ import { ACCOUNT_SETTING_ANALYTICS_ARTIFACTS } from '@/sync/domains/settings/reg
 import type { SettingsAnalyticsSnapshot } from './types';
 import { buildSettingsPropertiesFromArtifacts } from './buildSettingsPropertiesFromArtifacts';
 
-export function buildAccountSettingsSnapshot(settings: Settings): SettingsAnalyticsSnapshot {
+export function buildAccountSettingsSnapshot(settings: Partial<Settings>): SettingsAnalyticsSnapshot {
     const settingsRecord = settings as Record<string, unknown>;
     const properties: SettingsAnalyticsSnapshot['properties'] = buildSettingsPropertiesFromArtifacts({
         artifacts: ACCOUNT_SETTING_ANALYTICS_ARTIFACTS,

@@ -11,6 +11,8 @@ import {
 } from '@/components/systemTasks/specs/localControl/buildLocalRelayRuntimeSystemTaskSpec';
 import { readRelayRuntimeStatusData, type RelayRuntimeStatusData } from './relayRuntimeStatus';
 import { removeServerProfileUiAction } from '@/components/serverProfiles/removeServerProfileUiAction';
+import { disconnectThisComputerBeforeForgettingHome } from '@/components/serverProfiles/disconnectThisComputerFromHome';
+import { toServerUrlDisplay } from '@/sync/domains/server/url/serverUrlDisplay';
 import {
     findPersonalHomeBootstrapCompletedProfile,
     listServerProfiles,
@@ -27,7 +29,8 @@ type PersonalHomeTaskKind =
     | 'relay.runtime.personal_home.backup.v1'
     | 'relay.runtime.personal_home.verify_backup.v1'
     | 'relay.runtime.personal_home.restore.v1'
-    | 'relay.runtime.personal_home.erase.v1';
+    | 'relay.runtime.personal_home.erase.v1'
+    | 'relay.runtime.personal_home.claim_owner.v1';
 
 type PersonalHomeInspection = Readonly<{
     homeServerIdentityId: string | null;
@@ -492,6 +495,15 @@ export function useLocalRelayRuntimeControl(options: Readonly<{
 
     return {
         activeTaskSnapshot,
+        /**
+         * Makes an Account the first owner of this computer's ownerless Personal Home, through
+         * the deployment-local claim the hosting desktop runs (plan §3.5, decision A(a)).
+         */
+        claimOwner: React.useCallback(async (accountId: string): Promise<PersonalHomeTaskOutcome> => (
+            await runPersonalHomeTask('relay.runtime.personal_home.claim_owner.v1', {
+                personalHomeOperation: { accountId },
+            }, false)
+        ), [runPersonalHomeTask]),
         runTask: React.useCallback(async (kind: RelayRuntimeActionKind | PersonalHomeTaskKind | 'relay.runtime.status.v1', taskOptions: LocalRelayRuntimeTaskOptions = {}) => {
             const started = kind === 'relay.runtime.status.v1'
                 ? await startTask(kind, taskOptions)
@@ -580,11 +592,30 @@ export function useLocalRelayRuntimeControl(options: Readonly<{
             return restore;
         }, [inspection?.restoreRecovery.status, refreshAfterMutation, runPersonalHomeTask]),
         erasePersonalHomeData: React.useCallback(async (promptContinuation?: SystemTaskPromptContinuation) => {
+            // R15 c: the Home is going away. Once the person confirmed the erase — and before the task
+            // destroys any data — this computer stops serving it through the same disconnect as
+            // removing a Home; when that must not go ahead, the erase is answered "not confirmed".
+            const disconnectingContinuation: SystemTaskPromptContinuation | undefined = promptContinuation
+                ? async (prompt) => {
+                    const answer = await promptContinuation(prompt);
+                    const confirmed = typeof answer === 'object' && answer !== null
+                        && (answer as { confirmed?: unknown }).confirmed === true;
+                    const data = (prompt.data ?? {}) as { canonicalServerUrl?: unknown; homeServerIdentityId?: unknown };
+                    const serverUrl = typeof data.canonicalServerUrl === 'string' ? data.canonicalServerUrl.trim() : '';
+                    if (!confirmed || !serverUrl) return answer;
+                    const mayErase = await disconnectThisComputerBeforeForgettingHome({
+                        serverUrl,
+                        serverIdentityId: typeof data.homeServerIdentityId === 'string' ? data.homeServerIdentityId : null,
+                        label: toServerUrlDisplay(serverUrl),
+                    }, runner);
+                    return mayErase ? answer : { confirmed: false };
+                }
+                : undefined;
             const outcome = await runPersonalHomeTask(
                 'relay.runtime.personal_home.erase.v1',
                 {},
                 true,
-                promptContinuation,
+                disconnectingContinuation,
             );
             if (outcome.status !== 'completed') return null;
             const data = outcome.result.data as Record<string, unknown> | undefined;
@@ -615,6 +646,8 @@ export function useLocalRelayRuntimeControl(options: Readonly<{
                     await removeServerProfileUiAction({
                         profileId: completedProfile.id,
                         serverUrl: completedProfile.serverUrl,
+                        // Disconnected above, after the erase was confirmed and before any data went.
+                        thisComputer: 'disconnected',
                     });
                 } catch {
                     // Keep the erase result; the profile row stays removable by hand.
@@ -622,7 +655,7 @@ export function useLocalRelayRuntimeControl(options: Readonly<{
             }
             refreshAfterMutation();
             return erase;
-        }, [refreshAfterMutation, runPersonalHomeTask]),
+        }, [refreshAfterMutation, runPersonalHomeTask, runner]),
         startExternalOperation: React.useCallback(async (
             spec: SystemTaskSpec,
             options: Readonly<{ promptContinuation?: SystemTaskPromptContinuation }> = {},

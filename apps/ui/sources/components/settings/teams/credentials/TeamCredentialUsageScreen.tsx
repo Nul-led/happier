@@ -4,11 +4,9 @@ import type {
     TeamCredentialUsageLimitV1,
     TeamCredentialUsageQueryInputV1,
 } from '@happier-dev/protocol/teams';
-import { useUnistyles } from 'react-native-unistyles';
 
 import { UsageVolumeBarChart } from '@/components/settings/usage/UsageVolumeBarChart';
 import type { UsageVolumeMetric } from '@/components/settings/usage/UsageVolumeBarChart';
-import { Icon } from '@/components/ui/icons/Icon';
 import { Item } from '@/components/ui/lists/Item';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
 import { useTeamCredentialUsage, useTeamCredentialUsageWriteRefresh } from '@/hooks/teams/useTeamCredentialResources';
@@ -114,7 +112,6 @@ const CredentialUsage = React.memo(function CredentialUsage(props: Readonly<{
     context: TeamSectionContext;
     resourceId: string;
 }>) {
-    const { theme } = useUnistyles();
     const { context, resourceId } = props;
     const view = useTeamCredentialResourceView({ context, resourceId });
     const resource = view.resource;
@@ -206,7 +203,7 @@ const CredentialUsage = React.memo(function CredentialUsage(props: Readonly<{
 
     if (!view.featureEnabled || (view.resolved && resource === null && catalogResource === null)) {
         return (
-            <ItemGroup footer={view.featureEnabled
+            <ItemGroup description={view.featureEnabled
                 ? t('teams.credentials.detail.notFound')
                 : t('teams.credentials.unavailable')}>
                 <Item
@@ -221,11 +218,10 @@ const CredentialUsage = React.memo(function CredentialUsage(props: Readonly<{
     if (resource === null && catalogResource === null) {
         if (view.error) {
             return (
-                <ItemGroup footer={credentialFailureMessage(view.error)}>
+                <ItemGroup description={credentialFailureMessage(view.error)}>
                     <Item
                         testID="team-credential-usage-resource-retry"
                         title={t('teams.unavailable.retry')}
-                        icon={<Icon name="arrow-clockwise" size={29} color={theme.colors.text.secondary} />}
                         onPress={() => void view.reload()}
                         showChevron={false}
                     />
@@ -376,7 +372,6 @@ const CredentialUsage = React.memo(function CredentialUsage(props: Readonly<{
                 <Item
                     testID="team-credential-usage-refresh"
                     title={t('common.refresh')}
-                    icon={<Icon name="arrow-clockwise" size={29} color={theme.colors.text.secondary} />}
                     loading={usage.status === 'loading' && result !== null}
                     accessibilityLiveRegion={usage.status === 'loading' ? 'polite' : undefined}
                     onPress={refreshToNow}
@@ -397,7 +392,7 @@ const CredentialUsage = React.memo(function CredentialUsage(props: Readonly<{
             ) : null}
 
             {result !== null ? (
-                <ItemGroup title={t('teams.credentials.usage.title')} footer={completeness || undefined}>
+                <ItemGroup title={t('teams.credentials.usage.title')} description={completeness || undefined}>
                     {!showRequests || coverage === null ? null : (
                         <Item
                             testID="team-credential-usage-requests"
@@ -490,7 +485,7 @@ const CredentialUsage = React.memo(function CredentialUsage(props: Readonly<{
 
             <ItemGroup
                 title={t('teams.credentials.usage.breakdownLabel')}
-                footer={administers ? undefined : t('teams.credentials.usage.breakdownRestricted')}
+                description={administers ? undefined : t('teams.credentials.usage.breakdownRestricted')}
                 accessibilityRole="radiogroup"
                 accessibilityLabel={t('teams.credentials.usage.breakdownLabel')}
             >
@@ -515,7 +510,7 @@ const CredentialUsage = React.memo(function CredentialUsage(props: Readonly<{
 
             {breakdown !== null && result !== null ? (
                 (result.breakdown ?? []).length === 0 ? (
-                    <ItemGroup footer={t('teams.credentials.usage.empty')}>
+                    <ItemGroup description={t('teams.credentials.usage.empty')}>
                         <Item
                             testID="team-credential-usage-breakdown-empty"
                             title={usageBreakdownLabel(breakdown)}
@@ -564,11 +559,10 @@ const CredentialUsage = React.memo(function CredentialUsage(props: Readonly<{
             ) : null}
 
             {usage.partial && usage.error ? (
-                <ItemGroup footer={credentialFailureMessage(usage.error)}>
+                <ItemGroup description={credentialFailureMessage(usage.error)}>
                     <Item
                         testID="team-credential-usage-load-more-retry"
                         title={t('teams.unavailable.retry')}
-                        icon={<Icon name="arrow-clockwise" size={29} color={theme.colors.text.secondary} />}
                         loading={usage.loadingMore}
                         disabled={usage.loadingMore}
                         accessibilityLiveRegion="polite"
@@ -579,7 +573,7 @@ const CredentialUsage = React.memo(function CredentialUsage(props: Readonly<{
             ) : null}
 
             {result !== null ? (
-                <ItemGroup footer={exportNotice ?? undefined}>
+                <ItemGroup description={exportNotice ?? undefined}>
                     <Item
                         testID="team-credential-usage-export"
                         title={t('teams.credentials.usage.export')}
@@ -617,7 +611,7 @@ const CredentialUsage = React.memo(function CredentialUsage(props: Readonly<{
             {limits.length > 0 ? (
                 <ItemGroup
                     title={t('teams.credentials.usage.limitsTitle')}
-                    footer={t('teams.credentials.limits.overshoot')}
+                    description={t('teams.credentials.limits.overshoot')}
                 >
                     {limits.map((limit) => {
                         const reset = formatLimitResetUtc(limit.currentWindow.resetsAtUtc);
@@ -643,9 +637,6 @@ const CredentialUsage = React.memo(function CredentialUsage(props: Readonly<{
                                     .filter((part): part is string => part !== null)
                                     .join('\n')}
                                 detail={reached ? t('teams.credentials.limits.reached') : undefined}
-                                icon={reached ? (
-                                    <Icon name="warning" size={29} color={theme.colors.state.warning.foreground} />
-                                ) : undefined}
                                 showChevron={false}
                             />
                         );
@@ -656,24 +647,22 @@ const CredentialUsage = React.memo(function CredentialUsage(props: Readonly<{
             {recipientLimit !== null ? (
                 <ItemGroup
                     title={t('teams.credentials.usage.limitsTitle')}
-                    footer={formatLimitResetUtc(recipientLimit.resetsAtUtc) ?? undefined}
+                    description={formatLimitResetUtc(recipientLimit.resetsAtUtc) ?? undefined}
                 >
                     <Item
                         testID="team-credential-usage-recipient-limit"
                         title={limitMetricLabel(recipientLimit.metric)}
                         detail={recipientLimit.remaining}
-                        icon={<Icon name="warning" size={29} color={theme.colors.state.warning.foreground} />}
                         showChevron={false}
                     />
                 </ItemGroup>
             ) : null}
 
             {usage.error && !usage.partial ? (
-                <ItemGroup footer={credentialFailureMessage(usage.error)}>
+                <ItemGroup description={credentialFailureMessage(usage.error)}>
                     <Item
                         testID="team-credential-usage-retry"
                         title={t('teams.unavailable.retry')}
-                        icon={<Icon name="arrow-clockwise" size={29} color={theme.colors.text.secondary} />}
                         onPress={() => void usage.reload()}
                         showChevron={false}
                     />
@@ -681,11 +670,10 @@ const CredentialUsage = React.memo(function CredentialUsage(props: Readonly<{
             ) : null}
 
             {view.error ? (
-                <ItemGroup footer={credentialFailureMessage(view.error)}>
+                <ItemGroup description={credentialFailureMessage(view.error)}>
                     <Item
                         testID="team-credential-usage-resource-retry"
                         title={t('teams.unavailable.retry')}
-                        icon={<Icon name="arrow-clockwise" size={29} color={theme.colors.text.secondary} />}
                         onPress={() => void view.reload()}
                         showChevron={false}
                     />
@@ -705,6 +693,7 @@ export const TeamCredentialUsageScreen = React.memo(function TeamCredentialUsage
             serverId={props.serverId}
             teamId={props.teamId}
             title={t('teams.credentials.usage.title')}
+            description={t('teams.pages.credentialUsage')}
         >
             {(context) => <CredentialUsage context={context} resourceId={props.resourceId} />}
         </TeamSection>

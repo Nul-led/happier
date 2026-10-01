@@ -101,6 +101,7 @@ export function createRuntimeProviderConnectionServices(input: Readonly<{
             registry: resolveProviderContributionRegistryView(
               lease.registry.contributes,
               lease.registry.generation,
+              lease.registry.readPluginOccurrenceId,
             ),
             generation: String(lease.registry.generation),
           });

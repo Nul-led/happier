@@ -136,41 +136,44 @@ describe('plugin development source observation', () => {
     }
   });
 
-  it('observes a literal TypeScript file without evaluating it or requiring author JSON', async () => {
-    const projectRoot = await mkdtemp(join(tmpdir(), 'happier-plugin-source-one-file-'));
-    try {
-      const sourcePath = join(projectRoot, 'plugin.ts');
-      await writeFile(
-        sourcePath,
-        'globalThis.__pluginObserverExecuted = true;\nexport const manifest = {};\nexport function activate() {}\n',
-        'utf8',
-      );
-      const canonicalSourcePath = await realpath(sourcePath);
+  it.each(['ts', 'mts', 'js', 'mjs'] as const)(
+    'observes a literal .%s file without evaluating it or requiring author JSON',
+    async (extension) => {
+      const projectRoot = await mkdtemp(join(tmpdir(), `happier-plugin-source-one-file-${extension}-`));
+      try {
+        const sourcePath = join(projectRoot, `plugin.${extension}`);
+        await writeFile(
+          sourcePath,
+          'globalThis.__pluginObserverExecuted = true;\nexport const manifest = {};\nexport function activate() {}\n',
+          'utf8',
+        );
+        const canonicalSourcePath = await realpath(sourcePath);
 
-      const observation = await inspectPluginDevelopmentSource({ projectRoot: sourcePath });
+        const observation = await inspectPluginDevelopmentSource({ projectRoot: sourcePath });
 
-      expect(observation).toMatchObject({
-        ok: true,
-        sourceKind: 'singleFile',
-        request: {
-          kind: 'development',
-          projectRoot: canonicalSourcePath,
-        },
-        developmentEntryPath: canonicalSourcePath,
-        observedRelativePaths: ['plugin.ts'],
-        declaredDependencies: {},
-        observedDirectoryPaths: [canonicalSourcePath],
-      });
-      expect((observation as { request?: { pluginId?: string } }).request?.pluginId).toBeUndefined();
-      expect((globalThis as { __pluginObserverExecuted?: boolean }).__pluginObserverExecuted).toBeUndefined();
-    } finally {
-      await rm(projectRoot, { recursive: true, force: true });
-    }
-  });
+        expect(observation).toMatchObject({
+          ok: true,
+          sourceKind: 'singleFile',
+          request: {
+            kind: 'development',
+            projectRoot: canonicalSourcePath,
+          },
+          developmentEntryPath: canonicalSourcePath,
+          observedRelativePaths: [`plugin.${extension}`],
+          declaredDependencies: {},
+          observedDirectoryPaths: [canonicalSourcePath],
+        });
+        expect((observation as { request?: { pluginId?: string } }).request?.pluginId).toBeUndefined();
+        expect((globalThis as { __pluginObserverExecuted?: boolean }).__pluginObserverExecuted).toBeUndefined();
+      } finally {
+        await rm(projectRoot, { recursive: true, force: true });
+      }
+    },
+  );
 
   it('is ready to report the first literal-file revision when startup resolves', async () => {
     const projectRoot = await mkdtemp(join(tmpdir(), 'happier-plugin-source-one-file-watch-'));
-    const sourcePath = join(projectRoot, 'plugin.ts');
+    const sourcePath = join(projectRoot, 'plugin.mjs');
     await writeFile(sourcePath, 'export const sentinel = 1;\n', 'utf8');
     const changedPathObservations: Array<readonly string[] | undefined> = [];
     const handle = await startPluginDevelopmentSourceObserver({
@@ -185,7 +188,7 @@ describe('plugin development source observation', () => {
       expect(changedPathObservations).toEqual([undefined]);
       await writeFile(sourcePath, 'export const sentinel = 2;\n', 'utf8');
       await vi.waitFor(
-        () => expect(changedPathObservations.at(-1)).toEqual(['plugin.ts']),
+        () => expect(changedPathObservations.at(-1)).toEqual(['plugin.mjs']),
         { timeout: 10_000, interval: 50 },
       );
     } finally {

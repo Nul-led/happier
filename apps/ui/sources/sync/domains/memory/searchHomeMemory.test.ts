@@ -84,7 +84,7 @@ function createHomeSearchHit(sessionId: string, summary = 'Personal Home summary
     };
 }
 
-function activateHome(name: string, serverUrl: string): string {
+async function activateHome(name: string, serverUrl: string): Promise<string> {
     const profile = await upsertServerProfile({ serverUrl, name });
     await setActiveServerId(profile.id, { scope: 'device' });
     return profile.id;
@@ -98,7 +98,7 @@ function mockScopedHomeResponse(response: Response): void {
 
 describe('searchHomeMemory', () => {
     it('posts the shared MemorySearchQueryV1 to /v1/home/search for the focused Home target and parses the shared result', async () => {
-        const homeA = activateHome('Home A', 'https://home-a.example');
+        const homeA = await activateHome('Home A', 'https://home-a.example');
         mockScopedHomeResponse(new Response(JSON.stringify({
             v: 1,
             ok: true,
@@ -134,7 +134,7 @@ describe('searchHomeMemory', () => {
     });
 
     it('sends contextual Session eligibility and rejects unfiltered legacy hits', async () => {
-        const homeA = activateHome('Home A', 'https://home-a.example');
+        const homeA = await activateHome('Home A', 'https://home-a.example');
         mockScopedHomeResponse(new Response(JSON.stringify({
             v: 1,
             ok: true,
@@ -166,7 +166,7 @@ describe('searchHomeMemory', () => {
     });
 
     it('sends an explicit Home B query to Home B while Home A stays focused', async () => {
-        activateHome('Home A', 'https://home-a.example');
+        await activateHome('Home A', 'https://home-a.example');
         const homeB = await upsertServerProfile({ serverUrl: 'https://home-b.example', name: 'Home B' });
         const homeBToken = tokenForSub('home-b-account');
         getCredentialsForServerUrlMock.mockResolvedValue({ token: homeBToken, secret: 'home-b-secret' });
@@ -198,7 +198,7 @@ describe('searchHomeMemory', () => {
     });
 
     it('rejects credentials for a different Account than the exact requested Home scope', async () => {
-        const homeB = activateHome('Home B', 'https://home-b.example');
+        const homeB = await activateHome('Home B', 'https://home-b.example');
         getCredentialsForServerUrlMock.mockResolvedValue({
             token: tokenForSub('different-account'),
             secret: 'home-b-secret',
@@ -218,7 +218,7 @@ describe('searchHomeMemory', () => {
     });
 
     it('uses explicitly scoped Home authority even when the target is the focused Home', async () => {
-        const homeA = activateHome('Home A', 'https://home-a.example');
+        const homeA = await activateHome('Home A', 'https://home-a.example');
         const homeAToken = tokenForSub('home-a-account');
         getCredentialsForServerUrlMock.mockResolvedValue({ token: homeAToken, secret: 'home-a-secret' });
         createEncryptionFromAuthCredentialsMock.mockResolvedValue({});
@@ -247,7 +247,7 @@ describe('searchHomeMemory', () => {
     });
 
     it('keeps the request bound to the explicitly targeted Home when focus moves during resolution', async () => {
-        const homeA = activateHome('Home A', 'https://home-a.example');
+        const homeA = await activateHome('Home A', 'https://home-a.example');
         const homeB = await upsertServerProfile({ serverUrl: 'https://home-b.example', name: 'Home B' });
         const homeAToken = tokenForSub('home-a-account');
         const homeBToken = tokenForSub('home-b-account');
@@ -281,7 +281,7 @@ describe('searchHomeMemory', () => {
     });
 
     it('refuses to search without an explicit Home target instead of using the focused Home', async () => {
-        activateHome('Home A', 'https://home-a.example');
+        await activateHome('Home A', 'https://home-a.example');
 
         const result = await searchHomeMemory({
             serverId: '  ',
@@ -297,7 +297,7 @@ describe('searchHomeMemory', () => {
     });
 
     it('rejects a malformed Home result as a typed failure instead of a false success', async () => {
-        const homeA = activateHome('Home A', 'https://home-a.example');
+        const homeA = await activateHome('Home A', 'https://home-a.example');
         mockScopedHomeResponse(new Response(JSON.stringify({
             v: 1,
             ok: true,
@@ -316,7 +316,7 @@ describe('searchHomeMemory', () => {
     });
 
     it('maps Home endpoint unavailability to a typed unavailable result', async () => {
-        const homeA = activateHome('Home A', 'https://home-a.example');
+        const homeA = await activateHome('Home A', 'https://home-a.example');
         mockScopedHomeResponse(new Response(null, { status: 404 }));
 
         const unavailable = await searchHomeMemory({

@@ -6,6 +6,8 @@ import {
   SessionModelSelectionResolutionError,
   SessionModelTransitionResultV1Schema,
   SessionModelSelectionV2Schema,
+  isModelRefGrantedV1,
+  type CallerInputConstraintsV1,
   type ProviderConnectionId,
   type ProviderBoundModelRef,
   type SessionModelSelectionV2,
@@ -46,6 +48,7 @@ type SetSessionModelLookupFailure = Readonly<Extract<
   ResolveSessionTransportContextResult,
   Readonly<{ ok: false }>
 >>;
+type SetSessionModelGrantFailure = Readonly<{ ok: false; code: 'model_not_granted'; sessionId: string }>;
 
 type SetSessionModelActiveResult = SessionModelTransitionResultV1 & Readonly<{
   sessionId: string;
@@ -81,6 +84,7 @@ type SetSessionTeamModelFailure = Readonly<{
 
 export type SetSessionModelResult =
   | SetSessionModelLookupFailure
+  | SetSessionModelGrantFailure
   | SetSessionModelActiveResult
   | SetSessionModelInactiveResult
   | SetSessionTeamModelInactiveResult
@@ -152,7 +156,12 @@ async function invokeActiveModelTransition(params: Readonly<{
   credentials: StoredCredentials;
   sessionTarget: ResolvedSessionTransportContext;
   selection: ProviderBoundModelRef;
-}>): Promise<SetSessionModelActiveResult> {
+  callerInputConstraints?: CallerInputConstraintsV1;
+  externalAction?: Parameters<typeof callSessionRpc>[0]['externalAction'];
+}>): Promise<SetSessionModelActiveResult | SetSessionModelGrantFailure> {
+  if (params.callerInputConstraints && !isModelRefGrantedV1(params.callerInputConstraints, params.selection)) {
+    return { ok: false, code: 'model_not_granted', sessionId: params.sessionTarget.sessionId };
+  }
   try {
     const result = SessionModelTransitionResultV1Schema.parse(
       await callSessionRpc({
@@ -161,6 +170,7 @@ async function invokeActiveModelTransition(params: Readonly<{
         method:
           `${params.sessionTarget.sessionId}:${SESSION_RPC_METHODS.SESSION_MODEL_TRANSITION}`,
         request: { v: 1, selection: params.selection },
+        ...(params.externalAction ? { externalAction: params.externalAction } : {}),
       }),
     );
     const safeResult = !result.ok && result.reason
@@ -189,10 +199,16 @@ export async function setSessionModel(params: Readonly<{
   /** Retained for caller compatibility; ordering is assigned by the owning CAS/RPC. */
   updatedAt?: number;
   serverFeaturesSnapshot?: CliServerFeaturesSnapshot;
+  callerInputConstraints?: CallerInputConstraintsV1;
+  externalAction?: Parameters<typeof callSessionRpc>[0]['externalAction'];
+  resolveAuthorizationHeaders?: (request: Readonly<{
+    method: 'GET' | 'POST' | 'PATCH'; path: string; body?: unknown;
+  }>) => Readonly<Record<string, string>> | null;
 }>): Promise<SetSessionModelResult> {
   const sessionTarget = await resolveSessionTransportContext({
     credentials: params.credentials,
     idOrPrefix: params.idOrPrefix,
+    ...(params.resolveAuthorizationHeaders ? { resolveAuthorizationHeaders: params.resolveAuthorizationHeaders } : {}),
     ...(params.serverFeaturesSnapshot ? { serverFeaturesSnapshot: params.serverFeaturesSnapshot } : {}),
   });
   if (!sessionTarget.ok) {
@@ -204,6 +220,10 @@ export async function setSessionModel(params: Readonly<{
   }
 
   if (params.teamCredentialModel !== undefined) {
+    // Team refs are not encodable in the finite ProviderBoundModelRef grant vocabulary.
+    if (params.callerInputConstraints && !isModelRefGrantedV1(params.callerInputConstraints, 'automatic')) {
+      return { ok: false, code: 'model_not_granted', sessionId: sessionTarget.sessionId };
+    }
     const requested = TeamCredentialProviderModelSelectionV1Schema.parse(params.teamCredentialModel);
     const metadata = tryDecryptSessionOwnerMetadataView({
       credentials: params.credentials,
@@ -234,6 +254,7 @@ export async function setSessionModel(params: Readonly<{
     try {
       const result = await updateSessionMetadataWithRetry({
         token: params.credentials.token,
+        ...(params.resolveAuthorizationHeaders ? { resolveAuthorizationHeaders: params.resolveAuthorizationHeaders } : {}),
         credentials: params.credentials,
         sessionId: sessionTarget.sessionId,
         rawSession: sessionTarget.rawSession,
@@ -319,6 +340,9 @@ export async function setSessionModel(params: Readonly<{
   if (!request) {
     return { ok: false, code: 'unsupported' };
   }
+  if (params.callerInputConstraints && !isModelRefGrantedV1(params.callerInputConstraints, request.selection)) {
+    return { ok: false, code: 'model_not_granted', sessionId: sessionTarget.sessionId };
+  }
 
   return await runModelIntentAtAuthoritativeDisposition({
     observedActive: sessionTarget.rawSession.active === true,
@@ -327,6 +351,8 @@ export async function setSessionModel(params: Readonly<{
         credentials: params.credentials,
         sessionTarget,
         selection: request.selection,
+        callerInputConstraints: params.callerInputConstraints,
+        externalAction: params.externalAction,
       }),
     updateInactiveIntent: async () => {
       const candidate = createModelIntentMetadataCasCandidate({
@@ -334,6 +360,7 @@ export async function setSessionModel(params: Readonly<{
       });
       const result = await updateSessionMetadataWithRetry({
         token: params.credentials.token,
+        ...(params.resolveAuthorizationHeaders ? { resolveAuthorizationHeaders: params.resolveAuthorizationHeaders } : {}),
         credentials: params.credentials,
         sessionId: sessionTarget.sessionId,
         rawSession: sessionTarget.rawSession,
@@ -366,6 +393,7 @@ export async function setSessionModel(params: Readonly<{
       const refreshedTarget = await resolveSessionTransportContext({
         credentials: params.credentials,
         idOrPrefix: sessionTarget.sessionId,
+        ...(params.resolveAuthorizationHeaders ? { resolveAuthorizationHeaders: params.resolveAuthorizationHeaders } : {}),
         ...(params.serverFeaturesSnapshot ? { serverFeaturesSnapshot: params.serverFeaturesSnapshot } : {}),
       });
       if (!refreshedTarget.ok || refreshedTarget.rawSession.active !== true) {
@@ -399,6 +427,8 @@ export async function setSessionModel(params: Readonly<{
         credentials: params.credentials,
         sessionTarget: refreshedTarget,
         selection: refreshedRequest.selection,
+        callerInputConstraints: params.callerInputConstraints,
+        externalAction: params.externalAction,
       });
     },
   });

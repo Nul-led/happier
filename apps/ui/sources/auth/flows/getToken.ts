@@ -262,12 +262,13 @@ async function authGetTokenCore(params: AuthTokenCoreParams): Promise<AuthCreden
         };
     }
 
-    // New content-key fields are sent only when negotiated, except for the
-    // Account-bound flow where they are part of the binding contract.
+    // A v2 Home can repair a proven 0.2 Account's missing content-key binding
+    // during ordinary secret-key sign-in, even without content-key sharing.
+    // Retain the released v1 feature negotiation for older Homes.
     const supportsContentKeys = readyServerFeaturesSnapshot
         ? readServerEnabledBit(readyServerFeaturesSnapshot.features, 'sharing.contentKeys') === true
         : false;
-    if (supportsContentKeys || params.expectedAccountId) {
+    if (supportsContentKeys || supportsKeyChallengeV2 || params.expectedAccountId || params.requireExistingAccount) {
         const encryption = await Encryption.create(params.secret);
         const contentPublicKey = encryption.contentDataKey;
 

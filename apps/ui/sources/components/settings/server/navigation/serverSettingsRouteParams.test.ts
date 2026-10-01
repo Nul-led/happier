@@ -13,6 +13,7 @@ describe('parseServerSettingsRouteParams', () => {
             source: null,
             groupEditor: false,
             initialGroupServerIds: [],
+            recovery: null,
         });
     });
 
@@ -23,6 +24,7 @@ describe('parseServerSettingsRouteParams', () => {
             source: null,
             groupEditor: false,
             initialGroupServerIds: [],
+            recovery: null,
         });
     });
 
@@ -33,6 +35,7 @@ describe('parseServerSettingsRouteParams', () => {
             source: null,
             groupEditor: false,
             initialGroupServerIds: [],
+            recovery: null,
         });
     });
 
@@ -43,6 +46,39 @@ describe('parseServerSettingsRouteParams', () => {
             source: 'notification',
             groupEditor: false,
             initialGroupServerIds: [],
+            recovery: null,
+        });
+    });
+
+    it('retains an exact Home recovery target and only an internal invoking path', () => {
+        const input: Parameters<typeof parseServerSettingsRouteParams>[0] & Readonly<{
+            recoveryProfile: string;
+            recoveryReturnTo: string;
+        }> = {
+            recoveryProfile: ' home-selected ',
+            recoveryReturnTo: ' /session/abc ',
+        };
+
+        expect(parseServerSettingsRouteParams(input)).toEqual({
+            url: null,
+            auto: false,
+            source: null,
+            groupEditor: false,
+            initialGroupServerIds: [],
+            recovery: {
+                profileRef: 'home-selected',
+                returnTo: '/session/abc',
+            },
+        });
+    });
+
+    it('keeps recovery on the Home route when a supplied return destination is not internal', () => {
+        expect(parseServerSettingsRouteParams({
+            recoveryProfile: 'home-selected',
+            recoveryReturnTo: 'https://outside.example.test/after-sign-in',
+        }).recovery).toEqual({
+            profileRef: 'home-selected',
+            returnTo: '/server',
         });
     });
 
@@ -61,6 +97,7 @@ describe('parseServerSettingsRouteParams', () => {
             source: null,
             groupEditor: true,
             initialGroupServerIds: ['home-a', 'home-b'],
+            recovery: null,
         });
     });
 

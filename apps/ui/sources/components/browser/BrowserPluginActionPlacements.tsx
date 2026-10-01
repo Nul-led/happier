@@ -1,10 +1,12 @@
 import * as React from 'react';
-import { Pressable, View } from 'react-native';
-import { Typography } from '@/constants/Typography';
+import { Platform, View } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
+import { IconButton } from '@/components/ui/buttons/IconButton';
+import { RoundButton } from '@/components/ui/buttons/RoundButton';
 import { ContextMenu, type ContextMenuItem } from '@/components/ui/forms/dropdown/ContextMenu';
-import { Text } from '@/components/ui/text/Text';
+import { ICON_SIZE } from '@/components/ui/icons/Icon';
+import { resolveMinimumInteractiveTargetSize } from '@/components/ui/interactiveTargetSize';
 import { resolvePluginUiIconName } from '@/components/plugins/surfaces/iconToken/resolvePluginUiIconToken';
 import type { PluginBrowserActionProjection } from '@/sync/domains/plugins/browser/actions';
 import {
@@ -18,8 +20,6 @@ import {
 import { t } from '@/text';
 import { Icon } from '@/components/ui/icons/Icon';
 
-const ACTION_TARGET_SIZE = 44;
-
 const stylesheet = StyleSheet.create((theme) => ({
     detailsPanel: {
         flexDirection: 'row',
@@ -32,43 +32,11 @@ const stylesheet = StyleSheet.create((theme) => ({
         borderTopColor: theme.colors.border.default,
         backgroundColor: theme.colors.surface.base,
     },
-    detailsAction: {
-        minHeight: ACTION_TARGET_SIZE,
-        minWidth: ACTION_TARGET_SIZE,
-        flexDirection: 'row',
-        alignItems: 'center',
-        gap: 8,
-        paddingHorizontal: 12,
-        borderRadius: 6,
-        borderWidth: 1,
-        borderColor: theme.colors.border.default,
-        backgroundColor: theme.colors.surface.base,
-    },
-    actionPressed: {
-        backgroundColor: theme.colors.surface.inset,
-    },
-    actionDisabled: {
-        opacity: 0.45,
-    },
-    actionText: {
-        ...Typography.rowMeta(),
-        color: theme.colors.text.primary,
-    },
     contextTriggerSlot: {
         position: 'absolute',
         right: 12,
         bottom: 44,
         zIndex: 5,
-    },
-    contextTrigger: {
-        width: ACTION_TARGET_SIZE,
-        height: ACTION_TARGET_SIZE,
-        alignItems: 'center',
-        justifyContent: 'center',
-        borderRadius: ACTION_TARGET_SIZE / 2,
-        borderWidth: 1,
-        borderColor: theme.colors.border.default,
-        backgroundColor: theme.colors.surface.base,
     },
 }));
 
@@ -137,51 +105,46 @@ export function BrowserPluginActionPlacements(props: Readonly<{
                         const title = actionTitle(action, props.localizePluginText);
                         const decision = decisionFor(action, props.policyContext, props.localizePluginText);
                         return (
-                            <Pressable
+                            <RoundButton
                                 key={action.id}
                                 testID={`${props.testID}-detailsPanel-${action.id}`}
-                                accessibilityRole="button"
+                                size="small"
+                                display="secondary"
+                                title={title}
                                 accessibilityLabel={title}
                                 accessibilityHint={!decision.enabled && decision.unavailableReason
                                     ? decision.unavailableReason
                                     : undefined}
-                                accessibilityState={{ disabled: !decision.enabled }}
                                 disabled={!decision.enabled}
                                 onPress={() => props.onAction(action)}
-                                style={({ pressed }) => [
-                                    stylesheet.detailsAction,
-                                    pressed ? stylesheet.actionPressed : null,
-                                    !decision.enabled ? stylesheet.actionDisabled : null,
-                                ]}
-                            >
-                                <Icon
-                                    name={resolvePluginUiIconName(action.display.iconToken)}
-                                    size={16}
-                                    color={theme.colors.text.secondary}
-                                />
-                                <Text style={stylesheet.actionText}>{title}</Text>
-                            </Pressable>
+                                leading={(
+                                    <Icon
+                                        name={resolvePluginUiIconName(action.display.iconToken)}
+                                        size={ICON_SIZE.xs}
+                                        color={theme.colors.text.secondary}
+                                    />
+                                )}
+                            />
                         );
                     })}
                 </View>
             ) : null}
             {props.contextMenuActions.length > 0 ? (
                 <View style={stylesheet.contextTriggerSlot}>
-                    <Pressable
-                        ref={contextAnchorRef}
-                        testID={`${props.testID}-contextMenu-trigger`}
-                        accessibilityRole="button"
-                        accessibilityLabel={t('browserShell.overflow.open')}
-                        accessibilityState={{ expanded: contextMenuOpen }}
-                        onPress={() => setContextMenuOpen((open) => !open)}
-                        style={stylesheet.contextTrigger}
-                    >
-                        <Icon
-                            name="dots-three"
-                            size={16}
-                            color={theme.colors.text.primary}
+                    <View ref={contextAnchorRef} collapsable={false}>
+                        <IconButton
+                            testID={`${props.testID}-contextMenu-trigger`}
+                            iconName="dots-three"
+                            variant="outlined"
+                            accessibilityLabel={t('browserShell.overflow.open')}
+                            tooltip={t('browserShell.overflow.open')}
+                            tooltipHidden={contextMenuOpen}
+                            expanded={contextMenuOpen}
+                            hasPopup="menu"
+                            minimumInteractiveTargetSize={resolveMinimumInteractiveTargetSize(Platform.OS)}
+                            onPress={() => setContextMenuOpen((open) => !open)}
                         />
-                    </Pressable>
+                    </View>
                     <ContextMenu
                         anchorRef={contextAnchorRef}
                         open={contextMenuOpen}

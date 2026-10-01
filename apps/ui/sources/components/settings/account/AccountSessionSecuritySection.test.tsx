@@ -5,16 +5,18 @@ import { renderScreen, standardCleanup } from '@/dev/testkit';
 import { storage } from '@/sync/domains/state/storageStore';
 import { getActiveServerSnapshot } from '@/sync/domains/server/serverRuntime';
 import { retireActiveServerAccountScopeLifetime } from '@/sync/domains/scope/activeServerAccountScope';
+import { restoreServerAccountForTest } from '@/dev/testkit/harness/serverAccountConnectionHarness';
 import { installSettingsViewCommonModuleMocks } from '../settingsViewTestHelpers';
 
 const boundary = vi.hoisted(() => ({
     confirm: vi.fn(async () => false),
+    alertAsync: vi.fn(async () => undefined),
     logout: vi.fn(async () => ({ kind: 'completed' as const })),
 }));
 installSettingsViewCommonModuleMocks({
     modal: async () => {
         const { createModalModuleMock } = await import('@/dev/testkit/mocks/modal');
-        return createModalModuleMock({ spies: { confirm: boundary.confirm } }).module;
+        return createModalModuleMock({ spies: { confirm: boundary.confirm, alertAsync: boundary.alertAsync } }).module;
     },
 });
 // The authenticated device session is supplied by the platform auth boundary.
@@ -24,12 +26,17 @@ vi.mock('@/auth/context/AuthContext', () => ({
 
 
 describe('Account session Security confirmation', () => {
-    beforeEach(() => {
+    let account: Awaited<ReturnType<typeof restoreServerAccountForTest>>;
+    beforeEach(async () => {
         boundary.confirm.mockReset().mockResolvedValue(false);
+        boundary.alertAsync.mockClear();
         boundary.logout.mockClear();
+        // A real applied Home and Account: the confirmation binds to them.
+        account = await restoreServerAccountForTest({ serverUrl: 'https://sign-out-home.example.test', accountId: 'account-a' });
         storage.getState().activateProfileScope({ serverId: getActiveServerSnapshot().serverId, accountId: 'account-a' });
     });
-    afterEach(() => {
+    afterEach(async () => {
+        await account.dispose();
         retireActiveServerAccountScopeLifetime();
         storage.getState().clearProfileScope();
         standardCleanup();
@@ -52,5 +59,15 @@ describe('Account session Security confirmation', () => {
         const screen = await renderScreen(<AccountSessionSecuritySection />);
         await screen.pressByTestIdAsync('settings-account-sign-out-everywhere');
         expect(boundary.logout).not.toHaveBeenCalled();
+        // The settings view mocks render translation keys.
+        expect(boundary.alertAsync).toHaveBeenCalledWith(expect.any(String), 'settingsApiTokens.errors.accountChanged');
+    });
+
+    it('signs out the Account it was confirmed for when nothing changed', async () => {
+        boundary.confirm.mockResolvedValueOnce(true);
+        const { AccountSessionSecuritySection } = await import('./AccountSessionSecuritySection');
+        const screen = await renderScreen(<AccountSessionSecuritySection />);
+        await screen.pressByTestIdAsync('settings-account-sign-out-everywhere');
+        expect(boundary.logout).toHaveBeenCalledTimes(1);
     });
 });

@@ -3,6 +3,7 @@ import {
   resolveProviderBindingCompatibilityWithFingerprintV1,
 } from '@happier-dev/protocol';
 import type { DaemonProviderAgentCompatibilitySummaryV1 } from '@happier-dev/protocol/rpc';
+import { buildBackendTargetKeyV2 } from '@happier-dev/protocol/backends';
 
 import type { PluginRuntimeRegistryLease } from '@/plugins/runtime/reload/controller';
 import { readLeasedAgentProviderBindingAdapter } from '@/plugins/runtime/providerBindings/adapter';
@@ -40,7 +41,7 @@ export function projectProviderConnectionCompatibility(input: Readonly<{
   const definitions = [...input.lease.registry.contributes.agentDefinitionsById.entries()]
     .sort(([left], [right]) => left.localeCompare(right));
   for (const [agentId, contribution] of definitions) {
-    const agentTargetKey = `backend:${agentId}`;
+    const agentTargetKey = buildBackendTargetKeyV2({ kind: 'backend', backendId: agentId });
     const agentName = readAgentName(contribution, agentId);
     // A static declaration without an active adapter is not incompatibility.
     // Omit it until the same leased generation has executable runtime truth.

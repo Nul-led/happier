@@ -13,6 +13,7 @@ type ActionSettingsTargetControlState =
         value: ActionSettingsApprovalControlValue;
         approvalSurface: keyof ActionSurfaces;
         approvalRequiredByPolicy: boolean;
+        approvalWaivable: boolean;
     }>
     | Readonly<{ kind: 'switch'; value: ActionSettingsBooleanControlValue }>
     | Readonly<{ kind: 'unavailable'; value: 'off' }>;
@@ -52,6 +53,22 @@ function expectApplyControlStateExport(): ApplyActionSettingsTargetControlState 
 }
 
 describe('resolveActionSettingsTargetControlState', () => {
+    it.each(['workflow.trigger.add', 'workflow.trigger.update', 'workflow.trigger.remove'] as const)(
+        'keeps %s Agent confirmation mandatory despite persisted waivers and preserves off/enable continuity',
+        (actionId) => {
+            const waived = { ...DEFAULT_ACTIONS_SETTINGS_V1, approvalWaivedSurfaces: { [actionId]: ['agent' as const] } };
+            expect(actionSettingsTargets.resolveActionSettingsTargetControlState({ settings: waived, actionId, targetId: 'agent' }))
+                .toMatchObject({ kind: 'approval', value: 'ask_first', approvalRequiredByPolicy: true, approvalWaivable: false });
+            const off = actionSettingsTargets.applyActionSettingsTargetControlState({ settings: waived, actionId, targetId: 'agent', value: 'off' });
+            expect(actionSettingsTargets.resolveActionSettingsTargetControlState({ settings: off, actionId, targetId: 'agent' }))
+                .toMatchObject({ value: 'off', approvalWaivable: false });
+            const enabled = actionSettingsTargets.applyActionSettingsTargetControlState({ settings: off, actionId, targetId: 'agent', value: 'allowed' });
+            expect(enabled.approvalWaivedSurfaces?.[actionId]).toBeUndefined();
+            expect(actionSettingsTargets.resolveActionSettingsTargetControlState({ settings: enabled, actionId, targetId: 'agent' }))
+                .toMatchObject({ value: 'ask_first', approvalRequiredByPolicy: true, approvalWaivable: false });
+        },
+    );
+
     it('resolves approval-capable targets to the inherited default', () => {
         const resolveControlState = expectResolveControlStateExport();
 
@@ -64,6 +81,7 @@ describe('resolveActionSettingsTargetControlState', () => {
             value: 'default',
             approvalSurface: 'mcp',
             approvalRequiredByPolicy: false,
+            approvalWaivable: true,
         });
     });
 
@@ -130,6 +148,7 @@ describe('resolveActionSettingsTargetControlState', () => {
             value: 'default',
             approvalSurface: 'agent',
             approvalRequiredByPolicy: true,
+            approvalWaivable: true,
         });
     });
 
@@ -148,6 +167,7 @@ describe('resolveActionSettingsTargetControlState', () => {
             value: 'default',
             approvalSurface: 'ui',
             approvalRequiredByPolicy: true,
+            approvalWaivable: true,
         });
 
         const waived = expectApplyControlStateExport()({
@@ -166,6 +186,7 @@ describe('resolveActionSettingsTargetControlState', () => {
             value: 'allowed',
             approvalSurface: 'ui',
             approvalRequiredByPolicy: false,
+            approvalWaivable: true,
         });
     });
 
@@ -199,6 +220,7 @@ describe('resolveActionSettingsTargetControlState', () => {
             value: 'off',
             approvalSurface: 'agent',
             approvalRequiredByPolicy: true,
+            approvalWaivable: true,
         });
     });
 

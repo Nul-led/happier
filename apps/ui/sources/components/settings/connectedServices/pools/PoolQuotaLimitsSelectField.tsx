@@ -1,10 +1,8 @@
 import * as React from 'react';
-import { useUnistyles } from 'react-native-unistyles';
 
 import type { ConnectedServiceQuotaLimitSelectionV1 } from '@happier-dev/protocol';
 
-import { Icon } from '@/components/ui/icons/Icon';
-import { t } from '@/text';
+import { getPreferredLanguage, t } from '@/text';
 
 import { PoolMultiSelectField } from './PoolMultiSelectField';
 
@@ -71,8 +69,8 @@ function buildQuotaLimitCandidateSubtitle(candidate: PoolQuotaLimitCandidate): s
 export const PoolQuotaLimitsSelectField = React.memo(function PoolQuotaLimitsSelectField(
     props: PoolQuotaLimitsSelectFieldProps,
 ) {
-    const { theme } = useUnistyles();
     const committed = props.selection ?? { mode: 'all' as const, providerLimitIds: [] };
+    const locale = getPreferredLanguage();
     const candidates = React.useMemo(() => [
         {
             id: ALL_LIMITS_ID,
@@ -88,7 +86,7 @@ export const PoolQuotaLimitsSelectField = React.memo(function PoolQuotaLimitsSel
             title: candidate.title,
             subtitle: buildQuotaLimitCandidateSubtitle(candidate) || undefined,
         })),
-    ], [props.candidates, props.loadingMemberCount]);
+    ], [locale, props.candidates, props.loadingMemberCount]);
     const selectedIds = committed.mode === 'selected'
         ? committed.providerLimitIds
         : [ALL_LIMITS_ID];
@@ -107,7 +105,6 @@ export const PoolQuotaLimitsSelectField = React.memo(function PoolQuotaLimitsSel
             emptySubtitle={t('connectedServices.detail.groupDetail.quotaLimitsAllTitle')}
             searchPlaceholder={t('connectedServices.detail.groupDetail.quotaLimitsSearchPlaceholder')}
             optionTestIDPrefix="qualified-connected-account-group:quota-limits:option"
-            icon={<Icon name="speedometer" size={20} color={theme.colors.accent.indigo} />}
             disabled={props.disabled}
             minimumSelected={1}
             exclusiveId={ALL_LIMITS_ID}

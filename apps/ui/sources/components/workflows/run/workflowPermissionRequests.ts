@@ -1,8 +1,6 @@
 import {
-    buildAgentRequestSemanticSummary,
     resolveAgentRequestKind,
     type AgentRequestKind,
-    type AgentRequestQuestionSummary,
     type WorkflowProgressEnvelopeV1,
 } from '@happier-dev/protocol';
 
@@ -12,16 +10,14 @@ import {
  * `kind` is the Protocol's answer, never inferred here: a structured agent
  * question (`user_action`) and a tool permission are different contracts with
  * different answer owners, and presenting a question as Allow/Deny would send
- * the agent a decision it cannot use. `questions` is the canonical
- * provider-neutral question contract for a `user_action`, read from the same
- * semantic-summary owner notifications and voice already consume.
+ * the agent a decision it cannot use. The canonical prompt cards read the
+ * question contract from `arguments` themselves.
  */
 export type WorkflowInvocationRequest = Readonly<{
     requestId: string;
     kind: AgentRequestKind;
     tool: string;
     arguments: unknown;
-    questions: readonly AgentRequestQuestionSummary[];
 }>;
 
 export type WorkflowPermissionRequest = Readonly<{
@@ -55,10 +51,7 @@ export function projectWorkflowInvocationRequests(
         const tool = typeof request.tool === 'string' && request.tool.trim() ? request.tool.trim() : null;
         if (tool === null) return [];
         const kind = resolveAgentRequestKind({ toolName: tool, requestKind: request.kind });
-        const questions = kind === 'user_action'
-            ? buildAgentRequestSemanticSummary({ kind, toolName: tool, toolInput: request.arguments }).questions
-            : [];
-        return [{ requestId, kind, tool, arguments: request.arguments, questions }];
+        return [{ requestId, kind, tool, arguments: request.arguments }];
     });
 }
 

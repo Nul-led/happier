@@ -1,3 +1,6 @@
+import { INJECTED_PAGE_AUTOMATION_ACTIONS } from '@/sync/domains/browser/automation/injectedPageActions';
+import { isBrowserAutomationMutatingActionKind, normalizeBrowserActiveTargetRect, readBrowserActiveTargetLabel } from '@happier-dev/protocol';
+
 export const INJECTED_ELEMENTS_RUNTIME = `
   function backendNodeRefFor(node) {
     if (!pickerNodeRefs || !node) return undefined;
@@ -327,10 +330,11 @@ export const INJECTED_ELEMENTS_RUNTIME = `
       && message.nonce === config.collector.nonce;
   }
 
-  function postAutomationResult(command, startedAt, ok, data, errorCode, stale) {
+  function postAutomationResult(command, startedAt, ok, data, errorCode, stale, activeTarget) {
     postEnvelope({
       v: 1,
       kind: 'browser.injectedRuntime.result',
+      ...(activeTarget ? { phase: 'target', activeTarget: activeTarget } : {}),
       runtimeId: runtime.runtimeId,
       collectorId: config.collector.collectorId,
       nonce: config.collector.nonce,
@@ -824,6 +828,14 @@ export const INJECTED_ELEMENTS_RUNTIME = `
     var startedAt = now();
     var restoreDialogGuard = installAutomationDialogGuard();
     try {
+      if (${JSON.stringify(INJECTED_PAGE_AUTOMATION_ACTIONS.filter(({ action }) => isBrowserAutomationMutatingActionKind(action)).map(({ action }) => action))}.indexOf(message.commandName) !== -1) {
+        var node = firstAutomationElement(message.payload || {});
+        var rect = node && rectFor(node);
+        var activeTarget = rect && (${normalizeBrowserActiveTargetRect.toString()})(rect, { width: window.innerWidth, height: window.innerHeight });
+        var targetLabel = node && (${readBrowserActiveTargetLabel.toString()})(node, 512);
+        if (activeTarget && targetLabel) activeTarget.label = targetLabel;
+        if (activeTarget) postAutomationResult(message, startedAt, true, {}, undefined, false, activeTarget);
+      }
       routeAutomationCommand(message, startedAt);
     } finally {
       restoreDialogGuard();
@@ -832,42 +844,10 @@ export const INJECTED_ELEMENTS_RUNTIME = `
 
   function routeAutomationCommand(message, startedAt) {
     switch (message.commandName) {
-      case 'snapshot':
-      case 'semanticSnapshot':
-        handleAutomationSnapshot(message, startedAt);
-        break;
-      case 'queryElements':
+      ${INJECTED_PAGE_AUTOMATION_ACTIONS.map(({ action, handler }) => `case '${action}': ${handler}(message, startedAt); break;`).join('\n      ')}
+      // Retained guest command alias; public admission uses queryElements.
       case 'locatorQuery':
         handleAutomationQuery(message, startedAt);
-        break;
-      case 'click':
-      case 'tap':
-        handleAutomationClick(message, startedAt);
-        break;
-      case 'type':
-      case 'setValue':
-        handleAutomationType(message, startedAt);
-        break;
-      case 'hover':
-        handleAutomationHover(message, startedAt);
-        break;
-      case 'focus':
-        handleAutomationFocus(message, startedAt);
-        break;
-      case 'press':
-        handleAutomationPress(message, startedAt);
-        break;
-      case 'upload':
-        handleAutomationUpload(message, startedAt);
-        break;
-      case 'drag':
-        handleAutomationDrag(message, startedAt);
-        break;
-      case 'scroll':
-        handleAutomationScroll(message, startedAt);
-        break;
-      case 'waitFor':
-        handleAutomationWaitFor(message, startedAt);
         break;
       case 'evaluate':
       case 'startElementPicker':

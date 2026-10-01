@@ -117,7 +117,7 @@ describe('createHappierMcpServer plugin tools', () => {
         }],
         selectedToolBindings: [{
           tool: catalog[0],
-          expectedContributorImmutableGenerationId: 'generation-g',
+          expectedContributorOccurrenceId: 'occurrence-g',
         }],
       }),
     });

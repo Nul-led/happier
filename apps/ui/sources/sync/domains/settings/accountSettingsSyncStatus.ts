@@ -1,4 +1,5 @@
 import { HappyError } from '@/utils/errors/errors';
+import { shouldRetryError } from '@/sync/runtime/connectivity/transientConnectivityErrors';
 
 export type AccountSettingsSyncStatusKind = 'auth' | 'config' | 'network' | 'server' | 'unknown';
 
@@ -26,7 +27,7 @@ function classifyAccountSettingsSyncError(error: unknown): Readonly<{
     kind: AccountSettingsSyncStatusKind;
 }> {
     const message = error instanceof Error ? error.message : String(error);
-    const retryable = !(error instanceof HappyError && error.canTryAgain === false);
+    const retryable = shouldRetryError(error);
     const kind: AccountSettingsSyncStatusKind =
         error instanceof HappyError && error.kind ? error.kind : 'unknown';
 

@@ -49,6 +49,14 @@ function hasShadow(style: Record<string, unknown>): boolean {
 }
 
 describe('ThemeProfilePreviewPane surface chrome', () => {
+    it('keeps the explanatory text and sample in the theme editor', async () => {
+        const { ThemeProfilePreviewPane } = await import('./ThemeProfilePreviewPane');
+        const screen = await renderScreen(<ThemeProfilePreviewPane mode="light" profile={null} />);
+        expect(screen.getTextContent()).toContain('settingsAppearance.themeProfiles.previewSubtitle');
+        expect(screen.getTextContent()).toContain('settingsAppearance.themeProfiles.previewButton');
+        expect(screen.getTextContent()).toContain('settingsAppearance.themeProfiles.previewCode');
+    });
+
     it('does not add border, highlight, or shadow chrome when surface chrome tokens are transparent', async () => {
         const { ThemeProfilePreviewPane } = await import('./ThemeProfilePreviewPane');
 

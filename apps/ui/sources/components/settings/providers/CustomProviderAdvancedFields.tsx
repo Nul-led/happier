@@ -1,6 +1,5 @@
 import * as React from 'react';
-import { View, type TextInput } from 'react-native';
-import { StyleSheet } from 'react-native-unistyles';
+import type { TextInput } from 'react-native';
 import {
     BUNDLED_PROVIDER_CATALOG_PARSERS_V1,
     BundledProviderCatalogParserV1Schema,
@@ -10,17 +9,12 @@ import {
 } from '@happier-dev/protocol';
 
 import { DropdownMenu, type DropdownMenuItem } from '@/components/ui/forms/dropdown/DropdownMenu';
-import { MachineSetupTextField } from '@/components/ui/forms/MachineSetupTextField';
 import { Switch } from '@/components/ui/forms/Switch';
 import { Item } from '@/components/ui/lists/Item';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
 import type { CustomProviderAdvancedEndpointDraft, CustomProviderDraft } from '@/providers/authoring/state';
+import { ProviderFieldRow } from './authoring/ProviderFieldRow';
 import { t } from '@/text';
-
-const styles = StyleSheet.create(() => ({
-    fields: { gap: 16, paddingHorizontal: 16, paddingVertical: 14 },
-    multiline: { minHeight: 88, textAlignVertical: 'top' },
-}));
 
 /**
  * Titles only. MEMBERSHIP of both vocabularies is owned by Protocol; these maps
@@ -79,78 +73,74 @@ export const CustomProviderAdvancedFields = React.memo(function CustomProviderAd
         <ItemGroup
             key={endpoint.protocol}
             title={protocolTitle}
-            footer={t(`settingsProviders.authoring.protocol.${endpoint.protocol}.description`)}
+            description={t(`settingsProviders.authoring.protocol.${endpoint.protocol}.description`)}
         >
             <Item
                 title={t('settingsProviders.authoring.endpointEnabled')}
                 subtitle={endpoint.enabled
                     ? t('settingsProviders.authoring.endpointEnabledDescription')
                     : t('settingsProviders.authoring.endpointDisabledDescription')}
+                showChevron={false}
                 rightElement={<Switch accessibilityLabel={controlLabel(t('settingsProviders.authoring.endpointEnabled'))} value={endpoint.enabled} onValueChange={(enabled) => update(endpoint.protocol, { enabled })} />}
                 rightElementOutsidePressable
             />
             {endpoint.enabled ? (
                 <>
-                    <View style={styles.fields}>
-                        <MachineSetupTextField
-                            ref={endpoint.protocol === focusEndpointProtocol ? props.baseUrlFieldRef : undefined}
-                            testID={endpoint.protocol === focusEndpointProtocol ? 'settings-provider-authoring-base-url' : undefined}
-                            label={t('settingsProviders.authoring.baseUrl')}
-                            value={endpoint.baseUrl}
-                            placeholder={t('settingsProviders.authoring.baseUrlPlaceholder')}
-                            autoCapitalize="none"
-                            autoCorrect={false}
-                            keyboardType="url"
-                            onChangeText={(baseUrl) => update(endpoint.protocol, { baseUrl })}
+                    <ProviderFieldRow
+                        ref={endpoint.protocol === focusEndpointProtocol ? props.baseUrlFieldRef : undefined}
+                        testID={endpoint.protocol === focusEndpointProtocol ? 'settings-provider-authoring-base-url' : `settings-provider-authoring-base-url:${endpoint.protocol}`}
+                        title={t('settingsProviders.authoring.baseUrl')}
+                        value={endpoint.baseUrl}
+                        placeholder={t('settingsProviders.authoring.baseUrlPlaceholder')}
+                        keyboardType="url"
+                        monospace
+                        onChangeText={(baseUrl) => update(endpoint.protocol, { baseUrl })}
+                    />
+                    <ProviderFieldRow
+                        testID={`settings-provider-authoring-public-headers:${endpoint.protocol}`}
+                        title={t('settingsProviders.authoring.publicHeaders')}
+                        value={endpoint.publicHeadersText}
+                        placeholder={t('settingsProviders.authoring.publicHeadersPlaceholder')}
+                        multiline
+                        monospace
+                        onChangeText={(publicHeadersText) => update(endpoint.protocol, { publicHeadersText })}
+                    />
+                    <ProviderFieldRow
+                        testID={`settings-provider-authoring-probe-paths:${endpoint.protocol}`}
+                        title={t('settingsProviders.authoring.optionalProbePath')}
+                        value={endpoint.probePathsText}
+                        placeholder={t('settingsProviders.authoring.modelsPathPlaceholder')}
+                        multiline
+                        monospace
+                        onChangeText={(probePathsText) => update(endpoint.protocol, { probePathsText })}
+                    />
+                    {endpoint.probePathsText.trim() ? (
+                        <DropdownMenu
+                            open={probeParserMenu === endpoint.protocol}
+                            onOpenChange={(open) => setProbeParserMenu(open ? endpoint.protocol : null)}
+                            variant="selectable"
+                            search={false}
+                            selectedId={endpoint.probeParser}
+                            showCategoryTitles={false}
+                            rowKind="item"
+                            itemTrigger={{
+                                title: t('settingsProviders.authoring.probeParserTitle'),
+                                showSelectedDetail: true,
+                                showSelectedSubtitle: false,
+                            }}
+                            items={probeParsers}
+                            onSelect={(probeParser) => {
+                                const parsed = BundledProviderCatalogParserV1Schema.safeParse(probeParser);
+                                if (parsed.success) update(endpoint.protocol, { probeParser: parsed.data });
+                            }}
                         />
-                        <MachineSetupTextField
-                            label={t('settingsProviders.authoring.publicHeaders')}
-                            value={endpoint.publicHeadersText}
-                            placeholder={t('settingsProviders.authoring.publicHeadersPlaceholder')}
-                            autoCapitalize="none"
-                            autoCorrect={false}
-                            multiline
-                            inputStyle={styles.multiline}
-                            onChangeText={(publicHeadersText) => update(endpoint.protocol, { publicHeadersText })}
-                        />
-                        <MachineSetupTextField
-                            label={t('settingsProviders.authoring.optionalProbePath')}
-                            value={endpoint.probePathsText}
-                            placeholder={t('settingsProviders.authoring.modelsPathPlaceholder')}
-                            autoCapitalize="none"
-                            autoCorrect={false}
-                            multiline
-                            inputStyle={styles.multiline}
-                            onChangeText={(probePathsText) => update(endpoint.protocol, { probePathsText })}
-                        />
-                        {endpoint.probePathsText.trim() ? (
-                            <DropdownMenu
-                                open={probeParserMenu === endpoint.protocol}
-                                onOpenChange={(open) => setProbeParserMenu(open ? endpoint.protocol : null)}
-                                variant="selectable"
-                                search={false}
-                                selectedId={endpoint.probeParser}
-                                showCategoryTitles={false}
-                                rowKind="item"
-                                itemTrigger={{
-                                    title: t('settingsProviders.authoring.probeParserTitle'),
-                                    subtitle: probeParsers.find((item) => item.id === endpoint.probeParser)?.title,
-                                    showSelectedDetail: false,
-                                    showSelectedSubtitle: false,
-                                }}
-                                items={probeParsers}
-                                onSelect={(probeParser) => {
-                                    const parsed = BundledProviderCatalogParserV1Schema.safeParse(probeParser);
-                                    if (parsed.success) update(endpoint.protocol, { probeParser: parsed.data });
-                                }}
-                            />
-                        ) : null}
-                    </View>
+                    ) : null}
                     <Item
                         title={t('settingsProviders.authoring.requiresApiKey')}
                         subtitle={endpoint.requiresApiKey
                             ? t('settingsProviders.authoring.requiresApiKeyYes')
                             : t('settingsProviders.authoring.requiresApiKeyNo')}
+                        showChevron={false}
                         rightElement={<Switch accessibilityLabel={controlLabel(t('settingsProviders.authoring.requiresApiKey'))} value={endpoint.requiresApiKey} onValueChange={(requiresApiKey) => update(endpoint.protocol, { requiresApiKey })} />}
                         rightElementOutsidePressable
                     />
@@ -166,8 +156,7 @@ export const CustomProviderAdvancedFields = React.memo(function CustomProviderAd
                                 rowKind="item"
                                 itemTrigger={{
                                     title: t('settingsProviders.authoring.credentialStyleTitle'),
-                                    subtitle: credentialStyles.find((item) => item.id === endpoint.credentialStyle)?.title,
-                                    showSelectedDetail: false,
+                                    showSelectedDetail: true,
                                     showSelectedSubtitle: false,
                                 }}
                                 items={credentialStyles}
@@ -177,16 +166,14 @@ export const CustomProviderAdvancedFields = React.memo(function CustomProviderAd
                                 }}
                             />
                             {endpoint.credentialStyle === 'custom-header' || endpoint.credentialStyle === 'custom-header-bearer' ? (
-                                <View style={styles.fields}>
-                                    <MachineSetupTextField
-                                        label={t('settingsProviders.authoring.credentialHeader')}
-                                        value={endpoint.credentialHeader}
-                                        placeholder={t('settingsProviders.authoring.credentialHeaderPlaceholder')}
-                                        autoCapitalize="none"
-                                        autoCorrect={false}
-                                        onChangeText={(credentialHeader) => update(endpoint.protocol, { credentialHeader })}
-                                    />
-                                </View>
+                                <ProviderFieldRow
+                                    testID={`settings-provider-authoring-credential-header:${endpoint.protocol}`}
+                                    title={t('settingsProviders.authoring.credentialHeader')}
+                                    value={endpoint.credentialHeader}
+                                    placeholder={t('settingsProviders.authoring.credentialHeaderPlaceholder')}
+                                    monospace
+                                    onChangeText={(credentialHeader) => update(endpoint.protocol, { credentialHeader })}
+                                />
                             ) : null}
                         </>
                     ) : null}

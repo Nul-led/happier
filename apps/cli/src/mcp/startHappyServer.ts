@@ -55,12 +55,25 @@ export type HappyMcpExecutionRunService = Readonly<{
 }>;
 
 export type HappyMcpSessionClient = {
+    getCurrentResolvedRoles?(): import('@happier-dev/protocol').ResolvedRolesSnapshotV1;
+    readRoleSources?: import('@/session/roles/roleSources').RoleSourceReader;
+    getCurrentWorkspaceWrites?(): 'allow' | 'deny' | undefined;
+    prepareWorkspaceWritesPolicy?: import('@/mcp/runtime/applyRunnerMcpSessionContext').RunnerMcpSessionContextAccessors['prepareWorkspaceWritesPolicy'];
     sessionId: string;
     getServerBinding(): SessionClientServerBinding;
+    getMachineAdmissionTransport?: import('@/api/session/sessionClient').ApiSessionClient['getMachineAdmissionTransport'];
     rpcHandlerManager: RpcHandlerManagerLike;
     updateMetadata(updater: (metadata: Metadata) => Metadata): void | Promise<void>;
+    enqueueRegisteredSessionStateFieldMutation?: import('@/api/session/sessionClient').ApiSessionClient['enqueueRegisteredSessionStateFieldMutation'];
+    enqueueSessionEventCommitted?: import('@/api/session/sessionClient').ApiSessionClient['enqueueSessionEventCommitted'];
     getMetadataSnapshot?(): Metadata | null;
     getPermissionMode?(): PermissionMode | null | undefined;
+    /** Host-owned absolute starter depth, never a tool request field. */
+    getWorkDepth?(): number;
+    /** Depth stamped by the host for this exact admitted turn. */
+    getHostTurnWorkDepth?(turnId: string): number | undefined;
+    /** Host-stamped Run caller, independent of confirmation/active-turn UI state. */
+    getAgentStartRunCaller?(): import('@/session/actions/resolveCliAgentStartContextV1').AgentStartRunCallerBinding | null;
     getActiveTurnPermissionWitness?(): RuntimeActiveTurnPermissionWitness | null | undefined;
     getRuntimeLifetimeSignal?(): AbortSignal | null | undefined;
     getServerFeaturesSnapshot?(): CliServerFeaturesSnapshot | undefined;
@@ -235,7 +248,8 @@ export async function startHappyServer(
     const isActionEnabled = createMcpActionEnablementWithServerFeatureAvailability({
         actionSettingsProvider,
         surface: 'agent',
-        hasAuthenticatedRuntime: (opts?.credentials ?? null) !== null,
+        hasAuthenticatedRuntime: (opts?.sessionCredentials ?? opts?.credentials ?? null) !== null,
+        authorityScope: opts?.authorityScope,
         readServerFeaturesSnapshot: () => client.getServerFeaturesSnapshot?.(),
     });
     const initialPluginToolCatalog = await readCurrentPluginToolCatalog(

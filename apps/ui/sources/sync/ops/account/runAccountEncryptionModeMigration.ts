@@ -11,12 +11,17 @@ type Params = Readonly<{
   migrate(request: AccountEncryptionMigrateRequest): Promise<AccountEncryptionMigrateSuccessResponse>;
   activateTargetMode(): void | Promise<void>;
   acknowledgeSessionDrafts(records: readonly SessionDraftRecordV2[]): void | Promise<void>;
+  isCurrent?(): boolean;
 }>;
 
 export async function runAccountEncryptionModeMigration(
   params: Params,
 ): Promise<AccountEncryptionMigrateSuccessResponse> {
   const result = await params.migrate(params.request);
+  // A committed migration response remains authoritative, but a Home switch
+  // retires local projection and acknowledgement. Do not turn that committed
+  // result into a false failure or publish it into the newly selected Home.
+  if (params.isCurrent && !params.isCurrent()) return result;
   const expectedItems = params.request.sessionDrafts?.items ?? [];
   let migratedRecords: readonly SessionDraftRecordV2[] = [];
 
@@ -47,6 +52,20 @@ export async function runAccountEncryptionModeMigration(
     if (!coverageIsExact) {
       throw new Error('Invalid session draft migration response');
     }
+  }
+
+  const expectedMemory = params.request.authoringMemory?.items ?? [];
+  if (expectedMemory.length > 0) {
+    const rows = result.authoringMemory?.rows ?? [];
+    const expectedByKey = new Map(expectedMemory.map((item) => [item.key, item]));
+    const seen = new Set<string>();
+    if (rows.length !== expectedMemory.length || !rows.every((row) => {
+      const expected = expectedByKey.get(row.key);
+      if (!expected || seen.has(row.key)) return false;
+      seen.add(row.key);
+      return row.revision === expected.expectedRevision + 1 && row.content !== null
+        && pluginJsonValuesEqual(row.content, expected.content);
+    })) throw new Error('Invalid authoring memory migration response');
   }
 
   await params.activateTargetMode();

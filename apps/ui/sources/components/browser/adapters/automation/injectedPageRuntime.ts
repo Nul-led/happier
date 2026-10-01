@@ -236,7 +236,7 @@ export function createInjectedPageAutomationOwner(
         fidelity: 'injectedPage',
         trustedInput: false,
         supportedActions: input.supportedActions,
-        executeAction(request: BrowserAutomationRequest, context: Readonly<{ signal: AbortSignal }>) {
+        executeAction(request: BrowserAutomationRequest, context: Parameters<BrowserAutomationOwner['executeAction']>[1]) {
             const startedAtMs = input.nowMs();
             const command = buildInjectedBrowserAutomationCommandMessage({
                 ...expected,
@@ -290,6 +290,10 @@ export function createInjectedPageAutomationOwner(
                     const parsed = parseInjectedBrowserAutomationResultMessage(raw, expected);
                     if (!parsed.ok) return;
                     if (parsed.result.commandId !== request.automationRequestId) return;
+                    if (parsed.result.phase === 'target') {
+                        if (parsed.result.activeTarget) context.onActiveTarget?.(parsed.result.activeTarget);
+                        return;
+                    }
                     settle(parsed.result.ok
                         ? {
                             status: 'succeeded',
@@ -309,7 +313,10 @@ export function createInjectedPageAutomationOwner(
                     });
                 }, Math.max(1, request.timeoutMs));
 
-                Promise.resolve(input.transport.sendCommand(command, script)).catch((error: unknown) => {
+                const sendCommand = async () => {
+                    await input.transport.sendCommand(command, script);
+                };
+                void sendCommand().catch((error: unknown) => {
                     const errorCode = error instanceof Error && error.message === 'cross_origin_frame_unavailable'
                         ? 'cross_origin_frame_unavailable'
                         : 'runtime_unavailable';

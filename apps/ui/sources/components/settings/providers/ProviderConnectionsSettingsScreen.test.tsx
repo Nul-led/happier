@@ -10,10 +10,12 @@ import {
     flushHookEffects,
     installMachineAdministrationTargetSelectionBoundary,
     installProviderSettingsRpcBoundary,
+    renderInCollectionLayout,
     renderScreen,
     standardCleanup,
 } from '@/dev/testkit';
 import { installSettingsViewCommonModuleMocks } from '../settingsViewTestHelpers';
+import { clearActiveUnsavedChangesGuard, setActiveUnsavedChangesGuard } from '@/utils/navigation/runGuardedNavigation';
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -40,13 +42,28 @@ const state = vi.hoisted(() => ({
 }));
 const run = vi.hoisted(() => vi.fn());
 const routerPush = vi.hoisted(() => vi.fn());
+const routerReplace = vi.hoisted(() => vi.fn());
 const navigationState = vi.hoisted(() => ({
     focusEffects: [] as Array<() => void | (() => void)>,
+    pathname: '/settings/providers',
+    params: {} as Record<string, string>,
+    navigatorMounts: 0,
+    focused: true,
+    focusListeners: new Set<() => void>(),
 }));
 const providerHarness = createProviderSettingsHarness();
 installProviderSettingsRpcBoundary(providerHarness);
 const administrationTarget = createMachineAdministrationTargetSelectionMock();
 installMachineAdministrationTargetSelectionBoundary(administrationTarget);
+// The composed layout must exercise the real target control, including unavailable states.
+vi.doUnmock('@/components/settings/machines/MachineAdministrationTargetSelector');
+
+/** The Connect action of a found local server's row. */
+function findConnectAction(screen: Awaited<ReturnType<typeof renderScreen>>, title: string) {
+    return screen.findAllByType('Item').find((item) => item.props.title === title)?.props.rightElement as
+        | { props: { onPress?: () => unknown; accessibilityLabel?: string } }
+        | undefined;
+}
 
 function createDeferred<T>() {
     let resolve!: (value: T) => void;
@@ -55,8 +72,30 @@ function createDeferred<T>() {
 }
 
 installSettingsViewCommonModuleMocks({
-    router: async () => ({ useRouter: () => ({ push: routerPush }) }),
+    reactNative: async () => {
+        const { createReactNativeWebMock } = await import('@/dev/testkit/mocks/reactNative');
+        return createReactNativeWebMock({
+            useWindowDimensions: () => ({ width: 1200, height: 800, scale: 1, fontScale: 1 }),
+        });
+    },
+    router: async () => {
+        const { createExpoRouterMock } = await import('@/dev/testkit/mocks/router');
+        const router = createExpoRouterMock({
+            pathname: () => navigationState.pathname,
+            params: () => navigationState.params,
+            router: { push: routerPush, replace: routerReplace },
+        });
+        // Expo owns route mounting. A stateful boundary exposes unwanted navigator remounts.
+        const Stack = Object.assign(function Stack() {
+            const [draft, setDraft] = React.useState('');
+            React.useEffect(() => { navigationState.navigatorMounts += 1; }, []);
+            return React.createElement('ProviderDraft', { testID: 'provider-draft', value: draft, onChangeText: setDraft });
+        }, { Screen: router.module.Stack.Screen });
+        return { ...router.module, Stack };
+    },
     storage: async () => ({
+        // The page header reads the viewer's content-width preference.
+        useLocalSetting: () => undefined,
         useAllMachines: () => [{
             id: 'machine-a', active: true, revokedAt: null,
             metadata: { displayName: 'Mac' }, metadataVersion: 1, daemonState: null, daemonStateVersion: 1,
@@ -71,6 +110,13 @@ vi.mock('@react-navigation/native', async () => {
     const { createReactNavigationNativeMock } = await import('@/dev/testkit/mocks/reactNavigation');
     return {
         ...createReactNavigationNativeMock(),
+        useIsFocused: () => ReactModule.useSyncExternalStore(
+            (listener) => {
+                navigationState.focusListeners.add(listener);
+                return () => navigationState.focusListeners.delete(listener);
+            },
+            () => navigationState.focused,
+        ),
         useFocusEffect: (effect: () => void | (() => void)) => {
             ReactModule.useEffect(() => {
                 navigationState.focusEffects.push(effect);
@@ -104,31 +150,43 @@ vi.mock('@/components/ui/lists/ItemGroup', () => ({ ItemGroup: (props: React.Pro
 vi.mock('@/components/ui/lists/ItemList', () => ({ ItemList: (props: React.PropsWithChildren<Record<string, unknown>>) => React.createElement('ItemList', props, props.children) }));
 vi.mock('@/components/ui/status/StatusPill', () => ({ StatusPill: (props: any) => React.createElement('StatusPill', props) }));
 vi.mock('@/components/ui/forms/Switch', () => ({ Switch: (props: any) => React.createElement('Switch', props) }));
-vi.mock('@/components/ui/forms/SearchHeader', () => ({ SearchHeader: (props: any) => React.createElement('SearchHeader', props) }));
 vi.mock('@/components/ui/feedback/ActivitySpinner', () => ({ ActivitySpinner: (props: any) => React.createElement('ActivitySpinner', props) }));
 vi.mock('@/components/ui/icons/SafeIonicons', () => ({ SafeIonicons: (props: any) => React.createElement('SafeIonicons', props) }));
 vi.mock('@/components/ui/buttons/IconButton', () => ({ IconButton: (props: any) => React.createElement('IconButton', props) }));
 vi.mock('@/components/ui/feedback/ShimmerView', () => ({ ShimmerView: (props: any) => React.createElement('ShimmerView', props) }));
-vi.mock('@/components/ui/empty/EmptyState', () => ({ EmptyState: (props: any) => React.createElement('EmptyState', props) }));
 vi.mock('@/components/ui/lists/ItemGroupColumns', () => ({
     ItemGroupColumns: (props: React.PropsWithChildren<Record<string, unknown>>) => React.createElement('ItemGroupColumns', props, props.children),
     ItemGroupColumn: (props: React.PropsWithChildren<Record<string, unknown>>) => React.createElement('ItemGroupColumn', props, props.children),
 }));
 vi.mock('@/providers/connection/ProviderIcon', () => ({ ProviderIcon: (props: any) => React.createElement('ProviderIcon', props) }));
 
+
+/** The rendered component that carries `prop` for a test id (the host view under it carries none). */
+function findComposite(screen: { findAllByTestId: (testID: string) => Array<{ props: Record<string, any> }> }, testID: string, prop: string) {
+    return screen.findAllByTestId(testID).find((node) => node.props[prop] !== undefined) ?? null;
+}
+
 describe('ProviderConnectionsSettingsScreen', () => {
     afterEach(() => {
+        clearActiveUnsavedChangesGuard();
         standardCleanup();
         vi.unstubAllGlobals();
     });
     beforeEach(() => {
         providerHarness.reset();
+        administrationTarget.controller.reset();
         state.enabled = true;
         state.providerDecision = { state: 'enabled', blockedBy: null, blockerCode: 'none' };
         state.localDiscoveryEnabled = true;
         run.mockReset();
         routerPush.mockReset();
+        routerReplace.mockReset();
         navigationState.focusEffects = [];
+        navigationState.pathname = '/settings/providers';
+        navigationState.params = {};
+        navigationState.navigatorMounts = 0;
+        navigationState.focused = true;
+        navigationState.focusListeners.clear();
         state.teamCredentialCatalog = {
             resources: [], teamNameById: {}, homeNameByTeamId: {}, currentResourceKeys: new Set(), current: true,
         };
@@ -193,10 +251,6 @@ describe('ProviderConnectionsSettingsScreen', () => {
         expect(routerPush).toHaveBeenCalledWith('/settings/teams/server-a/team-1/credentials/resource-1');
     });
 
-    function refocusScreen(): void {
-        for (const effect of [...navigationState.focusEffects]) effect();
-    }
-
     it('renders the configured connection supplied by the shared Provider RPC boundary', async () => {
         state.query = {
             loading: false,
@@ -228,10 +282,8 @@ describe('ProviderConnectionsSettingsScreen', () => {
             data: ReturnType<typeof createProviderConnectionsDescribeFixture>;
         };
         query.data = createProviderConnectionsDescribeFixture({ connections: [] });
-        await React.act(async () => {
-            refocusScreen();
-            await flushHookEffects();
-        });
+        await screen.update(<ProviderConnectionsSettingsScreen active={false} />);
+        await screen.update(<ProviderConnectionsSettingsScreen active />);
 
         expect(screen.findAllByType('Item').map((item) => item.props.title)).not.toContain('Acme');
 
@@ -242,16 +294,14 @@ describe('ProviderConnectionsSettingsScreen', () => {
                 providerName: 'Returned connection',
             })],
         });
-        await React.act(async () => {
-            refocusScreen();
-            await flushHookEffects();
-        });
+        await screen.update(<ProviderConnectionsSettingsScreen active={false} />);
+        await screen.update(<ProviderConnectionsSettingsScreen active />);
 
         expect(screen.findAllByType('Item').map((item) => item.props.title))
             .toContain('Returned connection');
     });
 
-    it('returns focus to the exact configured, available, and add-custom row after Back', async () => {
+    it('pauses the collection focus return until Back reaches the collection route', async () => {
         let activeElement: {
             focus: ReturnType<typeof vi.fn>;
             isConnected: boolean;
@@ -263,35 +313,39 @@ describe('ProviderConnectionsSettingsScreen', () => {
             },
             body: {},
             documentElement: {},
+            getElementById: () => null,
             querySelectorAll: () => activeElement ? [activeElement] : [],
         });
         const { ProviderConnectionsSettingsScreen } = await import('./ProviderConnectionsSettingsScreen');
         const screen = await renderScreen(<ProviderConnectionsSettingsScreen />);
-        const testIds = [
-            'settings-provider-connection:pc_a',
-            'settings-provider-available:plugin/other',
-            'settings-provider-add-custom',
+        // A connection row, then the "+" menu's catalog provider and custom endpoint.
+        const entries = [
+            { testID: 'settings-provider-connection:pc_a', open: () => screen.findByTestId('settings-provider-connection:pc_a')?.props.onPress?.() },
+            { testID: 'settings-providers-add', open: () => findComposite(screen, 'settings-providers-add-menu', 'onSelect')?.props.onSelect?.('catalog:plugin/other') },
+            { testID: 'settings-providers-add', open: () => findComposite(screen, 'settings-providers-add-menu', 'onSelect')?.props.onSelect?.('custom') },
         ];
 
-        for (const testID of testIds) {
+        for (const { testID, open } of entries) {
             const focus = vi.fn();
             activeElement = {
                 focus,
                 isConnected: true,
                 getAttribute: (name: string) => name === 'data-testid' ? testID : null,
             };
-            const row = screen.findAllByType('Item').find((item) => item.props.testID === testID);
 
             React.act(() => {
-                row?.props.onPress?.();
+                open();
             });
 
             expect(focus).not.toHaveBeenCalled();
 
-            await React.act(async () => {
-                refocusScreen();
-                await flushHookEffects();
-            });
+            navigationState.pathname = testID === 'settings-provider-connection:pc_a'
+                ? '/settings/providers/pc_a' : '/settings/providers/new';
+            await screen.update(<ProviderConnectionsSettingsScreen active />);
+            expect(focus).not.toHaveBeenCalled();
+
+            navigationState.pathname = '/settings/providers';
+            await screen.update(<ProviderConnectionsSettingsScreen />);
             expect(focus).toHaveBeenCalledOnce();
         }
 
@@ -356,49 +410,272 @@ describe('ProviderConnectionsSettingsScreen', () => {
         expect(items.map((item) => item.props.subtitle)).toContain(subtitle);
     });
 
-    it('renders configured and available providers from the daemon projection', async () => {
+    it('lists configured connections and offers available providers from the add menu', async () => {
         const { ProviderConnectionsSettingsScreen } = await import('./ProviderConnectionsSettingsScreen');
         const screen = await renderScreen(React.createElement(ProviderConnectionsSettingsScreen));
         const titles = screen.findAllByType('Item').map((item) => item.props.title);
         expect(titles).toContain('Acme');
-        expect(titles).toContain('Other');
+        // Available providers are what you can add, not rows of the collection.
+        expect(titles).not.toContain('Other');
         const acme = screen.findAllByType('Item').find((item) => item.props.title === 'Acme');
-        expect(acme?.props.subtitleAccessory.props.label).toBe('settingsProviders.status.available');
-        const other = screen.findAllByType('Item').find((item) => item.props.title === 'Other');
-        expect(other?.props.subtitleAccessory.props.label).toBe('settingsProviders.compatibility.experimental');
-        expect(screen.findAllByType('ItemGroupColumns')).toHaveLength(1);
+        // A healthy connection is quiet: its models, no status word and no trouble dot.
+        expect(acme?.props.subtitle).toContain('settingsProviders.detail.modelCount');
+        expect(acme?.props.subtitleLeading).toBeUndefined();
+        const menuItems = findComposite(screen, 'settings-providers-add-menu', 'items')?.props.items as Array<{ id: string; title: string; subtitle?: string }>;
+        expect(menuItems.map((item) => item.id)).toEqual(['custom', 'catalog:plugin/other']);
+        expect(menuItems[1]?.subtitle).toContain('settingsProviders.compatibility.experimental');
     });
 
-    it('labels every standalone Provider switch with its owning row', async () => {
-        const { ProviderConnectionsSettingsScreen } = await import('./ProviderConnectionsSettingsScreen');
-        const screen = await renderScreen(<ProviderConnectionsSettingsScreen />);
-        const switchRows = screen.findAllByType('Item').filter((item) => (
-            typeof item.props.rightElement?.props?.onValueChange === 'function'
-        ));
-
-        expect(switchRows.length).toBeGreaterThan(0);
-        for (const row of switchRows) {
-            expect(row.props.rightElement.props.accessibilityLabel).toBe(row.props.title);
-        }
-    });
-
-    it('uses one atomic connection-scope disable for the configured connection switch', async () => {
+    it('marks a connection that needs the user with a status line and a trouble dot', async () => {
         const query = state.query as { data: { connections: Array<Record<string, unknown>> } };
         query.data.connections[0] = {
             ...query.data.connections[0],
-            authorized: true,
-            grants: { accountEnabled: true, enabledMachineIds: ['machine-a'] },
+            runtime: { health: 'unreachable', modelCount: 3, checkedAt: 1, endpoints: [] },
         };
         const { ProviderConnectionsSettingsScreen } = await import('./ProviderConnectionsSettingsScreen');
+        const screen = await renderScreen(<ProviderConnectionsSettingsScreen variant="rail" />);
+        const acme = screen.findByTestId('settings-provider-connection:pc_a');
+        expect(acme?.props.subtitle).toBe('settingsProviders.status.unreachable');
+        expect(acme?.props.subtitleLeading).toBeTruthy();
+    });
+
+    it('selects the route connection in the rail and searches only a collection too long to scan', async () => {
+        const { ProviderConnectionsSettingsScreen } = await import('./ProviderConnectionsSettingsScreen');
+        const small = await renderScreen(<ProviderConnectionsSettingsScreen variant="rail" selectedConnectionId="pc_a" />);
+        expect(small.findByTestId('settings-provider-connection:pc_a')?.props.selected).toBe(true);
+        expect(small.findByTestId('settings-providers-search')).toBeNull();
+
+        const query = state.query as { data: { connections: Array<Record<string, unknown>> } };
+        const exemplar = query.data.connections[0]!;
+        query.data.connections = Array.from({ length: 10 }, (_, index) => ({
+            ...exemplar,
+            connectionId: index === 0 ? 'pc_a' : `pc_${index}`,
+            displayName: index === 0 ? 'Acme' : `Provider ${index}`,
+            providerName: index === 0 ? 'Acme' : `Provider ${index}`,
+        }));
+        const large = await renderScreen(<ProviderConnectionsSettingsScreen variant="rail" selectedConnectionId="pc_a" />);
+        await React.act(async () => { large.changeTextByTestId('settings-providers-search', 'provider 3'); });
+        expect(large.findByTestId('settings-provider-connection:pc_a')).toBeNull();
+        expect(large.findAllByType('Item').map((item) => item.props.title)).toContain('Provider 3');
+        await React.act(async () => { large.changeTextByTestId('settings-providers-search', ''); });
+        expect(large.findByTestId('settings-provider-connection:pc_a')?.props.selected).toBe(true);
+    });
+
+    it('does not leave a dirty editor when another connection is selected until its guard permits navigation', async () => {
+        const { ProviderConnectionsSettingsScreen } = await import('./ProviderConnectionsSettingsScreen');
         const screen = await renderScreen(<ProviderConnectionsSettingsScreen />);
-        const configured = screen.findAllByType('Item')
-            .find((item) => item.props.testID === 'settings-provider-connection:pc_a');
+        const decision = vi.fn<() => Promise<'keepEditing' | 'discard'>>(async () => 'keepEditing');
+        setActiveUnsavedChangesGuard({
+            isDirtyRef: { current: true },
+            requestDecision: decision,
+            tag: 'provider-collection-test',
+        });
+        await screen.pressByTestIdAsync('settings-provider-connection:pc_a');
+        expect(decision).toHaveBeenCalledOnce();
+        expect(routerPush).not.toHaveBeenCalled();
+        decision.mockResolvedValueOnce('discard');
+        await screen.pressByTestIdAsync('settings-provider-connection:pc_a');
+        expect(routerPush).toHaveBeenCalledWith('/(app)/settings/providers/pc_a');
+    });
 
-        await React.act(async () => { await configured?.props.rightElement.props.onValueChange(false); });
+    it('pauses the collection RPC while a narrow detail hides it and reloads when the collection becomes visible', async () => {
+        const { ProviderConnectionsSettingsScreen } = await import('./ProviderConnectionsSettingsScreen');
+        const screen = await renderScreen(<ProviderConnectionsSettingsScreen active={false} />);
+        expect(providerHarness.state.requests).toHaveLength(0);
+        await React.act(async () => {
+            screen.tree.update(<ProviderConnectionsSettingsScreen active />);
+            await flushHookEffects();
+        });
+        expect(screen.findAllByType('Item').map((item) => item.props.title)).toContain('Acme');
+        expect(providerHarness.state.requests.map((request) => request.method)).toEqual([
+            RPC_METHODS.DAEMON_PROVIDERS_CONNECTIONS_DESCRIBE,
+        ]);
+        await screen.update(<ProviderConnectionsSettingsScreen active={false} />);
+        await screen.update(<ProviderConnectionsSettingsScreen active />);
+        expect(providerHarness.state.requests).toHaveLength(2);
+    });
 
-        expect(run).toHaveBeenCalledWith(expect.objectContaining({
-            action: 'setEnabled', connectionId: 'pc_a', enabled: false, scope: 'connection',
-        }), 'pc_a');
+    it('preserves the route editor and collection selection when its measured panes resize', async () => {
+        navigationState.pathname = '/settings/providers/pc_a';
+        navigationState.params = { connectionId: 'pc_a' };
+        const { ProviderSettingsLayout } = await import('./ProviderSettingsLayout');
+        const screen = await renderScreen(<ProviderSettingsLayout />);
+        const resize = async (width: number) => {
+            await React.act(async () => {
+                screen.findByTestId('settings-providers-layout')?.props.onLayout({ nativeEvent: { layout: { width } } });
+                await flushHookEffects();
+            });
+        };
+        expect(providerHarness.state.requests).toHaveLength(0);
+        await resize(1200);
+        expect(screen.findByTestId('settings-provider-connection:pc_a')?.props.selected).toBe(true);
+        await React.act(async () => {
+            screen.findByTestId('provider-draft')?.props.onChangeText('Unsubmitted endpoint');
+        });
+        await resize(480);
+        expect(screen.findByTestId('settings-providers-list-pane')?.props.accessibilityElementsHidden).toBe(true);
+        await resize(1200);
+        expect(screen.findByTestId('settings-providers-list-pane')?.props.accessibilityElementsHidden).toBe(false);
+        expect(screen.findByTestId('provider-draft')?.props.value).toBe('Unsubmitted endpoint');
+        expect(navigationState.navigatorMounts).toBe(1);
+        expect(screen.findByTestId('settings-provider-connection:pc_a')?.props.selected).toBe(true);
+    });
+
+    it('shows the provider rail beside the detail on desktop and only the detail stack on a narrow screen', async () => {
+        navigationState.pathname = '/settings/providers';
+        navigationState.params = {};
+        const { ProviderSettingsLayout } = await import('./ProviderSettingsLayout');
+        const screen = await renderScreen(<ProviderSettingsLayout />);
+        const resize = async (width: number) => {
+            await React.act(async () => {
+                screen.findByTestId('settings-providers-layout')?.props.onLayout({ nativeEvent: { layout: { width } } });
+                await flushHookEffects();
+            });
+        };
+
+        await resize(1200);
+        expect(screen.findByTestId('settings-providers-list-pane')?.props.accessibilityElementsHidden).toBe(false);
+        expect(screen.findByTestId('settings-providers-detail-pane')?.props.accessibilityElementsHidden).toBe(false);
+
+        // Narrow: the detail stack alone, whose index page is the provider list.
+        await resize(480);
+        expect(screen.findByTestId('settings-providers-list-pane')?.props.accessibilityElementsHidden).toBe(true);
+        expect(screen.findByTestId('settings-providers-detail-pane')?.props.accessibilityElementsHidden).toBe(false);
+    });
+
+    it('pauses the collection when the Providers navigator loses focus', async () => {
+        administrationTarget.controller.setMachines([{ machineId: 'machine-a' }, { machineId: 'machine-b' }]);
+        const { ProviderSettingsLayout } = await import('./ProviderSettingsLayout');
+        const screen = await renderScreen(<ProviderSettingsLayout />);
+        await React.act(async () => {
+            screen.findByTestId('settings-providers-layout')?.props.onLayout({ nativeEvent: { layout: { width: 1200 } } });
+            await flushHookEffects();
+        });
+        expect(screen.findByTestId('settings-provider-connection:pc_a')).not.toBeNull();
+        await React.act(async () => {
+            navigationState.focused = false;
+            for (const listener of navigationState.focusListeners) listener();
+        });
+        expect(screen.findByTestId('settings-provider-connection:pc_a')).not.toBeNull();
+        const readsBeforeTargetChange = providerHarness.state.requests.length;
+        await React.act(async () => { administrationTarget.controller.select('machine-b'); });
+        expect(providerHarness.state.requests).toHaveLength(readsBeforeTargetChange);
+        await React.act(async () => {
+            navigationState.focused = true;
+            for (const listener of navigationState.focusListeners) listener();
+        });
+        expect(screen.findByTestId('settings-provider-connection:pc_a')).not.toBeNull();
+        expect(providerHarness.state.requests).toHaveLength(readsBeforeTargetChange + 1);
+        expect(providerHarness.state.requests.at(-1)?.machineId).toBe('machine-b');
+        expect(navigationState.navigatorMounts).toBe(1);
+    });
+
+    it('keeps the machine chip beside the unavailable notice when Providers is unavailable', async () => {
+        state.enabled = false;
+        state.providerDecision = { state: 'disabled', blockedBy: 'server', blockerCode: 'feature_disabled' };
+        const { ProviderSettingsIndex } = await import('./ProviderSettingsIndex');
+        const screen = await renderInCollectionLayout(<ProviderSettingsIndex />, 'split');
+        expect(screen.findByTestId('settings.providers.administration.target.chip')).not.toBeNull();
+        expect(screen.findAllByType('Item').map((item) => item.props.title)).toContain('settingsProviders.unavailable');
+        expect(providerHarness.state.requests).toHaveLength(0);
+    });
+
+    it('lands a wide collection on the last visited connection, else the first', async () => {
+        const query = state.query as { data: { connections: Array<Record<string, unknown>> } };
+        const exemplar = query.data.connections[0]!;
+        query.data.connections = [
+            exemplar,
+            { ...exemplar, connectionId: 'pc_b', displayName: 'Beta', providerName: 'Beta' },
+        ];
+        const { ProviderSettingsIndex } = await import('./ProviderSettingsIndex');
+        const { recordProviderCollectionVisit } = await import('./collection/providerCollectionModel');
+        const landing = async () => {
+            const screen = await renderInCollectionLayout(<ProviderSettingsIndex />, 'split');
+            return screen.findAllByType('Redirect')[0]?.props.href;
+        };
+        expect(await landing()).toBe('/(app)/settings/providers/pc_a');
+        recordProviderCollectionVisit('pc_b');
+        expect(await landing()).toBe('/(app)/settings/providers/pc_b');
+    });
+
+    it('invites a wide collection with nothing to select to add its first provider', async () => {
+        const query = state.query as { data: { connections: Array<Record<string, unknown>> } };
+        query.data.connections = [];
+        const { ProviderSettingsIndex } = await import('./ProviderSettingsIndex');
+        const screen = await renderInCollectionLayout(<ProviderSettingsIndex />, 'split');
+        expect(screen.findAllByType('Redirect')).toHaveLength(0);
+        expect(screen.findByTestId('settings-providers-invitation')).not.toBeNull();
+        await screen.pressByTestIdAsync('settings-providers-invitation-custom');
+        expect(routerReplace).toHaveBeenCalledWith('/(app)/settings/providers/new');
+    });
+
+    it('says what failed and offers its recovery when a wide collection cannot read the machine', async () => {
+        state.query = {
+            loading: false, data: null, refresh: vi.fn(),
+            error: createProviderErrorV1('provider_endpoint_unavailable', { machineId: 'machine-a' }),
+        };
+        const { ProviderSettingsIndex } = await import('./ProviderSettingsIndex');
+        const screen = await renderInCollectionLayout(<ProviderSettingsIndex />, 'split');
+        const titles = screen.findAllByType('Item').map((item) => item.props.title);
+        expect(titles).toContain('settingsProviders.errors.unreachableTitle');
+        expect(titles).toContain('settingsProviders.errors.actions.retry');
+        expect(screen.findByTestId('settings-providers-invitation')).toBeNull();
+
+        // Retry reads the machine again; once it answers, the collection lands on its connection.
+        const describeReads = () => providerHarness.state.requests.filter(
+            (request) => request.method === RPC_METHODS.DAEMON_PROVIDERS_CONNECTIONS_DESCRIBE,
+        ).length;
+        const readsBefore = describeReads();
+        state.query = {
+            loading: false, error: null, refresh: vi.fn(),
+            data: createProviderConnectionsDescribeFixture({ connections: [createProviderConnectionViewFixture({ connectionId: 'pc_a' })] }),
+        };
+        const retry = screen.findAllByType('Item').find((item) => item.props.title === 'settingsProviders.errors.actions.retry');
+        await React.act(async () => { await retry?.props.onPress?.(); });
+        await flushHookEffects();
+        expect(describeReads()).toBe(readsBefore + 1);
+        expect(screen.findAllByType('Redirect')[0]?.props.href).toBe('/(app)/settings/providers/pc_a');
+    });
+
+    it('keeps landing on the last-known connection when a later read fails', async () => {
+        const { ProviderSettingsIndex } = await import('./ProviderSettingsIndex');
+        const screen = await renderInCollectionLayout(<ProviderSettingsIndex />, 'split');
+        expect(screen.findAllByType('Redirect')[0]?.props.href).toBe('/(app)/settings/providers/pc_a');
+
+        (state.query as { error: ReturnType<typeof createProviderErrorV1> | null }).error =
+            createProviderErrorV1('provider_endpoint_unavailable', { machineId: 'machine-a' });
+        await React.act(async () => {
+            navigationState.focused = false;
+            for (const listener of navigationState.focusListeners) listener();
+        });
+        await React.act(async () => {
+            navigationState.focused = true;
+            for (const listener of navigationState.focusListeners) listener();
+        });
+        await flushHookEffects();
+        // The error does not replace the collection it already knows: it still lands on the connection.
+        expect(screen.findAllByType('Redirect')[0]?.props.href).toBe('/(app)/settings/providers/pc_a');
+        expect(screen.findAllByType('Item').map((item) => item.props.title))
+            .not.toContain('settingsProviders.errors.unreachableTitle');
+    });
+
+    it('shows the new provider as a selected draft row while its editor is open', async () => {
+        navigationState.pathname = '/settings/providers/new';
+        const { ProviderConnectionsSettingsScreen } = await import('./ProviderConnectionsSettingsScreen');
+        const { publishProviderDraftTitle } = await import('./collection/providerDraftTitle');
+        const screen = await renderScreen(<ProviderConnectionsSettingsScreen variant="rail" />);
+        expect(screen.findAllByType('Item').find((item) => item.props.testID === 'settings-providers-draft')?.props.title).toBe('settingsProvidersCollection.newTitle');
+        await React.act(async () => { publishProviderDraftTitle('Company gateway'); });
+        expect(screen.findAllByType('Item').find((item) => item.props.testID === 'settings-providers-draft')?.props.title).toBe('Company gateway');
+        expect(screen.findAllByType('Item').find((item) => item.props.testID === 'settings-providers-draft')?.props.selected).toBe(true);
+        await React.act(async () => { publishProviderDraftTitle(''); });
+    });
+
+    it('keeps collection rows to identity and state: no switch beside a connection', async () => {
+        const { ProviderConnectionsSettingsScreen } = await import('./ProviderConnectionsSettingsScreen');
+        const screen = await renderScreen(<ProviderConnectionsSettingsScreen variant="rail" />);
+        expect(screen.findByTestId('settings-provider-connection:pc_a')?.props.rightElement).toBeUndefined();
+        expect(screen.findAllByType('Switch')).toHaveLength(0);
     });
 
     it('retries the exact typed list mutation instead of substituting a catalog read', async () => {
@@ -408,14 +685,19 @@ describe('ProviderConnectionsSettingsScreen', () => {
                 connectionId: 'pc_a', machineId: 'machine-a',
             }),
         });
+        const query = state.query as { data: { discoveryCandidates: unknown[] } };
+        query.data.discoveryCandidates = [{
+            v: 1, machineId: 'machine-a', contributionKey: 'plugin/ollama',
+            providerName: 'Ollama', endpointTemplateId: 'native',
+            normalizedEndpointUrl: 'http://127.0.0.1:11435',
+            candidateId: 'discovery-candidate:v1:exact-listener',
+            evidence: { kind: 'attributed_listener' }, ownership: 'adopted',
+            connection: { status: 'enable_default' },
+        }];
         const { ProviderConnectionsSettingsScreen } = await import('./ProviderConnectionsSettingsScreen');
         const screen = await renderScreen(<ProviderConnectionsSettingsScreen />);
-        const configured = screen.findAllByType('Item')
-            .find((item) => item.props.testID === 'settings-provider-connection:pc_a');
 
-        await React.act(async () => {
-            await configured?.props.rightElement.props.onValueChange(false);
-        });
+        await React.act(async () => { await findConnectAction(screen, 'Ollama')?.props.onPress?.(); });
         const retry = screen.findAllByType('Item')
             .find((item) => item.props.title === 'settingsProviders.errors.actions.retry');
         expect(retry).toBeDefined();
@@ -427,18 +709,23 @@ describe('ProviderConnectionsSettingsScreen', () => {
 
     it('preserves an unknown list mutation when its reconciliation read also fails', async () => {
         run.mockRejectedValueOnce(new Error('acknowledgement lost after dispatch'));
+        const query = state.query as { data: { discoveryCandidates: unknown[] } };
+        query.data.discoveryCandidates = [{
+            v: 1, machineId: 'machine-a', contributionKey: 'plugin/ollama',
+            providerName: 'Ollama', endpointTemplateId: 'native',
+            normalizedEndpointUrl: 'http://127.0.0.1:11435',
+            candidateId: 'discovery-candidate:v1:exact-listener',
+            evidence: { kind: 'attributed_listener' }, ownership: 'adopted',
+            connection: { status: 'enable_default' },
+        }];
         const { ProviderConnectionsSettingsScreen } = await import('./ProviderConnectionsSettingsScreen');
         const screen = await renderScreen(<ProviderConnectionsSettingsScreen />);
-        const query = state.query as { error: ReturnType<typeof createProviderErrorV1> | null };
-        query.error = createProviderErrorV1('provider_endpoint_unavailable', {
+        const erroring = state.query as { error: ReturnType<typeof createProviderErrorV1> | null };
+        erroring.error = createProviderErrorV1('provider_endpoint_unavailable', {
             machineId: 'machine-a',
         });
-        const configured = screen.findAllByType('Item')
-            .find((item) => item.props.testID === 'settings-provider-connection:pc_a');
 
-        await React.act(async () => {
-            await configured?.props.rightElement.props.onValueChange(false);
-        });
+        await React.act(async () => { await findConnectAction(screen, 'Ollama')?.props.onPress?.(); });
 
         expect(screen.findAllByType('Item').map((item) => item.props.title))
             .toContain('settingsProviders.errors.mutationOutcomeUnknownTitle');
@@ -456,7 +743,7 @@ describe('ProviderConnectionsSettingsScreen', () => {
         )).toHaveLength(readsBeforeReview + 1);
     });
 
-    it('renders a truthful cross-group search-empty state and clears hidden filtering below the search threshold', async () => {
+    it('keeps search and its no-results explanation when a refreshed collection becomes smaller', async () => {
         const query = state.query as { data: { connections: Array<Record<string, unknown>>; available: Array<Record<string, unknown>> } };
         const exemplar = query.data.connections[0]!;
         query.data.connections = Array.from({ length: 10 }, (_, index) => ({
@@ -468,16 +755,16 @@ describe('ProviderConnectionsSettingsScreen', () => {
         query.data.available = [];
         const { ProviderConnectionsSettingsScreen } = await import('./ProviderConnectionsSettingsScreen');
         const screen = await renderScreen(<ProviderConnectionsSettingsScreen />);
-        await React.act(async () => { screen.findByType('SearchHeader').props.onChangeText('not-a-provider'); });
-        expect(screen.findByType('EmptyState').props.title).toBe('settingsProviders.searchEmptyTitle');
-        expect(screen.findAllByType('EmptyState').map((emptyState) => emptyState.props.title))
-            .not.toContain('settingsProviders.emptyTitle');
+        const titles = () => screen.findAllByType('Item').map((item) => item.props.title);
+        await React.act(async () => { screen.changeTextByTestId('settings-providers-search', 'not-a-provider'); });
+        expect(titles()).toContain('settingsProviders.searchEmptyTitle');
+        expect(titles()).not.toContain('settingsProviders.emptyTitle');
 
         query.data.connections = [exemplar];
-        await React.act(async () => { screen.tree.unmount(); });
-        const shrunk = await renderScreen(<ProviderConnectionsSettingsScreen />);
-        expect(shrunk.findAllByType('SearchHeader')).toHaveLength(0);
-        expect(shrunk.findAllByType('Item').map((item) => item.props.title)).toContain('Acme');
+        await screen.update(<ProviderConnectionsSettingsScreen active={false} />);
+        await screen.update(<ProviderConnectionsSettingsScreen active />);
+        expect(screen.findHostByTestId('settings-providers-search')?.props.value).toBe('not-a-provider');
+        expect(titles()).toContain('settingsProviders.searchEmptyTitle');
     });
 
     it('uses three skeleton rows for first load and an honest configured empty state', async () => {
@@ -491,7 +778,8 @@ describe('ProviderConnectionsSettingsScreen', () => {
             data: { status: 'success', diagnostics: [], diagnosticsTruncated: false, availableTruncated: false, discoveryCandidates: [], discoveryCandidatesTruncated: false, localInstallations: [], connections: [], available: [] },
         };
         const empty = await renderScreen(<ProviderConnectionsSettingsScreen />);
-        expect(empty.findByType('EmptyState').props.title).toBe('settingsProviders.emptyTitle');
+        expect(empty.findAllByType('Item').map((item) => item.props.title)).toContain('settingsProviders.emptyTitle');
+        expect(empty.findAllByType('ShimmerView')).toHaveLength(0);
     });
 
     it('retains configured rows and renders an actionable typed error after a transport refresh failure', async () => {
@@ -501,11 +789,8 @@ describe('ProviderConnectionsSettingsScreen', () => {
         query.error = createProviderErrorV1('provider_endpoint_unavailable', {
             machineId: 'machine-a',
         });
-        const configured = screen.findAllByType('Item')
-            .find((item) => item.props.testID === 'settings-provider-connection:pc_a');
-        await React.act(async () => {
-            await configured?.props.rightElement.props.onValueChange(false);
-        });
+        await screen.update(<ProviderConnectionsSettingsScreen active={false} />);
+        await screen.update(<ProviderConnectionsSettingsScreen active />);
 
         expect(screen.findAllByType('Item').map((item) => item.props.title)).toContain('Acme');
         expect(screen.findAllByType('Item').map((item) => item.props.title))
@@ -532,7 +817,7 @@ describe('ProviderConnectionsSettingsScreen', () => {
         expect(hidden.findAllByType('Item').filter((item) => item.props.title === 'Ollama')).toHaveLength(0);
     });
 
-    it('qualifies same-provider discovery switches with their exact endpoint identity', async () => {
+    it('qualifies same-provider Connect actions with their exact endpoint identity', async () => {
         const query = state.query as { data: { discoveryCandidates: unknown[] } };
         query.data.discoveryCandidates = [11434, 11435].map((port) => ({
             v: 1, machineId: 'machine-a', contributionKey: 'plugin/ollama',
@@ -548,12 +833,12 @@ describe('ProviderConnectionsSettingsScreen', () => {
             .map((item) => item.props.rightElement.props.accessibilityLabel);
 
         expect(labels).toEqual([
-            'Ollama, http://127.0.0.1:11434/',
-            'Ollama, http://127.0.0.1:11435/',
+            'settingsProvidersCollection.connect: Ollama, http://127.0.0.1:11434/',
+            'settingsProvidersCollection.connect: Ollama, http://127.0.0.1:11435/',
         ]);
     });
 
-    it('disables an account-backed detected match at the owning account scope', async () => {
+    it('lists a detected server already matched to a connection only as that connection', async () => {
         const query = state.query as { data: { discoveryCandidates: unknown[] } };
         query.data.discoveryCandidates = [{
             v: 1, machineId: 'machine-a', contributionKey: 'plugin/acme',
@@ -564,17 +849,9 @@ describe('ProviderConnectionsSettingsScreen', () => {
         }];
         const { ProviderConnectionsSettingsScreen } = await import('./ProviderConnectionsSettingsScreen');
         const screen = await renderScreen(<ProviderConnectionsSettingsScreen />);
-        const detected = screen.findAllByType('Item').find((item) => (
-            item.props.title === 'Acme'
-            && item.props.rightElement?.props.accessibilityLabel.startsWith('Acme, https://api.acme.example')
-        ));
-        await React.act(async () => {
-            await detected?.props.rightElement.props.onValueChange(false);
-        });
+        const acmeRows = screen.findAllByType('Item').filter((item) => item.props.title === 'Acme');
 
-        expect(run).toHaveBeenCalledWith(expect.objectContaining({
-            action: 'setEnabled', connectionId: 'pc_a', enabled: false, scope: 'account',
-        }), 'pc_a');
+        expect(acmeRows.map((item) => item.props.testID)).toEqual(['settings-provider-connection:pc_a']);
     });
 
     it('enables an exact detected endpoint through the canonical mutation action', async () => {
@@ -589,9 +866,8 @@ describe('ProviderConnectionsSettingsScreen', () => {
         }];
         const { ProviderConnectionsSettingsScreen } = await import('./ProviderConnectionsSettingsScreen');
         const screen = await renderScreen(React.createElement(ProviderConnectionsSettingsScreen));
-        const ollama = screen.findAllByType('Item').find((item) => item.props.title === 'Ollama');
         await React.act(async () => {
-            await ollama?.props.rightElement.props.onValueChange(true);
+            await findConnectAction(screen, 'Ollama')?.props.onPress?.();
         });
 
         expect(run).toHaveBeenCalledWith(expect.objectContaining({
@@ -615,9 +891,7 @@ describe('ProviderConnectionsSettingsScreen', () => {
         }];
         const { ProviderConnectionsSettingsScreen } = await import('./ProviderConnectionsSettingsScreen');
         const screen = await renderScreen(<ProviderConnectionsSettingsScreen />);
-        const ollama = screen.findAllByType('Item').find((item) => item.props.title === 'Ollama');
-
-        await React.act(async () => { await ollama?.props.rightElement.props.onValueChange(true); });
+        await React.act(async () => { await findConnectAction(screen, 'Ollama')?.props.onPress?.(); });
 
         expect(run).not.toHaveBeenCalled();
         expect(screen.findAllByType('Item').map((item) => item.props.title))
@@ -642,10 +916,8 @@ describe('ProviderConnectionsSettingsScreen', () => {
         });
         const { ProviderConnectionsSettingsScreen } = await import('./ProviderConnectionsSettingsScreen');
         const screen = await renderScreen(<ProviderConnectionsSettingsScreen />);
-        const ollama = screen.findAllByType('Item').find((item) => item.props.title === 'Ollama');
-
         await React.act(async () => {
-            await ollama?.props.rightElement.props.onValueChange(true);
+            await findConnectAction(screen, 'Ollama')?.props.onPress?.();
         });
 
         expect(routerPush).toHaveBeenCalledWith(expect.stringContaining(

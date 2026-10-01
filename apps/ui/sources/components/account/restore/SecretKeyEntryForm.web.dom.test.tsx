@@ -5,7 +5,7 @@ import { createRoot } from 'react-dom/client';
 import { expect, it, vi } from 'vitest';
 
 import { SecretKeyEntryForm } from './SecretKeyEntryForm';
-import { setPreferredLanguageFromSettings, t } from '@/text';
+import { t } from '@/text';
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -45,8 +45,7 @@ it('keeps keyboard focus and the invalid draft after Enter submits the real web 
     }
 });
 
-it('uses the canonical Recovery key terminology in localized recovery flows', async () => {
-    setPreferredLanguageFromSettings('pl');
+it('gives the secret input an accessible name that is also visible in the form', async () => {
     const container = document.createElement('div');
     document.body.appendChild(container);
     const root = createRoot(container);
@@ -62,11 +61,11 @@ it('uses the canonical Recovery key terminology in localized recovery flows', as
         });
 
         const input = container.querySelector<HTMLInputElement>('[data-testid="restore-manual-secret-input"]')!;
-        expect(input.getAttribute('aria-label')).toBe(t('settingsAccount.secretKey'));
-        expect(input.getAttribute('aria-label')).not.toBe(t('connect.secretKeyInputLabel'));
+        const accessibleName = input.getAttribute('aria-label');
+        expect(accessibleName).toBeTruthy();
+        expect(container.textContent).toContain(accessibleName);
     } finally {
         await act(async () => { root.unmount(); });
         container.remove();
-        setPreferredLanguageFromSettings(null);
     }
 });

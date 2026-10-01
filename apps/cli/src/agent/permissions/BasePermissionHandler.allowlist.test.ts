@@ -5198,6 +5198,43 @@ describe('BasePermissionHandler allowlist', () => {
     });
   });
 
+  it('keeps the user-action answer route available after a turn reset', async () => {
+    const session = new FakeSession();
+    const handler = new TestPermissionHandler(session as any);
+    const previous = handler.request('previous-question', 'AskUserQuestion', {
+      questions: [{ question: 'Previous?', options: [{ label: 'Yes' }] }],
+    });
+    const previousCancelled = expect(previous).rejects.toThrow('Session reset');
+    await handler.reset();
+    await previousCancelled;
+
+    const rpc = session.rpcHandlerManager.handlers.get('session.user_action.answer');
+    expect(rpc).toBeDefined();
+    await expect(rpc!({
+      id: 'previous-question',
+      approved: true,
+      answers: { 'Previous?': ['Yes'] },
+    })).resolves.toEqual({
+      ok: false,
+      errorCode: 'permission_request_not_found',
+      requestId: 'previous-question',
+    });
+
+    const next = handler.request('next-question', 'AskUserQuestion', {
+      questions: [{ question: 'Continue?', options: [{ label: 'Yes' }] }],
+    });
+    await expect(rpc!({
+      id: 'next-question',
+      approved: true,
+      answers: { 'Continue?': ['Yes'] },
+    })).resolves.toBeUndefined();
+    await expect(next).resolves.toEqual({
+      decision: 'approved',
+      answers: { 'Continue?': ['Yes'] },
+    });
+    expect(session.agentState.requests['next-question']).toBeUndefined();
+  });
+
   it('retains the released preview scalar answer reader for old UI to new CLI skew', async () => {
     const session = new FakeSession();
     const handler = new TestPermissionHandler(session as any);

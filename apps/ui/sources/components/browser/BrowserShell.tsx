@@ -1,6 +1,6 @@
 import * as React from 'react';
 import { View } from 'react-native';
-import { StyleSheet } from 'react-native-unistyles';
+import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 import type {
     BrowserCommandV1,
     BrowserPlatformV1,
@@ -67,43 +67,53 @@ import {
 } from './toolbar';
 import { useBrowserToolbarOverflowItems } from './toolbar/useBrowserToolbarOverflowItems';
 import { useBrowserPluginActions } from './useBrowserPluginActions';
-import { BROWSER_CHROME_WIDTH, useBrowserChromeDensity } from './browserChromeDensity';
+import { BROWSER_CHROME_WIDTH, resolveBrowserChromeControlMetrics, useBrowserChromeDensity } from './browserChromeDensity';
+import { useSessionCockpitBottomChromeHeight } from '@/components/workspaceCockpit/session/SessionCockpitChromeRegistry';
 import { BrowserStatusBar } from './BrowserStatusBar';
 import { BrowserToolbar } from './BrowserToolbar';
 import { BrowserViewHost } from './BrowserViewHost';
+import { isDaemonAuthoritativeBrowserView } from '@/sync/domains/browser/control/commands';
+import type { BrowserStreamedPageRect, BrowserStreamedSurfaceRuntime } from './adapters/BrowserStreamedTarget';
 import { BrowserPluginActionPlacements } from './BrowserPluginActionPlacements';
-import { BrowserAutomationControls } from './automation';
+import { BrowserShellPresence, type BrowserShellAgentPresence } from './copresence/BrowserShellPresence';
 import { type BrowserProfileStatusModel } from './profile/BrowserProfileStatus';
 import { BrowserPrivacyPopover } from './profile/BrowserPrivacyPopover';
 import { shouldSurfaceBrowserPrivacy } from './profile/browserPrivacyVisibility';
 import type { BrowserDiagnosticsEngineBridgeConfig } from './frame/types';
 import {
-    BrowserRecordingControls,
-    type BrowserRecordingControlsProps,
+    BrowserRecordingCapsule,
+    resolveBrowserRecordingControl,
+    type BrowserRecordingControlInput,
     type BrowserRecordingStartControlRequest,
 } from './recording';
+import { IconButton } from '@/components/ui/buttons/IconButton';
+import { RoundButton } from '@/components/ui/buttons/RoundButton';
+import { Icon, ICON_SIZE } from '@/components/ui/icons/Icon';
+import {
+    buildOpenExternalTabSelection,
+    openBrowserExternalTabSelection,
+} from '@/sync/domains/browser/adapters/selection';
+import { t } from '@/text';
 import { getPreferredLanguage } from '@/text';
 
 const stylesheet = StyleSheet.create((theme) => ({
+    // No box of its own: the pane or the Details column owns separation, the page is the hero.
     root: {
         flex: 1,
         minHeight: 0,
         backgroundColor: theme.colors.surface.base,
-        borderWidth: 1,
-        borderColor: theme.colors.border.default,
     },
+    // One quiet row that recedes (lab `browser` Q): plain navigation glyphs, the address capsule with
+    // its trust glyph inside, Mark up, Attach page and `⋯`. It never wraps; a running recording docks
+    // here as a capsule and leaves when it stops, so nothing ever adds a second row.
     toolbarRow: {
         flexDirection: 'row',
         alignItems: 'center',
-        // The row no longer WRAPS. Wrapping was the old answer to nine clusters in a 380px pane, and
-        // it bought a usable address field with a toolbar that silently doubled in height. There are
-        // four clusters now — navigation, address, identity, overflow — and the collapsed density
-        // drops the identity chip to its glyph, so the row fits without a second line.
         flexWrap: 'nowrap',
-        gap: 8,
-        paddingHorizontal: 10,
-        paddingVertical: 8,
-        borderBottomWidth: 1,
+        gap: 4,
+        paddingHorizontal: 8,
+        paddingVertical: 6,
+        borderBottomWidth: StyleSheet.hairlineWidth,
         borderBottomColor: theme.colors.border.default,
         backgroundColor: theme.colors.surface.base,
     },
@@ -114,25 +124,38 @@ const stylesheet = StyleSheet.create((theme) => ({
         flexShrink: 1,
         flexBasis: BROWSER_CHROME_WIDTH.addressFloor,
         minWidth: 0,
-    },
-    // Live-status controls (recording / automation) sit on their own line UNDER the chrome rather
-    // than inside it. They appear only while something is actually running, so a row that exists
-    // only in that moment can afford the height, and the toolbar above it never reflows.
-    liveStatusRow: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        flexWrap: 'wrap',
-        rowGap: 6,
-        gap: 8,
-        paddingHorizontal: 10,
-        paddingBottom: 8,
-        borderBottomWidth: 1,
-        borderBottomColor: theme.colors.border.default,
-        backgroundColor: theme.colors.surface.base,
+        marginHorizontal: 4,
     },
     viewHost: {
         flex: 1,
         minHeight: 0,
+    },
+    // Phone (lab `browser` Qp): the host capsule alone at the top, no rule under it — the page begins
+    // where the capsule's breathing room ends.
+    phoneTopBar: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 8,
+        paddingHorizontal: 16,
+        paddingTop: 6,
+        paddingBottom: 8,
+        backgroundColor: theme.colors.surface.base,
+    },
+    phoneAddressSlot: {
+        flex: 1,
+        minWidth: 0,
+    },
+    // The page controls in thumb reach. It sits in flow under the page (an embedded page can still
+    // scroll its last row into view) and, when the session cockpit floats over this screen without
+    // reserving its own height, above that cockpit.
+    phoneBottomBar: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        minHeight: 48,
+        paddingHorizontal: 8,
+        borderTopWidth: StyleSheet.hairlineWidth,
+        borderTopColor: theme.colors.border.default,
+        backgroundColor: theme.colors.surface.base,
     },
 }));
 
@@ -160,11 +183,12 @@ export type BrowserShellRecordingState = Readonly<{
     onStopRecording?: (recording: BrowserRecordingSessionV1) => void;
     onCancelRecording?: (recording: BrowserRecordingSessionV1) => void;
     onUnavailable?: (reason: Readonly<{ reasonCode: string; message: string }>) => void;
-    isCaptureSourceAvailable?: BrowserRecordingControlsProps['isCaptureSourceAvailable'];
+    isCaptureSourceAvailable?: BrowserRecordingControlInput['isCaptureSourceAvailable'];
 }>;
 
 export type BrowserShellAutomationState = Readonly<{
     controlService: BrowserAutomationControlService;
+    engineBridge?: BrowserDiagnosticsEngineBridgeConfig | null;
     enabled?: boolean;
     supportedActions?: readonly string[];
     nowMs?: () => number;
@@ -176,10 +200,10 @@ export type BrowserShellProfileState = BrowserProfileStatusModel;
 
 function resolveActiveDiagnosticsBridge(input: Readonly<{
     activeView: ReturnType<typeof selectActiveBrowserView>;
-    diagnostics?: BrowserShellDiagnosticsState | null;
+    bridge?: BrowserDiagnosticsEngineBridgeConfig | null;
 }>): BrowserDiagnosticsEngineBridgeConfig | undefined {
     const activeView = input.activeView;
-    const bridge = input.diagnostics?.bridge;
+    const bridge = input.bridge;
     if (!activeView || !bridge) {
         return undefined;
     }
@@ -253,9 +277,17 @@ export function BrowserShell(props: Readonly<{
         }>,
     ) => void;
     simulatorPreviewRuntime?: SimulatorPreviewSurfaceRuntime | null;
+    /** The live stream of the agent's browser for streamed views (the daemon owns the producer). */
+    streamedBrowserRuntime?: BrowserStreamedSurfaceRuntime | null;
     browserContext?: BrowserShellContextState | null;
     browserDiagnostics?: BrowserShellDiagnosticsState | null;
     browserAutomation?: BrowserShellAutomationState | null;
+    /**
+     * The session whose agent drives this browser, so the presence capsule, the cursor badge and the
+     * streamed states name it (and know whether its turn is running). Independent of in-app
+     * automation: a daemon-owned view is the agent's browser even when in-app automation is off.
+     */
+    agent?: BrowserShellAgentPresence | null;
     browserRecording?: BrowserShellRecordingState | null;
     browserProfile?: BrowserShellProfileState | null;
     navigationEffect?: BrowserControlCommandEffect | null;
@@ -265,9 +297,15 @@ export function BrowserShell(props: Readonly<{
     testID?: string;
 }>): React.ReactElement {
     const testID = props.testID ?? 'browser-shell';
+    const { theme } = useUnistyles();
     // Measured CONTAINER width, not the window: the same shell renders into a ~380px session panel
     // and a 2560px window on one machine, and only the container knows which.
     const chromeDensity = useBrowserChromeDensity();
+    // 0 unless the session cockpit floats over this screen without reserving its height itself.
+    const bottomChromeHeight = useSessionCockpitBottomChromeHeight();
+    // Where a streamed page is drawn (it is letterboxed): the agent cursor maps its target into it.
+    // Reported by the streamed target only when the fit changes (a new connection or a resize).
+    const [streamedPageRect, setStreamedPageRect] = React.useState<BrowserStreamedPageRect | null>(null);
     const activeView = selectActiveBrowserView(props.state, props.browserSessionId, props.viewId);
     const browserDiagnostics = props.browserDiagnostics === undefined
         ? null
@@ -318,7 +356,7 @@ export function BrowserShell(props: Readonly<{
         : null;
     const diagnosticsBridge = resolveActiveDiagnosticsBridge({
         activeView,
-        diagnostics: browserDiagnostics,
+        bridge: browserDiagnostics?.bridge ?? props.browserAutomation?.engineBridge,
     });
     const urlFieldRef = React.useRef<BrowserUrlFieldHandle | null>(null);
     const dispatchViewCommand = React.useCallback((kind: 'goBack' | 'goForward' | 'reload' | 'stop') => {
@@ -384,16 +422,68 @@ export function BrowserShell(props: Readonly<{
         desktopWebViewAvailability: props.desktopWebViewAvailability,
     });
 
+    const recordingModel = props.browserRecording ?? null;
+    const recordingControl = React.useMemo(() => (recordingModel
+        ? resolveBrowserRecordingControl({
+            view: activeView,
+            profileId: activeSession?.profileId ?? null,
+            state: recordingModel.state,
+            recordingCapabilities: recordingModel.recordingCapabilities,
+            enabled: recordingModel.enabled,
+            policyState: recordingModel.policyState,
+            isCaptureSourceAvailable: recordingModel.isCaptureSourceAvailable,
+        })
+        : null), [activeSession?.profileId, activeView, recordingModel]);
+    const startRecording = React.useCallback(() => {
+        if (!recordingModel || !recordingControl) return;
+        if (recordingControl.startRequest) {
+            recordingModel.onStartRecording?.(recordingControl.startRequest);
+        } else if (recordingControl.unavailable) {
+            recordingModel.onUnavailable?.(recordingControl.unavailable);
+        }
+    }, [recordingControl, recordingModel]);
+    const discardRecording = React.useCallback(() => {
+        if (recordingControl?.activeRecording) recordingModel?.onCancelRecording?.(recordingControl.activeRecording);
+    }, [recordingControl, recordingModel]);
+
+    // The escape to the user's own browser: one action, in `⋯`, for any page with an address — it
+    // no longer floats over the page's own controls.
+    const openableUrl = activeView && (activeView.target.kind === 'externalUrl' || activeView.target.kind === 'localServicePreview')
+        ? activeView.currentUrl ?? activeView.pendingUrl ?? null
+        : null;
+    const openInYourBrowser = React.useMemo(() => (openableUrl
+        ? () => { void openBrowserExternalTabSelection(buildOpenExternalTabSelection(openableUrl)); }
+        : null), [openableUrl]);
+
     const overflowItems = useBrowserToolbarOverflowItems({
         activeView,
-        annotation,
-        browserContextPresent: Boolean(props.browserContext),
+        annotation: props.browserContext ? annotation : null,
+        recording: recordingControl,
+        onStartRecording: recordingModel?.onStartRecording ? startRecording : undefined,
+        onDiscardRecording: recordingModel?.onCancelRecording ? discardRecording : undefined,
+        onOpenInYourBrowser: openInYourBrowser,
         desktopNativeDevtoolsAvailable,
         onOpenDesktopDevtools: openDesktopDevtools,
         plugins,
         pluginActionsEnabled: Boolean(props.onPluginBrowserAction),
         localizePluginText,
     });
+    // While the agent drives its own (daemon) browser the page is moving under it: the page tools
+    // step out of the chrome until the person has the page (lab `browser` A/H). The controller is the
+    // daemon's, already in the view state.
+    const agentDrivesPage = Boolean(activeView && isDaemonAuthoritativeBrowserView(activeView)
+        && activeView.automationController?.controller === 'agent');
+    const browserContextPresent = Boolean(props.browserContext) && !agentDrivesPage;
+    const markUpOffered = browserContextPresent && annotation.supported;
+    const markUpDisabledReason = annotation.contextButtonDisabled
+        ? annotation.contextDisabledReason
+        : annotation.captureProducerUnavailable
+            ? annotation.captureDisabledReason
+            : null;
+    const toggleMarkUp = React.useCallback(() => {
+        if (annotation.editorActive) annotation.cancel();
+        else annotation.start();
+    }, [annotation]);
 
     // UB-6: browser chrome shortcuts, owned by the app's one keyboard-command registry. Each is
     // registered only while the active engine can fulfil it, so a key is never swallowed by a
@@ -407,82 +497,138 @@ export function BrowserShell(props: Readonly<{
         onStop: () => dispatchViewCommand('stop'),
     });
 
-    return (
-        <View testID={testID} style={stylesheet.root} onLayout={chromeDensity.onLayout}>
-            <View style={stylesheet.toolbarRow}>
-                <BrowserToolbar
-                    testID={testID}
-                    model={toolbar}
-                    shortcutLabels={browserShortcutLabels}
-                    onBack={() => dispatchViewCommand('goBack')}
-                    onForward={() => dispatchViewCommand('goForward')}
-                    onReload={() => dispatchViewCommand('reload')}
-                    onStop={() => dispatchViewCommand('stop')}
-                />
-                <View style={stylesheet.addressFieldSlot}>
-                    <BrowserUrlField
-                        testID={`${testID}-address`}
-                        focusRef={urlFieldRef}
-                        density="toolbar"
-                        trailingAction="copy"
-                        formatWhileBlurred
-                        value={activeView?.pendingUrl ?? activeView?.currentUrl ?? ''}
-                        disabled={activeView ? !toolbar.canNavigate : !props.onNavigateInPlace}
-                        {...(props.searchUrlTemplate ? { searchUrlTemplate: props.searchUrlTemplate } : {})}
-                        onSubmitUrl={dispatchNavigate}
-                    />
-                </View>
-                {/*
-                  * One identity chip, not three. The page title lives on the workspace tab strip that
-                  * already owns it, and the origin-kind pill folded into this chip's fallback label.
-                  * Collapsed, it keeps its glyph and drops its label: trust is never the thing that
-                  * gets hidden to save width.
-                  */}
+    // H-UX §5: a phone recomposes the chrome instead of shrinking it — the address is a host capsule
+    // at the top, and the page controls move to a bottom bar in thumb reach. The launchpad is its own
+    // page there (lab W): it brings its own address entry, so no browser chrome surrounds it.
+    const phone = chromeDensity.density === 'phone';
+    const showPhoneChrome = phone && !showLaunchpad;
+    const controlMetrics = resolveBrowserChromeControlMetrics(chromeDensity.density);
+    const addressField = (
+        <BrowserUrlField
+            testID={`${testID}-address`}
+            focusRef={urlFieldRef}
+            density={controlMetrics.addressDensity}
+            trailingAction={phone ? 'none' : 'copy'}
+            formatWhileBlurred
+            value={activeView?.pendingUrl ?? activeView?.currentUrl ?? ''}
+            disabled={activeView ? !toolbar.canNavigate : !props.onNavigateInPlace}
+            {...(props.searchUrlTemplate ? { searchUrlTemplate: props.searchUrlTemplate } : {})}
+            leading={(
                 <SecurityOriginIndicator
                     testID={`${testID}-security`}
                     view={activeView}
-                    compact={chromeDensity.collapsed}
+                    compact
                 />
-                {props.browserProfile && shouldSurfaceBrowserPrivacy(props.browserProfile) ? (
-                    <BrowserPrivacyPopover
-                        testID={`${testID}-privacy`}
-                        model={props.browserProfile}
-                    />
-                ) : null}
-                <BrowserToolbarOverflowMenu
-                    testID={`${testID}-overflow`}
-                    items={overflowItems}
-                />
-            </View>
-            {props.browserRecording || props.browserAutomation ? (
-                <View style={stylesheet.liveStatusRow}>
-                    {props.browserRecording ? (
-                        <BrowserRecordingControls
-                            testID={`${testID}-recording`}
-                            view={activeView}
-                            profileId={activeSession?.profileId ?? null}
-                            state={props.browserRecording.state}
-                            recordingCapabilities={props.browserRecording.recordingCapabilities}
-                            enabled={props.browserRecording.enabled}
-                            policyState={props.browserRecording.policyState}
-                            nowMs={props.browserRecording.nowMs ?? props.nowMs}
-                            onStartRecording={props.browserRecording.onStartRecording}
-                            onStopRecording={props.browserRecording.onStopRecording}
-                            onCancelRecording={props.browserRecording.onCancelRecording}
-                            onUnavailable={props.browserRecording.onUnavailable}
-                            isCaptureSourceAvailable={props.browserRecording.isCaptureSourceAvailable}
-                        />
-                    ) : null}
-                    {props.browserAutomation ? (
-                        <BrowserAutomationControls
-                            testID={`${testID}-automation`}
-                            view={activeView}
-                            controlService={props.browserAutomation.controlService}
-                            enabled={props.browserAutomation.enabled}
-                        />
-                    ) : null}
+            )}
+            onSubmitUrl={dispatchNavigate}
+        />
+    );
+    const recordingCapsule = recordingControl?.activeRecording ? (
+        <BrowserRecordingCapsule
+            testID={`${testID}-recording`}
+            recording={recordingControl.activeRecording}
+            onStop={recordingModel?.onStopRecording}
+        />
+    ) : null;
+    const markUpButton = markUpOffered ? (
+        <IconButton
+            testID={`${testID}-mark-up`}
+            iconName="pencil-simple"
+            variant="plain"
+            iconSize={controlMetrics.iconSize}
+            accessibilityLabel={t('browserContext.composer.startAnnotation')}
+            tooltip={t('browserContext.composer.startAnnotation')}
+            selected={annotation.editorActive}
+            disabled={markUpDisabledReason !== null && !annotation.editorActive}
+            disabledReason={markUpDisabledReason ?? undefined}
+            size={controlMetrics.size}
+            minimumInteractiveTargetSize={controlMetrics.touchTargetFloorPx ?? undefined}
+            interactiveTargetGapPx={4}
+            onPress={toggleMarkUp}
+        />
+    ) : null;
+    const attachPageButton = browserContextPresent ? (
+        chromeDensity.collapsed ? (
+            <IconButton
+                testID={`${testID}-attach-page`}
+                iconName="paperclip"
+                variant="plain"
+                iconSize={controlMetrics.iconSize}
+                accessibilityLabel={t('browserContext.composer.attachPageReference')}
+                tooltip={t('browserContext.composer.attachPageReference')}
+                disabled={annotation.contextButtonDisabled}
+                disabledReason={annotation.contextDisabledReason ?? undefined}
+                size={controlMetrics.size}
+                minimumInteractiveTargetSize={controlMetrics.touchTargetFloorPx ?? undefined}
+                interactiveTargetGapPx={4}
+                onPress={annotation.attachPageReference}
+            />
+        ) : (
+            <RoundButton
+                testID={`${testID}-attach-page`}
+                size="small"
+                display="secondary"
+                title={t('browserContext.composer.attachPageReference')}
+                leading={<Icon name="paperclip" size={ICON_SIZE.xs} color={theme.colors.text.primary} />}
+                disabled={annotation.contextButtonDisabled}
+                accessibilityHint={annotation.contextDisabledReason ?? undefined}
+                onPress={annotation.attachPageReference}
+            />
+        )
+    ) : null;
+    const privacyControl = props.browserProfile && shouldSurfaceBrowserPrivacy(props.browserProfile) ? (
+        <BrowserPrivacyPopover
+            testID={`${testID}-privacy`}
+            model={props.browserProfile}
+        />
+    ) : null;
+    const overflowMenu = (
+        <BrowserToolbarOverflowMenu
+            testID={`${testID}-overflow`}
+            items={overflowItems}
+            size={controlMetrics.size}
+            iconSize={controlMetrics.iconSize}
+            touchTargetFloorPx={controlMetrics.touchTargetFloorPx}
+            placement={phone ? 'top' : 'bottom'}
+        />
+    );
+    const navigationControls = (
+        <BrowserToolbar
+            testID={testID}
+            model={toolbar}
+            shortcutLabels={browserShortcutLabels}
+            controlSize={controlMetrics.size}
+            iconSize={controlMetrics.iconSize}
+            touchTargetFloorPx={controlMetrics.touchTargetFloorPx}
+            spread={phone}
+            onBack={() => dispatchViewCommand('goBack')}
+            onForward={() => dispatchViewCommand('goForward')}
+            onReload={() => dispatchViewCommand('reload')}
+            onStop={() => dispatchViewCommand('stop')}
+        >
+            {phone ? <>{markUpButton}{attachPageButton}{overflowMenu}</> : null}
+        </BrowserToolbar>
+    );
+
+    return (
+        <View testID={testID} style={stylesheet.root} onLayout={chromeDensity.onLayout}>
+            {phone ? (showPhoneChrome ? (
+                <View testID={`${testID}-top-bar`} style={stylesheet.phoneTopBar}>
+                    <View style={stylesheet.phoneAddressSlot}>{addressField}</View>
+                    {recordingCapsule}
+                    {privacyControl}
                 </View>
-            ) : null}
+            ) : null) : (
+                <View style={[stylesheet.toolbarRow, { paddingVertical: controlMetrics.rowPaddingVerticalPx }]}>
+                    {navigationControls}
+                    <View style={stylesheet.addressFieldSlot}>{addressField}</View>
+                    {recordingCapsule}
+                    {markUpButton}
+                    {attachPageButton}
+                    {privacyControl}
+                    {overflowMenu}
+                </View>
+            )}
             <View style={stylesheet.viewHost}>
                 <BrowserLoadProgressBar
                     testID={`${testID}-load-progress`}
@@ -500,6 +646,7 @@ export function BrowserShell(props: Readonly<{
                         allowExternalUrlBrowsing={props.allowExternalUrlBrowsing}
                         refreshStatus={props.launchpadRefreshStatus ?? 'idle'}
                         refreshError={props.launchpadRefreshError}
+                        localServicePreviewServerId={props.localServicePreviewServerId}
                         onOpenTarget={props.onOpenTarget}
                         onNavigateInPlace={props.onNavigateInPlace}
                     />
@@ -510,6 +657,7 @@ export function BrowserShell(props: Readonly<{
                         onViewLifecycle={props.onViewLifecycle}
                         lifecycleState={props.lifecycleState}
                         localServicePreviewState={localServicePreviewState}
+                        localServicePreviewServerId={props.localServicePreviewServerId}
                         pluginUiProjection={props.pluginUiProjection}
                         projectionInteractionEnabled={props.pluginUiInteractionEnabled}
                         simulatorPreviewRuntime={props.simulatorPreviewRuntime}
@@ -517,6 +665,9 @@ export function BrowserShell(props: Readonly<{
                         diagnosticsBridge={diagnosticsBridge}
                         browserAutomation={props.browserAutomation}
                         browserProfile={props.browserProfile?.profile ?? null}
+                        streamedBrowserRuntime={props.streamedBrowserRuntime}
+                        onStreamedPageRectChange={setStreamedPageRect}
+                        agent={props.agent ?? null}
                         nowMs={props.nowMs}
                     />
                 )}
@@ -535,6 +686,21 @@ export function BrowserShell(props: Readonly<{
                         onCommentChange={annotation.changeComment}
                         onAttach={annotation.attachDraft}
                         onCancel={annotation.cancel}
+                    />
+                ) : null}
+                {activeView && (isDaemonAuthoritativeBrowserView(activeView)
+                    || (props.browserAutomation && props.browserAutomation.enabled !== false)) ? (
+                    <BrowserShellPresence
+                        testID={`${testID}-presence`}
+                        view={activeView}
+                        controlService={props.browserAutomation && props.browserAutomation.enabled !== false
+                            ? props.browserAutomation.controlService
+                            : null}
+                        sendDaemonCommand={props.browserContext?.daemonControl?.sendCommand}
+                        agent={props.agent ?? null}
+                        pageRect={streamedPageRect}
+                        compact={chromeDensity.collapsed}
+                        nowMs={props.browserAutomation?.nowMs ?? props.nowMs}
                     />
                 ) : null}
             </View>
@@ -567,7 +733,17 @@ export function BrowserShell(props: Readonly<{
             <BrowserStatusBar
                 testID={`${testID}-status`}
                 view={activeView}
+                onRetry={toolbar.canReload ? () => dispatchViewCommand('reload') : undefined}
             />
+            {showPhoneChrome ? (
+                <View
+                    testID={`${testID}-bottom-bar`}
+                    accessibilityRole="toolbar"
+                    style={[stylesheet.phoneBottomBar, bottomChromeHeight > 0 ? { paddingBottom: bottomChromeHeight } : null]}
+                >
+                    {navigationControls}
+                </View>
+            ) : null}
         </View>
     );
 }

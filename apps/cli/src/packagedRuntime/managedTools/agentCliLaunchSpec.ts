@@ -45,7 +45,7 @@ export function bindAgentCliLaunchSpec(params: Readonly<{
 
 export function resolveAgentCliLaunchSpecForRuntime(
   runtimeSpec: AgentCliRuntimeDescriptor,
-  opts: Readonly<{ processEnv?: NodeJS.ProcessEnv }> = {},
+  opts: Readonly<{ processEnv?: NodeJS.ProcessEnv; platform?: NodeJS.Platform }> = {},
 ): AgentCliLaunchSpec | null {
   const processEnv = opts.processEnv ?? process.env;
   const resolved = resolveAgentCliCommandForRuntime(runtimeSpec, {
@@ -54,7 +54,7 @@ export function resolveAgentCliLaunchSpecForRuntime(
     currentExecPath: process.execPath,
   });
   if (!resolved) return null;
-  return buildAgentCliLaunchSpecFromResolution(resolved, { processEnv });
+  return buildAgentCliLaunchSpecFromResolution(resolved, { processEnv, platform: opts.platform });
 }
 
 /**
@@ -68,11 +68,12 @@ export function resolveAgentCliLaunchSpecForRuntime(
  */
 export function buildAgentCliLaunchSpecFromResolution(
   resolved: AgentCliCommandResolution,
-  opts: Readonly<{ processEnv?: NodeJS.ProcessEnv }> = {},
+  opts: Readonly<{ processEnv?: NodeJS.ProcessEnv; platform?: NodeJS.Platform }> = {},
 ): AgentCliLaunchSpec | null {
   const processEnv = opts.processEnv ?? process.env;
+  const platform = opts.platform ?? process.platform;
 
-  if (process.platform === 'win32' && isWindowsShellShimPath(resolved.command)) {
+  if (platform === 'win32' && isWindowsShellShimPath(resolved.command)) {
     const runnerPath = resolveCliRuntimeAssetPath(
       'scripts',
       'agent_cli_windows_shim_runner.cjs',
@@ -114,7 +115,7 @@ export function buildAgentCliLaunchSpecFromResolution(
   // fallback here: a runtime command that cannot resolve directly keeps the
   // previously resolved command and fails at spawn, as before.
   const launchCommand =
-    process.platform === 'win32' && isWindowsShellShimPath(runtimeCommand)
+    platform === 'win32' && isWindowsShellShimPath(runtimeCommand)
       ? (resolveDirectJavaScriptRuntimeCommand({
           isBunRuntime: isBun(),
           processEnv,

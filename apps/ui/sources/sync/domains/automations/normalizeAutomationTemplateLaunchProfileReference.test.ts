@@ -11,7 +11,7 @@ const migratedSelection = SessionModelSelectionV1Schema.parse({
     v: 1,
     updatedAt: 20,
     ref: {
-        agentTargetKey: 'backend:claude',
+        agentTargetKey: 'agent:happier.agent.claude/claude',
         providerConnectionId: 'pc_deepseek',
         modelId: 'deepseek-chat',
     },
@@ -59,7 +59,7 @@ describe('normalizeAutomationTemplateLaunchProfileReference', () => {
             v: 1,
             updatedAt: 30,
             ref: {
-                agentTargetKey: 'backend:codex',
+                agentTargetKey: 'agent:happier.agent.codex/codex',
                 providerConnectionId: null,
                 modelId: 'gpt-explicit',
             },
@@ -104,7 +104,7 @@ describe('normalizeAutomationTemplateLaunchProfileReference', () => {
             backendTarget: { kind: 'backend', backendId: 'claude' },
             modelSelection: {
                 ...preferredSelection,
-                ref: { ...preferredSelection.ref, agentTargetKey: 'backend:claude' },
+                ref: { ...preferredSelection.ref, agentTargetKey: 'agent:happier.agent.claude/claude' },
             },
         });
     });

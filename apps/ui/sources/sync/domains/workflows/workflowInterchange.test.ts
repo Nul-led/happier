@@ -8,11 +8,8 @@ import {
   exportWorkflowDocument,
   importWorkflowDocument,
 } from './workflowInterchange';
-import {
-  createWorkflowEditorDraft,
-  setWorkflowDefaultField,
-  type WorkflowEditorDraft,
-} from './workflowEditorDraft';
+import { createWorkflowEditorDraft, type WorkflowEditorDraft } from './workflowEditorDraft';
+import { setWorkflowDefaultField } from '@happier-dev/protocol/workflows/workflowDefinitionEditV1';
 
 const CLAUDE_AGENT_TARGET = {
   kind: 'agent' as const,

@@ -8,7 +8,7 @@ import {
     type SelectionListStep,
 } from '@/components/ui/selectionList';
 import { Modal } from '@/modal';
-import { t } from '@/text';
+import { getPreferredLanguage, t } from '@/text';
 
 const FILTERS: readonly TeamCredentialResourceListFilterV1[] = Object.freeze([
     'all',
@@ -71,6 +71,7 @@ export const TeamCredentialResourceFilterPicker = React.memo(function TeamCreden
     onChange: (filter: TeamCredentialResourceListFilterV1) => void;
 }>) {
     const modalIdRef = React.useRef<string | null>(null);
+    const locale = getPreferredLanguage();
     const rootStep = React.useMemo<SelectionListStep>(() => ({
         id: 'team-credential-resource-filters',
         inputPlaceholder: t('modelPickerOverlay.searchPlaceholder'),
@@ -83,7 +84,7 @@ export const TeamCredentialResourceFilterPicker = React.memo(function TeamCreden
                 label: filterLabel(filter),
             })),
         }],
-    }), []);
+    }), [locale]);
     const close = React.useCallback(() => {
         if (modalIdRef.current === null) return;
         Modal.hide(modalIdRef.current);
@@ -108,7 +109,7 @@ export const TeamCredentialResourceFilterPicker = React.memo(function TeamCreden
             },
             closeOnBackdrop: true,
         });
-    }, [close, props.disabled, props.onChange, props.value, rootStep]);
+    }, [close, locale, props.disabled, props.onChange, props.value, rootStep]);
 
     React.useEffect(() => close, [close]);
 

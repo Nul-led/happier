@@ -1,13 +1,14 @@
 import * as React from 'react';
-import { Pressable, View } from 'react-native';
-import { Typography } from '@/constants/Typography';
-import { StyleSheet, useUnistyles } from 'react-native-unistyles';
+import { Platform, View } from 'react-native';
+import { useUnistyles } from 'react-native-unistyles';
 
-import { Text } from '@/components/ui/text/Text';
+import { IconButton } from '@/components/ui/buttons/IconButton';
+import { Icon, ICON_SIZE, type IconName } from '@/components/ui/icons/Icon';
+import { resolveMinimumInteractiveTargetSize } from '@/components/ui/interactiveTargetSize';
+import { ActionListSection } from '@/components/ui/lists/ActionListSection';
 import { FloatingOverlay } from '@/components/ui/overlays/FloatingOverlay';
 import { MODAL_AWARE_FLOATING_POPOVER_PORTAL_OPTIONS, Popover } from '@/components/ui/popover';
 import { t } from '@/text';
-import { Icon, type IconName } from '@/components/ui/icons/Icon';
 
 import { BROWSER_CHROME_WIDTH } from '../browserChromeDensity';
 
@@ -18,68 +19,27 @@ export type BrowserToolbarOverflowItem = Readonly<{
     onPress: () => void;
     disabled?: boolean;
     disabledReason?: string | null;
-    /** Marks a destructive/active state (e.g. an in-progress recording) so it reads with warning tone. */
-    tone?: 'default' | 'active';
+    /** A destructive one-shot (discard a recording): drawn in the menu's destructive tone. */
+    destructive?: boolean;
 }>;
 
-const stylesheet = StyleSheet.create((theme) => ({
-    trigger: {
-        width: 34,
-        // `minHeight`, not `height`. Q2 measured that the app's `uiFontScale` GROWS the line box —
-        // a fixed-height container is what actually clips scaled text, not a missing `lineHeight`.
-        minHeight: 34,
-        borderRadius: 6,
-        alignItems: 'center',
-        justifyContent: 'center',
-        borderWidth: 1,
-        borderColor: theme.colors.border.default,
-        backgroundColor: theme.colors.surface.base,
-    },
-    triggerDisabled: {
-        opacity: 0.45,
-    },
-    body: {
-        paddingVertical: 6,
-        minWidth: BROWSER_CHROME_WIDTH.chip,
-    },
-    item: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        gap: 10,
-        paddingHorizontal: 12,
-        paddingVertical: 10,
-    },
-    itemPressed: {
-        backgroundColor: theme.colors.surface.inset,
-    },
-    itemDisabled: {
-        opacity: 0.45,
-    },
-    itemLabel: {
-        ...Typography.rowMeta(),
-        color: theme.colors.text.primary,
-        flexShrink: 1,
-    },
-    itemTextStack: {
-        flexShrink: 1,
-        minWidth: 0,
-    },
-    itemReason: {
-        ...Typography.rowMeta(),
-        color: theme.colors.text.secondary,
-        flexShrink: 1,
-    },
-}));
-
 /**
- * Consolidates the browser toolbar's SECONDARY controls (devtools, attach-context, annotation,
- * recording, automation) into one overflow Popover so the toolbar stops wrapping onto a second row
- * in narrow panes (Lunel-parity gap #52). Mirrors the canonical `BrowserPrivacyPopover` Popover +
- * `FloatingOverlay` pattern; primary navigation (back/forward/reload/stop/address) stays inline.
+ * The browser chrome's `⋯`: rare one-shot tools (Record, Open in your browser, Devtools, plugin
+ * actions). It is the canonical icon-button + popover + menu-row composition — `IconButton` as the
+ * trigger, `ActionListSection` rows (`SelectableRow presentation="menu"`) inside `FloatingOverlay`
+ * — so the rows, highlight, focus and disabled treatment are the app's, not a local copy. A
+ * disabled row keeps its reason on its second line: greyed out with no explanation reads as broken.
  */
 export function BrowserToolbarOverflowMenu(props: Readonly<{
     items: readonly BrowserToolbarOverflowItem[];
     testID: string;
+    /** Visible trigger size and glyph; the dense chrome row by default. */
+    size?: number;
+    iconSize?: number;
+    /** The press target the trigger grows to; none under a precise pointer. */
+    touchTargetFloorPx?: number | null;
+    /** The phone's bottom bar opens the menu upward, toward the page. */
+    placement?: 'top' | 'bottom';
 }>): React.ReactElement | null {
     const { theme } = useUnistyles();
     const [open, setOpen] = React.useState(false);
@@ -91,71 +51,64 @@ export function BrowserToolbarOverflowMenu(props: Readonly<{
 
     return (
         <>
-            <Pressable
-                ref={anchorRef}
-                testID={props.testID}
-                accessibilityRole="button"
-                accessibilityLabel={t('browserShell.overflow.open')}
-                accessibilityState={{ expanded: open }}
-                onPress={() => setOpen((value) => !value)}
-                style={stylesheet.trigger}
-            >
-                <Icon name="dots-three" size={16} color={theme.colors.text.primary} />
-            </Pressable>
+            <View ref={anchorRef} collapsable={false}>
+                <IconButton
+                    testID={props.testID}
+                    iconName="dots-three"
+                    variant="plain"
+                    iconSize={props.iconSize ?? ICON_SIZE.sm}
+                    accessibilityLabel={t('browserShell.overflow.open')}
+                    tooltip={t('browserShell.overflow.open')}
+                    tooltipHidden={open}
+                    expanded={open}
+                    hasPopup="menu"
+                    size={props.size ?? 34}
+                    minimumInteractiveTargetSize={props.touchTargetFloorPx === undefined
+                        ? resolveMinimumInteractiveTargetSize(Platform.OS)
+                        : props.touchTargetFloorPx ?? undefined}
+                    interactiveTargetGapPx={4}
+                    onPress={() => setOpen((value) => !value)}
+                />
+            </View>
             {open ? (
                 <Popover
                     open={open}
                     anchorRef={anchorRef}
-                    placement="bottom"
+                    placement={props.placement ?? 'bottom'}
                     gap={6}
                     maxHeightCap={420}
-                    maxWidthCap={320}
+                    maxWidthCap={BROWSER_CHROME_WIDTH.panel}
                     onRequestClose={() => setOpen(false)}
                     backdrop={{ enabled: false }}
                     portal={MODAL_AWARE_FLOATING_POPOVER_PORTAL_OPTIONS}
                 >
                     {({ maxHeight }) => (
                         <FloatingOverlay maxHeight={maxHeight} surfaceChrome="theme">
-                            <View testID={`${props.testID}-panel`} style={stylesheet.body}>
-                                {props.items.map((item) => (
-                                    <Pressable
-                                        key={item.id}
-                                        testID={`${props.testID}-item-${item.id}`}
-                                        accessibilityRole="button"
-                                        accessibilityLabel={item.label}
-                                        accessibilityHint={item.disabled === true && item.disabledReason ? item.disabledReason : undefined}
-                                        accessibilityState={{ disabled: item.disabled === true }}
-                                        disabled={item.disabled === true}
-                                        onPress={() => {
-                                            if (item.disabled === true) {
-                                                return;
-                                            }
+                            <View testID={`${props.testID}-panel`}>
+                                <ActionListSection
+                                    actions={props.items.map((item) => ({
+                                        id: item.id,
+                                        testID: `${props.testID}-item-${item.id}`,
+                                        label: item.label,
+                                        subtitle: item.disabled === true && item.disabledReason ? item.disabledReason : undefined,
+                                        disabled: item.disabled === true,
+                                        destructive: item.destructive === true,
+                                        icon: (
+                                            <Icon
+                                                name={item.iconName}
+                                                size={ICON_SIZE.sm}
+                                                color={item.destructive
+                                                    ? theme.colors.state.danger.foreground
+                                                    : theme.colors.text.secondary}
+                                            />
+                                        ),
+                                        onPress: () => {
+                                            if (item.disabled === true) return;
                                             setOpen(false);
                                             item.onPress();
-                                        }}
-                                        style={({ pressed }) => [
-                                            stylesheet.item,
-                                            pressed ? stylesheet.itemPressed : null,
-                                            item.disabled ? stylesheet.itemDisabled : null,
-                                        ]}
-                                    >
-                                        <Icon
-                                            name={item.iconName}
-                                            size={16}
-                                            color={item.tone === 'active'
-                                                ? theme.colors.state.warning.foreground
-                                                : theme.colors.text.primary}
-                                        />
-                                        <View style={stylesheet.itemTextStack}>
-                                            <Text numberOfLines={1} style={stylesheet.itemLabel}>{item.label}</Text>
-                                            {item.disabled === true && item.disabledReason ? (
-                                                <Text numberOfLines={1} style={stylesheet.itemReason}>
-                                                    {item.disabledReason}
-                                                </Text>
-                                            ) : null}
-                                        </View>
-                                    </Pressable>
-                                ))}
+                                        },
+                                    }))}
+                                />
                             </View>
                         </FloatingOverlay>
                     )}

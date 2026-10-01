@@ -1,6 +1,7 @@
 import type { ReviewCommentStateV1 } from '@happier-dev/protocol';
 
 export type ReviewCommentLabels = Readonly<{
+    delegate?: string;
     empty: string;
     engine: string;
     stale: string;

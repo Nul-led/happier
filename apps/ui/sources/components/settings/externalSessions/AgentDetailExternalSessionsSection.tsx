@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { useRouter } from 'expo-router';
+import { useRouter } from '@/components/appShell/workspace/destinationRoute';
 import type { MachineAdministrationTargetV1 } from '@happier-dev/protocol';
 
 import { resolveAgentUiBehavior } from '@/agents/registry/registryUiBehavior';

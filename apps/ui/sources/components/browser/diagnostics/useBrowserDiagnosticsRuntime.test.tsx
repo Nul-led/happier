@@ -2,16 +2,22 @@ import type { BrowserDiagnosticEventV1, BrowserDiagnosticsSnapshotV1 } from '@ha
 import { act } from 'react-test-renderer';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { createDeferred, flushHookEffects } from '@/dev/testkit';
+import { createDeferred } from '@/dev/testkit/hooks/createDeferred';
+import { flushHookEffects } from '@/dev/testkit/hooks/flushHookEffects';
 import { standardCleanup } from '@/dev/testkit/cleanup/standardCleanup';
 import { renderHook } from '@/dev/testkit/hooks/renderHook';
 import { createNativeWebViewPageInfoDiagnosticEvent } from '@/components/browser/adapters/diagnostics';
 import { buildBrowserAdapterCapabilities } from '@/sync/domains/browser/adapters/capabilities';
 import type { BrowserControlViewState } from '@/sync/domains/browser/control';
-import { selectBrowserDiagnosticsForView } from '@/sync/domains/browser/diagnostics';
+import { selectBrowserDiagnosticsForView } from '@/sync/domains/browser/diagnostics/store';
 import type { BrowserDiagnosticsSnapshotClientResult } from '@/sync/domains/browser/diagnostics/machineRpc';
 
 import { useBrowserDiagnosticsRuntime } from './useBrowserDiagnosticsRuntime';
+
+// The RPC adapter is the network boundary; deterministic snapshot/store/collector logic stays real.
+vi.mock('@/sync/domains/browser/diagnostics/machineRpc', () => ({
+    fetchBrowserDiagnosticsSnapshotViaMachineRpc: vi.fn(async () => ({ ok: false, reason: 'unavailable' })),
+}));
 
 afterEach(() => {
     standardCleanup();
@@ -157,6 +163,39 @@ function createDaemonDiagnosticsSnapshot(
 }
 
 describe('useBrowserDiagnosticsRuntime', () => {
+    it.each(['webIframe', 'nativeWebView', 'desktopWebView'] as const)('provides the %s collector identity for automation while diagnostics presentation is disabled', async (engineKind) => {
+        stubCryptoRandomUuid();
+        const view: BrowserControlViewState = {
+            ...createLocalPreviewView({ engineKind, adapterKind: 'externalUrl' }),
+            target: { kind: 'externalUrl', targetId: 'external_1', url: 'https://preview.happier.test/' },
+        };
+        const hook = await renderHook(() => useBrowserDiagnosticsRuntime({
+            view, enabled: false, automationEnabled: true, parentOrigin: 'https://app.happier.test',
+        }));
+        expect(hook.getCurrent()?.bridge).toMatchObject({
+            browserSessionId: view.browserSessionId, viewId: view.viewId,
+            navigationGeneration: view.navigationGeneration,
+        });
+        expect(hook.getCurrent()?.requestEval({ expression: 'document.title' })).toBe(false);
+        expect(hook.getCurrent()?.bridge?.consoleValueCapture).toBe(false);
+        await act(async () => hook.getCurrent()?.bridge?.onEvents([createDaemonConsoleEvent()]));
+        expect(selectBrowserDiagnosticsForView(hook.getCurrent()!.state, view).eventCount).toBe(0);
+    });
+
+    it('keeps the installed collector identity across native history-only updates', async () => {
+        stubCryptoRandomUuid();
+        const view = createLocalPreviewView({ engineKind: 'nativeWebView' });
+        const hook = await renderHook(({ currentView }: { currentView: BrowserControlViewState }) =>
+            useBrowserDiagnosticsRuntime({ view: currentView, enabled: true, automationEnabled: true }),
+        { initialProps: { currentView: view } });
+        const before = hook.getCurrent()!.bridge!;
+        await hook.rerender({ currentView: { ...view, canGoBack: true, title: 'Updated title' } });
+        expect(hook.getCurrent()?.bridge).toMatchObject({ collectorId: before.collectorId, nonce: before.nonce });
+        await hook.rerender({ currentView: { ...view, navigationGeneration: view.navigationGeneration + 1 } });
+        expect(hook.getCurrent()?.bridge?.collectorId).not.toBe(before.collectorId);
+        expect(hook.getCurrent()?.bridge?.nonce).not.toBe(before.nonce);
+    });
+
     it('fails closed when diagnostics runtime is not explicitly enabled', async () => {
         stubCryptoRandomUuid();
         const snapshotClient = vi.fn(async () => ({

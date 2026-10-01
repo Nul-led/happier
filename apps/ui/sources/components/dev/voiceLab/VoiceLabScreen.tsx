@@ -1,13 +1,12 @@
 import * as React from 'react';
-import { Appearance, Pressable, ScrollView, View } from 'react-native';
+import { Pressable, ScrollView, View } from 'react-native';
 import { useUnistyles } from 'react-native-unistyles';
 
 import { Text } from '@/components/ui/text/Text';
 import { Typography } from '@/constants/Typography';
 import { useReducedMotionPreference } from '@/hooks/ui/useReducedMotionPreference';
 import { useLocalSettingMutable } from '@/sync/domains/state/storage';
-import { applyThemeRuntimeSelection } from '@/theme/profiles/themeProfileRuntime';
-import { DEFAULT_THEME_PROFILES_LOCAL_STATE } from '@/theme/profiles/themeProfilePersistence';
+import { useToggleThemeMode } from '@/components/settings/appearance/useApplyThemeSelection';
 
 import { ConceptStage } from './ConceptStage';
 import { VoiceEnergyProvider } from '@/components/voice/light/useVoiceEnergy';
@@ -203,29 +202,8 @@ export function VoiceLabScreen() {
 
     const onToggleExpanded = React.useCallback(() => setExpanded((v) => !v), []);
 
-    /**
-     * Theme switching goes through the canonical theme owner.
-     *
-     * `UnistylesRuntime.setTheme('dark')` looks like the obvious call and is
-     * wrong: the app registers *profile-derived* themes (18 profiles), so a bare
-     * 'light'/'dark' name is not guaranteed to exist and throws into the crash
-     * boundary. `applyThemeRuntimeSelection` resolves the registered themes from
-     * the user's profiles, and the preference is persisted alongside it exactly
-     * as Settings → Appearance does.
-     */
-    const [themePreference, setThemePreference] = useLocalSettingMutable('themePreference');
-    const [themeProfiles] = useLocalSettingMutable('themeProfiles');
-    const toggleTheme = React.useCallback(() => {
-        const next = theme.dark ? 'light' : 'dark';
-        const profiles = themeProfiles ?? DEFAULT_THEME_PROFILES_LOCAL_STATE;
-        setThemePreference(next);
-        applyThemeRuntimeSelection({
-            themePreference: next,
-            themeProfiles: profiles,
-            systemTheme: Appearance.getColorScheme() === 'dark' ? 'dark' : 'light',
-        });
-    }, [setThemePreference, theme.dark, themeProfiles]);
-    void themePreference;
+    // Theme switching goes through the canonical theme owner (the same writer as Settings → Appearance).
+    const toggleTheme = useToggleThemeMode();
 
     const concepts = conceptId === '__all__'
         ? VOICE_LAB_CONCEPTS

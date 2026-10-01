@@ -1,26 +1,31 @@
 import * as React from 'react';
-import { useRouter } from 'expo-router';
-import { useFocusEffect } from '@react-navigation/native';
+import { useRouter } from '@/components/appShell/workspace/destinationRoute';
+import { useFocusEffect } from '@/components/appShell/workspace/destinationRoute';
 import type { TeamMembersListFilterV1, TeamMembershipV1 } from '@happier-dev/protocol/teams';
 import { Platform } from 'react-native';
 import { useUnistyles } from 'react-native-unistyles';
 
 import { Avatar } from '@/components/ui/avatar/Avatar';
-import { Icon } from '@/components/ui/icons/Icon';
+import { CompactSearchField } from '@/components/ui/forms/CompactSearchField';
+import { DropdownMenu } from '@/components/ui/forms/dropdown/DropdownMenu';
 import { Item } from '@/components/ui/lists/Item';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
+import { SectionActionButton } from '@/components/ui/lists/SectionActionButton';
+import { SectionContentRow } from '@/components/ui/lists/SectionContentRow';
 import { VirtualizedList } from '@/components/ui/lists/virtualized';
 import { StatusPill } from '@/components/ui/status/StatusPill';
-import { TextInput } from '@/components/ui/text/Text';
 import { useTeamMembersRoster } from '@/hooks/teams/useTeamMembersRoster';
-import { formatAccountDisplayName } from '@/sync/domains/account/formatAccountDisplayName';
-import { t } from '@/text';
+import { resolveAccountDisplayName } from '@/sync/domains/account/formatAccountDisplayName';
+import { getPreferredLanguage, t } from '@/text';
+import { formatWithCachedDateTimeFormatter } from '@/utils/datetime/cachedIntlFormatters';
 
 import { TeamSection } from '../TeamSection';
 import type { TeamSectionContext } from '../teamSectionContext';
 import { teamMemberAddPath, teamMemberDetailPath } from '../teamsRoutes';
 import { membershipManagementLabel, teamRoleLabel } from '../teamLabels';
 import { TeamOwnerRequiredNotice } from './TeamOwnerRequiredNotice';
+import { AttentionBanner } from '@/components/ui/lists/AttentionBanner';
+import { teamReadFailureLabel } from '../teamMutationPresentation';
 
 const MEMBER_AVATAR_SIZE = 36;
 const MEMBER_CHUNK_SIZE = 12;
@@ -52,6 +57,34 @@ function filterLabel(filter: TeamMembersListFilterV1): string {
             return t('teams.members.filterSuspended');
     }
 }
+
+/** Narrows the roster by role or status: one choice among several, so a field select. */
+const MemberFilterRow = React.memo(function MemberFilterRow(props: Readonly<{
+    filter: TeamMembersListFilterV1;
+    onChange: (filter: TeamMembersListFilterV1) => void;
+}>) {
+    const [open, setOpen] = React.useState(false);
+    const items = React.useMemo(() => FILTERS.map((candidate) => ({
+        id: candidate,
+        title: filterLabel(candidate),
+        testID: `team-members-filter:${candidate}`,
+    })), []);
+    return (
+        <DropdownMenu
+            testID="team-members-filter"
+            open={open}
+            onOpenChange={setOpen}
+            selectedId={props.filter}
+            items={items}
+            onSelect={(id) => {
+                setOpen(false);
+                const next = FILTERS.find((candidate) => candidate === id);
+                if (next) props.onChange(next);
+            }}
+            itemTrigger={{ title: t('teams.members.filterLabel') }}
+        />
+    );
+});
 
 const MemberRoster = React.memo(function MemberRoster(props: Readonly<{
     context: TeamSectionContext;
@@ -113,10 +146,13 @@ const MemberRoster = React.memo(function MemberRoster(props: Readonly<{
 
         if (!canRead) {
             add('forbidden', () => (
-                <ItemGroup footer={t('teams.errors.forbidden')}>
+                <ItemGroup>
                     <Item
                         testID="team-members-forbidden"
                         title={t('homeGovernance.forbiddenTitle')}
+                        subtitle={t('teams.errors.forbidden')}
+                        subtitleLines={0}
+                        mode="info"
                         showChevron={false}
                     />
                 </ItemGroup>
@@ -130,69 +166,69 @@ const MemberRoster = React.memo(function MemberRoster(props: Readonly<{
             ));
         }
 
-        add('search', () => (
-            <ItemGroup>
-                <TextInput
-                    testID="team-members-search"
-                    value={query}
-                    onChangeText={setQuery}
-                    placeholder={t('teams.members.searchPlaceholder')}
-                    accessibilityLabel={t('teams.members.searchPlaceholder')}
-                />
-            </ItemGroup>
-        ));
-
-        add('filters', () => (
-            <ItemGroup accessibilityRole="radiogroup" accessibilityLabel={t('teams.tabs.members')}>
-                {FILTERS.map((candidate) => (
-                    <Item
-                        key={candidate}
-                        testID={`team-members-filter:${candidate}`}
-                        title={filterLabel(candidate)}
-                        accessibilityRole="radio"
-                        webRole="radio"
-                        accessibilityChecked={candidate === filter}
-                        selected={candidate === filter}
-                        onPress={() => setFilter(candidate)}
-                        showChevron={false}
+        // The roster section opens with its own controls — find someone, narrow by role — and
+        // continues into the member chunks as one sheet.
+        add('controls', () => (
+            <ItemGroup
+                title={t('teams.tabs.members')}
+                action={canAdd ? (
+                    <SectionActionButton
+                        testID="team-members-add"
+                        icon="plus"
+                        title={t('teams.members.add')}
+                        onPress={() => router.push(teamMemberAddPath(context.address))}
                     />
-                ))}
+                ) : undefined}
+                virtualizedSegment={{ first: true, last: roster.rows.length === 0 }}
+            >
+                <SectionContentRow>
+                    <CompactSearchField
+                        testID="team-members-search"
+                        value={query}
+                        onChangeText={setQuery}
+                        placeholder={t('teams.members.searchPlaceholder')}
+                    />
+                </SectionContentRow>
+                <MemberFilterRow filter={filter} onChange={setFilter} />
             </ItemGroup>
         ));
 
         if (roster.status === 'loading' && roster.rows.length === 0) {
             add('loading', () => (
                 <ItemGroup>
-                    <Item testID="team-members-loading" title={t('teams.tabs.members')} loading showChevron={false} />
+                    <Item testID="team-members-loading" title={t('teams.loading')} loading mode="info" showChevron={false} />
                 </ItemGroup>
             ));
         }
 
         if (roster.rows.length === 0 && roster.status === 'ready') {
             add('empty', () => (
-                <ItemGroup footer={t('teams.members.emptyBody')}>
-                    <Item testID="team-members-empty" title={t('teams.members.emptyTitle')} showChevron={false} />
+                <ItemGroup>
+                    <Item
+                        testID="team-members-empty"
+                        title={t('teams.members.emptyTitle')}
+                        subtitle={t('teams.members.emptyBody')}
+                        mode="info"
+                        showChevron={false}
+                    />
                 </ItemGroup>
             ));
         }
 
         for (let start = 0; start < roster.rows.length; start += MEMBER_CHUNK_SIZE) {
             const chunk = roster.rows.slice(start, start + MEMBER_CHUNK_SIZE);
-            const first = start === 0;
             const last = start + MEMBER_CHUNK_SIZE >= roster.rows.length;
             add(`members:${chunk[0]!.id}`, () => (
-                <ItemGroup
-                    title={first ? t('teams.tabs.members') : undefined}
-                    virtualizedSegment={{ first, last }}
-                >
+                <ItemGroup virtualizedSegment={{ first: false, last }}>
                     {chunk.map((membership) => {
-                        const displayName = formatAccountDisplayName(membership.account) ?? membership.accountId;
+                        const person = resolveAccountDisplayName({ profile: membership.account, accountId: membership.accountId, viewerAccountId: context.scope.accountId });
+                        const displayName = person.name;
                         const managedBy = membershipManagementLabel(membership);
                         // The viewer's own row and the one truthful membership-age
                         // fact the projection already carries. `scope.accountId` is
                         // the Account this screen was opened for, so the mark
                         // follows the Home the roster was read from.
-                        const isViewer = membership.accountId === context.scope.accountId;
+                        const isViewer = person.viewer && person.named;
                         return (
                             <Item
                                 key={membership.id}
@@ -201,9 +237,10 @@ const MemberRoster = React.memo(function MemberRoster(props: Readonly<{
                                 subtitle={[
                                     teamRoleLabel(membership.role),
                                     isViewer ? t('teams.members.you') : null,
+                                    person.hint,
                                     managedBy,
                                     t('teams.members.joined', {
-                                        when: new Date(membership.joinedAt).toLocaleDateString(),
+                                        when: formatWithCachedDateTimeFormatter(new Date(membership.joinedAt), getPreferredLanguage(), { dateStyle: 'medium' }),
                                     }),
                                 ]
                                     .filter((part): part is string => part !== null)
@@ -233,15 +270,15 @@ const MemberRoster = React.memo(function MemberRoster(props: Readonly<{
 
         if (roster.error) {
             add('retry', () => (
-                <ItemGroup footer={t('teams.unavailable.offline')}>
-                    <Item
-                        testID="team-members-retry"
-                        title={t('teams.unavailable.retry')}
-                        icon={<Icon name="arrow-clockwise" size={29} color={theme.colors.text.secondary} />}
-                        onPress={roster.reload}
-                        showChevron={false}
-                    />
-                </ItemGroup>
+                <AttentionBanner
+                    testID="team-members-unavailable"
+                    title={teamReadFailureLabel(roster.error!)}
+                    action={roster.error?.retryable ? {
+                        label: t('teams.unavailable.retry'),
+                        onPress: roster.reload,
+                        testID: 'team-members-retry',
+                    } : undefined}
+                />
             ));
         } else if (roster.hasMore && roster.rows.length > 0) {
             add('load-more', () => (
@@ -253,18 +290,6 @@ const MemberRoster = React.memo(function MemberRoster(props: Readonly<{
                         disabled={roster.status === 'loading_more'}
                         onPress={roster.loadMore}
                         showChevron={false}
-                    />
-                </ItemGroup>
-            ));
-        }
-
-        if (canAdd) {
-            add('add', () => (
-                <ItemGroup>
-                    <Item
-                        testID="team-members-add"
-                        title={t('teams.members.add')}
-                        onPress={() => router.push(teamMemberAddPath(context.address))}
                     />
                 </ItemGroup>
             ));
@@ -297,7 +322,7 @@ const MemberRoster = React.memo(function MemberRoster(props: Readonly<{
             ListHeaderComponent={props.header === undefined ? null : <>{props.header}</>}
             style={{
                 flex: 1,
-                backgroundColor: theme.colors.background.canvas,
+                backgroundColor: theme.colors.surface.base,
                 ...(Platform.OS === 'web' ? { minHeight: 0 } : {}),
             }}
             contentContainerStyle={{ paddingBottom: Platform.OS === 'ios' ? 34 : 16 }}
@@ -320,6 +345,7 @@ export const TeamMembersScreen = React.memo(function TeamMembersScreen(props: Re
             serverId={props.serverId}
             teamId={props.teamId}
             title={t('teams.tabs.members')}
+            description={t('teams.pages.members')}
             presentation="virtualized-list"
         >
             {(context, header) => <MemberRoster context={context} header={header} />}

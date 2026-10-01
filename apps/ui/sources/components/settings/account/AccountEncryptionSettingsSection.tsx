@@ -14,7 +14,7 @@ import { useFeatureEnabled } from '@/hooks/server/useFeatureEnabled';
 import { useActiveServerSnapshot } from '@/hooks/server/useActiveServerSnapshot';
 import { fetchAccountEncryptionCurrentness, fetchAccountEncryptionMode, getAccountEncryptionModeScopeKey } from '@/sync/api/account/apiAccountEncryptionMode';
 import { migrateAccountEncryptionMode } from '@/sync/api/account/apiAccountEncryptionMigrate';
-import { useRouter } from 'expo-router';
+import { useRouter } from '@/components/appShell/workspace/destinationRoute';
 import { buildAccountEncryptionMigrateToPlainRequest } from '@/sync/ops/account/buildAccountEncryptionMigrateToPlainRequest';
 import { getConnectedServiceCredentialSealed } from '@/sync/api/account/apiConnectedServicesV2';
 import { buildAccountEncryptionMigrateToE2eeRequest } from '@/sync/ops/account/buildAccountEncryptionMigrateToE2eeRequest';
@@ -23,30 +23,41 @@ import { getQualifiedConnectedAccountConfigurationV4, getQualifiedConnectedAccou
 import { AccountEncryptionMigrateInvalidParamsReasonSchema, AccountEncryptionMigrateRequestSchema, createAccountEncryptionMigrateRequestBindingDigestV1, type AccountEncryptionMigrateRequest } from '@happier-dev/protocol';
 import { createEncryptionFromAuthCredentials } from '@/auth/encryption/createEncryptionFromAuthCredentials';
 import { fetchMachineRows } from '@/sync/engine/machines/syncMachines';
-import { kvList } from '@/sync/api/account/apiKv';
-import { fetchArtifact, fetchArtifacts } from '@/sync/api/artifacts/apiArtifacts';
+import { fetchAccountEncryptionMigrationKvInventory } from '@/sync/ops/account/fetchAccountEncryptionMigrationKvInventory';
+import { createArtifactAccessApi, fetchArtifact, fetchArtifacts } from '@/sync/api/artifacts/apiArtifacts';
 import { buildAccountEncryptionMigrationStorageDirectives } from '@/sync/ops/account/buildAccountEncryptionMigrationStorageDirectives';
 import { fetchAccountEncryptionMigrationSessionInventory } from '@/sync/ops/account/fetchAccountEncryptionMigrationSessionInventory';
 import { fetchReviewCommentAccountEncryptionMigrationInventory } from '@/sync/domains/reviews/comments/accountEncryptionMigrationApi';
 import { fetchSessionOrganizationAccountEncryptionMigrationInventory } from '@/sync/ops/account/fetchSessionOrganizationAccountEncryptionMigrationInventory';
+import { fetchAccountEncryptionMigrationAutomationsInventory } from '@/sync/ops/account/fetchAccountEncryptionMigrationAutomationsInventory';
 import { prepareAccountEncryptionMigrateToE2eeKey } from '@/sync/ops/account/prepareAccountEncryptionMigrateToE2eeKey';
 import { openAccountEncryptionFirstKeyExternalAuthUrl, requestAccountEncryptionFirstKeyPasswordProof, retryPendingAccountEncryptionFirstKeyExternalAuth, resumeAccountEncryptionFirstKeyExternalAuth, startAccountEncryptionFirstKeyExternalAuth } from '@/sync/ops/account/accountEncryptionFirstKeyExternalAuth';
 import { runTasksWithLimit } from '@/sync/runtime/orchestration/runTasksWithLimit';
 import { getActiveServerAccountScope } from '@/sync/domains/scope/activeServerAccountScope';
 import { acknowledgeNewSessionDraftEncryptionMigration, listNewSessionDraftEncryptionMigrationCandidates } from '@/sync/ops/sessionDrafts/sessionDraftRepository';
 import { runAccountEncryptionModeMigration } from '@/sync/ops/account/runAccountEncryptionModeMigration';
+import { fetchAccountEncryptionAuthoringMemoryMigrationCandidates } from '@/sync/ops/account/fetchAccountEncryptionAuthoringMemoryMigrationCandidates';
 import { prepareAccountEncryptionModePasswordCredential } from '@/sync/api/auth/accountSecurity';
-import { serverFetch } from '@/sync/http/client';
 import { decodeBase64 } from '@/encryption/base64';
 import { createAccountSecurityActionClient } from './accountSecurityActionClient';
+import { captureAccountSettingsRequest } from '@/sync/api/account/accountSettingsRequest';
 import { resolveHomeKeyChallengeExpectedAudience } from '@/auth/flows/resolveHomeAuthenticationTarget';
 import { resolveUiClientEncryptionRequirement } from '@/sync/domains/settings/clientEncryptionRequirement';
+import { Icon } from '@/components/ui/icons/Icon';
+import { announceAccessibilityMessage } from '@/components/ui/accessibility/announceAccessibilityMessage';
 
 type AccountEncryptionModePresentation = Readonly<{
     scope: string | null;
     mode: 'e2ee' | 'plain' | null;
     recoveryRequired: boolean;
 }>;
+
+class AccountEncryptionScopeChangedError extends Error {
+    constructor() {
+        super('Account encryption scope changed');
+        this.name = 'AccountEncryptionScopeChangedError';
+    }
+}
 
 export const AccountEncryptionSettingsSection = React.memo(function AccountEncryptionSettingsSection() {
     const auth = useAuth();
@@ -57,7 +68,6 @@ export const AccountEncryptionSettingsSection = React.memo(function AccountEncry
     const encryptionAccountOptOutEnabled = useFeatureEnabled('encryption.accountOptOut');
     const sessionDraftSyncEnabled = useFeatureEnabled('sessions.drafts');
     const activeServer = useActiveServerSnapshot();
-    const accountSecurityClient = React.useMemo(() => createAccountSecurityActionClient(), []);
     const accountEncryptionScope = auth.credentials
         ? getAccountEncryptionModeScopeKey(auth.credentials, activeServer)
         : null;
@@ -101,11 +111,18 @@ export const AccountEncryptionSettingsSection = React.memo(function AccountEncry
         React.useRef<string | null>(null);
 
     React.useEffect(() => {
-        if (!encryptionAccountOptOutEnabled) return;
+        if (!encryptionAccountOptOutEnabled && (!auth.credentials || !isLegacyAuthCredentials(auth.credentials))) return;
         const credentials = auth.credentials;
         const presentationScope = accountEncryptionScope;
         if (!credentials?.token || !presentationScope) return;
         const credentialsToken = credentials.token;
+        const target = activeServer.serverId && activeServer.serverUrl
+            ? {
+                serverId: activeServer.serverId,
+                serverUrl: activeServer.serverUrl,
+                ...(activeServer.runtimeOrigin ? { runtimeOrigin: activeServer.runtimeOrigin } : {}),
+            }
+            : undefined;
 
         let cancelled = false;
         const handleAccountEncryptionModeError = async (
@@ -147,9 +164,12 @@ export const AccountEncryptionSettingsSection = React.memo(function AccountEncry
                         && !isTokenOnlyAuthCredentials(credentials)
                     ) {
                         const credentialReplacement =
-                            await auth.loginWithCredentials({
-                                token: credentialsToken,
-                            });
+                            await auth.loginWithCredentials(
+                                { token: credentialsToken },
+                                target
+                                    ? { target, expectedCredentials: credentials }
+                                    : undefined,
+                            );
                         if (credentialReplacement.kind !== 'completed') {
                             throw new Error(
                                 'Plain Account credentials could not be persisted',
@@ -182,6 +202,8 @@ export const AccountEncryptionSettingsSection = React.memo(function AccountEncry
                             currentCredentials: credentials,
                             persistCredentials:
                                 auth.loginWithCredentials,
+                            ...(target ? { target } : {}),
+                            scopeGuard: { isCurrent: () => !cancelled },
                         });
                     if (cancelled || !replayed) return;
                     publishAccountEncryptionPresentation(
@@ -204,6 +226,9 @@ export const AccountEncryptionSettingsSection = React.memo(function AccountEncry
     }, [
         auth.credentials,
         accountEncryptionScope,
+        activeServer.runtimeOrigin,
+        activeServer.serverId,
+        activeServer.serverUrl,
         encryptionAccountOptOutEnabled,
         publishAccountEncryptionPresentation,
     ]);
@@ -245,16 +270,13 @@ export const AccountEncryptionSettingsSection = React.memo(function AccountEncry
                             }
                             showChevron={false}
                         />
-                        {accountEncryptionRecoveryRequired ? (
-                            <Item
-                                testID="settings-account-encryption-recovery"
-                                title={t('navigation.restoreWithSecretKey')}
-                                subtitle={t('settingsAccount.restoreRequiredBody')}
-                                onPress={() => router.push('/restore/manual')}
-                            />
-                        ) : null}
                         <Item
+                            testID="settings-account-encryption-mode"
                             title={t('terminal.endToEndEncrypted')}
+                            // While the mode is read the switch waits disabled; no "Loading…" value.
+                            detail={accountEncryptionModeSaving ? t('identityAdministration.saving') : undefined}
+                            loading={accountEncryptionModeSaving}
+                            accessibilityLiveRegion={accountEncryptionModeSaving || accountEncryptionModeLoading ? 'polite' : undefined}
                             rightElement={
                                 <Switch
                                     testID="settings-account-encryption-mode-switch"
@@ -266,6 +288,10 @@ export const AccountEncryptionSettingsSection = React.memo(function AccountEncry
                                         !auth.credentials ||
                                         accountEncryptionMode == null
                                     }
+                                    accessibilityState={{
+                                        disabled: accountEncryptionModeSaving,
+                                        busy: accountEncryptionModeSaving,
+                                    }}
                                     onValueChange={async (enabled) => {
                                         if (!auth.credentials) return;
                                         if (accountEncryptionMode == null) return;
@@ -278,7 +304,28 @@ export const AccountEncryptionSettingsSection = React.memo(function AccountEncry
                                         const sourceEncryption = sync.encryption;
 
                                         setAccountEncryptionModeSaving(true);
+                                        announceAccessibilityMessage(t('identityAdministration.saving'));
+                                        let capturedRequest: Awaited<ReturnType<typeof captureAccountSettingsRequest>> = null;
                                         try {
+                                            const settingsScope = getActiveServerAccountScope();
+                                            if (!settingsScope) return;
+                                            capturedRequest = await captureAccountSettingsRequest({
+                                                credentials,
+                                                settingsScope,
+                                            });
+                                            if (!capturedRequest) return;
+                                            const accountId = capturedRequest.scope.accountId;
+                                            const requireCurrentScope = (): void => {
+                                                if (!capturedRequest?.isCurrent()) {
+                                                    throw new AccountEncryptionScopeChangedError();
+                                                }
+                                            };
+                                            const homeRequest = capturedRequest.request;
+                                            const target = capturedRequest.target;
+                                            const accountSecurityClient = createAccountSecurityActionClient({
+                                                resolveServerId: () => capturedRequest?.scope.serverId ?? target.serverId,
+                                            });
+                                            if (!capturedRequest.isCurrent()) return;
                                             if (
                                                 nextMode === 'e2ee'
                                                 && isTokenOnlyAuthCredentials(
@@ -287,16 +334,18 @@ export const AccountEncryptionSettingsSection = React.memo(function AccountEncry
                                             ) {
                                                 const replayed =
                                                     await retryPendingAccountEncryptionFirstKeyExternalAuth({
-                                                        currentCredentials:
-                                                            credentials,
-                                                        persistCredentials:
-                                                            auth.loginWithCredentials,
+                                                        currentCredentials: credentials,
+                                                        persistCredentials: auth.loginWithCredentials,
+                                                        target,
+                                                        scopeGuard: capturedRequest,
                                                     });
                                                 if (replayed) {
+                                                    requireCurrentScope();
                                                     publishAccountEncryptionPresentation(
                                                         presentationScope,
                                                         replayed.mode,
                                                     );
+                                                    announceAccessibilityMessage(t('common.success'));
                                                     return;
                                                 }
                                             }
@@ -308,7 +357,10 @@ export const AccountEncryptionSettingsSection = React.memo(function AccountEncry
                                             const currentness =
                                                 await fetchAccountEncryptionCurrentness(
                                                     credentials,
+                                                    { request: homeRequest },
                                                 );
+                                            if (!capturedRequest.isCurrent()) return;
+                                            requireCurrentScope();
                                             if (
                                                 currentness.mode
                                                 !== accountEncryptionMode
@@ -319,10 +371,14 @@ export const AccountEncryptionSettingsSection = React.memo(function AccountEncry
                                                         credentials,
                                                     )
                                                 ) {
+                                                    if (!capturedRequest.isCurrent()) return;
+                                                    capturedRequest.prepareCredentialAdoption({ token: credentialsToken });
                                                     const credentialReplacement =
-                                                        await auth.loginWithCredentials({
-                                                            token: credentialsToken,
-                                                        });
+                                                        await auth.loginWithCredentials(
+                                                            { token: credentialsToken },
+                                                            { target, expectedCredentials: credentials },
+                                                        );
+                                                    requireCurrentScope();
                                                     if (
                                                         credentialReplacement.kind
                                                         !== 'completed'
@@ -331,12 +387,15 @@ export const AccountEncryptionSettingsSection = React.memo(function AccountEncry
                                                             'Plain Account credentials could not be persisted',
                                                         );
                                                     }
+                                                    requireCurrentScope();
                                                     publishAccountEncryptionPresentation(
                                                         presentationScope,
                                                         currentness.mode,
                                                     );
+                                                    announceAccessibilityMessage(t('common.success'));
                                                     return;
                                                 }
+                                                requireCurrentScope();
                                                 publishAccountEncryptionPresentation(
                                                     presentationScope,
                                                     currentness.mode,
@@ -345,18 +404,14 @@ export const AccountEncryptionSettingsSection = React.memo(function AccountEncry
                                                     'Account encryption mode changed while preparing the migration',
                                                 );
                                             }
-                                            const expectedSettingsVersion = storage.getState().settingsVersion ?? 0;
+                                            const settingsSnapshot = storage.getState();
+                                            const expectedSettingsVersion = settingsSnapshot.settingsVersion ?? 0;
                                             const connectedServiceProfiles = profile.connectedServicesV2.flatMap((svc) =>
                                                 svc.profiles.map((p) => ({
                                                     serviceId: svc.serviceId as any,
                                                     profileId: p.profileId,
                                                 })),
                                             );
-                                            const automations = Object.values(storage.getState().automations ?? {}).map((a: any) => ({
-                                                id: a.id,
-                                                templateVersion: a.templateVersion,
-                                                templateCiphertext: a.templateCiphertext,
-                                            }));
                                             const preparedE2eeKey =
                                                 nextMode === 'e2ee'
                                                     ? await prepareAccountEncryptionMigrateToE2eeKey({
@@ -369,7 +424,9 @@ export const AccountEncryptionSettingsSection = React.memo(function AccountEncry
                                                                 .contentKeyFingerprint,
                                                     })
                                                     : null;
+                                            requireCurrentScope();
                                             const accountSecurity = await accountSecurityClient.read();
+                                            requireCurrentScope();
                                             const transitionPassword = accountSecurity.password.status === 'enrolled'
                                                 ? await Modal.prompt(
                                                     t('settingsAccount.nativePassword.password'),
@@ -377,6 +434,7 @@ export const AccountEncryptionSettingsSection = React.memo(function AccountEncry
                                                     { inputType: 'secure-text' },
                                                 )
                                                 : null;
+                                            requireCurrentScope();
                                             if (accountSecurity.password.status === 'enrolled' && transitionPassword === null) return;
                                             const transitionCredentialRevision = accountSecurity.password.status === 'enrolled'
                                                 ? accountSecurity.password.revision
@@ -384,7 +442,7 @@ export const AccountEncryptionSettingsSection = React.memo(function AccountEncry
                                             const transitionChallengeAudience = accountSecurity.password.status === 'enrolled'
                                                 ? resolveHomeKeyChallengeExpectedAudience({
                                                     kind: 'saved_profile',
-                                                    profileRef: activeServer.serverId,
+                                                    profileRef: target.serverId,
                                                 })
                                                 : null;
                                             if (accountSecurity.password.status === 'enrolled' && transitionCredentialRevision === null) {
@@ -404,15 +462,17 @@ export const AccountEncryptionSettingsSection = React.memo(function AccountEncry
                                                 })()
                                                 : null;
                                             const targetE2eePasswordCredential = transitionPassword !== null && transitionSecret && nextMode === 'e2ee'
-                                                ? await prepareAccountEncryptionModePasswordCredential(serverFetch, {
+                                                ? await prepareAccountEncryptionModePasswordCredential(homeRequest, {
                                                     fromMode: 'plain', toMode: 'e2ee', password: transitionPassword,
-                                                    accountId: profile.id,
+                                                    accountId,
                                                     expectedCredentialRevision: transitionCredentialRevision!,
                                                     normalizedNativeEmail: accountSecurity.nativeEmail,
                                                     secret: transitionSecret,
                                                     expectedAudience: transitionChallengeAudience!,
+                                                    scope: capturedRequest,
                                                 })
-                                                : null;
+                                                    : null;
+                                            requireCurrentScope();
                                             const targetEncryption =
                                                 nextMode === 'e2ee'
                                                     ? await createEncryptionFromAuthCredentials(
@@ -420,34 +480,42 @@ export const AccountEncryptionSettingsSection = React.memo(function AccountEncry
                                                             .credentials,
                                                     )
                                                     : null;
+                                            requireCurrentScope();
                                             const [
                                                 machineRows,
                                                 todoRows,
+                                                workspaceRows,
                                                 artifactList,
                                                 sessionRows,
                                                 reviewCommentsInventory,
                                                 sessionOrganizationInventory,
+                                                automationsInventory,
                                             ] = await Promise.all([
                                                 fetchMachineRows({
                                                     credentials,
+                                                    request: homeRequest,
                                                 }),
-                                                kvList(credentials, {
-                                                    prefix: 'todo.',
-                                                    limit: 1000,
-                                                    retry: 'none',
-                                                }).then(
-                                                    (response) =>
-                                                        response.items,
-                                                ),
+                                                fetchAccountEncryptionMigrationKvInventory({ namespace: 'todo', credentials, request: homeRequest, scope: capturedRequest }),
+                                                fetchAccountEncryptionMigrationKvInventory({ namespace: 'workspace', credentials, request: homeRequest, scope: capturedRequest }),
                                                 fetchArtifacts(credentials, {
+                                                    request: homeRequest,
                                                     retry: 'none',
+                                                    ownerAccountId: capturedRequest.scope.accountId,
                                                 }),
                                                 fetchAccountEncryptionMigrationSessionInventory({
                                                     token: credentials.token,
+                                                    request: homeRequest,
+                                                    scope: capturedRequest,
                                                 }),
-                                                fetchReviewCommentAccountEncryptionMigrationInventory(),
-                                                fetchSessionOrganizationAccountEncryptionMigrationInventory(),
+                                                fetchReviewCommentAccountEncryptionMigrationInventory({ request: homeRequest }),
+                                                fetchSessionOrganizationAccountEncryptionMigrationInventory({ request: homeRequest }),
+                                                fetchAccountEncryptionMigrationAutomationsInventory({ request: homeRequest }),
                                             ]);
+                                            requireCurrentScope();
+                                            const automations = automationsInventory.templates.map(row => ({
+                                                id: row.automationId, templateVersion: row.expectedTemplateVersion,
+                                                templateCiphertext: row.templateCiphertext,
+                                            }));
                                             const artifactRows =
                                                 await runTasksWithLimit(
                                                     artifactList.map(
@@ -458,8 +526,8 @@ export const AccountEncryptionSettingsSection = React.memo(function AccountEncry
                                                                         credentials,
                                                                         artifact.id,
                                                                         {
-                                                                            retry:
-                                                                                'none',
+                                                                            retry: 'none',
+                                                                            request: homeRequest,
                                                                         },
                                                                     );
                                                                 if (
@@ -491,6 +559,7 @@ export const AccountEncryptionSettingsSection = React.memo(function AccountEncry
                                                     ),
                                                     4,
                                                 );
+                                            requireCurrentScope();
                                             const storageDirectives =
                                                 await buildAccountEncryptionMigrationStorageDirectives({
                                                     fromMode:
@@ -503,25 +572,33 @@ export const AccountEncryptionSettingsSection = React.memo(function AccountEncry
                                                     targetEncryption,
                                                     machines: machineRows,
                                                     todos: todoRows,
+                                                    workspace: workspaceRows,
                                                     artifacts: artifactRows,
+                                                    readArtifactRecipients: createArtifactAccessApi(credentials, { request: homeRequest }).readRecipients,
                                                     sessions: sessionRows,
                                                     reviewCommentsInventory,
                                                     sessionOrganizationInventory,
+                                                    automationsInventory,
                                                     sessionSourceCredentials:
                                                         credentials,
                                                     sessionTargetCredentials:
                                                         preparedE2eeKey
                                                             ?.credentials
                                                         ?? null,
+                                                    scope: capturedRequest,
                                                 });
                                             const sessionDraftScope = sessionDraftSyncEnabled
-                                                ? getActiveServerAccountScope()
+                                                ? settingsScope
                                                 : null;
                                             const sessionDrafts = sessionDraftScope
                                                 ? listNewSessionDraftEncryptionMigrationCandidates(
                                                     sessionDraftScope,
                                                 )
                                                 : [];
+                                            const authoringMemory = await fetchAccountEncryptionAuthoringMemoryMigrationCandidates({
+                                                credentials, mode: currentness.mode, request: homeRequest,
+                                            });
+                                            requireCurrentScope();
                                             let request: AccountEncryptionMigrateRequest = nextMode === 'plain'
                                                 ? await buildAccountEncryptionMigrateToPlainRequest({
                                                     credentials,
@@ -535,18 +612,19 @@ export const AccountEncryptionSettingsSection = React.memo(function AccountEncry
                                                             .contentKeyFingerprint,
                                                     storageDirectives,
                                                     expectedSettingsVersion,
-                                                    settings: storage.getState().settings,
+                                                    settings: settingsSnapshot.settings,
                                                     connectedServiceProfiles,
                                                     qualifiedConnectedAccounts:
                                                         profile.connectedAccountsV4,
                                                     automations,
                                                     sessionDrafts,
+                                                    authoringMemory,
                                                     fetchConnectedServiceCredentialSealed: async ({ serviceId, profileId }) =>
-                                                        await getConnectedServiceCredentialSealed(credentials, { serviceId, profileId }),
+                                                        await getConnectedServiceCredentialSealed(credentials, { serviceId, profileId }, { request: homeRequest }),
                                                     fetchQualifiedConnectedAccountCredential: async (ref) =>
-                                                        await getQualifiedConnectedAccountCredentialV4(credentials, ref),
+                                                        await getQualifiedConnectedAccountCredentialV4(credentials, ref, { request: homeRequest }),
                                                     fetchQualifiedConnectedAccountConfiguration: async (ref) =>
-                                                        await getQualifiedConnectedAccountConfigurationV4(credentials, ref),
+                                                        await getQualifiedConnectedAccountConfigurationV4(credentials, ref, { request: homeRequest }),
                                                     decryptAutomationTemplateRaw: async (payloadCiphertext: string) =>
                                                         await sourceEncryption!.decryptAutomationTemplateRaw(payloadCiphertext),
                                                 })
@@ -554,7 +632,7 @@ export const AccountEncryptionSettingsSection = React.memo(function AccountEncry
                                                     credentials:
                                                         preparedE2eeKey!
                                                             .credentials,
-                                                    accountId: profile.id,
+                                                    accountId,
                                                     expectedAccountVersion:
                                                         currentness.version,
                                                     expectedSigningKeyFingerprint:
@@ -565,12 +643,13 @@ export const AccountEncryptionSettingsSection = React.memo(function AccountEncry
                                                             .contentKeyFingerprint,
                                                     storageDirectives,
                                                     expectedSettingsVersion,
-                                                    settings: storage.getState().settings,
+                                                    settings: settingsSnapshot.settings,
                                                     connectedServiceProfiles,
                                                     qualifiedConnectedAccounts:
                                                         profile.connectedAccountsV4,
                                                     automations,
                                                     sessionDrafts,
+                                                    authoringMemory,
                                                     keyProof:
                                                         preparedE2eeKey!
                                                             .keyProof,
@@ -578,22 +657,25 @@ export const AccountEncryptionSettingsSection = React.memo(function AccountEncry
                                                         ? { passwordCredential: targetE2eePasswordCredential }
                                                         : {}),
                                                     fetchConnectedServiceCredentialPlain: async ({ serviceId, profileId }) =>
-                                                        await getConnectedServiceCredentialPlain(credentials, { serviceId, profileId }),
+                                                        await getConnectedServiceCredentialPlain(credentials, { serviceId, profileId }, { request: homeRequest }),
                                                     fetchQualifiedConnectedAccountCredential: async (ref) =>
-                                                        await getQualifiedConnectedAccountCredentialV4(credentials, ref),
+                                                        await getQualifiedConnectedAccountCredentialV4(credentials, ref, { request: homeRequest }),
                                                     fetchQualifiedConnectedAccountConfiguration: async (ref) =>
-                                                        await getQualifiedConnectedAccountConfigurationV4(credentials, ref),
+                                                        await getQualifiedConnectedAccountConfigurationV4(credentials, ref, { request: homeRequest }),
                                                 });
+                                            requireCurrentScope();
                                             if (transitionPassword !== null && transitionSecret && nextMode === 'plain') {
-                                                const passwordCredential = await prepareAccountEncryptionModePasswordCredential(serverFetch, {
+                                                const passwordCredential = await prepareAccountEncryptionModePasswordCredential(homeRequest, {
                                                     fromMode: 'e2ee', toMode: 'plain', password: transitionPassword,
-                                                    accountId: profile.id,
+                                                    accountId,
                                                     expectedCredentialRevision: transitionCredentialRevision!,
                                                     normalizedNativeEmail: accountSecurity.nativeEmail,
                                                     secret: transitionSecret,
                                                     expectedAudience: transitionChallengeAudience!,
                                                     baseRequest: request,
+                                                    scope: capturedRequest,
                                                 });
+                                                requireCurrentScope();
                                                 request = AccountEncryptionMigrateRequestSchema.parse({ ...request, passwordCredential });
                                             }
                                             // A retained-key Plain Account with a password proves the
@@ -602,15 +684,16 @@ export const AccountEncryptionSettingsSection = React.memo(function AccountEncry
                                             if (transitionPassword !== null && nextMode === 'e2ee'
                                                 && !preparedE2eeKey!.requiresExternalAuthProof) {
                                                 const externalAuthProof = await requestAccountEncryptionFirstKeyPasswordProof({
-                                                    request: serverFetch,
+                                                    request: homeRequest,
                                                     token: credentials.token,
                                                     password: transitionPassword,
                                                     requestDigest: createAccountEncryptionMigrateRequestBindingDigestV1({
                                                         request,
-                                                        accountId: profile.id,
+                                                        accountId,
                                                         sourceMode: 'plain',
                                                     }),
                                                 });
+                                                requireCurrentScope();
                                                 request = AccountEncryptionMigrateRequestSchema.parse({ ...request, externalAuthProof });
                                             }
 
@@ -622,7 +705,7 @@ export const AccountEncryptionSettingsSection = React.memo(function AccountEncry
                                                         const externalAuth =
                                                             await startAccountEncryptionFirstKeyExternalAuth({
                                                                 accountId:
-                                                                    profile.id,
+                                                                    accountId,
                                                                 currentCredentials:
                                                                     credentials,
                                                                 proposedCredentials:
@@ -642,10 +725,7 @@ export const AccountEncryptionSettingsSection = React.memo(function AccountEncry
                                                                     ),
                                                                 returnTo:
                                                                     '/settings/account/security',
-                                                                target: {
-                                                                    serverId: activeServer.serverId,
-                                                                    serverUrl: activeServer.serverUrl,
-                                                                },
+                                                                target,
                                                                 ...(transitionPassword !== null
                                                                     ? { nativePassword: transitionPassword }
                                                                     : {}),
@@ -654,6 +734,7 @@ export const AccountEncryptionSettingsSection = React.memo(function AccountEncry
                                                             externalAuth.kind
                                                             === 'oauth'
                                                         ) {
+                                                            requireCurrentScope();
                                                             await openAccountEncryptionFirstKeyExternalAuthUrl(
                                                                 externalAuth.url,
                                                             );
@@ -661,19 +742,14 @@ export const AccountEncryptionSettingsSection = React.memo(function AccountEncry
                                                         }
                                                         const resumed =
                                                             await resumeAccountEncryptionFirstKeyExternalAuth({
-                                                            provider:
-                                                                externalAuth
-                                                                    .externalAuthProof
-                                                                    .provider,
-                                                            pending:
-                                                                externalAuth
-                                                                    .externalAuthProof
-                                                                    .pending,
-                                                            currentCredentials:
-                                                                credentials,
-                                                            persistCredentials:
-                                                                auth.loginWithCredentials,
-                                                        });
+                                                                provider: externalAuth.externalAuthProof.provider,
+                                                                pending: externalAuth.externalAuthProof.pending,
+                                                                currentCredentials: credentials,
+                                                                persistCredentials: auth.loginWithCredentials,
+                                                                target,
+                                                                scopeGuard: capturedRequest,
+                                                            });
+                                                        requireCurrentScope();
                                                         return resumed.migration;
                                                     })()
                                                     : await runAccountEncryptionModeMigration({
@@ -682,8 +758,15 @@ export const AccountEncryptionSettingsSection = React.memo(function AccountEncry
                                                             await migrateAccountEncryptionMode(
                                                                 credentials,
                                                                 migrationRequest,
+                                                                { request: homeRequest, target },
                                                             ),
+                                                        isCurrent: capturedRequest.isCurrent,
                                                         activateTargetMode: () => {
+                                                            if (!capturedRequest?.isCurrent()) return;
+                                                            sync.reconfigureAuthoringMemoryForAccountMode(
+                                                                nextMode === 'e2ee' ? preparedE2eeKey!.credentials : credentials,
+                                                                nextMode,
+                                                            );
                                                             sync.reconfigureSessionDraftRepositoryForAccountMode(
                                                                 nextMode === 'e2ee'
                                                                     ? preparedE2eeKey!.credentials
@@ -692,6 +775,7 @@ export const AccountEncryptionSettingsSection = React.memo(function AccountEncry
                                                             );
                                                         },
                                                         acknowledgeSessionDrafts: async (records) => {
+                                                            if (!capturedRequest?.isCurrent()) return;
                                                             if (!sessionDraftScope) {
                                                                 throw new Error(
                                                                     'Session draft repository scope is unavailable',
@@ -704,14 +788,18 @@ export const AccountEncryptionSettingsSection = React.memo(function AccountEncry
                                                         },
                                                     });
                                             if (!result) return;
+                                            if (!capturedRequest.isCurrent()) return;
                                             if (
                                                 nextMode === 'plain'
                                                 && result.mode === 'plain'
                                             ) {
+                                                capturedRequest.prepareCredentialAdoption({ token: credentials.token });
                                                 const credentialReplacement =
-                                                    await auth.loginWithCredentials({
-                                                        token: credentials.token,
-                                                    });
+                                                    await auth.loginWithCredentials(
+                                                        { token: credentials.token },
+                                                        { target, expectedCredentials: credentials },
+                                                    );
+                                                requireCurrentScope();
                                                 if (
                                                     credentialReplacement.kind
                                                     !== 'completed'
@@ -725,8 +813,11 @@ export const AccountEncryptionSettingsSection = React.memo(function AccountEncry
                                                 presentationScope,
                                                 result.mode,
                                             );
+                                            announceAccessibilityMessage(t('common.success'));
 
                                         } catch (e) {
+                                            if (e instanceof AccountEncryptionScopeChangedError) return;
+                                            if (capturedRequest && !capturedRequest.isCurrent()) return;
                                             if (e instanceof HappyError) {
                                                 if (nextMode === 'e2ee' && e.status === 400) {
                                                     if (
@@ -758,14 +849,27 @@ export const AccountEncryptionSettingsSection = React.memo(function AccountEncry
                                                 return;
                                             }
                                             await Modal.alertAsync(t('common.error'), t('settingsAccount.encryptionUpdateFailed'));
+                                            announceAccessibilityMessage(t('common.error'));
                                             return;
                                         } finally {
+                                            capturedRequest?.dispose();
                                             setAccountEncryptionModeSaving(false);
                                         }
                                     }}
                                 />
                             }
                             showChevron={false}
+                        />
+                    </ItemGroup>
+                )}
+                {accountEncryptionRecoveryRequired && (
+                    <ItemGroup title={t('terminal.encryption')}>
+                        <Item
+                            testID="settings-account-encryption-recovery"
+                            icon={<Icon name="key" />}
+                            title={t('navigation.restoreWithSecretKey')}
+                            subtitle={t('settingsAccount.restoreRequiredBody')}
+                            onPress={() => router.push('/restore/manual')}
                         />
                     </ItemGroup>
                 )}

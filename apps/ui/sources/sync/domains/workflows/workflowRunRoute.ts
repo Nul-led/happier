@@ -12,6 +12,11 @@ export function createWorkflowRunRoute(runId: string): string {
     return `${WORKFLOWS_ROUTE}/runs/${encodeURIComponent(runId)}`;
 }
 
+/** The exact saved workflow's editor route (also the link a document share sheet copies). */
+export function createWorkflowDefinitionRoute(definitionId: string): string {
+    return `${WORKFLOWS_ROUTE}/${encodeURIComponent(definitionId)}`;
+}
+
 /**
  * The exact managed Run an admission receipt declared, or `null`.
  *

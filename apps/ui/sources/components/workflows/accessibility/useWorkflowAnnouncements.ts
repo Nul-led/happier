@@ -24,14 +24,20 @@ export function formatWorkflowAnnouncement(
 ): string {
   switch (announcement.kind) {
     case 'terminal':
-      return announcement.attentionCount > 0
+      // A partial attention window cannot promise how many steps still need
+      // the person, so the exact count is withheld and only the state is said.
+      return announcement.attentionCount > 0 && announcement.attentionHasMore !== true
         ? t('workflows.a11y.terminalWithAttention', {
           state: t(`workflows.runState.${announcement.terminal}`),
           count: announcement.attentionCount,
         })
         : t('workflows.a11y.terminal', { state: t(`workflows.runState.${announcement.terminal}`) });
     case 'attention':
-      return t('workflows.a11y.needsYou', { count: announcement.attentionCount });
+      // Same construction the visible needs-you header uses: loaded rows are
+      // stated as loaded so a reader never mistakes them for the total.
+      return announcement.attentionHasMore === true
+        ? `${announcement.attentionCount} ${t('workflows.a11y.needsYouLoaded')}`
+        : t('workflows.a11y.needsYou', { count: announcement.attentionCount });
     case 'validation':
       return announcement.blockId === undefined
         ? t('workflows.a11y.validation', { reason: t(`workflows.issue.${announcement.issueCode}`) })
@@ -58,13 +64,24 @@ export function formatWorkflowAnnouncement(
       });
     case 'selectedRowUpdated':
       return t('workflows.a11y.selectedRowUpdated', { block: resolveBlockLabel(announcement.blockId) });
-    case 'progress':
-      return announcement.attentionCount > 0
-        ? t('workflows.a11y.progressWithAttention', {
-          count: announcement.changedRowCount,
-          attention: announcement.attentionCount,
-        })
+    case 'progress': {
+      if (announcement.historyIncomplete !== true && announcement.attentionHasMore !== true) {
+        return announcement.attentionCount > 0
+          ? t('workflows.a11y.progressWithAttention', {
+            count: announcement.changedRowCount,
+            attention: announcement.attentionCount,
+          })
+          : t('workflows.a11y.progress', { count: announcement.changedRowCount });
+      }
+      const countText = announcement.historyIncomplete === true
+        ? t('workflows.a11y.progressLoaded', { count: announcement.changedRowCount })
         : t('workflows.a11y.progress', { count: announcement.changedRowCount });
+      if (announcement.attentionCount === 0) return countText;
+      const attentionText = announcement.attentionHasMore === true
+        ? `${announcement.attentionCount} ${t('workflows.a11y.needsYouLoaded')}`
+        : t('workflows.a11y.needsYou', { count: announcement.attentionCount });
+      return `${countText}; ${attentionText}`;
+    }
   }
 }
 

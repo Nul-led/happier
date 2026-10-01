@@ -64,7 +64,6 @@ describe('SettingsSystemSection catalog projection', () => {
             <SettingsSystemSection
                 handleReportIssue={handleReportIssue}
                 router={{ push } as never}
-                theme={{ colors: { text: { secondary: '#777' } } } as never}
             />,
         );
 

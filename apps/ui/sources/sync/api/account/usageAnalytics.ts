@@ -398,7 +398,13 @@ function resolveCostSource(cost: ProtocolUsageAnalyticsTotals['cost'], mode: Usa
     return 'none';
 }
 
-function resolveAvailableCostModes(cost: ProtocolUsageAnalyticsTotals['cost'], legacyOnly = false): UsageCostMode[] {
+/**
+ * The cost modes a total can honestly be read in: always the automatic
+ * per-event precedence, plus a reported-only or estimate-only view when the
+ * total actually carries that component. Team credential usage offers the same
+ * choices from its own totals.
+ */
+export function resolveAvailableCostModes(cost: ProtocolUsageAnalyticsTotals['cost'], legacyOnly = false): UsageCostMode[] {
     const modes: UsageCostMode[] = ['auto'];
 
     if (legacyOnly) {

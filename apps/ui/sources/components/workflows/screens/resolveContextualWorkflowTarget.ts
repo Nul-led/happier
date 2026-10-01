@@ -1,7 +1,8 @@
 import type { WorkflowProjectTargetV1 } from '@happier-dev/protocol/workflows';
 
-import { resolvePreferredMachineId } from '@/components/settings/pickers/resolvePreferredMachineId';
+import { resolvePreferredLaunchMachineId } from '@/components/settings/pickers/resolvePreferredMachineId';
 import type { Machine } from '@/sync/domains/state/storageTypes';
+import { resolveDefaultDirectoryForMachine } from '@/utils/sessions/machineDefaultDirectory';
 
 /**
  * The contextual Machine and project folder a new workflow draft starts with.
@@ -13,7 +14,7 @@ import type { Machine } from '@/sync/domains/state/storageTypes';
  * screen look complete while Run now still could not proceed.
  *
  * Both halves come from the owners ordinary Session authoring already uses —
- * `resolvePreferredMachineId` and the Account's recent machine paths — so a
+ * `resolvePreferredLaunchMachineId` and the Account's recent machine paths — so a
  * workflow and a new Session opened side by side agree about "where".
  */
 
@@ -25,12 +26,7 @@ export function resolveContextualWorkflowProjectTarget(params: Readonly<{
     /** A captured Session's machine, when the draft was opened from one. */
     preferredMachineId?: string | null;
 }>): WorkflowProjectTargetV1 | null {
-    const machineId = resolvePreferredMachineId({
-        machines: params.machines,
-        recentMachinePaths: params.recentMachinePaths,
-        preferredMachineId: params.preferredMachineId ?? null,
-        onlineOnly: true,
-    }) ?? resolvePreferredMachineId({
+    const machineId = resolvePreferredLaunchMachineId({
         machines: params.machines,
         recentMachinePaths: params.recentMachinePaths,
         preferredMachineId: params.preferredMachineId ?? null,
@@ -43,11 +39,16 @@ export function resolveContextualWorkflowProjectTarget(params: Readonly<{
         : params.machines.find((candidate) => candidate.id === machineId);
     if (!machineId || machine === undefined) return null;
 
-    const recentDirectory = params.recentMachinePaths
-        .find((entry) => entry?.machineId === machineId && typeof entry.path === 'string' && entry.path.trim().length > 0)
-        ?.path;
-    const homeDirectory = machine.metadata?.homeDir;
-    const directory = (recentDirectory ?? homeDirectory ?? '').trim();
+    // Where a Machine starts is the shared default-directory policy New
+    // Session uses, not a second "recent path, else home" rule kept here.
+    const directory = resolveDefaultDirectoryForMachine({
+        machineId,
+        machines: params.machines,
+        recentPaths: params.recentMachinePaths
+            .filter((entry) => entry?.machineId === machineId)
+            .map((entry) => entry.path)
+            .filter((path): path is string => typeof path === 'string'),
+    }).trim();
     if (directory.length === 0) return null;
 
     return { machineId, directory };

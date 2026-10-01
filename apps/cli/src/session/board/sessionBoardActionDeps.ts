@@ -306,7 +306,7 @@ export function createSessionBoardActionDeps(options: Readonly<{
       const surface = args.item.source.surface;
       const placements = Object.values(response.data.projection.familiesById.pluginUi?.entriesById ?? {}).filter((entry) => {
         if (!entry || typeof entry !== 'object' || !('binding' in entry) || !entry.binding || entry.contributionKind !== 'surfacePlacement') return false;
-        return isPluginUiInlineSurfaceBindingForSurfaceV1(entry.binding, surface, 'sessionWidget');
+        return isPluginUiInlineSurfaceBindingForSurfaceV1(entry.binding, surface, 'widget');
       });
       const placement = placements[0];
       if (placements.length !== 1 || !placement || placement.contributionKind !== 'surfacePlacement') return createSessionBoardFailureV1('session_board_invalid');

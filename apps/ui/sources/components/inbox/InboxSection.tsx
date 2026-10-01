@@ -5,28 +5,39 @@ import { StyleSheet } from 'react-native-unistyles';
 import { SelectionListSectionHeader } from '@/components/ui/selectionList/SelectionListSectionHeader';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
 
-/** One section owner with host-selected grouped screen or flat popover chrome. */
+/**
+ * One section owner for the Inbox and Updates, in two host-selected shapes:
+ * - `page` (the Inbox screen): a page section — sentence-case title, its one action in the section
+ *   header's action slot, the rows in one sheet. Spacing comes from the page metrics.
+ * - `flat` (the sidebar popovers): the compact command-bar header above flat rows.
+ */
 export const InboxSection = React.memo(function InboxSection(props: Readonly<{
     testID: string;
     title: string;
     rightAccessory?: React.ReactNode;
+    /** Page surface only: an identity mark before the title (a lead's agent mark, a run's glyph). */
+    leading?: React.ReactNode;
+    /** Page surface only: one quiet fact read with the title ("Orchestrator · 3 sub-sessions"). */
+    meta?: React.ReactNode;
+    /** Flat surface only: whether a section is rendered above this one. */
     spacingBefore?: 'following' | 'separated';
-    surface?: 'flat' | 'grouped';
+    surface?: 'flat' | 'page';
     children: React.ReactNode;
 }>) {
-    const grouped = props.surface === 'grouped';
-    const header = (
-        <SelectionListSectionHeader
-            testID={`${props.testID}.header`}
-            title={props.title}
-            rightAccessory={props.rightAccessory}
-            containerStyle={grouped
-                ? styles.groupedHeader
-                : props.rightAccessory
-                    ? styles.actionHeader
-                    : undefined}
-        />
-    );
+    if (props.surface === 'page') {
+        return (
+            <View testID={props.testID}>
+                <ItemGroup
+                    title={props.title}
+                    action={props.rightAccessory}
+                    titleLeading={props.leading}
+                    titleAccessory={props.meta}
+                >
+                    {props.children}
+                </ItemGroup>
+            </View>
+        );
+    }
 
     return (
         <View
@@ -37,16 +48,13 @@ export const InboxSection = React.memo(function InboxSection(props: Readonly<{
                     ? styles.separated
                     : undefined}
         >
-            {grouped ? (
-                <ItemGroup title={header} headerStyle={styles.groupedItemGroupHeader} clipContent>
-                    {props.children}
-                </ItemGroup>
-            ) : (
-                <>
-                    {header}
-                    {props.children}
-                </>
-            )}
+            <SelectionListSectionHeader
+                testID={`${props.testID}.header`}
+                title={props.title}
+                rightAccessory={props.rightAccessory}
+                containerStyle={props.rightAccessory ? styles.actionHeader : undefined}
+            />
+            {props.children}
         </View>
     );
 });
@@ -58,18 +66,7 @@ const styles = StyleSheet.create(() => ({
     separated: {
         marginTop: 14,
     },
-    groupedHeader: {
-        minHeight: Platform.select({ ios: 44, default: 48 }),
-        paddingHorizontal: Platform.select({ ios: 32, default: 24 }),
-        paddingTop: 0,
-        paddingBottom: 0,
-    },
     actionHeader: {
         minHeight: Platform.select({ ios: 44, default: 48 }),
-    },
-    groupedItemGroupHeader: {
-        paddingHorizontal: 0,
-        paddingTop: 0,
-        paddingBottom: 0,
     },
 }));

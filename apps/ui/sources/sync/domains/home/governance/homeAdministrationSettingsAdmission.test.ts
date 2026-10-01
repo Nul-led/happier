@@ -15,6 +15,7 @@ function projection(overrides?: Partial<HomeGovernanceProjectionV1>): HomeGovern
             manageHomeRoles: true,
             manageTeamCreationPolicy: true,
             manageAuthentication: true,
+            manageHomeSettings: true,
             eraseAccounts: true,
             createTeam: true,
             manageAllTeams: true,

@@ -8,13 +8,15 @@ import {
     authenticateSelectedAccountServiceWithKey,
     type AccountServiceKeyAuthOutcome,
 } from '@/auth/accountDirectory/accountDirectoryKeyAuth';
-import type { AccountDirectoryAuthTransport, VerifiedAccountServiceAuthority } from '@/auth/accountDirectory/accountDirectoryAuthClient';
+import type { AccountDirectoryAuthTransport, AccountServiceEmailPasswordExecution, VerifiedAccountServiceAuthority } from '@/auth/accountDirectory/accountDirectoryAuthClient';
+import { AccountServicePasswordForm, type AccountServicePasswordFormView } from './AccountServicePasswordForm';
 import { SecretKeyEntryForm } from '@/components/account/restore/SecretKeyEntryForm';
 import { ActivitySpinner } from '@/components/ui/feedback/ActivitySpinner';
 import { SurfaceStateCard } from '@/components/ui/surfaces/SurfaceStateCard';
 import { AccountServiceContinuation } from './AccountServiceContinuation';
 import {
     completeAccountServicePostAuth,
+    shouldDismissAccountPostAuthContinuation,
     type AccountPostAuthInput,
     type AccountPostAuthResult,
 } from '@/sync/ops/accountDirectory/completeAccountServicePostAuth';
@@ -31,10 +33,22 @@ export type AccountDirectoryKeyLoginFormProps = Readonly<{
     service: VerifiedAccountServiceAuthority;
     serviceName: string;
     intent: AccountContinuationIntent;
-    mode?: 'login' | 'provision';
+    /**
+     * `password` signs in (or starts mailbox-first creation) with email and password; the signed-in
+     * session continues through the same post-auth owner as a key.
+     */
+    mode?: 'login' | 'provision' | 'password';
+    /** For `password`: the service's email sign-in (for its reset fact) and which view opens. */
+    password?: Readonly<{ login: AccountServiceEmailPasswordExecution | null; view: AccountServicePasswordFormView }>;
     transport?: AccountDirectoryAuthTransport;
     signal?: AbortSignal;
     onResult: (result: AccountDirectoryKeyLoginOutcome) => Promise<void> | void;
+    /**
+     * When set, the host renders the post-auth card itself (its own continuation
+     * step) and owns cancellation of the transferred input; the form then never
+     * shows the card.
+     */
+    onPostAuthContinuation?: (input: AccountPostAuthInput, result: AccountPostAuthResult) => void;
     onBack: () => void;
     onReauthenticate?: (input: AccountPostAuthInput) => void | Promise<void>;
     onOpenHomeAuthentication?: (
@@ -101,8 +115,11 @@ export const AccountDirectoryKeyLoginForm = React.memo(function AccountDirectory
         };
         inputRef.current = input;
         const result = await completeAccountServicePostAuth(input);
-        setPostAuthResult(result);
+        const showsCard = !shouldDismissAccountPostAuthContinuation(result);
+        if (showsCard && props.onPostAuthContinuation) continuationTransferredRef.current = true;
+        else if (showsCard) setPostAuthResult(result);
         await props.onResult(result);
+        if (showsCard) props.onPostAuthContinuation?.(input, result);
         return result;
     }, [props]);
 
@@ -201,6 +218,23 @@ export const AccountDirectoryKeyLoginForm = React.memo(function AccountDirectory
                 } }} />;
         }
         return <View testID="account-directory-key-provision-pending"><ActivitySpinner /></View>;
+    }
+
+    if (props.mode === 'password') {
+        return (
+            <AccountServicePasswordForm
+                service={props.service}
+                serviceName={props.serviceName}
+                transport={props.transport}
+                login={props.password?.login ?? null}
+                initialView={props.password?.view ?? 'sign_in'}
+                onSignedIn={async (outcome) => {
+                    beginAuthentication();
+                    await completeAuthentication(outcome);
+                }}
+                onCancel={() => { abortControllerRef.current?.abort(); props.onBack(); }}
+            />
+        );
     }
 
     return (

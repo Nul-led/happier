@@ -18,6 +18,7 @@ import { buildHomeConnectionDescriptorForProfile, resolveServerProfileForPortabl
 import { parseToken } from '@/utils/auth/parseToken';
 import { encodeBase64 } from '@/encryption/base64';
 import { HappyError } from '@/utils/errors/errors';
+import { isExplicitlyRetryableError } from '@/sync/runtime/connectivity/transientConnectivityErrors';
 import { refreshAccountHomeDirectory } from './refreshAccountHomeDirectory';
 import { provisionAuthenticatedHomeLink } from './provisionAuthenticatedHomeLink';
 import { enrollDirectoryHome, finalizeDirectoryHomeEntryIntent, type DirectoryHomeEnrollmentResult } from './enrollDirectoryHome';
@@ -131,7 +132,7 @@ function projectFailure(stage: Failure['stage'], error: unknown, homeCommitted =
     if (stage === 'enroll' && error instanceof HappyError && error.kind === 'auth') {
         return failure(stage, { source: 'home', code: 'failed' }, 'use_home_auth', homeCommitted, target, homeAccountId);
     }
-    const transient = error instanceof TypeError || (error instanceof HappyError && error.canTryAgain);
+    const transient = isExplicitlyRetryableError(error);
     return failure(stage, fallback, transient ? 'retry_stage' : 'stop', homeCommitted, target, homeAccountId);
 }
 

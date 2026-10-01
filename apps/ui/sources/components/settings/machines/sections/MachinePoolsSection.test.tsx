@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { MachinePoolViewV1 } from '@happier-dev/protocol';
 
 import { createMachineFixture, renderScreen } from '@/dev/testkit';
+import { resolveItemSubtitleMaxLines } from '@/components/ui/lists/itemTextClamp';
 import { TokenStorage } from '@/auth/storage/tokenStorage';
 import { buildServerFeaturesResponse } from '@/hooks/server/serverFeaturesTestUtils';
 import { getServerFeaturesSnapshot, resetServerFeaturesClientForTests } from '@/sync/api/capabilities/serverFeaturesClient';
@@ -315,20 +316,32 @@ describe('MachinePoolsSection', () => {
         const screen = await renderScreen(<MachinePoolsSection groups={[group('idle')]} />);
 
         const row = screen.findByTestId(`settings.machinePools.row.${boundary.serverId}.${view.pool.id}`);
-        expect(row?.props.subtitle).toBe('Mac Studio, enabled-');
-        expect(row?.props.accessibilityLabel).toContain('Mac Studio, enabled-');
+        // A member this Home no longer lists is named by the state the pool reports, never as locked.
+        expect(row?.props.subtitle).toBe('Mac Studio, machine.unlistedMachine');
+        expect(row?.props.accessibilityLabel).toContain('Mac Studio, machine.unlistedMachine');
         expect(row?.props.accessibilityLabel).not.toContain('disabled-');
     });
 
-    it('exposes pool identity when duplicate names also have the same member preview', async () => {
+    it.each(['page', 'rail'] as const)('exposes distinct visible pool identities in %s when names and member previews match', async (variant) => {
         await act(async () => publishPools([POOL_A, POOL_B]));
         const { MachinePoolsSection } = await import('./MachinePoolsSection');
-        const screen = await renderScreen(<MachinePoolsSection groups={[group('idle')]} />);
+        const screen = await renderScreen(<MachinePoolsSection groups={[group('idle')]} variant={variant} />);
 
-        const row = screen.findByTestId(`settings.machinePools.row.${boundary.serverId}.${POOL_A.pool.id}`);
-        expect(row?.props.title).toBe('Development');
-        expect(row?.props.detail).toContain(POOL_A.pool.id.slice(0, 8));
-        expect(row?.props.accessibilityLabel).toContain(POOL_A.pool.id);
+        for (const pool of [POOL_A, POOL_B]) {
+            const row = screen.findByTestId(`settings.machinePools.row.${boundary.serverId}.${pool.pool.id}`);
+            expect(row?.props.title).toBe('Development');
+            const visibleText = [row?.props.title, row?.props.subtitle, row?.props.detail].filter(Boolean).join(' ');
+            // These IDs differ only in their final character: a common short prefix is not identity.
+            expect(visibleText).toContain(pool.pool.id);
+            expect(row?.props.accessibilityLabel).toContain(pool.pool.id);
+            if (variant === 'rail') {
+                // Item's actual text owner must allow the distinguishing suffix to wrap in a narrow rail.
+                expect(resolveItemSubtitleMaxLines({
+                    text: row?.props.subtitle,
+                    subtitleLines: row?.props.subtitleLines,
+                })).toBeNull();
+            }
+        }
     });
 
     it('chooses the next, then previous, then Add row after deleting the originating Pool', async () => {

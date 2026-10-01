@@ -50,7 +50,7 @@ export const SettingsSchema = z.object({
  */
 type RuntimeAccountSettings = Omit<
     ProtocolAccountSettingsRuntimeProjection,
-    'favoriteModelSelectionsV1' | 'lastEngineSelectionsByScopeV1'
+    'favoriteModelSelectionsV1'
 > & CurrentSessionAuthoringSelectionsRuntimeProjection;
 
 export type KnownSettings = RuntimeAccountSettings & LocalAccountSettings;
@@ -65,7 +65,6 @@ export type WritableSettingsKey = Exclude<
     keyof Settings,
     | 'currentSecretBindingsByProfileId'
     | 'currentFavoriteModelSelectionsV1'
-    | 'currentRememberedEngineSelectionsByScopeV1'
 >;
 
 /** Public generic Account Settings write shape. */
@@ -80,7 +79,6 @@ export type AccountSettingsWriteDelta = SettingsWriteDelta & Partial<Pick<
     AccountSettingsDefaults,
     | 'secretBindingsByProfileId'
     | 'favoriteModelSelectionsV1'
-    | 'lastEngineSelectionsByScopeV1'
 >>;
 
 export { ACCOUNT_SETTING_ARTIFACTS };

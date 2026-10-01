@@ -7,7 +7,7 @@ import {
 import { getActionSettingsTargetPreferenceSelected, setActionTargetSelected } from './actionSettingsTargetSelection';
 import {
     getActionTargetApprovalOverride,
-    getActionTargetApprovalRequired,
+    getActionTargetApprovalPolicy,
     isActionSettingsApprovalAction,
     resolveActionSettingsApprovalSurface,
     setActionTargetApprovalRequired,
@@ -32,6 +32,8 @@ export type ActionSettingsTargetControlState =
          * dangerous Action still confirms on Agent, MCP and CLI.
          */
         approvalRequiredByPolicy: boolean;
+        /** Whether an explicit waiver actually suppresses confirmation on this surface. */
+        approvalWaivable: boolean;
     }>
     | Readonly<{
         kind: 'switch';
@@ -98,7 +100,7 @@ export function resolveActionSettingsTargetControlState(
         };
     }
 
-    const approvalRequiredByPolicy = getActionTargetApprovalRequired({
+    const approvalPolicy = getActionTargetApprovalPolicy({
         settings: params.settings,
         actionId: params.actionId,
         targetId: params.targetId,
@@ -110,7 +112,7 @@ export function resolveActionSettingsTargetControlState(
             kind: 'approval',
             value: 'off',
             approvalSurface,
-            approvalRequiredByPolicy,
+            ...approvalPolicy,
         };
     }
 
@@ -123,9 +125,10 @@ export function resolveActionSettingsTargetControlState(
 
     return {
         kind: 'approval',
-        value: approvalOverride === null ? 'default' : approvalOverride ? 'ask_first' : 'allowed',
+        value: !approvalPolicy.approvalWaivable ? 'ask_first'
+            : approvalOverride === null ? 'default' : approvalOverride ? 'ask_first' : 'allowed',
         approvalSurface,
-        approvalRequiredByPolicy,
+        ...approvalPolicy,
     };
 }
 

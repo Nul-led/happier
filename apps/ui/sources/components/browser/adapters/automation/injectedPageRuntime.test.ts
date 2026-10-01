@@ -1,4 +1,7 @@
 import { describe, expect, it } from 'vitest';
+import { createBrowserAutomationControlService } from '@/sync/domains/browser/automation/controlService';
+import { selectBrowserCopresence } from '@/sync/domains/browser/automation/copresence';
+import { createInjectedPageAutomationOwner } from './injectedPageRuntime';
 
 type InjectedAutomationCommandMessage = Readonly<{
     v: 1;
@@ -160,6 +163,27 @@ const runtimeIdentity = {
     nonce: 'nonce_1',
     capabilityVersion: '1.0.0',
 } as const;
+
+it('projects nonce-bound target progress while the in-app action is active and clears it on completion', async () => {
+    const listeners = new Set<(raw: string) => void>();
+    const service = createBrowserAutomationControlService({ nowMs: Date.now });
+    const owner = createInjectedPageAutomationOwner({ ...runtimeIdentity, ownerId: 'owner', adapterKind: 'localPreview',
+        supportedActions: ['click'], nowMs: Date.now, transport: { sendCommand: () => undefined,
+            subscribeToResults: listener => { listeners.add(listener); return () => { listeners.delete(listener); }; } } });
+    service.registerOwner(owner);
+    const action = service.executeAction(createAutomationRequest({ actionKind: 'click', timeoutMs: 5_000 }));
+    const target = { x: 0.5, y: 0.25, width: 0.2, height: 0.1 };
+    const presence = () => selectBrowserCopresence({ snapshot: service.getSnapshot(), view: runtimeIdentity });
+    try {
+        for (const listener of [...listeners]) listener(runtimeResultMessage({ phase: 'target', activeTarget: target }));
+        expect(presence()).toMatchObject({ kind: 'agent', activity: 'click', target });
+        for (const listener of [...listeners]) listener(runtimeResultMessage({ phase: 'target', activeTarget: { ...target, x: 2 } }));
+        expect(presence()).toMatchObject({ target });
+        for (const listener of [...listeners]) listener(runtimeResultMessage());
+        expect(await action).toMatchObject({ status: 'succeeded' });
+        expect(presence()).toMatchObject({ kind: 'idle' });
+    } finally { service.closeView(runtimeIdentity); }
+});
 
 async function loadAutomationModule(): Promise<InjectedPageAutomationModule | null> {
     const path = './injectedPageRuntime';

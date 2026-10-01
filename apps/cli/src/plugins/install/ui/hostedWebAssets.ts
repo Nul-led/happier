@@ -1,10 +1,10 @@
 import {
-  PLUGIN_UI_HOST_API_VERSION_V1,
+  isPluginUiHostApiVersionCompatibleV1,
   PluginHostedWebRuntimeModeV1Schema,
-  PluginUiArtifactsManifestV1Schema,
+  PluginUiArtifactsManifestV2Schema,
   type PluginHostedWebRuntimeModeV1,
-  type PluginUiArtifactsManifestEntryV1,
-  type PluginUiArtifactsManifestV1,
+  type PluginUiHostedStaticArtifactV2,
+  type PluginUiArtifactsManifestV2,
 } from '@happier-dev/protocol/plugins/ui';
 
 export type HostedWebAssetRuntimeResolutionCode =
@@ -12,7 +12,6 @@ export type HostedWebAssetRuntimeResolutionCode =
   | 'invalid_artifact_manifest'
   | 'artifact_entry_missing'
   | 'artifact_id_mismatch'
-  | 'artifact_platform_mismatch'
   | 'asset_root_mismatch'
   | 'hosted_web_static_artifact_host_api_mismatch'
   | 'registered_endpoint_requires_lsv3';
@@ -33,12 +32,12 @@ export type HostedWebAssetRuntimeResolutionResult =
   }>;
 
 function findHostedWebManifestEntry(
-  manifest: PluginUiArtifactsManifestV1,
-  contributionId: string,
-): PluginUiArtifactsManifestEntryV1 | null {
+  manifest: PluginUiArtifactsManifestV2,
+  artifactId: string,
+): PluginUiHostedStaticArtifactV2 | null {
   return manifest.entries.find((entry) => (
-    entry.contributionId === contributionId && entry.tier === 'hostedWeb'
-  )) ?? null;
+    entry.artifactId === artifactId && entry.tier === 'hostedWeb'
+  )) as PluginUiHostedStaticArtifactV2 | undefined ?? null;
 }
 
 function normalizeArtifactPath(path: string): string {
@@ -53,7 +52,6 @@ function isDeclaredUnderAssetRoot(path: string, assetRootId: string): boolean {
 
 export function resolveHostedWebAssetRuntime(params: Readonly<{
   contributionId: string;
-  manifestContributionId?: string;
   runtimeMode: unknown;
   manifest: unknown;
 }>): HostedWebAssetRuntimeResolutionResult {
@@ -66,7 +64,7 @@ export function resolveHostedWebAssetRuntime(params: Readonly<{
     });
   }
 
-  const manifest = PluginUiArtifactsManifestV1Schema.safeParse(params.manifest);
+  const manifest = PluginUiArtifactsManifestV2Schema.safeParse(params.manifest);
   if (!manifest.success) {
     return Object.freeze({
       ok: false,
@@ -77,7 +75,6 @@ export function resolveHostedWebAssetRuntime(params: Readonly<{
 
   return resolveParsedHostedWebAssetRuntime({
     contributionId: params.contributionId,
-    manifestContributionId: params.manifestContributionId,
     runtimeMode: runtimeMode.data,
     manifest: manifest.data,
   });
@@ -85,9 +82,8 @@ export function resolveHostedWebAssetRuntime(params: Readonly<{
 
 function resolveParsedHostedWebAssetRuntime(params: Readonly<{
   contributionId: string;
-  manifestContributionId?: string;
   runtimeMode: PluginHostedWebRuntimeModeV1;
-  manifest: PluginUiArtifactsManifestV1;
+  manifest: PluginUiArtifactsManifestV2;
 }>): HostedWebAssetRuntimeResolutionResult {
   if (params.runtimeMode.kind === 'registeredSessionEndpoint') {
     return Object.freeze({
@@ -97,8 +93,7 @@ function resolveParsedHostedWebAssetRuntime(params: Readonly<{
     });
   }
 
-  const manifestContributionId = params.manifestContributionId ?? params.contributionId;
-  const entry = findHostedWebManifestEntry(params.manifest, manifestContributionId);
+  const entry = findHostedWebManifestEntry(params.manifest, params.runtimeMode.artifactId);
   if (!entry) {
     return Object.freeze({
       ok: false,
@@ -106,21 +101,7 @@ function resolveParsedHostedWebAssetRuntime(params: Readonly<{
       diagnostics: Object.freeze(['hosted_web_artifact_entry_missing']),
     });
   }
-  if (params.manifestContributionId !== undefined && entry.platform !== 'web') {
-    return Object.freeze({
-      ok: false,
-      code: 'artifact_platform_mismatch',
-      diagnostics: Object.freeze(['hosted_web_artifact_platform_mismatch']),
-    });
-  }
-  if (params.manifestContributionId !== undefined && params.runtimeMode.artifactId !== manifestContributionId) {
-    return Object.freeze({
-      ok: false,
-      code: 'artifact_id_mismatch',
-      diagnostics: Object.freeze(['hosted_web_artifact_id_mismatch']),
-    });
-  }
-  if (entry.hostUiApiVersion !== PLUGIN_UI_HOST_API_VERSION_V1) {
+  if (!isPluginUiHostApiVersionCompatibleV1(entry.hostUiApiRange)) {
     return Object.freeze({
       ok: false,
       code: 'hosted_web_static_artifact_host_api_mismatch',

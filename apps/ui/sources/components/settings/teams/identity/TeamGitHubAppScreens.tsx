@@ -49,7 +49,7 @@ export const TeamGitHubAppDetailScreen = React.memo(function TeamGitHubAppDetail
     registrationId: string;
 }>) {
     return (
-        <TeamSection serverId={props.serverId} teamId={props.teamId} title={t('identityAdministration.githubApps')}>
+        <TeamSection serverId={props.serverId} teamId={props.teamId} title={t('identityAdministration.githubApps')} description={t('teams.pages.githubApp')}>
             {(context) => context.team.capabilities.manageAuthentication ? (
                 <ManagedGitHubAppDetailContent
                     surface={teamGitHubAppSurface(context)}
@@ -70,6 +70,7 @@ export const TeamGitHubAppEditorScreen = React.memo(function TeamGitHubAppEditor
             serverId={props.serverId}
             teamId={props.teamId}
             title={t('identityAdministration.githubAppEditTitle')}
+            description={t('teams.pages.githubAppEdit')}
         >
             {(context) => context.team.capabilities.manageAuthentication ? (
                 <ManagedGitHubAppEditorContent

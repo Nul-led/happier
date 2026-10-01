@@ -1,9 +1,8 @@
 import * as React from 'react';
-import type { ActionOperationProjection } from '@/sync/domains/actionOperations/actionOperationSelectors';
 
-import { requestActionOperationStop } from './requestActionOperationStop';
+import { requestActionOperationStop, type ActionOperationStopTarget } from './requestActionOperationStop';
 
-export function useActionOperationStopControl(operation: ActionOperationProjection | null | undefined) {
+export function useActionOperationStopControl(operation: ActionOperationStopTarget | null | undefined) {
     const mountedRef = React.useRef(true);
     const [pending, setPending] = React.useState(false);
     const [feedback, setFeedback] = React.useState<

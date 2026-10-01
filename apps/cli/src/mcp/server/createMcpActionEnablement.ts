@@ -1,5 +1,6 @@
 import {
   getActionRequiredServerFeatureId,
+  getActionSpec,
   isActionEnabledByActionsSettings,
   isApprovalRequiredByActionsSettings,
   type AccountSettings,
@@ -49,6 +50,7 @@ export function createMcpActionEnablementWithServerFeatureAvailability(params: R
   actionSettingsProvider: RuntimeActionSettingsProvider;
   surface: keyof ActionSurfaces;
   hasAuthenticatedRuntime: boolean;
+  authorityScope?: 'account' | 'session';
   readServerFeaturesSnapshot: () => CliServerFeaturesSnapshot | undefined;
   env?: NodeJS.ProcessEnv;
 }>): (id: ActionId) => boolean {
@@ -58,6 +60,10 @@ export function createMcpActionEnablementWithServerFeatureAvailability(params: R
   });
   return (id) => {
     if (!isEnabledByPolicy(id)) return false;
+    if (params.authorityScope === 'session') {
+      const placement = getActionSpec(id).executionPlacement;
+      if (placement !== 'session' && placement !== 'machine') return false;
+    }
     const featureId = getActionRequiredServerFeatureId(id);
     if (featureId === null) return true;
     if (!params.hasAuthenticatedRuntime) return false;

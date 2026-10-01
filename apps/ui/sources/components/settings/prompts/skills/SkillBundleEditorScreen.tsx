@@ -1,23 +1,23 @@
 import * as React from 'react';
 import { View } from 'react-native';
-import { StyleSheet, useUnistyles } from 'react-native-unistyles';
-import { useNavigation, useRouter } from 'expo-router';
-import { useFocusEffect } from '@react-navigation/native';
+import { StyleSheet } from 'react-native-unistyles';
+import { useNavigation, useRouter } from '@/components/appShell/workspace/destinationRoute';
+import { useFocusEffect } from '@/components/appShell/workspace/destinationRoute';
 
 import { t } from '@/text';
-import { useLayoutMaxWidthStyle } from '@/components/ui/layout/layout';
 import { sync } from '@/sync/sync';
 import { storage, useSetting, useSettingMutable } from '@/sync/domains/state/storage';
 import type { CodeEditorHandle } from '@/components/ui/code/editor/codeEditorTypes';
 import { MarkdownCodeEditorField } from '@/components/ui/markdown/editor/MarkdownCodeEditorField';
-import { SETTINGS_TEXT_INPUT_METRICS } from '@/components/ui/forms/settingsTextInputMetrics';
+import { FieldTextInput } from '@/components/ui/forms/FieldTextInput';
 import { Item } from '@/components/ui/lists/Item';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
 import { ItemList } from '@/components/ui/lists/ItemList';
 import { ItemRowActions } from '@/components/ui/lists/ItemRowActions';
 import type { ItemAction } from '@/components/ui/lists/itemActions';
-import { SettingsActionFooter } from '@/components/ui/settingsSurface/SettingsActionFooter';
-import { Text, TextInput } from '@/components/ui/text/Text';
+import { SectionActionButton } from '@/components/ui/lists/SectionActionButton';
+import { SectionContentRow } from '@/components/ui/lists/SectionContentRow';
+import type { PageHeaderMenuAction } from '@/components/ui/layout/PageHeaderEntityParts';
 import { Modal } from '@/modal';
 import {
   DEFAULT_SKILL_PROMPT_MARKDOWN,
@@ -28,40 +28,21 @@ import {
   readSkillMarkdownFromPromptBundleBody,
   updateSkillPromptBundle,
 } from '@/sync/ops/promptLibrary/promptBundles';
-import { safeRouterBack } from '@/utils/navigation/safeRouterBack';
+import { useUnsavedDraftNavigationGuard } from '@/utils/navigation/useUnsavedDraftNavigationGuard';
 import { PromptExternalLinksGroup } from '@/components/settings/prompts/shared/PromptExternalLinksGroup';
-import { PromptOrganizationFields } from '@/components/settings/prompts/shared/PromptOrganizationFields';
+import { PromptFolderFieldRow, PromptTagsFieldRow } from '@/components/settings/prompts/shared/PromptOrganizationFields';
+import { PromptEditorHeader } from '@/components/settings/prompts/collection/PromptEditorHeader';
+import { publishPromptCollectionDraftTitle } from '@/components/settings/prompts/collection/PromptCollectionList';
+import { promptCollectionItemHref, promptCollectionRoot } from '@/components/settings/prompts/collection/promptCollectionModel';
+import { usePromptLibraryEntryActions } from '@/components/settings/prompts/collection/usePromptLibraryEntryActions';
+import { usePromptLibraryEntryMeta } from '@/components/settings/prompts/collection/usePromptLibraryEntryMeta';
 import { usePromptEditorDraftField } from '@/components/settings/prompts/shared/usePromptEditorDraftField';
 import { readSkillBundleArtifactState } from '@/components/settings/prompts/skills/readSkillBundleArtifactState';
 import { ensurePromptFolderByName, findPromptFolderById, formatPromptTags, normalizePromptTags } from '@/sync/ops/promptLibrary/promptFolders';
 
 const styles = StyleSheet.create((theme) => ({
-  container: {
-    flex: 1,
-    backgroundColor: theme.colors.background.canvas,
-  },
-  content: {
-    padding: 16,
-    paddingBottom: 64,
-    width: '100%',
-    alignSelf: 'center',
-  },
-  titleInput: {
-    backgroundColor: theme.colors.input.background,
-    color: theme.colors.input.text,
-    borderRadius: 10,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    ...SETTINGS_TEXT_INPUT_METRICS,
-    marginBottom: 12,
-  },
-  fieldLabel: {
-    color: theme.colors.text.secondary,
-    fontSize: 14,
-    marginBottom: 8,
-  },
   editorContainer: {
-    borderRadius: 12,
+    borderRadius: 10,
     overflow: 'hidden',
     borderWidth: 1,
     borderColor: theme.colors.border.default,
@@ -69,43 +50,51 @@ const styles = StyleSheet.create((theme) => ({
   },
 }));
 
+/**
+ * A skill's editor in the Skills collection: a saved skill (`artifactId`) or the new-skill draft
+ * (`null`). Saving a draft opens the saved skill in its place; saving a skill keeps it open.
+ */
 export const SkillBundleEditorScreen = React.memo((props: Readonly<{ artifactId: string | null }>) => {
-  // Composed at render time: the module-scope stylesheet evaluates once, so a
-  // baked-in `layout.maxWidth` would freeze the user's content-width preference.
-  const contentMaxWidthStyle = useLayoutMaxWidthStyle();
-  const contentStyle = React.useMemo(() => [styles.content, contentMaxWidthStyle], [contentMaxWidthStyle]);
-  const { theme } = useUnistyles();
   const router = useRouter();
   const navigation = useNavigation();
   const [promptFoldersV1, setPromptFoldersV1] = useSettingMutable('promptFoldersV1');
   const wrapLinesInDiffs = useSetting('wrapLinesInDiffs');
   const savedArtifactId = props.artifactId;
+  const isNew = savedArtifactId === null;
+  const entryActions = usePromptLibraryEntryActions('bundle');
+  const meta = usePromptLibraryEntryMeta(savedArtifactId);
   const [isLoading, setIsLoading] = React.useState<boolean>(Boolean(props.artifactId));
+  const titleField = usePromptEditorDraftField('');
+  const skillMarkdownField = usePromptEditorDraftField(DEFAULT_SKILL_PROMPT_MARKDOWN);
+  const folderField = usePromptEditorDraftField('');
+  const tagsField = usePromptEditorDraftField('');
   const {
     value: title,
     setValue: setTitle,
     setPristineValue: setPristineTitle,
     applyExternalValue: applyExternalTitle,
-  } = usePromptEditorDraftField('');
+  } = titleField;
   const {
     value: skillMarkdown,
     setValue: setSkillMarkdown,
     setPristineValue: setPristineSkillMarkdown,
     applyExternalValue: applyExternalSkillMarkdown,
-  } = usePromptEditorDraftField(DEFAULT_SKILL_PROMPT_MARKDOWN);
+  } = skillMarkdownField;
   const {
     value: folderName,
     setValue: setFolderName,
     setPristineValue: setPristineFolderName,
     applyExternalValue: applyExternalFolderName,
-  } = usePromptEditorDraftField('');
+  } = folderField;
   const {
     value: tagsText,
     setValue: setTagsText,
     setPristineValue: setPristineTagsText,
     applyExternalValue: applyExternalTagsText,
-  } = usePromptEditorDraftField('');
+  } = tagsField;
   const [saving, setSaving] = React.useState(false);
+  // Where to go once the save that asked for it has rendered (so the draft is no longer dirty).
+  const [pendingHref, setPendingHref] = React.useState<string | null>(null);
   const [supportingFiles, setSupportingFiles] = React.useState<Array<{ path: string; contentKind: 'utf8' | 'binary' }>>([]);
   // Flushed before reading `skillMarkdown` on save so the latest rich/raw edit
   // (which may still be debounced inside the active editor surface) is captured.
@@ -216,10 +205,20 @@ export const SkillBundleEditorScreen = React.memo((props: Readonly<{ artifactId:
     applyArtifactState(savedArtifactId, { preserveDirtyFields: true });
   }, [applyArtifactState, promptFoldersV1, savedArtifactId]);
 
-  const canSave = title.trim().length > 0 && hasSkillPromptMarkdownContent(skillMarkdown) && !saving;
+  React.useEffect(() => {
+    if (!isNew) return undefined;
+    publishPromptCollectionDraftTitle('bundle', title);
+    return () => publishPromptCollectionDraftTitle('bundle', '');
+  }, [isNew, title]);
 
-  const save = React.useCallback(async () => {
-    if (!canSave) return;
+  const changed = titleField.changed || skillMarkdownField.changed || folderField.changed || tagsField.changed;
+  // Saving makes the fields pristine, so a saved draft opens in its place without asking.
+  const dirty = changed;
+  const contentValid = title.trim().length > 0 && hasSkillPromptMarkdownContent(skillMarkdown);
+  const canSave = contentValid && !saving && !isLoading && (isNew || changed);
+
+  const save = React.useCallback(async (): Promise<boolean> => {
+    if (!contentValid || saving) return false;
 
     try {
       setSaving(true);
@@ -233,17 +232,69 @@ export const SkillBundleEditorScreen = React.memo((props: Readonly<{ artifactId:
       }
       const tags = normalizePromptTags(tagsText);
       if (!props.artifactId) {
-        await createSkillPromptBundle({ title: title.trim(), skillMarkdown: latestSkillMarkdown, folderId: ensuredFolder.folderId, tags });
+        const artifactId = await createSkillPromptBundle({ title: title.trim(), skillMarkdown: latestSkillMarkdown, folderId: ensuredFolder.folderId, tags });
+        setPendingHref(promptCollectionItemHref('bundle', artifactId));
       } else {
         await updateSkillPromptBundle({ artifactId: props.artifactId, title: title.trim(), skillMarkdown: latestSkillMarkdown, folderId: ensuredFolder.folderId, tags });
       }
-      safeRouterBack({ router, navigation, fallbackHref: '/settings/prompts/skills' });
-    } catch (err) {
+      setPristineTitle(title);
+      setPristineSkillMarkdown(latestSkillMarkdown);
+      setPristineFolderName(folderName);
+      setPristineTagsText(tagsText);
+      return true;
+    } catch {
       Modal.alert(t('common.error'), t('promptLibrary.saveError'));
+      return false;
     } finally {
       setSaving(false);
     }
-  }, [canSave, folderName, navigation, promptFoldersV1, props.artifactId, router, setPromptFoldersV1, skillMarkdown, tagsText, title]);
+  }, [contentValid, folderName, promptFoldersV1, props.artifactId, saving, setPristineFolderName, setPristineSkillMarkdown, setPristineTagsText, setPristineTitle, setPromptFoldersV1, skillMarkdown, tagsText, title]);
+
+  const leave = React.useCallback(() => setPendingHref(promptCollectionRoot('bundle')), []);
+  React.useEffect(() => {
+    if (!pendingHref) return;
+    setPendingHref(null);
+    router.replace(pendingHref as never);
+  }, [pendingHref, router]);
+  const discard = React.useCallback(() => {
+    if (!savedArtifactId) {
+      setPristineTitle('');
+      setPristineSkillMarkdown(DEFAULT_SKILL_PROMPT_MARKDOWN);
+      setPristineFolderName('');
+      setPristineTagsText('');
+      return;
+    }
+    applyArtifactState(savedArtifactId);
+  }, [applyArtifactState, savedArtifactId, setPristineFolderName, setPristineSkillMarkdown, setPristineTagsText, setPristineTitle]);
+  useUnsavedDraftNavigationGuard({
+    navigation,
+    isDirty: dirty,
+    onDiscard: discard,
+    onSave: save,
+    onLeave: leave,
+    tag: 'SkillBundleEditorScreen.leave',
+  });
+
+  const menuActions = React.useMemo((): readonly PageHeaderMenuAction[] => {
+    if (!savedArtifactId) {
+      return [{ id: 'discard', testID: 'skillBundle.discard', title: t('common.discard'), onSelect: () => { discard(); leave(); } }];
+    }
+    return [
+      { id: 'duplicate', testID: 'skillBundle.duplicate', title: t('common.duplicate'), onSelect: () => entryActions.duplicate(savedArtifactId) },
+      { id: 'external', testID: 'skillBundle.externalAssets', title: t('promptLibrary.manageExternalAssets'), onSelect: () => entryActions.manageExternalAssets(savedArtifactId) },
+      {
+        id: 'delete',
+        testID: 'skillBundle.delete',
+        title: t('common.delete'),
+        onSelect: async () => {
+          if (await entryActions.remove(savedArtifactId)) {
+            discard();
+            leave();
+          }
+        },
+      },
+    ];
+  }, [discard, entryActions, leave, savedArtifactId]);
 
   const removeSupportingFile = React.useCallback((path: string) => {
     if (!savedArtifactId) return;
@@ -275,138 +326,137 @@ export const SkillBundleEditorScreen = React.memo((props: Readonly<{ artifactId:
   }, [savedArtifactId]);
 
   return (
-    <View style={styles.container}>
-      <ItemList containerStyle={contentStyle} keyboardShouldPersistTaps="handled">
-        <ItemGroup title={t('promptLibrary.general')}>
-          <View style={{ paddingHorizontal: 16, paddingTop: 12 }}>
-            <Text style={styles.fieldLabel}>{t('promptLibrary.skillNameLabel')}</Text>
-            <TextInput
+    <ItemList presentation="page" keyboardShouldPersistTaps="handled">
+      <PromptEditorHeader
+        testID="skillBundle.header"
+        mark="sparkle"
+        title={title.trim() || (isNew ? t('promptLibrary.newSkill') : t('promptLibrary.untitledSkill'))}
+        description={t('promptLibrary.surface.skillEditorDescription')}
+        meta={meta}
+        saveTestID="skillBundle.save"
+        saveDisabled={!canSave}
+        saving={saving}
+        onSave={() => { void save(); }}
+        menuActions={menuActions}
+      />
+
+      <ItemGroup title={t('promptLibrary.surface.skillSection')} description={t('promptLibrary.surface.skillSectionDescription')}>
+        <Item
+          title={t('promptLibrary.surface.nameTitle')}
+          accessoryLayout="adaptive"
+          showChevron={false}
+          rightElement={(
+            <FieldTextInput
               testID="skillBundle.title"
-              placeholder={t('promptLibrary.titlePlaceholder')}
-              placeholderTextColor={theme.colors.input.placeholder}
               value={title}
               onChangeText={setTitle}
-              style={styles.titleInput}
+              accessibilityLabel={t('promptLibrary.surface.nameTitle')}
+              placeholder={t('promptLibrary.titlePlaceholder')}
+              autoCapitalize="sentences"
+              autoFocus={isNew}
               editable={!isLoading}
             />
+          )}
+        />
+        <PromptFolderFieldRow value={folderName} onChange={setFolderName} testID="skillBundle.folderName" editable={!isLoading} />
+        <PromptTagsFieldRow value={tagsText} onChange={setTagsText} testID="skillBundle.tags" editable={!isLoading} />
+      </ItemGroup>
+
+      <ItemGroup title={t('promptLibrary.skillContent')} description={t('promptLibrary.surface.skillContentDescription')}>
+        <SectionContentRow>
+          <View style={styles.editorContainer}>
+            <MarkdownCodeEditorField
+              resetKey={props.artifactId ?? 'new'}
+              testID="skillBundle.editor"
+              value={skillMarkdown}
+              filePath="SKILL.md"
+              onChange={setSkillMarkdown}
+              readOnly={isLoading}
+              editorRef={editorRef}
+              wrapLines={wrapLinesInDiffs !== false}
+            />
           </View>
-          <PromptOrganizationFields
-            folderName={folderName}
-            onChangeFolderName={setFolderName}
-            tags={tagsText}
-            onChangeTags={setTagsText}
-            folderTestID="skillBundle.folderName"
-            tagsTestID="skillBundle.tags"
-            editable={!isLoading}
+        </SectionContentRow>
+      </ItemGroup>
+
+      <ItemGroup
+        title={t('promptLibrary.supportingFiles')}
+        description={t('promptLibrary.surface.supportingFilesDescription')}
+        action={savedArtifactId ? (
+          <SectionActionButton
+            testID="skillBundle.addSupportingFile"
+            title={t('promptLibrary.surface.addFile')}
+            icon="plus"
+            onPress={() => router.push(`/settings/prompts/skills/${savedArtifactId}/files/new`)}
           />
-        </ItemGroup>
+        ) : undefined}
+      >
+        {savedArtifactId ? (
+          supportingFiles.length > 0 ? supportingFiles.map((entry, index) => {
+            const editPath = `/settings/prompts/skills/${savedArtifactId}/files/edit?path=${encodeURIComponent(entry.path)}`;
+            const actions: ItemAction[] = [];
+            if (entry.contentKind === 'utf8') {
+              actions.push({
+                id: 'edit',
+                title: t('common.edit'),
+                icon: 'pencil',
+                onPress: () => router.push(editPath),
+              });
+            }
+            actions.push({
+              id: 'delete',
+              title: t('common.delete'),
+              icon: 'trash',
+              destructive: true,
+              onPress: () => removeSupportingFile(entry.path),
+            });
 
-        <ItemGroup title={t('promptLibrary.skillContent')}>
-          <View style={{ padding: 12 }}>
-            <View style={styles.editorContainer}>
-              <MarkdownCodeEditorField
-                resetKey={props.artifactId ?? 'new'}
-                testID="skillBundle.editor"
-                value={skillMarkdown}
-                filePath="SKILL.md"
-                onChange={setSkillMarkdown}
-                readOnly={isLoading}
-                editorRef={editorRef}
-                wrapLines={wrapLinesInDiffs !== false}
-              />
-            </View>
-          </View>
-        </ItemGroup>
-
-        <ItemGroup title={t('promptLibrary.supportingFiles')}>
-          {savedArtifactId ? (
-            supportingFiles.length > 0 ? supportingFiles.map((entry, index) => (
-              (() => {
-                const editPath = `/settings/prompts/skills/${savedArtifactId}/files/edit?path=${encodeURIComponent(entry.path)}`;
-                const actions: ItemAction[] = [];
-                if (entry.contentKind === 'utf8') {
-                  actions.push({
-                    id: 'edit',
-                    title: t('common.edit'),
-                    icon: 'pencil',
-                    onPress: () => router.push(editPath),
-                  });
-                }
-                actions.push({
-                  id: 'delete',
-                  title: t('common.delete'),
-                  icon: 'trash',
-                  destructive: true,
-                  onPress: () => removeSupportingFile(entry.path),
-                });
-
-                return (
-                  <Item
-                    key={entry.path}
-                    testID={`skillBundle.supportingFile.${index}`}
-                    title={entry.path}
-                    subtitle={entry.contentKind === 'binary'
-                      ? t('promptLibrary.supportingFileBinarySubtitle')
-                      : t('promptLibrary.supportingFileTextSubtitle')}
-                    onPress={entry.contentKind === 'utf8' ? () => router.push(editPath) : undefined}
-                    rightElement={(
-                      <ItemRowActions
-                        title={entry.path}
-                        compactActionIds={entry.contentKind === 'utf8' ? ['edit', 'delete'] : ['delete']}
-                        actions={actions}
-                      />
-                    )}
-                  />
-                );
-              })()
-            )) : (
+            return (
               <Item
-                testID="skillBundle.supportingFilesEmpty"
-                title={t('promptLibrary.supportingFilesEmptyTitle')}
-                subtitle={t('promptLibrary.supportingFilesEmptySubtitle')}
-                showChevron={false}
+                key={entry.path}
+                testID={`skillBundle.supportingFile.${index}`}
+                title={entry.path}
+                subtitle={entry.contentKind === 'binary'
+                  ? t('promptLibrary.supportingFileBinarySubtitle')
+                  : t('promptLibrary.supportingFileTextSubtitle')}
+                onPress={entry.contentKind === 'utf8' ? () => router.push(editPath) : undefined}
+                rightElement={(
+                  <ItemRowActions
+                    title={entry.path}
+                    compactActionIds={entry.contentKind === 'utf8' ? ['edit', 'delete'] : ['delete']}
+                    actions={actions}
+                  />
+                )}
               />
-            )
-          ) : (
+            );
+          }) : (
             <Item
-              testID="skillBundle.supportingFilesSaveFirst"
-              title={t('promptLibrary.supportingFilesSaveFirstTitle')}
-              subtitle={t('promptLibrary.supportingFilesSaveFirstSubtitle')}
+              testID="skillBundle.supportingFilesEmpty"
+              title={t('promptLibrary.supportingFilesEmptyTitle')}
+              subtitle={t('promptLibrary.supportingFilesEmptySubtitle')}
+              mode="info"
               showChevron={false}
             />
-          )}
-        </ItemGroup>
+          )
+        ) : (
+          <Item
+            testID="skillBundle.supportingFilesSaveFirst"
+            title={t('promptLibrary.supportingFilesSaveFirstTitle')}
+            subtitle={t('promptLibrary.supportingFilesSaveFirstSubtitle')}
+            mode="info"
+            showChevron={false}
+          />
+        )}
+      </ItemGroup>
 
-        {savedArtifactId ? (
-          <ItemGroup>
-            <Item
-              testID="skillBundle.addSupportingFile"
-              title={t('promptLibrary.addSupportingFile')}
-              subtitle={t('promptLibrary.addSupportingFileSubtitle')}
-              onPress={() => router.push(`/settings/prompts/skills/${savedArtifactId}/files/new`)}
-            />
-          </ItemGroup>
-        ) : null}
-
-        <PromptExternalLinksGroup
-          artifactId={props.artifactId}
-          libraryKind="bundle"
-          manageItemTestID="skillBundle.manageExternalAssets"
-          manageItemSubtitle={t('promptLibrary.externalAssetsSubtitle')}
-          linkTestIDPrefix="skillBundle.link"
-        />
-
-        <SettingsActionFooter
-          primaryLabel={t('common.save')}
-          onPrimaryPress={() => { void save(); }}
-          primaryDisabled={!canSave}
-          primaryTestID="skillBundle.save"
-          secondaryLabel={t('common.cancel')}
-          onSecondaryPress={() => safeRouterBack({ router, navigation, fallbackHref: '/settings/prompts/skills' })}
-          secondaryTestID="skillBundle.cancel"
-        />
-      </ItemList>
-    </View>
+      <PromptExternalLinksGroup
+        artifactId={props.artifactId}
+        libraryKind="bundle"
+        manageItemTestID="skillBundle.manageExternalAssets"
+        manageItemSubtitle={t('promptLibrary.surface.manageExternalAssetsDescription')}
+        linkTestIDPrefix="skillBundle.link"
+      />
+    </ItemList>
   );
 });
 

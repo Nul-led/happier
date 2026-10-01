@@ -59,6 +59,7 @@ describe('resolveSimulatorLiveStreamIdentity', () => {
             sourceCodecs: ['image.mjpeg', 'h264.avcc'],
             caps: DEFAULT_SIMULATOR_LIVE_STREAM_CAPS,
         });
+        expect(identity?.caps).toEqual({});
     });
 
     it('returns null when there is no selection or no resolved relay/viewer identity', () => {

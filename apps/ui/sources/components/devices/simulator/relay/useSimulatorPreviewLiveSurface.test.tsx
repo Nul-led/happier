@@ -126,7 +126,7 @@ function createFakeSocket(socketId = 'viewer-socket-1'): {
                     listeners.delete(listener);
                 };
             },
-            disconnect: () => {},
+            disconnect: async () => {},
         },
     };
 }

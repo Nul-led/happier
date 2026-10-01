@@ -45,7 +45,8 @@ installSettingsViewCommonModuleMocks({
     },
 });
 
-vi.mock('@/utils/platform/desktopHost', () => ({
+vi.mock('@/utils/platform/desktopHost', async (importOriginal) => ({
+    ...await importOriginal<typeof import('@/utils/platform/desktopHost')>(),
     isDesktopHost: () => tauriDesktopState.value,
 }));
 
@@ -99,12 +100,6 @@ vi.mock('expo-constants', () => ({
     default: { expoConfig: { version: '0.0.0-test' } },
 }));
 
-vi.mock('@/constants/Typography', () => ({
-    Typography: {
-        default: () => ({}),
-        mono: () => ({}),
-    },
-}));
 
 vi.mock('@/components/ui/lists/ItemList', () => ({
     ItemList: ({ children }: { children?: React.ReactNode }) => React.createElement('ItemList', null, children),
@@ -154,15 +149,6 @@ vi.mock('@/sync/domains/profiles/profile', async (importOriginal) => {
     };
 });
 
-vi.mock('@/agents/catalog/catalog', () => ({
-    AGENT_IDS: ['codex', 'claude', 'gemini'],
-    DEFAULT_AGENT_ID: 'agent_default',
-    getAgentCore: () => ({ uiConnectedService: { serviceId: 'anthropic', labelKey: 'agentInput.agent.claude', connectRoute: null } }),
-    getAgentIconSource: () => null,
-    getAgentIconTintColor: () => null,
-    resolveAgentIdFromConnectedServiceId: () => null,
-}));
-
 describe('SettingsView desktop route', () => {
     beforeEach(() => {
         tauriDesktopState.value = true;
@@ -174,10 +160,12 @@ describe('SettingsView desktop route', () => {
         const { SettingsView } = await import('./SettingsView');
         const screen = await renderSettingsView(<SettingsView />);
 
-        expect(screen.findRowByTitle('settingsDesktop.title')).toBeTruthy();
+        // The System group renders in a deferred overview stage (`SettingsBelowFoldSections`).
+        await vi.waitFor(() => expect(screen.findRowByTitle('settingsDesktop.title')).toBeTruthy());
         expect(screen.findRow('settings-desktop-entry')).toBeTruthy();
 
         screen.pressRow('settings-desktop-entry');
-        expect(routerPushSpy).toHaveBeenCalledWith('/settings/desktop');
+        // Web defers catalog navigation past the press (deferOnWeb).
+        await vi.waitFor(() => expect(routerPushSpy).toHaveBeenCalledWith('/settings/desktop'));
     });
 });

@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import type { ServerAccountRequestAuthority } from '@/sync/runtime/orchestration/serverScopedRpc/createServerRequestWithServerScope';
 
 const fetchSessionById = vi.hoisted(() => vi.fn());
 
@@ -23,6 +24,26 @@ const TARGETS = [
     { sessionKey: 'account-a:server-a:local-1', serverId: 'server-a', accountId: 'account-a', sessionId: 'local-1' },
     { sessionKey: 'account-a:server-a:outside-1', serverId: 'server-a', accountId: 'account-a', sessionId: 'outside-1' },
 ] as const;
+
+function createRequestAuthority(
+    request: ServerAccountRequestAuthority['request'],
+): ServerAccountRequestAuthority {
+    return {
+        scope: { serverId: 'server-a', accountId: 'account-a' },
+        context: {
+            scope: 'scoped',
+            timeoutMs: 5_000,
+            targetServerId: 'server-a',
+            targetServerUrl: 'https://server-a.example.test',
+            targetAccountId: 'account-a',
+            token: 'token-a',
+            credentials: { token: 'token-a' },
+            encryption: null,
+        },
+        request,
+        release: async () => undefined,
+    };
+}
 
 describe('hydrateMemorySearchSessionTargets', () => {
     it('rejects a memory window for a revoked Session before daemon access', async () => {
@@ -184,9 +205,9 @@ describe('hydrateMemorySearchSessionTargets', () => {
     });
 
     it('aborts reads and suppresses publication when the exact Account lifetime retires', async () => {
-        let retire: (() => void) | null = null;
+        const retirement: { current: (() => void) | null } = { current: null };
         let current = true;
-        let observedSignal: AbortSignal | null = null;
+        const observedSignal: { current: AbortSignal | null } = { current: null };
         let finishRead!: () => void;
         const readFinished = new Promise<void>((resolve) => { finishRead = resolve; });
         const pending = hydrateMemorySearchSessionTargets({
@@ -195,22 +216,22 @@ describe('hydrateMemorySearchSessionTargets', () => {
             accountLifetime: {
                 isCurrent: () => current,
                 onRetire: (callback) => {
-                    retire = callback;
+                    retirement.current = callback;
                     return { dispose: () => undefined };
                 },
             },
             concurrencyLimit: 2,
             readSessionForServerScope: async ({ signal }) => {
-                observedSignal = signal;
+                observedSignal.current = signal;
                 await readFinished;
                 return { ok: true };
             },
         });
-        await vi.waitFor(() => expect(observedSignal).not.toBeNull());
+        await vi.waitFor(() => expect(observedSignal.current).not.toBeNull());
 
         current = false;
-        retire?.();
-        expect(observedSignal?.aborted).toBe(true);
+        retirement.current?.();
+        expect(observedSignal.current?.aborted).toBe(true);
         finishRead();
 
         await expect(pending).resolves.toEqual([]);
@@ -218,12 +239,7 @@ describe('hydrateMemorySearchSessionTargets', () => {
 
     it('passes the exact Account authority and AbortSignal through the canonical Session reader', async () => {
         const request = vi.fn(async () => new Response('{}'));
-        const authority = {
-            scope: { serverId: 'server-a', accountId: 'account-a' },
-            context: { scope: 'scoped', credentials: { token: 'token-a' } },
-            request,
-            release: async () => undefined,
-        };
+        const authority = createRequestAuthority(request);
         const controller = new AbortController();
         fetchSessionById.mockImplementationOnce(async (params) => {
             params.applySessions([{
@@ -237,7 +253,7 @@ describe('hydrateMemorySearchSessionTargets', () => {
 
         await expect(readMemorySearchSessionForServerScope({
             target: TARGETS[0],
-            authority: authority as Parameters<typeof readMemorySearchSessionForServerScope>[0]['authority'],
+            authority,
             signal: controller.signal,
         })).resolves.toEqual({ ok: true, visibleThroughSeq: 1 });
 
@@ -257,16 +273,11 @@ describe('hydrateMemorySearchSessionTargets', () => {
     it('fails closed before reading when the target Account differs from captured authority', async () => {
         fetchSessionById.mockClear();
         const controller = new AbortController();
-        const authority = {
-            scope: { serverId: 'server-a', accountId: 'account-a' },
-            context: { scope: 'scoped', credentials: { token: 'token-a' } },
-            request: vi.fn(),
-            release: async () => undefined,
-        };
+        const authority = createRequestAuthority(vi.fn());
 
         await expect(readMemorySearchSessionForServerScope({
             target: { ...TARGETS[0], accountId: 'account-b' },
-            authority: authority as Parameters<typeof readMemorySearchSessionForServerScope>[0]['authority'],
+            authority,
             signal: controller.signal,
         })).resolves.toEqual({ ok: false, errorCode: 'account_scope_mismatch' });
         expect(fetchSessionById).not.toHaveBeenCalled();

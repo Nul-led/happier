@@ -1,3 +1,4 @@
+import { folderlessSessionTranslations } from './folderlessSessionTranslations';
 import { sessionMessageAccountActorTranslations } from './sessionMessageAccountActorTranslations';
 import { sessionAccessTranslations } from './sessionAccessTranslations';
 import { sessionCollaborationTranslations } from './sessionCollaborationTranslations';
@@ -5,14 +6,22 @@ import { sessionResponsibilityTranslations } from './sessionResponsibilityTransl
 import { nativePasswordTranslations } from './nativePasswordTranslations';
 import { sessionFollowTranslations } from './sessionFollowTranslations';
 import { sessionHomeFreshnessTranslations } from './sessionHomeFreshnessTranslations';
+import { sessionEmbeddedTranslations } from './sessionEmbeddedTranslations';
 import { sessionReminderTranslations } from './sessionReminderTranslations';
 import { settingsProvidersTranslations } from './settingsProvidersTranslations';
 import { providerSessionTranslations } from './providerSessionTranslations';
 import { externalSessionOperationTranslations } from './externalSessionOperationTranslations';
 import { externalSessionSettingsTranslations } from './externalSessionSettingsTranslations';
 import { machinePoolTranslations } from './machinePoolTranslations';
+import { settingsConnectionsTranslations } from './settingsConnectionsTranslations';
+import { settingsMachinesTranslations } from './settingsMachinesTranslations';
+import { connectedServicesSettingsTranslations } from './connectedServicesSettingsTranslations';
+import { connectedServicesPoolTranslations } from './connectedServicesPoolTranslations';
+import { connectedServicesCollectionTranslations } from './connectedServicesCollectionTranslations';
 import { cliPathExposureTranslations } from './cliPathExposureTranslations';
+import { agentInstallJobTranslations } from './agentInstallJobTranslations';
 import { thisComputerConnectionTranslations } from './thisComputerConnectionTranslations';
+import { menuBarModeTranslations } from './menuBarModeTranslations';
 import { personalHomeDecisionTranslations } from './personalHomeDecisionTranslations';
 import { cliTrustPromptTranslations } from './cliTrustPromptTranslations';
 import { pluginUpdateReviewTranslations } from './pluginUpdateReviewTranslations';
@@ -23,6 +32,15 @@ import { pluginMarketplaceDiscoverTranslations } from './pluginMarketplaceDiscov
 import { pluginSettingsPresentationTranslations } from './pluginSettingsPresentationTranslations';
 import { sessionRemotePermissionGrantTranslations } from './sessionRemotePermissionGrantTranslations';
 import { sessionAgentActivityTranslations } from './sessionAgentActivityTranslations';
+import { sessionWorkTranslations } from './sessionWorkTranslations';
+import { agentStartTranslations } from './agentStartTranslations';
+import { goalControlTranslations } from './goalControlTranslations';
+import { inboxWorkTranslations } from './inboxWorkTranslations';
+import { sessionGitPaneTranslations } from './sessionGitPaneTranslations';
+import { sessionGitDisplayTranslations } from './sessionGitDisplayTranslations';
+import { sessionGitBranchesTranslations } from './sessionGitBranchesTranslations';
+import { sessionGitPullRequestTranslations } from './sessionGitPullRequestTranslations';
+import { sessionConversationSurfaceTranslations } from './sessionConversationSurfaceTranslations';
 import { changedFileEvidenceTranslations } from './changedFileEvidenceTranslations';
 import { voiceReadinessTranslations } from './voiceReadinessTranslations';
 import { voiceDiagnosticsTranslations } from './voiceDiagnosticsTranslations';
@@ -33,6 +51,19 @@ import { voiceLocalCredentialTranslations } from './voiceLocalCredentialTranslat
 import { pluginWebhookAdministrationTranslations } from './pluginWebhookAdministrationTranslations';
 import { pluginAccountDataEraseTranslations } from './pluginAccountDataEraseTranslations';
 import { apiTokenSettingsTranslations } from './apiTokenSettingsTranslations';
+import { embedSettingsTranslations } from './embedSettingsTranslations';
+import { embedTranslations } from './embedTranslations';
+import { actionFamilyTranslations } from './actionFamilyTranslations';
+import { providerCollectionTranslations } from './providerCollectionTranslations';
+import { settingsSearchKeywordsTranslations } from './settingsSearchKeywordsTranslations';
+import { automationPageTranslations } from './automationPageTranslations';
+import { settingsSessionPagesTranslations } from './settingsSessionPagesTranslations';
+import { workspaceTabTranslations } from './workspaceTabTranslations';
+import { workspaceBarTranslations } from './workspaceBarTranslations';
+import { settingsProfilesRemoteHostsPageTranslations } from './settingsProfilesRemoteHostsPageTranslations';
+import { profilesPageTranslations } from './profilesPageTranslations';
+import { machineDetailPageTranslations } from './machineDetailPageTranslations';
+import { sessionPageTranslations } from './sessionPageTranslations';
 import { pluginAccountReleaseSelectionTranslations } from './pluginAccountReleaseSelectionTranslations';
 import { pluginMachineMatrixTranslations } from './pluginMachineMatrixTranslations';
 import { pluginInvocationLogTranslations } from './pluginInvocationLogTranslations';
@@ -40,10 +71,47 @@ import { eventAutomationComposerTranslations } from './eventAutomationComposerTr
 import { automationTriggerSetTranslations } from './automationTriggerSetTranslations';
 import { actionOperationInboxTranslations } from './actionOperationInboxTranslations';
 import { actionConfirmationTranslations } from './actionConfirmationTranslations';
+import { detailPageTranslations } from './detailPageTranslations';
+import { rolesTranslations } from './rolesTranslations';
+import { boardsTranslations } from './boardsTranslations';
+import { workStatusTranslations } from './workStatusTranslations';
+import { shareSheetTranslations } from './shareSheetTranslations';
+import { surfaceStateTranslations } from './surfaceStateTranslations';
+import { sessionCompanionTranslations } from './sessionCompanionTranslations';
+import { runPageTranslations } from './runPageTranslations';
+import { detailsChromeTranslations } from './detailsChromeTranslations';
+import { browserPresenceTranslations } from './browserPresenceTranslations';
+import { computerUseTranslations } from './computerUseTranslations';
+import { browserToolTranslations } from './browserToolTranslations';
+import { detailsFileTranslations } from './detailsFileTranslations';
+import { filesPaneTranslations } from './filesPaneTranslations';
+import { detailsHistoryTranslations } from './detailsHistoryTranslations';
+import { detailsReviewTranslations } from './detailsReviewTranslations';
 import { sessionDraftTranslations } from './sessionDraftTranslations';
+import { sessionDirectoryRecoveryTranslations } from './sessionDirectoryRecoveryTranslations';
 import { accountServiceOAuthTranslations } from './accountServiceOAuthTranslations';
 import { personalHomeSettingsTranslations } from './personalHomeSettingsTranslations';
 import { homeDeviceApprovalTranslations } from './homeDeviceApprovalTranslations';
+import { settingsOverviewTranslations } from './settingsOverviewTranslations';
+import { homeSetupTranslations } from './homeSetupTranslations';
+import { connectedServicesSetupTranslations } from './connectedServicesSetupTranslations';
+import { homeWidgetTranslations } from './homeWidgetTranslations';
+import { widgetAddTranslations } from './widgetAddTranslations';
+import { widgetFrameTranslations } from './widgetFrameTranslations';
+import { widgetGlanceTranslations } from './widgetGlanceTranslations';
+import { homeIndexTranslations } from './homeIndexTranslations';
+import { addFlowsTranslations } from './addFlowsTranslations';
+import { machineAddTranslations } from './machineAddTranslations';
+import { machineAgentsTranslations } from './machineAgentsTranslations';
+import { homeComposerTranslations } from './homeComposerTranslations';
+import { sidebarFooterTranslations } from './sidebarFooterTranslations';
+import { accountPopoverTranslations } from './accountPopoverTranslations';
+import { homesHubTranslations } from './homesHubTranslations';
+import { homesJourneysTranslations } from './homesJourneysTranslations';
+import { homeAddTranslations } from './homeAddTranslations';
+import { accountDisplayTranslations } from './accountDisplayTranslations';
+import { homeFeatureTranslations } from './homeFeatureTranslations';
+import { homeSettingsTranslations } from './homeSettingsTranslations';
 import { homeGovernanceTranslations } from './homeGovernanceTranslations';
 import { workflowTranslations } from './workflowTranslations';
 import { teamsTranslations } from './teamsTranslations';
@@ -51,6 +119,8 @@ import { identityAdministrationTranslations } from './identityAdministrationTran
 import { en } from './en';
 import { workspaceSyncTranslations } from './workspaceSyncDiagnosticTranslations';
 import { personalHomeBootstrapBlockedTranslations } from './personalHomeBootstrapBlockedTranslations';
+import { secretsSettingsTranslations } from './secretsSettingsTranslations';
+import { mcpSettingsTranslations } from './mcpSettingsTranslations';
 
 /**
  * Chinese (Simplified) translations for the Happier app
@@ -196,7 +266,51 @@ const newSessionMcpTranslationExtension = {
 } as const;
 
 const settingsAppearanceTranslationExtension = {
+  switchToDarkTheme: '切换到深色主题',
+  switchToLightTheme: '切换到浅色主题',
+  themeToggle: {
+    title: '浅色/深色切换',
+    description: '在窗口顶部显示一个半填充的圆。点击即可切换；长按或右键可查看更多选项。',
+    hideFromToolbar: '从工具栏隐藏',
+    menuLabel: '主题选项',
+    matchSystem: '跟随系统',
+  },
   themeProfiles: {
+    pageDescription: '浅色和深色模式的配色。为每种模式选择一个，或自己制作。',
+    lightModeSection: '浅色模式',
+    lightModeSectionDescription: '应用为浅色时使用的主题。',
+    darkModeSection: '深色模式',
+    darkModeSectionDescription: '应用为深色时使用的主题。',
+    yourThemes: '我的主题',
+    yourThemesDescription: '你创建或导入的主题。打开一个即可更改其颜色。',
+    addTheme: '添加主题',
+    newTheme: '新建主题',
+    newThemeDescription: '从任意主题开始并更改其颜色。',
+    importThemeDescription: '粘贴 JSON 或选择文件。',
+    themeLimitDescription: ({ count }: { count: number }) => `最多可保留 ${count} 个主题。删除一个才能再添加。`,
+    noProfilesDescription: '从上方任意主题制作一个，或导入一个。',
+    inUse: '使用中',
+    builtInTheme: '内置',
+    customTheme: '我的主题',
+    builtInThemeDescription: '内置主题。复制后即可更改其颜色。',
+    editorDescription: '编辑时更改会在整个应用中显示，保存后保留。',
+    missingProfileDescription: '此主题已被删除或从未保存。',
+    saveAndUse: '保存并使用',
+    detailsDescription: '名称、颜色的起点，以及它是浅色还是深色主题。',
+    themeName: '名称',
+    startFrom: '基于',
+    startFromDescription: '选择其他主题会替换下方的颜色。',
+    themeAppearance: '浅色或深色',
+    themeAppearanceDescription: '哪种模式使用此主题，以及图标和图片适合浅色还是深色背景。',
+    previewSection: '预览',
+    colorsDescription: '应用使用的所有颜色。更改过的颜色可以单独重置。',
+    colorsReadOnlyDescription: '此主题使用的所有颜色。',
+    importPageDescription: '从 JSON 添加主题：Happier 主题或 VS Code 主题。',
+    importAction: '导入',
+    importedWithWarnings: '已导入，但有警告',
+    exportPageDescription: '将此主题复制或下载为 JSON，用于分享或备份。',
+    exportMissingDescription: '打开一个主题并选择“导出”以获取其 JSON。',
+    deleteTheme: '删除主题',
     title: '主题',
     editorTitle: '主题简介',
     activeGroup: '活跃主题',
@@ -280,6 +394,7 @@ const settingsAppearanceTranslationExtension = {
     deactivateProfileSubtitle: '停用自定义配置文件并保存它',
     deleteProfile: '删除个人资料',
     deleteProfileSubtitle: '删除此本地自定义主题配置文件',
+    deleteAssignedThemeBody: ({ slots }: { slots: string }) => `这是${slots}的主题。删除后，该模式将恢复为默认主题。`,
     saveAndActivate: '保存并激活',
     missingProfile: '未找到主题配置文件',
     importFooter: ({ formats }: { formats: string }) => `支持的格式：${formats}。未知令牌会显示为警告。`,
@@ -435,6 +550,7 @@ const memoryEmbeddingsTranslationExtension = {
       modelPromptBody: '输入要向远程端点请求的嵌入模型 ID。',
       apiKeyTitle: 'API 密钥',
       apiKeyPromptBody: '输入远程嵌入端点使用的 API 密钥。',
+      removeApiKey: '移除 API 密钥',
       dimensionsTitle: '维度',
       dimensionsPromptBody: '支持该设置的端点可选的输出维度覆盖。',
     },
@@ -666,9 +782,42 @@ function plural({
 
 export const zhHans = {
     homeDeviceApproval: homeDeviceApprovalTranslations['zh-Hans'],
+    settingsOverview: settingsOverviewTranslations['zh-Hans'],
+    homeSetup: homeSetupTranslations['zh-Hans'],
+    connectedServicesSetup: connectedServicesSetupTranslations['zh-Hans'],
+    homeWidgets: homeWidgetTranslations['zh-Hans'],
+    widgetFrame: widgetFrameTranslations['zh-Hans'],
+    widgetAdd: widgetAddTranslations['zh-Hans'],
+    widgetGlances: widgetGlanceTranslations['zh-Hans'],
+    homeIndex: homeIndexTranslations['zh-Hans'],
+    addFlows: addFlowsTranslations['zh-Hans'],
+    machineAdd: machineAddTranslations['zh-Hans'],
+    machineAgents: machineAgentsTranslations['zh-Hans'],
+    homeComposer: homeComposerTranslations['zh-Hans'],
+    sidebarFooter: sidebarFooterTranslations['zh-Hans'],
+    accountPopover: accountPopoverTranslations['zh-Hans'],
+    homesHub: homesHubTranslations['zh-Hans'],
+    homesJourneys: homesJourneysTranslations['zh-Hans'],
+    homeAdd: homeAddTranslations['zh-Hans'],
+    accountDisplay: accountDisplayTranslations['zh-Hans'],
     actionConfirmations: actionConfirmationTranslations['zh-Hans'],
+    detailPages: detailPageTranslations['zh-Hans'],
+    roles: rolesTranslations['zh-Hans'],
+    boards: boardsTranslations.zhHans,
+    workStatus: workStatusTranslations.zhHans,
+    shareSheet: shareSheetTranslations['zh-Hans'],
+    surfaceState: surfaceStateTranslations['zh-Hans'],
+    sessionCompanion: sessionCompanionTranslations['zh-Hans'],
+    runPage: runPageTranslations['zh-Hans'],
+    detailsSurface: {
+        chrome: detailsChromeTranslations['zh-Hans'],
+        file: detailsFileTranslations['zh-Hans'],
+        history: detailsHistoryTranslations['zh-Hans'],
+        review: detailsReviewTranslations['zh-Hans'],
+    },
     workspaceSync: workspaceSyncTranslations['zh-Hans'],
     sessionDrafts: sessionDraftTranslations.zhHans,
+    sessionDirectoryRecovery: sessionDirectoryRecoveryTranslations['zh-Hans'],
     transferRecovery: {
         title: '完成暂存上传',
         message: '上传已到达设备，但最终保存需要处理。仅重试最终保存，或丢弃暂存上传。',
@@ -681,6 +830,14 @@ export const zhHans = {
     pluginPermissions: pluginPermissionTranslations['zh-Hans'],
     sessionBoard: sessionBoardTranslations['zh-Hans'],
     sessionAgentActivity: sessionAgentActivityTranslations.zhHans,
+    sessionWork: sessionWorkTranslations.zhHans,
+    agentStart: agentStartTranslations.zhHans,
+    goalControl: goalControlTranslations.zhHans,
+    sessionGitPane: sessionGitPaneTranslations.zhHans,
+    sessionGitDisplay: sessionGitDisplayTranslations.zhHans,
+    sessionGitBranches: sessionGitBranchesTranslations.zhHans,
+    sessionGitPullRequest: sessionGitPullRequestTranslations.zhHans,
+    sessionConversation: sessionConversationSurfaceTranslations.zhHans,
     ...changedFileEvidenceTranslations['zh-Hans'],
     sessionRemotePermissionGrants: sessionRemotePermissionGrantTranslations['zh-Hans'],
     pluginSurfaces: {
@@ -712,20 +869,34 @@ export const zhHans = {
     },
     settingsKeyboard: {
         title: '键盘快捷键',
-        entrySubtitle: '发现和控制应用程序快捷方式',
-        generalGroupTitle: '键盘控制',
-        generalGroupFooter: '快捷方式首选项会与您的账户同步。',
-        enableShortcutsTitle: '启用统一快捷键',
-        enableShortcutsSubtitle: '使用新的键盘命令注册表作为应用程序快捷方式。',
+        entrySubtitle: '更改运行应用命令的按键，或将其关闭。',
+        generalGroupTitle: '快捷键',
+        generalGroupFooter: '你的快捷键会随账户同步到每台设备。',
+        enableShortcutsTitle: '统一快捷键',
+        enableShortcutsSubtitle: '输入框的发送键遵循下方的命令。',
         singleKeyTitle: '单键快捷键',
-        singleKeySubtitle: '允许快捷方式，例如？当文本输入未获得焦点时。',
+        singleKeySubtitle: '未在输入时，? 等单键可用。',
         conflictsTitle: ({ count }: { count: number }) => `${count} shortcut conflict${count === 1 ? '' : 's'} detected`,
         conflictsSubtitle: ({ count }: { count: number }) => `${count} command${count === 1 ? '' : 's'} need review before all shortcuts can be active.`,
-        conflictsGroupTitle: '诊断',
+        conflictsGroupTitle: '冲突',
+        conflictBrowserReserved: '浏览器保留了这些按键。请选择其他按键。',
+        conflictDuplicate: '这些命令使用相同的按键。请更改其中一个。',
         commandsGroupTitle: '命令',
         commandsGroupFooter: '默认值从快捷方式注册表中显示。设置自定义快捷方式、禁用命令或重置它以恢复默认绑定。',
         noDefaultShortcut: '没有默认快捷方式',
-        setCommandButton: '套装',
+        commandOff: '关闭',
+        noShortcut: '无快捷键',
+        customShortcut: '自定义按键',
+        commandEnabledTitle: '已启用',
+        keysTitle: '按键',
+        resetToDefaultTitle: '恢复默认',
+        groupApp: '应用',
+        groupSessions: '会话',
+        groupComposer: '输入框',
+        groupTranscript: '对话记录',
+        groupSplitView: '分屏视图',
+        groupBrowser: '浏览器',
+        setCommandButton: '更改',
         setCommandAccessibility: ({ command }: { command: string }) => `Set ${command} shortcut`,
         setShortcutPromptTitle: ({ command }: { command: string }) => `Set shortcut for ${command}`,
         setShortcutPromptMessage: '输入快捷键，例如 Alt+K、Alt+ArrowDown、Mod+Enter 或 ?。',
@@ -884,8 +1055,10 @@ export const zhHans = {
 
 
   inbox: {
+        work: inboxWorkTranslations.zhHans,
         ...actionOperationInboxTranslations,
     openSession: ({ session }: { session: string }) => `打开会话：${session}`,
+    stoppedResumeToAnswer: '已停止 — 恢复后即可答复',
     readySessionAccessibilityLabel: ({ session }: { session: string }) => `待审阅：${session}`,
     // Inbox screen
     emptyTitle: "已全部处理完",
@@ -893,7 +1066,10 @@ export const zhHans = {
     approvals: "审批",
     permissions: "权限",
     readySessions: "待审阅",
-    errors: "错误",
+    pageDescription: "你的会话、审批和联系人中需要你处理的事项。",
+    needsYou: "需要你处理",
+    failed: "失败",
+    friendRequests: "好友请求",
     markAllRead: "全部标为已读",
     openInbox: "打开收件箱",
     updates: "动态",
@@ -932,6 +1108,96 @@ export const zhHans = {
   },
 
   promptLibrary: {
+      surface: {
+          installAction: '安装',
+          projectDirectoryPlaceholder: '项目在机器上的路径',
+          pageDescription: '写一次、在会话中反复使用的提示词、技能和斜杠模板。',
+          librarySectionDescription: '你已写好的内容，随时可复用。',
+          promptsLinkDescription: '可插入会话或添加到代理指令中的文本。',
+          skillsLinkDescription: '带有支持文件的 SKILL.md 指令。',
+          skillsKeywords: '技能, skill, SKILL.md, 包',
+          templatesLinkDescription: '插入提示词的斜杠命令。',
+          useSection: '资料库的用处',
+          useSectionDescription: '资料库条目生效的地方。',
+          stacksLinkDescription: '添加到每个编码或语音会话的提示词和技能。',
+          foldersLinkDescription: '用来归类提示词和技能的命名分组。',
+          importSection: '从别处引入',
+          importSectionDescription: '已在你的机器或注册表中的提示词和技能。',
+          externalAssetsLinkDescription: '你的工具保存在机器上的提示词和技能。',
+          registriesLinkDescription: '浏览技能注册表并导入技能。',
+          itemCount: ({ count }: { count: number }) => `${count}`,
+          docsDescription: '可插入会话或添加到代理指令中的文本。',
+          skillsDescription: '代理遵循的 SKILL.md 指令及其支持文件。',
+          templatesDescription: '插入你某个提示词的斜杠命令。',
+          addPrompt: '新建提示词',
+          addSkill: '新建技能',
+          addTemplate: '新建模板',
+          searchPrompts: '搜索提示词',
+          searchSkills: '搜索技能',
+          searchTemplates: '搜索模板',
+          noFolder: '无文件夹',
+          nameTitle: '名称',
+          optionalPlaceholder: '可选',
+          folderDescription: '输入新名称会创建该文件夹。',
+          tagsDescription: '用逗号分隔标签。',
+          promptSection: '提示词',
+          promptSectionDescription: '它在资料库中的显示和归档方式。',
+          contentSection: '内容',
+          docContentDescription: '在使用提示词的位置插入的 Markdown。',
+          docEditorDescription: '可插入会话或添加到代理指令中的文本。',
+          skillSection: '技能',
+          skillSectionDescription: '它在资料库中的显示和归档方式。',
+          skillContentDescription: '代理读取的指令。前置信息为技能命名并说明何时使用。',
+          skillEditorDescription: '代理遵循的指令，与其文件一起导出为 SKILL.md。',
+          supportingFilesDescription: '与 SKILL.md 一起导出的文件，例如模板和检查清单。',
+          addFile: '添加文件',
+          externalLinksDescription: '此条目在你的机器上的导出位置。导出内容与资料库保持关联。',
+          manageExternalAssetsDescription: '导出到机器上的工具，或更新已有导出。',
+          templateSection: '模板',
+          templateSectionDescription: '在输入框中输入什么来使用它。',
+          templateEditorDescription: '插入你某个提示词的斜杠命令。',
+          tokenDescription: '在输入框中输入，以 / 开头。',
+          templateTargetDescription: '该命令插入的提示词。',
+          behaviorSectionDescription: '选择该命令时会发生什么。',
+          behaviorTitle: '选择时',
+          behaviorInsertDescription: '将提示词加入输入框，供你编辑。',
+          behaviorInsertOnSendDescription: '发送消息时展开为提示词。',
+          behaviorInsertAndSendDescription: '立即发送提示词。',
+          fileSection: '文件',
+          filePathDescription: '相对于技能的路径，例如 templates/review.md。',
+          supportingFileDescription: ({ skill }: { skill: string }) => `${skill} 的一个文件，与其 SKILL.md 一起导出。`,
+          foldersPageDescription: '将提示词和技能分组，更容易找到。',
+          foldersSectionDescription: '删除文件夹会保留其中条目，它们只是离开该文件夹。',
+          stacksPageDescription: '自动添加到代理指令中的提示词和技能。',
+          stacksSection: '应用位置',
+          stacksSectionDescription: '会话开始时按顺序添加每个列表。',
+          profileStacksDescription: '为使用某个配置启动的会话额外添加的提示词。',
+          profileStacksPageDescription: '添加到使用各配置启动的会话中的提示词和技能。',
+          profileStackEditorDescription: '添加到使用此配置启动的会话中。',
+          profilesSection: '配置',
+          stackEntriesDescription: '按此顺序添加。关闭某项可保留但不使用。',
+          stackPickerDescription: '选择要添加的提示词或技能。',
+          registriesPageDescription: '在注册表中查找技能并导入到你的资料库。',
+          projectSection: '项目',
+          registriesProjectDescription: '在机器上项目级安装的位置。',
+          registriesSourcesDescription: '内置注册表和你添加的 Git 来源。选择一个查看其技能。',
+          registriesItemsDescription: '所选来源中的技能。',
+          registryItemDescription: '来自注册表的技能。导入到资料库，或安装到机器上。',
+          registryItemSection: '技能',
+          importToLibrary: '导入到资料库',
+          registryInstallDescription: '同时写入机器上工具读取技能的位置。',
+          installProjectScopeDescription: '在机器上的某个项目目录中。',
+          installUserScopeDescription: '在机器上的用户文件夹中，适用于所有项目。',
+          installMethodLink: '链接',
+          installMethodCopy: '复制',
+          installMethodLinkDescription: '推荐：链接到 Happier 保持最新的副本。',
+          installTargetDescription: '工具使用的文件或文件夹名称。',
+          externalAssetsPageDescription: '你的工具保存在机器上的提示词和技能。导入后即可复用和同步。',
+          whereToLookSection: '查找位置',
+          whereToLookDescription: '机器上的某个项目，或你的用户文件夹。',
+          exportDescription: ({ title }: { title: string }) => `将 ${title} 写入机器上工具读取的位置。`,
+          exportOptionsDescription: '选择工具以及它应在哪里找到文件。',
+      },
     sections: "分区",
     library: "资料库",
     librarySubtitle: "管理提示词与技能",
@@ -1160,7 +1426,7 @@ export const zhHans = {
         target: '执行目标',
         targetNewSession: '新会话',
         targetExistingSession: '现有会话',
-        targetExecutionRun: '执行运行',
+        targetExecutionRun: '后台运行',
         chooseExistingSession: '选择会话',
         searchEvents: '搜索事件',
         executionNoTools: '无工具',
@@ -1401,7 +1667,7 @@ export const zhHans = {
         outputCeiling: "输出上限",
         existingSession: ({ sessionId }: { sessionId: string }) => `现有会话：${sessionId}`,
         newSession: ({ machineId, directory }: { machineId: string; directory: string }) => `在 ${machineId} 上的新会话：${directory}`,
-        executionRun: ({ permissionMode }: { permissionMode: string }) => `执行运行 · ${permissionMode}`,
+        executionRun: ({ permissionMode }: { permissionMode: string }) => `后台运行 · ${permissionMode}`,
         prompt: "冻结提示词",
         result: "最终结果",
         resultAbsent: "未记录最终结果。",
@@ -1530,7 +1796,9 @@ export const zhHans = {
     delete: "删除",
     deleted: "已删除",
     optional: "可选的",
+    draft: "草稿",
     noMatches: "无匹配结果",
+    choose: "选择…",
     all: "全部",
     machine: "机器",
     clearSearch: "清除搜索",
@@ -1704,6 +1972,11 @@ export const zhHans = {
   },
 
   connect: {
+    addPhonePage: {
+      description: '在手机上的 Happier 中使用你已有的 Home。',
+      qrTitle: '二维码',
+      signInFirst: '请先登录',
+    },
     restoreAccount: "恢复账户",
     enterSecretKey: "请输入恢复密钥",
     invalidSecretKey: "无效的恢复密钥，请检查后重试。",
@@ -1789,6 +2062,7 @@ export const zhHans = {
 
   bugReports: {
     composer: {
+      pageDescription: '告诉我们出了什么问题。附上诊断信息可以帮助我们更快找到原因。',
       alerts: {
         previewUnavailableTitle: "无法预览",
         previewUnavailableBody: "无法构建诊断预览。",
@@ -1894,6 +2168,7 @@ export const zhHans = {
         },
       },
       environment: {
+        description: '根据此设备自动填写。如有不对，请更正。',
         title: "环境（可编辑）",
         appVersionLabel: "应用版本",
         platformLabel: "平台",
@@ -1923,15 +2198,21 @@ export const zhHans = {
   },
 
   memorySearchSettings: {
+    indexing: {
+        description: '哪些会话进入索引，以及每个会话索引多少内容。',
+        title: '索引范围',
+    },
+    pagePurpose: '按对话内容查找过去的会话。索引保存在你选择的设备上。',
     disabled: {
       footer: "在“功能”中启用记忆搜索以配置本地索引。",
       title: "记忆搜索已禁用",
-      subtitle: "打开 设置 → 功能 以启用 memory.search",
       openFeatureSettings: "打开功能设置",
-      alertTitle: "记忆搜索已禁用",
-      alertBody: "在 设置 → 功能 中启用 memory.search。",
     },
     enabled: {
+      updateRequired: '这台设备上的 Happier 需要更新后才能更改记忆设置。',
+      unreachable: '无法连接这台设备。它重新上线后会显示记忆设置。',
+      chooseMachine: '在上方选择一台设备，查看并更改它的索引。',
+      sectionTitle: '本地索引',
       title: "已启用",
       subtitle: "在此设备上构建并维护本地索引",
       footer:
@@ -1940,12 +2221,9 @@ export const zhHans = {
     budgets: {
       groupTitle: "磁盘配额",
       groupFooter: "限制本地记忆索引可使用的磁盘空间（尽力而为地回收）。",
-      mbLabel: ({ mb }: { mb: number }) => `${mb} MB`,
       lightTitle: "轻量索引配额",
-      lightPromptTitle: "轻量索引配额",
       lightPromptBody: "此设备上轻量（摘要分片）索引的最大 MB。",
       deepTitle: "深度索引配额",
-      deepPromptTitle: "深度索引配额",
       deepPromptBody: "此设备上深度（分块）索引的最大 MB。",
     },
     privacy: {
@@ -1961,7 +2239,7 @@ export const zhHans = {
       emptyResults: "暂无内存结果",
     },
     status: {
-      title: "本地索引状态",
+      title: "状态",
       diskUsageTitle: "磁盘使用情况",
       disabled: "此设备已禁用本地记忆搜索",
       empty: "本地记忆搜索已启用，但尚未索引任何可搜索内容",
@@ -1985,24 +2263,19 @@ export const zhHans = {
       noMachine: "无设备",
     },
     indexMode: {
-      title: "索引模式",
-      footer:
-        "轻量模式只存储较小的摘要分片。深度模式更全面，但占用更多磁盘。",
       triggerTitle: "模式",
       options: {
-        lightTitle: "轻量（推荐）",
-        lightSubtitle: "仅摘要分片",
+        lightTitle: "轻量",
+        lightSubtitle: "仅摘要分片。推荐。",
         deepTitle: "深度",
-        deepSubtitle: "在本地索引消息分片",
+        deepSubtitle: "同时索引消息分片。能找到更多内容，但占用更多磁盘。",
       },
     },
     backfill: {
-      title: "回填",
-      footer: "控制启用本地记忆时要索引多少历史记录。",
-      triggerTitle: "策略",
+      triggerTitle: "历史记录",
       options: {
-        newOnlyTitle: "仅新内容（推荐）",
-        newOnlySubtitle: "仅索引启用之后创建的内容",
+        newOnlyTitle: "仅新内容",
+        newOnlySubtitle: "仅索引启用之后创建的内容。推荐。",
         last30DaysTitle: "最近30天",
         last30DaysSubtitle: "回填最近的会话",
         allHistoryTitle: "全部历史",
@@ -2010,35 +2283,28 @@ export const zhHans = {
       },
     },
     archived: {
-        groupTitle: '已归档会话',
-        groupFooter: '开启后，已归档会话会被编入本地搜索索引。关闭后，它们会被排除，其已索引内容也会从搜索中移除。',
         includeTitle: '搜索已归档会话',
-        includeSubtitle: '在此设备上索引已归档会话',
+        includeSubtitle: '也索引已归档会话。关闭后，它们会从搜索中移除。',
         unsupportedSubtitle: '此设备上的 Happier 需要更新',
-        unsupportedFooter: '此设备未报告支持归档索引，因此无法在此应用该设置。其他搜索仍然可用。',
     },
     indexContents: {
-      groupTitle: "索引内容",
+      groupTitle: "索引活动",
       title: "可搜索内容",
       subtitle: ({ sessions, lightShards, deepChunks }: { sessions: number; lightShards: number; deepChunks: number }) =>
         `${sessions} 个会话 · ${lightShards} 个轻量分片 · ${deepChunks} 个深度分块`,
     },
     queue: {
-      groupTitle: "回填和队列",
       title: "索引队列",
       subtitle: ({ selected, queued, indexing, indexed, empty, failed, waiting }: { selected: number; queued: number; indexing: number; indexed: number; empty: number; failed: number; waiting: number }) =>
         `${selected} 已选择 · ${queued} 排队 · ${indexing} 索引中 · ${indexed} 已索引 · ${empty} 空 · ${failed} 失败 · ${waiting} 等待`,
       workerPhase: ({ phase }: { phase: string }) => `当前阶段：${phase}`,
     },
     lastRun: {
-      groupTitle: "最近一次索引",
       title: "最近运行",
       subtitle: ({ considered, processed, semanticRows, failures }: { considered: number; processed: number; semanticRows: number; failures: number }) =>
         `${considered} 已考虑 · ${processed} 已处理 · ${semanticRows} 条语义行 · ${failures} 个失败`,
     },
     coverage: {
-      title: "内容覆盖范围",
-      footer: "控制在所选会话中索引哪些语义对话记录内容。",
       triggerTitle: "覆盖范围",
       options: {
         fullTitle: "所有选中历史",
@@ -2066,23 +2332,21 @@ export const zhHans = {
       toolOutputsSubtitle: "除非你有意让本地索引包含原始工具输出文本，否则请保持关闭",
     },
     hints: {
-      title: "记忆提示生成",
-      footer: "控制轻量记忆搜索的摘要分片生成方式。",
+      title: "摘要",
+      footer: "轻量索引如何为每个会话生成摘要。",
       backend: {
-        title: "摘要后端",
-        promptTitle: "摘要后端",
-        promptBody: "输入一个 execution-run 后端 id（例如：claude、codex）。",
+        title: "摘要代理",
+        promptBody: "撰写摘要的代理 ID，例如 claude 或 codex。",
       },
       model: {
         title: "摘要模型",
-        promptTitle: "摘要模型",
         promptBody: "输入要传递给后端的模型 id。",
       },
       permissions: {
         triggerTitle: "摘要权限",
         options: {
-          noToolsTitle: "无工具（推荐）",
-          noToolsSubtitle: "仅总结文本",
+          noToolsTitle: "无工具",
+          noToolsSubtitle: "仅总结文本。推荐。",
           readOnlyTitle: "只读",
           readOnlySubtitle: "在支持时允许不改变状态的工具",
         },
@@ -2100,13 +2364,11 @@ export const zhHans = {
     ruleEditor: {
       header: {
         newRule: "新规则",
-        editRule: "编辑规则",
       },
       enabled: {
         title: "启用",
       },
       enabledState: {
-        enabled: "已启用",
         disabled: "已禁用",
       },
       common: {
@@ -2160,45 +2422,34 @@ export const zhHans = {
       },
     },
         settings: {
+      instructionsTitle: '委派',
+      pagePurpose: '你的代理如何把工作交给其他代理，以及交接时遵循的规则。',
       groupTitle: "子代理",
       disabled: {
+        title: '子代理已关闭',
         footer:
           "Execution runs 已禁用。请在 设置 → 功能 中启用 Execution Runs 以使用委派指引。",
         enableExecutionRuns: {
-          title: "启用 Execution Runs",
-          subtitle: "打开功能设置",
+          title: "在“功能”中开启",
         },
       },
       footer:
         "规则会追加到系统提示词中，让主代理知道你希望何时以及如何启动子代理运行。",
-      overview: {
-        groupTitle: "概览",
-        footer: "使用此页面配置子代理指导，并跳转到相关的提供方、后端和会话设置。",
-        explainerTitle: "此页面控制什么",
-        explainerSubtitle: "子代理的委派指导，以及指向各提供方子代理设置的链接。",
-        happierStatusTitle: "子代理",
-        happierStatusEnabledSubtitle: "已启用。你可以从受支持的会话中启动子代理。",
-        happierStatusDisabledSubtitle: "已禁用。请在“功能”设置中启用子代理。",
-      },
       related: {
+        agentsSubtitle: '登录、设置和自定义 ACP 代理。',
+        agentsTitle: '代理',
         groupTitle: "相关设置",
-        footer: "子代理启动和控制也取决于会话行为、提供方和已配置后端。",
+        footer: "子代理也遵循你的会话行为和每个代理的设置。",
         sessionTitle: "会话行为",
         sessionSubtitle: "消息发送、忙碌引导和回放/恢复行为。",
-        providersTitle: "提供方",
-        providersSubtitle: "提供方相关的认证、运行时和代理设置。",
-        backendsTitle: "ACP 目录",
-        backendsSubtitle: "已配置后端和自定义启动目标。",
       },
       enableInjection: {
         title: "Happier 运行指令",
         subtitle: "关闭后，编码代理的系统提示词中将移除原生优先路由说明和 Happier 运行机制。",
       },
-      notifyParentOnCompletion: { title: '运行完成时通知父代理', subtitle: '向父代理发送结构化的完成事件。' },
+      notifyParentOnCompletion: { title: '旁支对话完成后回报', subtitle: '长时间运行的后台运行结束时，通知启动它的会话。审查、计划和委派任务始终会回报。' },
       characterBudget: {
         title: "自定义规则字符上限",
-        subtitle: ({ value }: { value: string }) => `${value} 个字符`,
-        promptTitle: "自定义规则字符上限",
         promptBody: "系统提示词中自定义运行规则的最大字符数。",
       },
       rules: {
@@ -2208,7 +2459,6 @@ export const zhHans = {
         emptyTitle: "还没有规则",
         emptySubtitle: "添加规则以指导委派。",
         addRuleTitle: "添加规则",
-        addRuleSubtitle: "创建新的指引规则",
         untitled: "未命名规则",
         descriptionFallback: "描述何时委派。",
         tapToEdit: "点击编辑",
@@ -2364,7 +2614,7 @@ export const zhHans = {
     appearance: "外观",
     appearanceSubtitle: "自定义应用外观",
     voiceAssistant: "语音助手",
-    voiceAssistantSubtitle: "配置语音交互偏好",
+    voiceAssistantSubtitle: "与你的智能体对话，并向输入框口述文字。",
     memorySearch: "本地记忆搜索",
     memorySearchSubtitle: "在设备本地搜索过往对话",
     notifications: "通知",
@@ -2377,18 +2627,16 @@ export const zhHans = {
     automationsSubtitle: "管理定时会话与周期性运行",
     executionRunsSubtitle: "跨设备执行运行",
     connectedServices: "已连接服务",
-    connectedServicesSubtitle: "Claude/Codex 订阅与 OAuth 配置",
+    connectedServicesSubtitle: '你的代理用于登录的账户，以及每个账户的剩余用量。',
     featuresTitle: "功能",
-    featuresSubtitle: "启用或禁用应用功能",
+    featuresSubtitle: '开启或关闭 Happier 的部分功能，并试用仍在开发中的功能。',
     pets: "宠物",
-    petsSubtitle: "选择 Blink 和此设备上的宠物伙伴",
+    petsSubtitle: '一个显示会话状态的小伙伴。',
     developer: "开发者",
     developerTools: "开发者工具",
     about: "关于",
     actionsSettingsAboutSubtitle:
       "可全局、按界面（UI/语音/MCP）以及按展示位置（在界面中出现的位置）启用或禁用操作。被禁用的操作在运行时会以安全方式（fail-closed）被阻止。",
-    aboutFooter:
-      "Happier Coder 是一个 Codex 和 Claude Code 移动客户端。默认启用端到端加密，并可在其他设备上恢复您的账户。与 Anthropic 无关联。",
     whatsNew: "更新日志",
     whatsNewSubtitle: "查看最新更新和改进",
     reportIssue: "报告问题",
@@ -2406,7 +2654,7 @@ export const zhHans = {
     claudeAuthSuccess: "成功连接到 Claude",
     exchangingTokens: "正在交换令牌...",
     usage: "使用情况",
-    usageSubtitle: "查看 API 使用情况和费用",
+    usageSubtitle: '你的会话、智能体和模型的令牌用量与费用。',
     profiles: "配置文件",
     profilesSubtitle: "管理环境配置文件和变量",
     secrets: "机密",
@@ -2680,6 +2928,7 @@ export const zhHans = {
     machineSetupStepAuthWait: "等待批准",
     machineSetupStepInstallService: "正在安装后台服务",
     machineSetupStepStartService: "正在启动后台服务",
+    machineSetupStepRestartService: "正在重新启动后台服务",
     machineSetupStepVerifyService: "正在验证后台服务",
     machineSetupRemoteSshTargetPlaceholder: "user@host",
     machineSetupRemoteSshUsernameLabel: "SSH 用户名",
@@ -2827,6 +3076,7 @@ export const zhHans = {
     systemTaskOpenLogsFailed: "无法打开日志文件夹。",},
 
 	  systemStatus: {
+	    pageDescription: '此应用、你的 Home 和你的机器当前的连接情况。',
 	    sections: {
 	      application: "应用",
 	      updates: "更新",
@@ -2915,14 +3165,15 @@ export const zhHans = {
     actions: {
       runDiagnosis: "运行诊断",
       runDiagnosisSubtitle: "检测 Home/账号/守护进程不匹配",
-      refreshMachineAttribution: "刷新守护进程归属信息",
+      refreshMachineAttribution: '检查守护进程',
       refreshMachineAttributionSubtitle: "为部分在线机器获取守护进程 Home/账号",
-      copyJson: "复制系统状态 JSON",
+      copyJson: '复制为 JSON',
       copyJsonSubtitle: "复制一个已脱敏的快照用于支持",
     },
   },
 
   diagnosis: {
+    pageDescription: '检查此应用、你的 Home 和你的机器是否存在设置问题，并给出解决步骤。',
     title: "诊断",
     sections: {
       overview: "概览",
@@ -3052,7 +3303,7 @@ export const zhHans = {
     fallbackName: "已连接服务",
     serviceNames: {
       claudeSubscription: "Claude 订阅",
-      openaiCodex: "OpenAI Codex（OpenAI）",
+      openaiCodex: 'ChatGPT',
       openai: "OpenAI API 密钥",
       anthropic: "Anthropic API 密钥",
       gemini: "Google Gemini（谷歌）",
@@ -3249,7 +3500,6 @@ export const zhHans = {
       lastUpdatedStale: ({ time }: { time: string }) =>
         `最后更新：${time} • 过期`,
       noData: "暂无配额数据",
-      planLabel: ({ plan }: { plan: string }) => `方案：${plan}`,
       remaining: ({ percent }: { percent: string }) => `剩余 ${percent}`,
       remainingWithReset: ({ percent, reset }: { percent: string; reset: string }) => `剩余 ${percent} · ${reset} 后重置`,
       usageCount: ({ used, limit }: { used: number; limit: number }) => `已用 ${used}/${limit}`,
@@ -3259,7 +3509,6 @@ export const zhHans = {
       recoveryCreditApplying: '正在应用…',
       recoveryCreditMachineUnavailable: '当前没有可用机器能应用这次用量重置。',
       recoveryCreditNothingToReset: '当前没有耗尽的使用窗口需要重置。',
-      recoveryCreditBadge: ({ count }: { count: number }) => count === 1 ? '1 次重置' : `${count} 次重置`,
       duration: {
         now: '现在',
         outdated: '过时',
@@ -3275,49 +3524,15 @@ export const zhHans = {
       configurationInvalid: '账户设置无效。请检查每个字段，并在需要处填写不含凭据的精确 HTTPS 源。',
       configurationRefreshApplied: '新设置已保存，已连接的账户已刷新。',
       configurationReconnectApplied: '新设置已保存，已连接的账户已重新连接。',
-      refreshA11y: '刷新用量和限额',
       usedDetail: ({ used, limit }: { used: string; limit: string }) => `已用 ${used}/${limit}`,
-      usageCaption: '用量',
-      resetsCaption: '重置',
-      poolsLabel: '池',
-      poolsCount: ({ count }: { count: number }) => count === 1 ? '1 个池' : `${count} 个池`,
-      planEmailSubtitle: ({ plan, email }: { plan: string; email: string }) => `${plan} · ${email}`,
       activeMemberA11y: '活动账号',
       setActiveA11y: '设为活动账号',
-      memberEnabledLabel: '账号已启用',
       resets: {
         now: '现在',
         inDays: ({ days }: { days: number }) => days === 1 ? '1 天后' : `${days} 天后`,
-        available: '有用量重置可用',
-        rowLabel: ({ date, countdown }: { date: string; countdown: string }) =>
-          countdown ? `${date} 过期 · ${countdown}` : `${date} 过期`,
-        confirmTitle: '应用用量重置？',
-        confirmMessage: '这将消耗此已连接账号的一次可用重置。',
-        confirmCta: '应用重置',
-        use: '使用',
       },
     },
     pools: {
-      title: '账号池',
-      autoBadge: '自动',
-      manualBadge: '手动',
-      memberWarningsA11y: ({ count }: { count: number }) =>
-        count === 1 ? '1 个成员需要处理' : `${count} 个成员需要处理`,
-      create: {
-        title: '创建账号池',
-        subtitle: '将已连接账号分组，用于自动回退。',
-      },
-      empty: {
-        title: '还没有账号池',
-        subtitle: '创建账号池，在多个已连接账号之间路由会话。',
-      },
-      loadError: {
-        title: "无法加载池",
-        subtitle: "账号池加载失败。请检查网络连接后重试。",
-        staleTitle: "显示最近一次已知的池",
-        staleSubtitle: "无法刷新最新的池列表。请重试以更新。",
-        retry: "重试",
-      },
       detail: {
         summaryTitle: '摘要',
         summary: ({ count, strategy }: { count: number; strategy: string }) =>
@@ -3327,8 +3542,6 @@ export const zhHans = {
         moveDown: '下移',
         noMembersTitle: '还没有成员',
         noMembersSubtitle: '向此账号池添加一个已连接账号。',
-        serverActiveStatusTitle: "已保存到服务器",
-        serverActiveStatusSubtitle: "这是服务器上持久保存的活动账号。离线设备将在重新连接时应用；此页面并不表示所有设备都已完成同步。",
         manualApplyDivergenceTitle: "已在服务器上切换，但未在运行中的会话中生效",
         manualApplyDivergenceSubtitle: ({ detail }: { detail: string }) => `活动账号已在服务器上更改，但未能应用到运行中的会话（${detail}）。请重试，或还原以让所有内容保持在上一个账号。`,
         manualApplyRetry: "重试应用到运行中的会话",
@@ -3343,9 +3556,6 @@ export const zhHans = {
         advancedSubtitle: '微调回退触发条件和恢复行为。',
       },
       behavior: {
-        autoRestorePrimaryTitle: '重置后恢复主账号',
-        autoRestorePrimarySubtitle: '当主账号的用量限制重置后，切回主账号。',
-        switchOnGroupSubtitle: '允许此条件触发自动账号池切换。',
         switchOn: {
           usageLimit: '用量限制',
           authExpired: '身份验证已过期',
@@ -3432,7 +3642,6 @@ export const zhHans = {
       },
     },
     detail: {
-      segments: { accounts: "账号", pools: "账号池" },
       unknownService: "未知的已连接服务。",
       actionsGroupTitle: "操作",
       actions: {
@@ -3440,7 +3649,6 @@ export const zhHans = {
         unsetDefault: "取消默认",
         editLabel: "编辑标签",
         reconnect: "重新连接",
-        openAccount: "打开账号",
       },
       setDefaultProfileTitle: "设置默认配置",
       setDefaultProfileSubtitleDefault: ({ profileId }: { profileId: string }) =>
@@ -3523,18 +3731,13 @@ export const zhHans = {
         statusUnknown: "未知",
         statusNeedsMembers: "需要启用的成员",
         activeMember: ({ profileId }: { profileId: string }) => `当前活动：${profileId}`,
-        enabledMembers: ({ enabled, total }: { enabled: number; total: number }) => `${enabled}/${total} 已启用`,
         autoFallbackEnabled: "自动回退开启",
         autoFallbackDisabled: "自动回退关闭",
-        strategyPriority: "优先级顺序",
-        strategyLeastLimited: "最少受限优先",
-        strategyManual: "手动切换",
         priority: ({ priority }: { priority: string }) => `优先级 ${priority}`,
         cooldown: ({ time }: { time: string }) => `冷却至 ${time}`,
         memberActive: "活动成员",
         memberEnabled: "已启用",
         memberDisabled: "已禁用",
-        memberAutoDisabledModelNotEntitled: "已自动停用：所选模型不可用",
         memberPriority: ({ priority }: { priority: number }) => `优先级 ${priority}`,
         memberExhaustedUntil: ({ time }: { time: string }) => `耗尽至 ${time}`,
         memberQuotaExhaustedUntil: ({ time }: { time: string }) => `用量受限至 ${time}`,
@@ -3579,7 +3782,6 @@ export const zhHans = {
         removeMember: "移除成员",
         removeMemberConfirmTitle: "移除成员",
         removeMemberConfirmBody: ({ profileId }: { profileId: string }) => `从此组移除“${profileId}”？`,
-        runtimeFallbackUnsupported: '此已连接服务不支持自动切换。',
         removeMembersConfirmBody: ({ count, members }: { count: number; members: string }) => `要从此池移除${count === 1 ? "这位成员" : `这 ${count} 位成员`}吗？\n\n${members}`,
         manageMembersTitle: '管理成员',
         manageMembersSubtitle: ({ count, total }: { count: number; total: number }) => `${total} 个账户中的 ${count} 个`,
@@ -3592,13 +3794,6 @@ export const zhHans = {
         membersTitle: "成员",
         membersSubtitle: ({ enabled, total }: { enabled: number; total: number }) => `${enabled}/${total} 已启用`,
         optionsTitle: "选项",
-        autoSwitchTitle: "自动回退",
-        autoQuotaResetTitle: "自动使用配额重置",
-        autoDisablePlanInvalidTitle: "停用无法使用所选模型的账户",
-        autoDisablePlanInvalidSubtitle: "当账户套餐无法使用所选模型时，自动停用该池账户。你可以手动重新启用。默认关闭。",
-        autoQuotaResetSubtitle: "仅当池中没有可用账户且耗尽的配额可以重置时，才消耗已保存的重置次数。默认关闭。",
-        autoSwitchEnabledSubtitle: "当当前账号需要恢复时切换到另一个成员。",
-        autoSwitchDisabledSubtitle: "继续使用当前成员，直到你手动切换。",
         quotaLimitsTitle: "使用限额",
         quotaLimitsAllTitle: "所有已报告的限额",
         quotaLimitsAllSubtitle: "使用此提供商报告的所有配额来决定切换。",
@@ -3613,33 +3808,10 @@ export const zhHans = {
         quotaLimitReportingSubtitle: ({ reporting, total }: { reporting: number; total: number }) => `${total} 个已启用账户中有 ${reporting} 个报告此限额`,
         quotaLimitsSearchPlaceholder: "搜索使用限额",
         strategyTitle: "选择策略",
-        strategyPriorityTitle: "优先级顺序",
-        strategyPrioritySubtitle: "先尝试较低的优先级数字。",
-        strategyLeastLimitedTitle: "限制较少优先",
-        strategyLeastLimitedSubtitle: "优先使用可用配额最多的成员。",
-        strategyManualTitle: "手动切换",
-        strategyManualSubtitle: "只使用当前成员，直到手动更改。",
-        softSwitchThresholdTitle: "软切换阈值",
-        softSwitchThresholdSubtitle: ({ percent }: { percent: string }) => `当有更安全的成员可用时，在剩余低于 ${percent}% 时切换。`,
-        softSwitchThresholdPromptTitle: "软切换阈值",
-        softSwitchThresholdPromptBody: "输入剩余百分比，Happier 将在该值以下优先选择更安全的账号。使用 0 可关闭软切换。",
-        invalidSoftSwitchThresholdTitle: "阈值无效",
-        invalidSoftSwitchThresholdBody: "请输入 0 到 100 之间的数字。",
-        staleProbeTitle: "配额数据过期后重新检查",
-        staleProbeSubtitle: ({ minutes }: { minutes: string }) => `当配额数据早于 ${minutes} 分钟时再次检查。`,
-        staleProbePromptTitle: "配额数据过期后重新检查",
-        staleProbePromptBody: "输入配额数据可重复使用的分钟数，超过后 Happier 会重新检查。",
-        invalidStaleProbeTitle: "检查间隔无效",
-        invalidStaleProbeBody: "请输入至少 1 分钟。",
-        switchBudgetTitle: "自动切换限制",
-        switchBudgetSubtitle: ({ perTurn, perHour }: { perTurn: string; perHour: string }) => `每轮最多 ${perTurn} 次自动切换，每小时会话最多 ${perHour} 次。`,
-        recoveryModeTitle: "恢复模式",
         recoveryModeOffSubtitle: "不自动恢复此组。",
         recoveryModeWaitUntilResetSubtitle: "等待限制重置后继续。",
         recoveryModeSwitchThenResumeSubtitle: "切换到其他成员后继续。",
         recoveryModeSwitchOrWaitSubtitle: "可行时切换到其他成员，否则等待重置。",
-        recoveryPromptTitle: "恢复提示",
-        recoveryPromptSubtitle: "对此组使用标准恢复和继续提示。",
         missingTitle: "未找到组",
         missingBody: ({ service, groupId }: { service: string; groupId: string }) =>
           `${service} 中不存在名为“${groupId}”的组。`,
@@ -3706,7 +3878,9 @@ export const zhHans = {
   },
 
   settingsAttachments: {
+    pageDescription: '你附加的文件保存在哪里，以及源代码管理如何对待它们。',
     disabled: {
+      bannerTitle: '文件上传已关闭',
       title: "附件",
       footer: "此功能已被服务器或构建策略禁用。",
     },
@@ -3714,16 +3888,19 @@ export const zhHans = {
       title: "文件上传",
     },
     uploadLocation: {
+      rowTitle: '上传保存到',
       title: "上传位置",
       footer:
         "上传到工作区目录最兼容。上传到系统临时目录可用于避免在仓库中留下文件，但在更严格的沙盒中可能无法读取。",
       options: {
         workspace: {
+          short: '工作区',
           title: "工作区目录（推荐）",
           subtitle:
             "上传内容会写入工作区相对目录，以便代理沙盒能够可靠读取。",
         },
         osTemp: {
+          short: '系统临时目录',
           title: "系统临时目录",
           subtitle:
             "上传内容会写入系统临时目录。在更严格的沙盒中可能会出问题。",
@@ -3731,6 +3908,7 @@ export const zhHans = {
       },
     },
     workspaceDirectory: {
+      usedForWorkspace: '上传保存到工作区时使用',
       title: "工作区目录",
       footer: "仅在上传位置设置为工作区目录时使用。",
       uploadsDirectory: {
@@ -3743,25 +3921,30 @@ export const zhHans = {
       },
     },
     sourceControlIgnore: {
+      rowTitle: '忽略上传',
       title: "版本控制忽略",
       footer:
         "仅本地忽略可避免误提交。如果选择 .gitignore，可能会修改被跟踪的文件。",
       options: {
         gitInfoExclude: {
+          short: '本地',
           title: "本地忽略（.git/info/exclude）（推荐）",
           subtitle: "无需修改仓库文件即可避免误提交。",
         },
         gitignore: {
+          short: '.gitignore',
           title: "通过 .gitignore 忽略",
           subtitle: "会在工作区的 .gitignore 中写入条目（可能被提交）。",
         },
         none: {
+          short: '关闭',
           title: "不写入忽略规则",
           subtitle:
             "根据仓库配置，上传的文件可能会被版本控制拾取。",
         },
       },
       writeIgnoreRules: {
+        subtitle: '保存上传时由 Happier 添加忽略规则。',
         title: "写入忽略规则",
       },
     },
@@ -3770,7 +3953,7 @@ export const zhHans = {
       footer: "这些限制由本地 CLI 上传处理器尽力执行。",
       invalidValueTitle: "值无效",
       maxAttachmentSize: {
-        title: "附件最大大小（字节）",
+        title: '附件最大大小',
         promptTitle: "附件最大大小（字节）",
         promptMessage: "示例：25MB 为 26214400。",
         invalidValueMessage: "请输入 1024 到 1073741824 之间的数字。",
@@ -3779,6 +3962,84 @@ export const zhHans = {
   },
 
   settingsSourceControl: {
+    page: {
+      description: "会话中的提交、推送和差异如何工作。",
+      commits: {
+        title: "提交",
+        description: "会话中的更改如何成为提交。",
+      },
+      commitStrategy: {
+        title: "提交方式",
+        atomic: "原子提交",
+        gitStaging: "Git 暂存",
+        atomicDescription: "一次性提交所有待处理的更改，代理之间不会共享 Git 索引。",
+        gitStagingDescription: "提交前包含或排除文件和行。",
+      },
+      coAuthoredByDescription: "在代理编写的提交信息中署名代理。",
+      generator: {
+        description: "代理根据待处理的更改起草提交信息。需要机器支持子代理。",
+        agentTitle: "代理",
+        agentDescription: "编写建议的提交信息。",
+        instructionsTitle: "说明",
+        instructionsDescription: "添加到每次请求中，例如要遵循的风格。",
+      },
+      remote: {
+        title: "拉取和推送",
+        description: "确认，以及推送被拒绝时的处理方式。",
+      },
+      pushRejection: {
+        title: "推送被拒绝时",
+        ask: "询问",
+        fetch: "获取",
+        manual: "手动",
+        askDescription: "分支落后于上游时，获取前先询问。",
+        fetchDescription: "分支落后于上游时，自动获取。",
+        manualDescription: "由你自行恢复。",
+      },
+      routing: {
+        title: "仓库后端",
+        description: "在所选机器上处理含 .git 文件夹的仓库的后端。",
+        rowTitle: ".git 仓库的后端",
+        git: "Git",
+        sapling: "Sapling",
+        chooseMachine: "选择机器",
+        chooseMachineDescription: "后端从上方所选的机器读取。",
+        waiting: ({ machine }: { machine: string }) => `正在等待 ${machine}`,
+        offline: ({ machine }: { machine: string }) => `${machine} 已离线`,
+        unavailable: ({ machine }: { machine: string }) => `${machine} 不可用`,
+        waitingDescription: "它在线并响应后，后端会显示出来。",
+        unavailableDescription: "请在上方选择其他机器。",
+      },
+      services: {
+        description: "你的后端所用代码托管服务的账户。",
+      },
+      files: {
+        title: "差异和文件",
+        description: "审阅时更改和文件的显示方式。语法高亮为实验功能，差异很大时可能关闭。",
+        renderer: "差异渲染器",
+        rendererPierre: "Pierre",
+        rendererHappier: "Happier",
+        layout: "差异布局",
+        unified: "统一",
+        split: "并排",
+        highlighting: "语法高亮",
+        off: "关闭",
+        simple: "简单",
+        advanced: "高级",
+        density: "已更改的文件",
+        comfortable: "宽松",
+        compact: "紧凑",
+      },
+      backend: {
+        defaultDiff: "默认差异视图",
+      },
+      editor: {
+        description: "文件的保存方式以及 Markdown 的打开方式。富文本编辑器无法完整保留的文件始终以文本打开。",
+        markdownTitle: "Markdown 打开方式",
+        rich: "富文本",
+        raw: "文本",
+      },
+    },
   title: '文件与源代码管理',
   editor: '编辑器',
   editorFooter: '配置文件编辑器的行为。',
@@ -3985,94 +4246,96 @@ export const zhHans = {
   },
 
   settingsDesktop: {
+    ...menuBarModeTranslations.zhHans,
     title: '桌面',
-    footer: '管理这台电脑上的 Tauri 桌面集成。',
-    startOnLoginTitle: '登录时启动',
-    startOnLoginSubtitle: '当你登录这台电脑时自动启动 Happier。',
+    footer: '桌面应用在此电脑上的启动方式和活动显示。',
+    startupTitle: '启动',
+    unavailableTitle: '仅限桌面应用',
+    unavailableSubtitle: '在电脑上打开 Happier 桌面应用即可更改这些设置。',
 
     overlay: {
-      title: 'Desktop overlay',
-      footer: 'Controls the local floating activity surface on this device.',
-      enabledTitle: 'Enable desktop overlay',
-      enabledSubtitle: 'Show a local floating activity surface on this device',
-      visibilityModeTitle: 'Visibility mode',
-      visibilityModeSubtitle: 'Choose when the overlay should appear',
-      visibilityAttentionOnlyTitle: 'Attention only',
-      visibilityActiveSessionsTitle: 'Active sessions',
-      visibilityAlwaysWhenEnabledTitle: 'Always when enabled',
-      showWhenRunningTitle: 'Show when running',
-      showWhenRunningSubtitle: 'Show the overlay while sessions are running',
-      showWhenAttentionRequiredTitle: 'Show when attention is required',
-      showWhenAttentionRequiredSubtitle: 'Show the overlay when a session needs your input',
-      showWhenReadyTitle: 'Show when ready',
-      showWhenReadySubtitle: 'Show the overlay when a turn finishes and waits for input',
-      alwaysOnTopTitle: 'Always on top',
-      alwaysOnTopSubtitle: 'Keep the overlay above other windows',
-      interactionTitle: 'Interaction',
-      interactionFooter: 'Choose how the overlay behaves while it is visible.',
-      autoHideEnabledTitle: 'Auto-hide',
-      autoHideEnabledSubtitle: 'Hide the overlay after it has been idle',
-      autoHideDelayTitle: 'Auto-hide delay',
-      autoHideDelaySubtitle: 'Choose how long the overlay waits before hiding',
-      autoHideDelay3sTitle: '3 seconds',
-      autoHideDelay6sTitle: '6 seconds',
-      autoHideDelay10sTitle: '10 seconds',
-      autoHideDelay30sTitle: '30 seconds',
-      expandedBehaviorTitle: 'Expanded behavior',
-      expandedBehaviorSubtitle: 'Choose how the overlay expands',
-      expandedBehaviorClickTitle: 'Click',
-      expandedBehaviorHoverTitle: 'Hover',
-      expandedBehaviorShortcutOnlyTitle: 'Shortcut only',
-      interactiveCollapsedTitle: 'Collapsed is interactive',
-      interactiveCollapsedSubtitle: 'Allow the collapsed overlay to respond to clicks',
-      collapsedClickActionTitle: 'Collapsed click action',
-      collapsedClickActionSubtitle: 'Choose what the overlay does when collapsed',
-      collapsedClickActionExpandOverlayTitle: 'Expand overlay',
-      collapsedClickActionOpenPrimarySessionTitle: 'Open primary session',
-      collapsedClickActionOpenSessionsTitle: 'Open sessions list',
-      placementTitle: 'Placement',
-      placementFooter: 'Choose where the overlay sits on the screen.',
-      presentationModeTitle: 'Presentation mode',
-            presentationModeSubtitle: 'Choose whether the overlay follows the display notch or floats freely',
-            presentationAutomaticTitle: 'Automatic',
-            presentationNotchIntegratedTitle: 'Notch-integrated',
-            presentationFloatingOverlayTitle: 'Floating overlay',
-            hostModeFallbackTitle: 'Host mode: Floating overlay',
-            hostModeFallbackSubtitle: 'Notch-integrated mode is unavailable on this display, so the overlay falls back to a floating overlay.',
-            placementModeTitle: 'Placement mode',
-            placementModeSubtitle: 'Switch between anchored and custom placement',
-      placementAnchoredTitle: 'Anchored',
-      placementCustomTitle: 'Custom',
-      anchorPresetTitle: 'Anchor preset',
-      anchorPresetSubtitle: 'Pick the anchor used for the overlay position',
-      anchorTopCenterTitle: 'Top center',
-      anchorTopLeftTitle: 'Top left',
-      anchorTopRightTitle: 'Top right',
-      anchorBottomCenterTitle: 'Bottom center',
-      anchorBottomLeftTitle: 'Bottom left',
-      anchorBottomRightTitle: 'Bottom right',
-      anchorLeftCenterTitle: 'Left center',
-      anchorRightCenterTitle: 'Right center',
-      allowRepositioningTitle: 'Allow repositioning',
-      allowRepositioningSubtitle: 'Let the overlay be dragged into a custom position',
-      lockPositionTitle: 'Lock position',
-      lockPositionSubtitle: 'Keep the overlay fixed in place',
-      resetPositionTitle: 'Reset position',
-      resetPositionSubtitle: 'Return to the default anchored position',
-      presentationTitle: 'Presentation',
-      presentationFooter: 'Tune how the overlay looks when it is collapsed.',
-      densityTitle: 'Density',
-      densitySubtitle: 'Choose the amount of spacing used in the overlay',
-      densityCompactTitle: 'Compact',
-      densityComfortableTitle: 'Comfortable',
-      compactStyleTitle: 'Compact style',
-      compactStyleSubtitle: 'Choose the shape used for the collapsed overlay',
-      compactStylePillTitle: 'Pill',
-      compactStylePanelTitle: 'Panel',
-      showSessionCountTitle: 'Show session count',
-      showSessionCountSubtitle: 'Show how many sessions are currently represented',
-      showPreviewTextTitle: 'Show preview text',
-      showPreviewTextSubtitle: 'Show the latest preview text when space allows',
+      title: '桌面悬浮层',
+      footer: '在此电脑上显示会话活动的小型浮动窗口。',
+      enabledTitle: '启用桌面悬浮层',
+      enabledSubtitle: '在此设备上显示一个浮动的活动面板',
+      visibilityModeTitle: '可见性',
+      visibilityModeSubtitle: '选择悬浮层何时出现',
+      visibilityAttentionOnlyTitle: '仅需要关注时',
+      visibilityActiveSessionsTitle: '活跃会话',
+      visibilityAlwaysWhenEnabledTitle: '启用时始终显示',
+      showWhenRunningTitle: '运行时显示',
+      showWhenRunningSubtitle: '会话运行时显示悬浮层',
+      showWhenAttentionRequiredTitle: '需要关注时显示',
+      showWhenAttentionRequiredSubtitle: '当会话需要你输入时显示悬浮层',
+      showWhenReadyTitle: '就绪时显示',
+      showWhenReadySubtitle: '当一轮结束并等待输入时显示悬浮层',
+      alwaysOnTopTitle: '始终置顶',
+      alwaysOnTopSubtitle: '让悬浮层始终显示在其他窗口之上',
+      interactionTitle: '交互',
+      interactionFooter: '选择悬浮层显示时的行为。',
+      autoHideEnabledTitle: '自动隐藏',
+      autoHideEnabledSubtitle: '闲置一段时间后隐藏悬浮层',
+      autoHideDelayTitle: '自动隐藏延迟',
+      autoHideDelaySubtitle: '选择悬浮层在隐藏前等待多久',
+      autoHideDelay3sTitle: '3 秒',
+      autoHideDelay6sTitle: '6 秒',
+      autoHideDelay10sTitle: '10 秒',
+      autoHideDelay30sTitle: '30 秒',
+      expandedBehaviorTitle: '展开方式',
+      expandedBehaviorSubtitle: '选择悬浮层的展开方式',
+      expandedBehaviorClickTitle: '点击',
+      expandedBehaviorHoverTitle: '悬停',
+      expandedBehaviorShortcutOnlyTitle: '仅快捷键',
+      interactiveCollapsedTitle: '收起时可交互',
+      interactiveCollapsedSubtitle: '允许收起的悬浮层响应点击',
+      collapsedClickActionTitle: '收起时的点击操作',
+      collapsedClickActionSubtitle: '选择点击收起的悬浮层时执行的操作',
+      collapsedClickActionExpandOverlayTitle: '展开悬浮层',
+      collapsedClickActionOpenPrimarySessionTitle: '打开主会话',
+      collapsedClickActionOpenSessionsTitle: '打开会话列表',
+      placementTitle: '位置',
+      placementFooter: '选择悬浮层在屏幕上的位置。',
+      presentationModeTitle: '呈现模式',
+            presentationModeSubtitle: '选择悬浮层贴合屏幕刘海还是自由浮动',
+            presentationAutomaticTitle: '自动',
+            presentationNotchIntegratedTitle: '与刘海集成',
+            presentationFloatingOverlayTitle: '浮动悬浮层',
+            hostModeFallbackTitle: '当前模式：浮动悬浮层',
+            hostModeFallbackSubtitle: '此显示器不支持刘海集成模式，因此悬浮层改为浮动显示。',
+            placementModeTitle: '位置模式',
+            placementModeSubtitle: '在锚定位置和自定义位置之间切换',
+      placementAnchoredTitle: '锚定',
+      placementCustomTitle: '自定义',
+      anchorPresetTitle: '锚点预设',
+      anchorPresetSubtitle: '选择悬浮层位置的锚点',
+      anchorTopCenterTitle: '顶部居中',
+      anchorTopLeftTitle: '左上',
+      anchorTopRightTitle: '右上',
+      anchorBottomCenterTitle: '底部居中',
+      anchorBottomLeftTitle: '左下',
+      anchorBottomRightTitle: '右下',
+      anchorLeftCenterTitle: '左侧居中',
+      anchorRightCenterTitle: '右侧居中',
+      allowRepositioningTitle: '允许调整位置',
+      allowRepositioningSubtitle: '允许将悬浮层拖到自定义位置',
+      lockPositionTitle: '锁定位置',
+      lockPositionSubtitle: '将悬浮层固定在原位',
+      resetPositionTitle: '重置位置',
+      resetPositionSubtitle: '恢复到默认的锚定位置',
+      presentationTitle: '外观',
+      presentationFooter: '调整悬浮层收起时的外观。',
+      densityTitle: '密度',
+      densitySubtitle: '选择悬浮层的间距大小',
+      densityCompactTitle: '紧凑',
+      densityComfortableTitle: '宽松',
+      compactStyleTitle: '紧凑样式',
+      compactStyleSubtitle: '选择收起后悬浮层的形状',
+      compactStylePillTitle: '胶囊',
+      compactStylePanelTitle: '面板',
+      showSessionCountTitle: '显示会话数量',
+      showSessionCountSubtitle: '显示当前呈现的会话数量',
+      showPreviewTextTitle: '显示预览文本',
+      showPreviewTextSubtitle: '空间足够时显示最新的预览文本',
     },},
 
   settingsPets: {
@@ -4083,7 +4346,8 @@ export const zhHans = {
     disabledSubtitle: '在功能中启用宠物，即可在此设备上使用伙伴。',
     disabledByServerTitle: '此服务器已停用宠物',
     disabledByServerSubtitle: '管理员已为此服务器关闭宠物伙伴。',
-    accountTitle: '账户默认值',
+    accountTitle: '伙伴',
+    accountDescription: '适用于你的账户；每台设备也可以单独设置。',
     enabledTitle: '启用宠物',
     enabledSubtitle: '为此账户显示伙伴界面。',
     companionSizeTitle: '宠物大小',
@@ -4103,6 +4367,9 @@ export const zhHans = {
     helpDocsTitle: '宠物帮助',
     helpDocsSubtitle: '打开 Happier 文档以查看设置和故障排除。',
     detectCodexPetsTitle: '检测 Codex 宠物',
+    codexPetsTitle: 'Codex 宠物',
+    codexPetsDescription: '把你在 Codex 中创建的宠物带到此设备。',
+    detectedCodexPetsTitle: '在 Codex 中找到',
     detectCodexPetsSubtitle: '在本地 Codex homes 中查找兼容宠物。',
     detectedCodexPetsTileSubtitle: '已在 Codex 中找到，准备加入此设备。',
     detectedCodexPetsEmptyTitle: '未找到 Codex 宠物',
@@ -4128,6 +4395,7 @@ export const zhHans = {
     importToAccountTitle: '导入到账户',
     importToAccountSubtitle: '上传兼容的本地宠物以跨设备使用。',
     desktopOverlayTitle: '桌面悬浮层',
+    desktopOverlayDescription: '你的宠物可以待在桌面上，位于应用窗口之外。',
     overlayTrayTitle: '宠物活动',
     overlayStatusWaiting: '等待中',
     overlayStatusFailed: '失败',
@@ -4156,6 +4424,7 @@ export const zhHans = {
   },
 
   settingsNotifications: {
+        pageDescription: '选择哪些内容提醒你、在哪里提醒，以及何时保持安静。',
         remoteAlerts: {
             title: "应用关闭时的会话提醒",
             accountTitle: "允许远程会话提醒",
@@ -4173,7 +4442,7 @@ export const zhHans = {
             deviceUnavailable: "此应用版本无法注册此设备。",
             deviceEnrolled: "已确认设备注册",
             deviceNotEnrolled: "尚未确认设备注册",
-            supportedEvents: "此设备目前支持会话就绪提醒。能否送达还取决于操作系统的通知权限。",
+            supportedEvents: "此设备支持会话活动提醒。能否送达还取决于操作系统的通知权限。",
         },
     badges: {
       title: "此设备上的角标",
@@ -4238,6 +4507,7 @@ export const zhHans = {
         openSettingsFailed: '无法打开系统设置。',
     },
     pushTroubleshooting: {
+      pageDescription: '检查推送通知为何无法到达此设备，并加以修复。',
       status: {
         title: "状态",
         footer: "检查账户设置、系统权限以及服务器注册状态。",
@@ -4258,8 +4528,8 @@ export const zhHans = {
         allowedSubtitle: "此应用已允许通知。",
         denied: "已拒绝",
         notRequested: "未请求",
-        canAskAgainSubtitle: "点按以请求权限。",
-        openSettingsSubtitle: "点按以打开系统设置。",
+        canAskAgainSubtitle: 'Happier 可以在此设备上请求权限。',
+        openSettingsSubtitle: '请在系统设置中允许 Happier 的通知。',
       },
       token: {
         title: "此设备",
@@ -4300,6 +4570,8 @@ export const zhHans = {
       },
     },
     webhooks: {
+      signingSecretReplaceAction: '替换',
+      signingSecretAddAction: '添加密钥',
       title: "Webhook 通知",
       footer: "将远程活动通知发送到此账号的其他 webhook 端点。",
       addTitle: "添加 webhook",
@@ -4337,6 +4609,9 @@ export const zhHans = {
       userActionsSubtitle: "当会话需要回答或确认时发送",
     },
     foregroundBehavior: {
+      needsDeviceNotifications: '开启设备通知后即可更改。',
+      accountShort: '同步',
+      rowTitle: '横幅和声音',
       title: "应用内通知",
       footer:
         "控制您使用应用时的通知方式。当前正在查看的会话的通知始终会被静音。",
@@ -4391,17 +4666,18 @@ export const zhHans = {
       privacyTitleOnlyTitle: "仅标题",
       privacyIncludePreviewTitle: "包含预览文本",
       liveActivities: {
-        title: "Live Activities",
+        maxConcurrentNeedsSessionSpecific: '在“按会话”策略下可用。',
+        title: '实时活动',
         footer: "控制 iPhone 锁屏和 Dynamic Island 的展示方式。",
         enabledSubtitle: "在此设备上启用 Live Activities",
-        strategyTitle: 'Activity strategy',
+        strategyTitle: '活动策略',
         strategySubtitle: "选择某个活动是跟随最重要的会话，还是保持固定。",
         focusedTitle: "聚焦会话",
         attentionTitle: "注意",
         runningTitle: "进行中的会话",
-        dynamicPrimaryTitle: 'Dynamic primary',
-        pinnedPrimaryTitle: 'Pinned primary',
-        sessionSpecificTitle: 'Session specific',
+        dynamicPrimaryTitle: '动态主活动',
+        pinnedPrimaryTitle: '固定主活动',
+        sessionSpecificTitle: '按会话',
         presentationTitle: "展示模式",
         presentationSubtitle: "选择 Live Activities 应如何突出当前会话。",
         maxConcurrentTitle: "最大并发活动数",
@@ -4453,6 +4729,7 @@ export const zhHans = {
         },
       },
       widgets: {
+        modeTitle: '内容',
         title: "主屏幕小组件",
         footer: "控制显示在设备主屏幕上的小组件概览。",
         enabledSubtitle: "在此设备上启用小组件",
@@ -4464,6 +4741,12 @@ export const zhHans = {
       },
     },
     quietHours: {
+      customSubtitle: '已设置自定义时间表。选择一个选项会替换它。',
+      syncedShort: '同步',
+      nightlyShort: '每晚',
+      offShort: '关闭',
+      deviceRowTitle: '此设备',
+      accountRowTitle: '账户时间表',
       title: "免打扰时段",
       footer: "账户免打扰时段默认在所有位置生效。设备覆盖只影响此设备。",
       accountOffTitle: "无账户免打扰时段",
@@ -4478,6 +4761,11 @@ export const zhHans = {
       deviceCustomNightlySubtitle: "在此设备上用 22:00 到 7:00 覆盖账户时段",
     },
     sounds: {
+      previewAction: '播放',
+      customSubtitle: '已设置自定义声音。选择一个选项会替换它们。',
+      accountDefaultShort: '系统',
+      accountHappierShort: 'Happier',
+      accountRowTitle: '声音',
       title: "声音",
       footer: "账户默认声音会在所有位置同步。此设备可以静音本地声音。",
       accountHappierTitle: "Happier 声音",
@@ -4524,15 +4812,90 @@ export const zhHans = {
     },
   },
 
+  mcpSettings: mcpSettingsTranslations.zhHans,
+  agentInstallJob: agentInstallJobTranslations.zhHans,
+  secretsSettings: secretsSettingsTranslations.zhHans,
   settingsProviders: settingsProvidersTranslations.zhHans,
 
   settingsAgents: {
     authoring: {
+      setUpMachine: '设置设备',
       configureAcpBackendPrompt: '帮我向 Happier 添加一个自定义 ACP 智能体。问我想运行哪个智能体以及它如何启动（命令、参数、环境变量），确认该命令能在此设备上运行，然后用 agents.acp.backends.upsert 操作保存它（先用 action_spec_get 查看输入）。它出现在 设置 → 智能体 中时告诉我。',
       addAgentPrompt: '我想向 Happier 添加一个新的编码智能体。问我是哪一个。如果它支持 ACP（Agent Client Protocol）并通过命令启动，就用 agents.acp.backends.upsert 操作把它添加为自定义 ACP 智能体。否则，按照 happier-plugin-authoring 技能，从 plugins.scaffold 操作开始，构建一个添加它的 Happier 插件。在做任何更改之前，告诉我你选择了哪种方式以及原因。',
       needsMachine: '需要一台设备。将打开设备设置。',
       useAgentToConfigure: '使用智能体配置',
       useAgentToConfigureDescription: '智能体会询问你要运行什么并为你保存。',
+    },
+    customAcp: {
+        newTitle: '新建 ACP 智能体',
+        description: 'Happier 通过命令启动并通过 ACP 通信的自定义智能体。',
+        agentSection: '智能体',
+        agentSectionDescription: '开始会话时的显示方式。',
+        nameTitle: '名称',
+        namePlaceholder: '我的智能体',
+        idTitle: 'ID',
+        idDerivedDescription: '根据名称生成。会话通过它找到此智能体。',
+        idFixedDescription: '保存后不可更改：会话通过它找到此智能体。',
+        idPending: '根据名称生成',
+        shortNameTitle: '简称',
+        shortNameDescription: '简短名称，在你的自定义智能体中唯一。',
+        descriptionTitle: '描述',
+        optionalPlaceholder: '可选',
+        launchSection: '启动',
+        launchSectionDescription: 'Happier 在机器上运行以启动智能体的内容。',
+        commandTitle: '命令',
+        argsTitle: '参数',
+        argsDescription: '按此顺序传给命令。',
+        argumentLabel: ({ position }: { position: number }) => `参数 ${position}`,
+        argumentPlaceholder: '参数',
+        addArgument: '添加参数',
+        removeArgument: ({ position }: { position: number }) => `移除参数 ${position}`,
+        defaultModeTitle: '默认模式',
+        defaultModelTitle: '默认模型',
+        agentDefaultPlaceholder: '智能体默认值',
+        environmentSection: '环境',
+        environmentSectionDescription: '启动时为命令设置。值可以来自已保存的密钥。',
+        addVariable: '添加变量',
+        noVariablesTitle: '没有变量',
+        noVariablesDescription: '命令使用机器的环境启动。',
+        signInSection: '登录',
+        signInSectionDescription: '如何在机器上登录此智能体。',
+        signInMethodTitle: '方式',
+        authLoginTerminal: '在终端中登录',
+        authStatusOnly: '仅检查状态',
+        authManualOnly: '手动登录',
+        authUnsupported: '无需登录',
+        loginCommandTitle: '登录命令',
+        loginArgsTitle: '登录参数',
+        docsUrlTitle: '登录指南',
+        docsUrlDescription: '说明如何登录的页面。',
+        machineLoginKeyTitle: '登录状态键',
+        machineLoginKeyDescription: '机器报告此智能体登录状态时使用的键。',
+        capabilitiesSection: '能力',
+        capabilitiesSectionDescription: '智能体支持的功能。“未知”将使用会话开始时智能体报告的内容。',
+        supportsModes: '模式',
+        supportsModels: '模型选择',
+        supportsConfigOptions: '配置选项',
+        promptImages: '提示中的图片',
+        hintUnknown: '未知',
+        hintYes: '是',
+        hintNo: '否',
+        discard: '放弃',
+        notFound: '此自定义智能体已不在你的账户中。',
+        deleteTitle: '删除此智能体？',
+        deleteConfirm: ({ name }: { name: string }) => `开始会话时将不再提供 ${name}。`,
+        errors: {
+            nameRequired: '请添加名称。',
+            idRequired: '请添加 ID。',
+            idInvalid: '请使用小写字母、数字、点、短横线或下划线，并以字母或数字开头。',
+            idTaken: '另一个自定义智能体已在使用此 ID。',
+            shortNameInvalid: '请使用小写字母、数字、点、短横线或下划线，并以字母或数字开头。',
+            shortNameTaken: '另一个自定义智能体已在使用此简称。',
+            commandRequired: '请添加启动智能体的命令。',
+            urlInvalid: '请输入以 https:// 开头的完整地址。',
+            envInvalid: '变量名使用大写字母、数字和下划线。',
+            fieldInvalid: '请检查此值。',
+        },
     },
     collection: {
       askAgentToAdd: '让智能体添加一个',
@@ -5225,6 +5588,8 @@ export const zhHans = {
   settingsFeatures: {
     // Features settings screen
     experiments: "实验功能",
+    generalTitle: '通用',
+    generalDescription: '可以开启或关闭的日常选项。',
     experimentsDescription:
       "启用仍在开发中的实验功能。这些功能可能不稳定或会在没有通知的情况下改变。",
     experimentalFeatures: "实验功能",
@@ -5232,8 +5597,8 @@ export const zhHans = {
     experimentalFeaturesDisabled: "仅使用稳定功能",
     experimentalOptions: "实验选项",
     experimentalOptionsDescription: "选择启用哪些实验功能。",
-    localTogglesTitle: "功能",
-    localTogglesFooter: "每个功能的本地开关（与服务器支持无关）。",
+    localTogglesTitle: '可选功能',
+    localTogglesFooter: '开启或关闭 Happier 的部分功能。',
     featureDiagnostics: {
       title: "功能诊断",
       footer:
@@ -5251,7 +5616,7 @@ export const zhHans = {
       }) => `${state}（blockedBy=${blockedBy ?? "null"}, code=${code}）`,
     },
     expAutomations: "自动化",
-    expAutomationsSubtitle: "启用自动化界面与定时调度",
+    expAutomationsSubtitle: "按计划或在某件事发生时运行工作流。",
     expExecutionRuns: "执行运行",
     expExecutionRunsSubtitle:
       "启用执行运行（子代理/审查）控制平面界面",
@@ -5295,12 +5660,10 @@ export const zhHans = {
     expVoiceAgentSubtitle: "启用基于守护进程的语音代理界面（需要执行运行）",
     expVoiceDaemonInference: '守护进程语音推理',
     expVoiceDaemonInferenceSubtitle: '启用由守护进程支持的本地语音推理控制',
-    expLiveActivities: 'Live Activities',
+    expLiveActivities: '实时活动',
     expLiveActivitiesSubtitle: '启用用于会话进度的 Live Activities 界面',
     expHomeScreenWidgets: '主屏幕小组件',
     expHomeScreenWidgetsSubtitle: '启用 Happier 活动的主屏幕小组件',
-    expConnectedServicesQuotas: "已连接服务配额",
-    expConnectedServicesQuotasSubtitle: "显示已连接服务的配额徽标与用量仪表",
     expMemorySearch: "记忆搜索",
     expMemorySearchSubtitle: "启用本地记忆搜索页面与设置",
     expSessionsDirect: "外部会话",
@@ -5345,9 +5708,6 @@ export const zhHans = {
     },
     groupInactiveSessionsByProject: "按项目分组非活跃会话",
     groupInactiveSessionsByProjectSubtitle: "按项目整理非活跃聊天",
-    environmentBadge: "环境徽标",
-    environmentBadgeSubtitle:
-      "在 Happier 标题旁显示小徽标，指示当前应用环境",
     enhancedSessionWizard: "增强会话向导",
     enhancedSessionWizardEnabled: "配置文件优先启动器已激活",
     enhancedSessionWizardDisabled: "使用标准会话启动器",
@@ -5541,6 +5901,7 @@ export const zhHans = {
   },
 
   newSession: {
+    folder: folderlessSessionTranslations.zhHans.composer,
     ...newSessionMcpTranslationExtension,
     ...acpCatalogTranslationExtension.newSession,
     // Used by new-session screen and launch flows
@@ -5643,6 +6004,7 @@ export const zhHans = {
     temporaryComputer: {
         title: '临时电脑',
         subtitle: '为另一台电脑准备已验证的 Runner 安装包。',
+        continueLater: '稍后继续',
         cancelConnectedTitle: '要取消这台临时电脑吗？',
         cancelConnectedBody: '对方电脑已经连接。取消会同时结束双方的这次请求，你当前的草稿会保留在这里。',
         choosePlatform: '选择电脑平台',
@@ -5722,8 +6084,8 @@ export const zhHans = {
             reconciling: '正在检查此请求…',
             preparing: '正在准备安装包…',
             waiting_for_computer: '正在等待电脑',
-            review_unavailable: '所选的 AI 访问方式暂时无法为这台临时电脑准备。请取消此请求，更新 Happier 后再试。',
-            materialization_unavailable: '这台临时电脑暂时还无法创建会话。请取消此请求，更新 Happier 后再试。',
+            review_unavailable: '所选的 AI 访问方式暂时无法为这台临时电脑准备。请求已保存。访问恢复后请重试。',
+            materialization_unavailable: '这台临时电脑暂时还无法创建会话。请求已保存。访问恢复后请重试。',
             waiting_for_approval: '正在等待批准',
             connected: '电脑已连接',
             installing_agent: '正在安装所选智能体…',
@@ -5937,22 +6299,24 @@ export const zhHans = {
   sessionHandoff: sessionHandoffTranslationExtensions['zh-Hans'],
 
   session: {
+    folderless: folderlessSessionTranslations.zhHans.display,
         access: sessionAccessTranslations['zh-Hans'],
+        untitled: '未命名会话',
         ...sessionResponsibilityTranslations['zh-Hans'],
         collaboration: sessionCollaborationTranslations['zh-Hans'],
         follow: sessionFollowTranslations['zh-Hans'],
         homeFreshness: sessionHomeFreshnessTranslations['zh-Hans'],
+        embedded: sessionEmbeddedTranslations['zh-Hans'],
     providerBinding: providerSessionTranslations.zhHans,
     transcriptNavigation: {
       title: "导航",
       modeAll: "全部",
       modePinned: "已固定",
-      entryCount: ({ count }: { count: number }) => `${count} 条`,
+      turnCount: ({ count }: { count: number }) => `${count} 个回合`,
       pinnedCount: ({ count }: { count: number }) => `${count} 条已固定`,
-      emptyPinnedTitle: "没有固定消息",
-      emptyPinnedBody: "固定消息后，重要回合会保留在这里。",
-      emptyAllTitle: "没有导航条目",
-      emptyAllBody: "用户回合和固定消息会显示在这里。",
+      emptyPinnedTitle: "固定你还会回来看的回合",
+      emptyAllTitle: "每条消息都会成为这里的一站",
+      emptyAllBody: "最新的在最上方。点按回合即可跳回；固定你还会回来看的回合。",
       entryA11y: ({ label }: { label: string }) => `跳转到 ${label}`,
       entryPinnedA11y: ({ label }: { label: string }) => `跳转到固定消息：${label}`,
       fallbackPinnedAssistant: "已固定的助手消息",
@@ -5970,6 +6334,44 @@ export const zhHans = {
       railScrollDownA11y: "向下滚动导航",
       emptyPinnedHint: "将光标悬停在消息上并选择固定图标即可固定。",
       emptyPinnedPrivacy: "固定内容仅保存在此设备上。",
+      showAllTurns: "显示所有回合",
+      filterApprovals: "审批",
+      filterErrors: "错误",
+      filtersA11y: "显示回合",
+      approvalsCount: ({ count }: { count: number }) => `${count} 个审批`,
+      errorsCount: ({ count }: { count: number }) => `${count} 个回合有错误`,
+      waitingCount: ({ count }: { count: number }) => `${count} 个在等你`,
+      soFar: "目前",
+      toolCount: ({ count }: { count: number }) => `${count} 个工具`,
+      allowedCount: ({ count }: { count: number }) => `已允许 ${count} 个`,
+      deniedCount: ({ count }: { count: number }) => `已拒绝 ${count} 个`,
+      failedCount: ({ count }: { count: number }) => `${count} 个失败`,
+      durationSeconds: ({ seconds }: { seconds: number }) => `${seconds}秒`,
+      durationMinutes: ({ minutes, seconds }: { minutes: number; seconds: string }) => `${minutes}分${seconds}秒`,
+      durationHours: ({ hours, minutes }: { hours: number; minutes: string }) => `${hours}小时${minutes}分`,
+      now: "现在",
+      waitingForYou: "在等你",
+      waitingForYouOn: ({ label }: { label: string }) => `在等你 · ${label}`,
+      approvalAllowed: ({ label }: { label: string }) => `已允许 · ${label}`,
+      approvalDenied: ({ label }: { label: string }) => `已拒绝 · ${label}`,
+      pinnedAnswer: "已固定的回答",
+      sessionStarted: "会话已开始",
+      agentOnMachine: ({ agent, machine }: { agent: string; machine: string }) => `${machine} 上的 ${agent}`,
+      partialApprovals: "来自目前已加载回合的审批。",
+      partialErrors: "来自目前已加载回合的错误。",
+      filterEndApprovals: ({ count, total }: { count: number; total: number }) => `${total} 个回合中有 ${count} 个请求了审批。`,
+      filterEndErrors: ({ count, total }: { count: number; total: number }) => `${total} 个回合中有 ${count} 个有失败的步骤。`,
+      loadEarlierTurns: "加载更早的回合",
+      loadingEarlierTurns: "正在加载更早的回合…",
+      earlierTurnsNotListed: "更早的回合尚未列出。",
+      noApprovals: "没有回合请求审批。",
+      noApprovalsSoFar: "目前已加载的回合中没有审批。",
+      noErrors: "此会话中没有失败的步骤。",
+      noErrorsSoFar: "目前已加载的回合中没有失败的步骤。",
+      machineOffline: ({ machine }: { machine: string }) => `${machine} 已离线`,
+      sessionOffline: "此会话已离线",
+      backToTime: ({ time }: { time: string }) => `回到 ${time}`,
+      backToReading: "回到阅读位置",
     },
 
     inputPlaceholder: "输入消息...",
@@ -6334,7 +6736,7 @@ export const zhHans = {
       openSubagents: ({ count }: { count: number }) => (count > 0 ? `打开代理 (${count})` : '打开代理'),
       participants: {
         to: '发送给',
-        lead: '主助手',
+        lead: '此会话',
         sendToTitle: '发送给',
         broadcast: ({ teamId }: { teamId: string }) => `广播：${teamId}`,
         executionRun: ({ runId }: { runId: string }) => `运行 ${runId}`,
@@ -6529,6 +6931,8 @@ export const zhHans = {
           invalid: '无法按原样接受这条消息。',
           archived: '此会话已归档，不再接受输入。',
           unauthorized: '你没有向此会话发送消息的权限。',
+          modelNotGranted: '不允许使用所选模型。',
+          permissionModeNotGranted: '不允许使用所选权限模式。',
           targetUnavailable: '所选代理对话已不可用。未发送任何内容。',
           targetUpdateRequired: '向代理对话发送消息需要更新 Home 和电脑。未发送任何内容。',
           cancelled: '发送在被接受前已取消。',
@@ -6701,6 +7105,7 @@ export const zhHans = {
   },
 
     universalSearch: {
+        scopeFilterLabel: 'Home',
         commitsUpdateRequired: '请更新此机器上的 Happier 以搜索提交。',
     moreResultsAvailable: '还有更多结果。请缩小搜索范围。',
     sections: {
@@ -6724,23 +7129,18 @@ export const zhHans = {
         shortcutsHelpHelp: '打开键盘快捷键',
         shortcutsHelpNewSession: '新建会话',
         commands: {
-            sessionsCategory: '会议',
-            navigationCategory: '导航',
+            actionsCategory: '操作',
+            navigationCategory: '前往',
             recentSessionsCategory: '最近的会议',
             runsCategory: '跑步',
             voiceCategory: '语音',
             systemCategory: '系统',
             developerCategory: '开发商',
             newSessionTitle: '新会议',
-            newSessionSubtitle: '开始新的聊天会话',
             viewAllSessionsTitle: '查看所有会议',
-            viewAllSessionsSubtitle: '浏览你的聊天记录',
             settingsTitle: '设置',
-            settingsSubtitle: '配置您的首选项',
             accountTitle: '账户',
-            accountSubtitle: '管理您的帐户',
             connectTerminalTitle: '扫描二维码连接终端',
-            connectTerminalSubtitle: '批准终端中显示的连接',
             memorySearchTitle: '搜索内存',
             memorySearchSubtitle: '搜索过去的对话',
             sessionFallbackTitle: ({ id }: { id: string }) => `Session ${id}`,
@@ -6750,29 +7150,26 @@ export const zhHans = {
             startReviewRunTitle: '开始审核运行',
             startPlanRunTitle: '开始计划运行',
             startDelegationRunTitle: '开始委托运行',
-            executionRunsSubtitle: '执行运行',
             openSessionRunsTitle: '开放会话运行',
             runsForCurrentSessionSubtitle: '为当前会话运行',
             runsAcrossMachinesSubtitle: '跨机器运行',
             resetVoiceAgentTitle: '重置语音代理',
-            voiceSubtitle: '语音',
             signOutTitle: '退出',
-            signOutSubtitle: '退出您的帐户',
             developerMenuTitle: '开发者菜单',
-            developerMenuSubtitle: '访问开发者工具',
         },
     pets: {
       category: "宠物",
       wakeTitle: "唤醒宠物",
-      wakeSubtitle: "在此界面显示伙伴。",
       tuckTitle: "收起宠物",
-      tuckSubtitle: "在此界面隐藏伙伴。",
       resetPositionTitle: "重置宠物位置",
-      resetPositionSubtitle: "将伙伴移回默认位置。",
       chooseTitle: "选择宠物",
       chooseSubtitle: "打开宠物设置。",
       refreshCodexTitle: "刷新 Codex 宠物",
-      refreshCodexSubtitle: "打开设置并检测本地 Codex 宠物。",
+    },
+    hints: {
+      move: '移动',
+      open: '打开',
+      close: '关闭',
     },
   },
 
@@ -6944,7 +7341,30 @@ export const zhHans = {
     },},
 
   server: {
+    pageSections: {
+      savedDescription: '切换你正在使用的 Home，或重命名、移除已保存的 Home。',
+      addTitle: '添加 Home',
+    },
+    page: {
+      description: '此设备连接的 Home，以及连接方式。',
+      connectionTitle: '连接',
+      connectionDescription: '此设备如何连接到你的 Home。',
+    },
     // Used by Server Configuration screen (app/(app)/server.tsx)
+    homeOnHost: ({ host }: { host: string }) => `${host} 上的 Home`,
+    homes: {
+      currentTitle: '此设备正在使用',
+      currentPill: '当前',
+      switch: '切换',
+      signIn: '登录',
+      signInAgainTitle: ({ name }: { name: string }) => `重新登录以使用 ${name}`,
+      signInAgainDescription: '此设备已退出此 Home，因此无法在此加载它的会话和机器。',
+      unavailableTitle: ({ name }: { name: string }) => `无法连接 ${name}`,
+      unavailableDescription: '此 Home 没有响应。请检查它是否正在运行，以及能否从此设备访问。',
+      connectionDetails: '连接详情',
+      nameThisHome: '为此 Home 命名',
+      addByAddress: '按地址添加',
+    },
     serverConfiguration: "Home 设置",
     enterServerUrl: "请输入 Home 地址",
     notValidHappyServer: "不是有效的 Happier Home",
@@ -7019,6 +7439,8 @@ export const zhHans = {
         keepForever: "不自动删除",
         automaticDeletionEnabled: "已启用自动删除",
         detailsUnavailable: "已启用自动删除，但此客户端无法显示所有生效的保留策略",
+        readFailed: "无法读取此 Home 的保留策略",
+        disclosureUnreadable: "无法检查此 Home 的数据保留",
         singlePolicySummary: ({ domain, policy }: { domain: string; policy: string }) => `${domain}：${policy}`,
         relayCleanupSummary: ({ policies }: { policies: string }) => `此 Home 会清理${policies}。`,
         relayCleanupAfterDays: ({ domain, count }: { domain: string; count: number }) => `${domain}（${count} 天后）`,
@@ -7041,8 +7463,16 @@ export const zhHans = {
         globalLocks: "全局锁",
         automationRuns: "自动化运行",
         automationRunEvents: "自动化运行事件",
+        homeAdministrationEvents: '活动（这个 Home 的审计记录）',
     },
     multiServerView: {
+        presentationChoice: {
+            title: '会话显示方式',
+            flat: '单一列表',
+            grouped: '按 Home',
+            flatDescription: '每个会话以徽章显示所属 Home。',
+            groupedDescription: '每个 Home 各有一个分区。',
+        },
       editMembersAction: "编辑此分组中的 Home",
       title: "此视图中的 Home",
       footer: "选择这些 Home 在会话列表中的显示方式，以及哪些 Home 属于此分组。",
@@ -7091,6 +7521,7 @@ export const zhHans = {
     viewOptions: '视图选项',
     searchSessions: '搜索会话',
     searchSessionsPlaceholder: '搜索会话...',
+    closeSearch: '关闭搜索',
     searchEverythingFor: ({ query }: { query: string }) => `全局搜索“${query}”`,
     searchGroupInThisView: '当前视图',
     searchGroupOtherMatches: '其他匹配',
@@ -7147,8 +7578,6 @@ export const zhHans = {
     dragA11yBlockedUnsupportedItem: '该项目无法移至文件夹',
     hideInactiveSessions: '隐藏非活动会话',
     showInactiveSessions: '显示非活动会话',
-    attentionSectionTitle: '需要注意',
-    workingSectionTitle: '正在工作',
     loadingSectionTitle: "加载中",
         backgroundWorkingSectionTitle: '后台运行中',
     selectionSelectedCount: ({ count }: { count: number }) => count === 1 ? '1 session selected' : `${count} sessions selected`,
@@ -7222,6 +7651,7 @@ export const zhHans = {
   },
 
     workspacePresentation: {
+        homeFolder: '主文件夹',
         checkoutKinds: {
             primary: '主 checkout',
             git_worktree: 'Git 工作树',
@@ -7436,7 +7866,9 @@ export const zhHans = {
       references: '引用',
       skills: '技能',
       commands: '命令',
+      people: '成员',
     },
+    suggestionTypeMoreToNarrow: '输入更多以缩小范围',
     stopCodingTurn: "停止编码轮次",
       nonSteerableSend: {
         title: '智能体正忙',
@@ -7509,6 +7941,8 @@ export const zhHans = {
     agent: {
       sectionTitle: "代理",
       unselected: "选择代理",
+      noLongerAvailableOn: ({ machine }: { machine: string }) => `${machine} 上已不可用 · 选择其他`,
+      noLongerAvailable: '已不可用 · 选择其他',
       claude: "Claude",
       codex: "Codex",
       cursor: "Cursor",
@@ -7911,6 +8345,7 @@ export const zhHans = {
   },
 
   files: {
+            pane: filesPaneTranslations['zh-Hans'],
             revealInFiles: "在文件中显示",
             openChanges: "打开更改",
     searchPlaceholder: "搜索文件...",
@@ -8067,7 +8502,7 @@ export const zhHans = {
     stash: {
       summaryA11y: "打开储藏详情",
       summaryTitle: "管理的储藏",
-      detailsTitle: "管理的储藏",
+      detailsTitle: "储藏",
       empty: "没有托管的 stash。",
       failedToLoad: "无法加载 stash。",
       failedToLoadDiff: "无法加载 stash diff。",
@@ -8146,7 +8581,6 @@ export const zhHans = {
     notRepo: "不是版本控制仓库",
     notUnderSourceControl: "此目录不在版本控制下",
     sourceControlStale: {
-        title: '版本控制需要处理',
         body: '正在显示上次成功的更新。最近一次刷新未完成。',
     },
     repositoryInit: {
@@ -8289,6 +8723,8 @@ export const zhHans = {
           missingContext: "缺少提交上下文",
           failedToLoadDiff: "加载提交差异失败",
           diffUnavailableTitle: "提交差异不可用",
+          couldNotOpenTitle: ({ sha }: { sha: string }) => `无法打开提交 ${sha}`,
+          couldNotOpenReason: '无法读取其更改。请重试，或返回历史记录。',
           diffUnavailableHint: "请从“文件”页面重新打开该提交。",
           commitLabel: "提交",
           running: ({ operation }: { operation: string }) => `运行中：${operation}`,
@@ -8310,6 +8746,7 @@ export const zhHans = {
 	          commit: "提交",
 	          generateFailed: "生成提交信息失败",
 	          generatorDisabled: "提交信息生成器已禁用",
+	          title: "创建提交",
 	        },
       commitAdjacentPush: {
         accessibilityLabel: ({ target }: { target: string }) => `Push 到 ${target}`,
@@ -8694,6 +9131,26 @@ export const zhHans = {
       diagnostic: ({ value }: { value: string }) => `Diagnostic: ${value}`,
       countBadge: ({ total, running }: { total: string; running: string }) => `${total} services · ${running} running`,
     },
+    pane: {
+      runningOn: ({ count, machine }: { count: number; machine: string }) => `${machine} 上有 ${count} 个正在运行`,
+      running: ({ count }: { count: number }) => `${count} 个正在运行`,
+      nothingRunningOn: ({ machine }: { machine: string }) => `${machine} 上没有正在运行的服务`,
+      nothingRunning: '没有正在运行的服务',
+      offlineOn: ({ machine }: { machine: string }) => `${machine} 已离线`,
+      offline: '这台机器已离线',
+      offlineReason: '它恢复后，其开发服务器会重新出现在这里。',
+      checkAgain: '再次检查',
+      sectionRunning: '正在运行',
+      sectionReady: '可以启动',
+      sectionElsewhereOn: ({ machine }: { machine: string }) => `${machine} 上的其他服务`,
+      sectionElsewhere: '这台机器上的其他服务',
+      happierServices: ({ count }: { count: number }) => `Happier 服务（${count}）`,
+      emptyTitle: '预览你正在构建的内容',
+      emptyReason: '在此工作区启动的开发服务器会显示在这里，并附带一个也能在手机上打开的链接。',
+      copyAddress: '复制地址',
+      publicLinkTitle: '公开链接',
+      publicLinkScanHint: '扫描即可在手机上打开。',
+    },
     session: {
       thisSessionTitle: '此会话',
       workspaceTitle: '工作区',
@@ -8812,14 +9269,15 @@ export const zhHans = {
       },
       createActionA11y: '创建公开预览链接',
       revokeActionA11y: '撤销公开预览链接',
-      confirmTitle: '将服务设为公开？',
+      confirmTitle: '分享此服务的链接？',
       confirmMessage: ({ service }: { service: string }) =>
-        `“${service}”将通过可分享的秘密链接在互联网上公开访问。`,
-      confirmCta: '创建公开链接',
+        `"${service}" 将获得一个可在其他设备上打开它的链接。`,
+      confirmCta: `创建链接`,
             revokeConfirmTitle: '撤销公开链接？',
             revokeConfirmMessage: ({ url }: { url: string }) => `撤销公开预览链接 ${url}？正在使用它的所有人都将失去访问权限。`,
             revokeConfirmCta: '撤销链接',
             consequenceReach: '任何拿到链接的人都能打开此服务，无需登录。',
+            consequenceReachSignedIn: `只有已登录 Happier 且能打开此会话的人才能打开该链接。`,
             consequenceExpiry: '下方的有效期用完后，链接会自动失效。',
             consequenceRevoke: '你随时可以在此面板撤销它。',
             lifetimeLabel: '有效期',
@@ -8832,6 +9290,7 @@ export const zhHans = {
     actions: {
       terminateDetectedA11y: '终止检测到的本地服务',
       forgetA11y: '从列表中隐藏此服务',
+      hiddenNotice: '服务已隐藏',
       terminatePidOnlyConfidence: '终止可信度：仅 PID 身份；需要确认',
             copyAddressA11y: '复制服务地址',
             terminateConfirmTitle: '终止服务？',
@@ -8840,7 +9299,9 @@ export const zhHans = {
             stopConfirmTitle: '停止服务？',
             stopConfirmMessage: ({ service }: { service: string }) => `停止 ${service}？服务在重新启动前将无法访问。`,
             stopConfirmCta: '停止',
+            openA11y: ({ service }: { service: string }) => `打开 ${service}`,
             startA11y: '启动服务',
+            runScriptA11y: '在新终端标签页中运行脚本',
             failure: {
                 title: '操作未完成',
                 refused: '机器拒绝了此操作。请检查此机器的本地服务权限后重试。',
@@ -8900,57 +9361,21 @@ export const zhHans = {
       stop: '停止录制',
       cancel: '取消录制',
     },
-    fidelity: {
-        pixel: '视觉捕获',
-        cdp: '浏览器捕获',
-        injectedPage: '页面捕获',
-        nativeCallback: '原生捕获',
-        streamFrame: '流捕获',
-        previewProxy: '预览捕获',
-        unavailable: '等待捕获',
+    failure: {
+      stopTitle: '无法停止录制',
+      stopBody: '可能仍在录制。请稍后重试。',
+      discardTitle: '无法丢弃录制',
+      discardBody: '片段未被移除。请稍后重试。',
     },
     status: {
       noView: '未选择浏览器视图。',
-      unavailable: ({ reason }: { reason: string }) => `录制不可用：${reason}`,
-      ready: ({ fidelity }: { fidelity: string }) => `录制已就绪 (${fidelity})`,
-      recording: ({ elapsed, fidelity }: { elapsed: string; fidelity: string }) => `正在录制 ${elapsed} (${fidelity})`,
-      temporary: '临时',
-      attached: '已附加',
-      discarded: '已丢弃',
     },
   },
 
-  browserAutomation: {
-    actions: {
-      cancel: '取消自动化',
-    },
-    status: {
-      noView: '未选择浏览器视图。',
-      unavailable: '自动化不可用',
-            running: '自动化正在运行',
-            readyForActions: '自动化已就绪',
-      ready: ({ authority }: { authority: string }) => `自动化已就绪 (${authority})`,
-      active: ({ requestId }: { requestId: string }) => `自动化运行中：${requestId}`,
-    },
-    timeline: {
-      entry: ({ action, status }: { action: string; status: string }) => `${action}: ${status}`,
-            action: {
-                inspect: '检查页面',
-                interact: '与页面交互',
-                navigate: '浏览页面',
-                browserAction: '浏览器操作',
-            },
-            status: {
-                succeeded: '完成',
-                failed: '失败',
-                canceled: '已取消',
-                timedOut: '已超时',
-                stale: '页面已过期',
-                blocked: '已阻止',
-                unsupported: '不支持',
-            },
-    },
-  },
+  browserPresence: browserPresenceTranslations['zh-Hans'],
+
+  computerUse: computerUseTranslations['zh-Hans'],
+  browserTool: browserToolTranslations['zh-Hans'],
 
   browserSurface: {
     title: '浏览器',
@@ -8960,6 +9385,10 @@ export const zhHans = {
   },
 
   browserLaunchpad: {
+    pane: {
+      previewsFrom: ({ machine }: { machine: string }) => `来自 ${machine} 的预览`,
+      previews: '来自这台机器的预览',
+    },
     refreshing: '正在刷新浏览器目标',
     sections: {
       running: '正在运行的预览',
@@ -8988,7 +9417,6 @@ export const zhHans = {
     },
     error: {
       title: '浏览器目标需要处理',
-      subtitle: ({ reason }: { reason: string }) => `刷新失败：${reason}`,
     },
   },
 
@@ -8997,7 +9425,6 @@ export const zhHans = {
       label: '浏览器地址',
       placeholder: '输入 URL',
             copy: '复制 URL',
-            searchUnconfigured: '未配置搜索引擎，请输入网址。',
     },
         frame: {
             errorTitle: '页面加载失败',
@@ -9083,6 +9510,9 @@ export const zhHans = {
     },
     unavailable: {
       generic: "此页面当前不可用。",
+      previewElsewhereTitle: ({ service, machine }: { service: string; machine: string }) => `${service} 运行在 ${machine} 上`,
+      previewElsewhereTitleUnknownMachine: ({ service }: { service: string }) => `${service} 运行在另一台机器上`,
+      previewElsewhere: `此设备无法直接打开它。在“本地服务”中分享链接即可在这里打开。`,
       desktopEngineUnavailable: "此设备上的内置浏览器引擎不可用。",
       desktopWebView: "此设备上的内置浏览器引擎不可用。你仍可以在系统浏览器中打开此页面。",
       desktopWebViewUnsupportedPlatform: "此平台暂不支持内置浏览。",
@@ -9141,15 +9571,9 @@ export const zhHans = {
       lowBandwidth: '带宽较低',
       degradedCodec: '编解码器已降级',
     },
-    actions: {
-      requestKeyframe: '请求关键帧',
-      lowerQuality: '降低质量',
-    },
     controls: {
       readOnly: '只读',
       controlling: '正在控制',
-      controlsUnavailable: '控制不可用',
-      controlsAvailable: '控制可用',
     },
     renderer: {
       fallback: '备用渲染器',
@@ -9431,8 +9855,6 @@ export const zhHans = {
   },
 
       settingsActions: {
-        aboutSubtitle: "选择每个操作在应用、语音和集成中的显示位置。不可用卡片会保持可见，以便你了解哪些内容被功能、隐私或运行时支持所阻止。",
-        aboutFooter: "这些设置会全局应用到你的账号默认值。不可用卡片会解释目标当前为何被阻止。",
         searchPlaceholder: "搜索操作",
         detailSearchPlaceholder: "搜索界面",
         noResults: "没有操作匹配你当前的搜索。",
@@ -9442,11 +9864,8 @@ export const zhHans = {
         invalidActionTitle: "未找到操作",
         invalidActionSubtitle: "此操作在此版本中不再可用。",
         configureActionAccessibilityLabel: "配置操作",
-        approvalHelpTitle: "批准模式",
         approvalHelpBody: "“先询问”会在此操作从该界面运行前显示确认。“允许”则让此操作从该界面运行，而无需批准提示。",
         contributed: {
-            machineSelectionTitle: "为贡献操作选择机器",
-            machineSelectionBody: "选择一台机器，以查看和配置其已安装插件声明的操作。",
             removedDescription: "此贡献操作已无法从所选机器获得。其已保存的设置会保留。",
             removedTargetsTitle: "贡献操作不可用",
             removedTargetsBody: "所选机器当前未声明此操作。其已保存的设置仍可在此处使用。",
@@ -9477,6 +9896,14 @@ export const zhHans = {
             },
         },
         spawnPolicy: {
+            allowLists: {
+                rolesTitle: "允许的角色",
+                rolesSubtitle: "选择代理可以启动的角色。",
+                agentsTitle: "允许的代理",
+                agentsSubtitle: "选择可以执行委派工作的代理。",
+                none: "全部禁止",
+                selected: ({ count }: { count: number }) => `已选 ${count} 项`,
+            },
             title: "AI 会话创建策略",
             footer: "这些控制项仅在 Happier 会话内的助手创建另一个会话时生效。继承自父会话的设置仍会被允许；被拒绝的项目会用清晰错误拒绝显式覆盖。",
             toggles: {
@@ -9488,6 +9915,7 @@ export const zhHans = {
                 allowAgentModeOverride: { title: "代理模式", subtitle: "允许选择代理或会话模式。" },
                 allowConfigOptionOverrides: { title: "配置选项", subtitle: "允许思考强度和 workflow 等提供方选项。" },
                 allowProfileOverride: { title: "配置档", subtitle: "允许按 id 选择配置档，且不暴露秘密。" },
+                allowEnvironmentVariables: { title: "环境变量", subtitle: "允许在新会话中显式设置环境变量。" },
                 allowConnectedServicesOverride: { title: "已连接服务", subtitle: "允许按引用选择已连接服务绑定。" },
                 allowMcpSelectionOverride: { title: "MCP 选择", subtitle: "允许覆盖继承的 MCP 服务器选择。" },
                 allowTranscriptStorageOverride: { title: "转录存储", subtitle: "允许选择兼容的转录存储模式。" },
@@ -9553,7 +9981,7 @@ export const zhHans = {
             voiceFeature: '启用语音助手设置后才能使用此目标。',
             voiceInventoryPrivacy: '在语音助手隐私设置中开启“共享设备清单”后才能使用此目标。',
             mcpFeature: '启用 MCP 服务器后才能通过 MCP 展示此操作。',
-            executionRunsFeature: '启用执行运行后才能使用此操作或目标。',
+            executionRunsFeature: '启用后台运行后才能使用此操作或目标。',
             memorySearchFeature: '启用本地记忆搜索后才能使用此操作。',
             sessionHandoffFeature: '启用会话接力支持后才能使用此操作。',
             notAvailableInThisApp: '此目标目前尚未在此客户端中显示。',
@@ -9595,11 +10023,11 @@ export const zhHans = {
             },
             run_list: {
                 title: '运行列表',
-                subtitle: '显示在执行运行列表中。',
+                subtitle: '显示在后台运行列表中。',
             },
             run_card: {
                 title: '运行卡片',
-                subtitle: '显示在执行运行卡片上。',
+                subtitle: '显示在后台运行卡片上。',
             },
             voice_tool: {
                 title: '语音工具',
@@ -9792,7 +10220,7 @@ settingsSession: {
         composer: { title: '输入与发送', entrySubtitle: 'Enter 发送、历史记录、输入栏外观，以及智能体忙碌时的发送行为。' },
         providerLimits: { title: '提供商限制和用量', entrySubtitle: '用量限制恢复和输入栏旁边的提供商用量指示器。' },
         resume: { title: '恢复和交接', entrySubtitle: '通过 transcript 重放恢复，以及在机器之间移动会话的默认设置。' },
-        runtime: { title: '运行时和终端', entrySubtitle: 'Tmux、Windows Terminal 窗口和 Terminal Connect 兼容性。' },
+        runtime: { title: '运行时和终端', entrySubtitle: '在你的机器上用 tmux 启动会话。' },
     banners: {
         title: '横幅',
         footer: '输入框上方的横幅可以折叠为状态徽标。选择是否记住该状态。',
@@ -10201,7 +10629,7 @@ settingsSession: {
         "新会话使用默认值，除非项目快捷方式或草稿提供设置。",
       wizardSettingsTitle: "新会话向导",
       wizardSettingsSubtitle: "选择每个向导选择器显示为列表还是下拉菜单。",
-      wizardDispositionTitle: "向导布局",
+      wizardDispositionTitle: '向导布局',
       wizardDispositionSubtitle: "选择哪些向导选择器显示为列表或下拉菜单。",
       wizardLayoutTitle: "向导布局",
       wizardLayoutFooter: "控制宽屏上向导区段的排列方式。",
@@ -10249,6 +10677,7 @@ settingsSession: {
               title: '默认会话类型',
               footer: '选择新会话默认是作为 Happier 会话启动，还是作为直接由提供方支持的会话启动。',
               globalTitle: '全局默认',
+              noDirectAgents: '你启用的智能体目前都无法启动直连会话，因此新会话都是 Happier 会话。',
               persistedSubtitle: '默认将新会话存储在 Happier 中，并在设备之间同步。',
               directSubtitle: '在提供方支持时启动绑定设备的直连会话。',
               globalSubtitle: ({ label }: { label: string }) => `全局默认：${label}`,
@@ -10284,7 +10713,7 @@ settingsSession: {
         customBackendIdSubtitle: "输入后端 id（例如 claude）。",
         customModelIdSubtitle: "输入模型 id（例如 default）。",
         requiresModelNotice: "请在下方选择摘要模型。未选择时，回放将仅使用最近的消息。",
-        requiresExecutionRunsNotice: "摘要需要执行运行，但此账户已关闭该功能。回放将仅使用最近的消息。",
+        requiresExecutionRunsNotice: "摘要需要后台运行，但此账户已关闭该功能。回放将仅使用最近的消息。",
       },
       recentMessagesTitle: "要包含的最近消息",
       recentMessagesPlaceholder: "16",
@@ -10324,14 +10753,15 @@ settingsSession: {
     ...voiceDiagnosticsTranslations['zh-Hans'],
     intents: {
       dictation: { title: '听写', subtitle: '将一次口述转换为输入框中的文本。' },
-      conversations: { title: '语音对话', subtitle: '选择提供商并配置其主要设置。' },
-      privacy: { title: '隐私与数据', subtitle: '查看提供商处理、上下文共享和语音历史。', processingTitle: '提供商数据处理' },
-      advanced: { title: '高级', subtitle: '配置语音界面、执行机器和诊断。' },
+      conversations: { title: '语音对话', subtitle: '用语音与智能体对话：选择一个语音提供方并完成设置。' },
+      privacy: { title: '隐私与数据', subtitle: '语音提供方会收到什么，以及 Happier 保存的语音历史。', processingTitle: '提供商数据处理' },
+      advanced: { title: '高级', subtitle: '语音在屏幕上的呈现方式、本地语音的运行位置以及诊断。' },
     },
     history: {
       title: '语音历史',
       sectionTitle: '历史',
       sectionFooter: '查看或删除无目标和全局语音对话的转录。',
+      pageDescription: '来自全局语音以及在会话之外开始的对话的转写。',
       entryTitle: '语音历史',
       entrySubtitle: '搜索、导出或清除已保存的独立语音转录。',
       searchTitle: '搜索已加载的历史',
@@ -10403,6 +10833,8 @@ settingsSession: {
     },
     // Voice settings screen
     modeTitle: "语音",
+    providerSectionTitle: "提供方",
+    providerSectionDescription: "你说话时由谁来聆听和回答。同一时间只有一个提供方处于启用状态。",
     modeDescription:
       "配置语音功能。您可以完全关闭语音、使用 Happier Voice（需要订阅），或使用您自己的 ElevenLabs 账号。",
     mode: {
@@ -10436,7 +10868,7 @@ settingsSession: {
     },
     ui: {
       title: "语音界面",
-      footer: "可选的语音事件屏幕活动流（不会写入会话）。",
+      footer: "说话时语音在屏幕上的显示方式。这里的内容不会写入会话。",
       activityFeedEnabled: "启用语音活动流",
       activityFeedEnabledSubtitle: "使用语音时显示最近的语音事件",
       activityFeedAutoExpandOnStart: "开始时自动展开",
@@ -11069,7 +11501,6 @@ settingsSession: {
       mediatorVerbosityBalanced: "均衡",
       mediatorIdleTtl: "中介空闲 TTL",
       mediatorIdleTtlSubtitle: "空闲后自动停止（60–3600 秒）",
-      mediatorIdleTtlTitle: "中介空闲 TTL（秒）",
       mediatorIdleTtlDescription: "请输入 60 到 3600 之间的数字。",
       mediatorIdleTtlInvalid: "请输入 60 到 3600 之间的数字。",
       mediatorChatModelSource: "中介模型来源（聊天）",
@@ -11290,8 +11721,8 @@ settingsSession: {
         feature_unavailable: "所选代理运行时不支持语音。",
       },},
     privacy: {
-      title: "隐私",
-      footer: "语音服务商会接收所选的会话上下文。",
+      title: "上下文共享",
+      footer: "语音与提供方交流时，可以包含哪些关于你的会话和本应用的信息。",
       shareSessionSummary: "分享会话摘要",
       shareSessionSummarySubtitle: "在语音上下文中包含会话摘要",
       shareRecentMessages: "分享最近消息",
@@ -11346,13 +11777,50 @@ settingsSession: {
   },
 
   settingsAccount: {
+    providerCatalogUnavailable: '无法检查可用的登录连接。',
     security: "登录与安全",
     securityPageDescription: "此 Home 的登录方式、恢复、会话和加密。",
+    accountServiceUnsupportedTitle: ({ accountService }: { accountService: string }) => `${accountService} 暂时无法查找 Home`,
+    accountServiceUnsupportedBody: "要使用这些功能，请使用支持查找 Home 的服务登录。你的 Home 仍照常使用。",
+    accountServiceUnreachableTitle: ({ accountService }: { accountService: string }) => `无法连接到 ${accountService}`,
+    accountServiceUnreachableBody: "你的 Home 和这台设备不受影响。请重试，或选择其他服务。",
+    accountServiceCustodyTitle: ({ accountService }: { accountService: string }) => `无法打开已保存的 ${accountService} 登录`,
+    accountServiceCustodyBody: "这台设备的安全存储没有响应。请重试，或重新登录。",
+    accountServiceChangeService: "更换服务",
+    accountServiceChooserTitle: "登录服务",
+    accountServiceChooserDescription: "你的账号所在的位置。你的 Home 以及登录此 Home 的方式都不会改变。",
+    accountServiceChooserCurrent: "当前",
+    accountServiceChooserDefault: "默认",
+    accountServiceChooserHomeOffersSignIn: "你使用的、同时提供登录的 Home",
+    accountServiceChooserAnother: "其他服务…",
+    accountServiceChooserAnotherDescription: "输入其地址",
+    accountServiceChooserAddressLabel: "登录服务地址",
+    accountServiceChooserAddressHelp: "用于登录并查找你的 Home 的服务地址。",
+    accountServiceCheck: "检查",
+    accountServiceUse: ({ accountService }: { accountService: string }) => `使用 ${accountService}`,
+    accountServiceUseThis: "使用此服务",
+    accountServiceFindsHomes: "可查找 Home",
+    accountServiceSignsInToHomes: "可登录 Home",
+    accountServiceKeepsSignIn: ({ accountService }: { accountService: string }) => `你在 ${accountService} 的登录会保存在这台设备上，切换回来时仍保持登录。`,
+    accountServiceSignedInWith: ({ provider }: { provider: string }) => `已通过 ${provider} 登录`,
+    accountServiceSignedIn: "已登录",
+    accountServiceLinkUnreachableHome: "你的其他设备暂时无法访问此 Home，因此无法关联。",
+    accountServiceSignOut: ({ accountService }: { accountService: string }) => `退出 ${accountService}`,
+    accountServiceLinkLocalHomeDescription: "仅在这台设备上。关联后，你的其他设备也能找到它。",
+    accountServiceLink: "关联",
+    accountServiceMoreWays: "更多登录方式",
+    accountServiceFewerWays: "收起",
+    accountServiceCreateAccount: "新用户？创建账号",
+    accountServiceRecoveryKeyTitle: ({ accountService }: { accountService: string }) => `${accountService} 恢复密钥`,
+    accountServiceRecoveryKeyBody: "它只在创建此账号时显示过一次，此设备不会保存它。如果你忘记密码，只有这把密钥能恢复你的账号。",
+    accountServiceRecoveryKeySaved: "我已保存",
+    accountServiceRecoveryKeyKeyOnly: ({ accountService }: { accountService: string }) => `此 ${accountService} 账号没有密码，因此无法在这里解锁其密钥。它就是你登录用的密钥，此设备不会保存它。`,
+    accountServiceCreateExplanation: ({ accountService }: { accountService: string }) => `我们会通过邮件发送一个链接。在此设备上打开它，然后为 ${accountService} 设置密码。`,
+    accountServiceForgotExplanation: ({ accountService }: { accountService: string }) => `我们会发送一个链接，用于重置你的 ${accountService} 密码。`,
     hideRecoveryKey: "隐藏恢复密钥",
     showRecoveryKey: "显示恢复密钥",
     accountIdCopy: "复制账户 ID",
     accountIdLabel: "账户 ID",
-    accountServiceSignInCta: ({ accountService }: { accountService: string }) => `登录 ${accountService}`,
     accountServiceBenefitFindHomes: "自动找到你的 Home",
     thisHome: "此 Home",
     thisHomeTitle: "此 Home",
@@ -11365,6 +11833,8 @@ settingsSession: {
     apiAccessSectionTitle: "API 访问",
     endToEndEncrypted: "端到端加密",
     notEndToEndEncrypted: "未端到端加密",
+    encryptionFactChecking: "正在检查加密…",
+    encryptionFactUnread: "无法读取加密状态",
     editUsername: "编辑用户名",
     chooseUsername: "选择用户名",
     signInSecurityDescription: ({ home }: { home: string }) => `你登录 ${home} 的方式。`,
@@ -11389,8 +11859,7 @@ settingsSession: {
     accountServiceBenefitDevicesDescription: "把你的手机和其他设备连接到你的 Home。",
     accountServiceLinkedHomes: "已关联的 Home",
     accountServiceRefreshedAt: ({ time }: { time: string }) => `刷新于 ${time}`,
-    accountServiceSignInAgain: "重新登录",
-    accountServiceAdvancedSummary: "登录服务 · 诊断",
+    accountServiceAdvancedSummary: "服务标识 · 诊断",
     accountDetails: "账户详情",
     devices: "设备",
     history: {
@@ -11449,10 +11918,9 @@ settingsSession: {
     accountServiceHomes: 'Homes',
     accountServiceFindHomes: '查找你的 Home',
         accountServiceFindHomesDescription: '查找已关联的 Home，并打开所选或首选 Home。',
-        accountServiceCheckingConnection: '正在检查连接…',
         accountServiceReconnectRequired: ({ accountService }: { accountService?: string }) => accountService ? `重新登录 ${accountService}` : '重新登录你的账户',
         accountServiceReconnectDescription: '你的账户登录已过期。请重新登录，以刷新或连接 Home。',
-        accountServiceDiscoveryDescription: '自动发现并连接已关联的 Home。你现有的 Home 和当前焦点保持不变。',
+        accountServiceDiscoveryDescription: "关联到你账号的 Home 会出现在你登录的每台设备上。",
         accountServiceDiscoveringHomes: '正在发现已关联的 Home…',
         accountServiceDiscoveryUnsupported: 'Home 发现不可用',
         accountServiceDiscoveryUnsupportedDescription: '使用其他账户查找已关联的 Home。',
@@ -11481,10 +11949,10 @@ settingsSession: {
     server: "服务器",
     backup: "备份",
     backupDescription: "恢复密钥可恢复对此加密账户的访问。请将其保存在密码管理器等安全位置。",
+    recoveryKeyRowDescription: "丢失所有设备时可恢复访问。",
     secretKey: "恢复密钥",
     tapToReveal: "点击显示",
     tapToHide: "点击隐藏",
-    secretKeyLabel: "恢复密钥（点击复制）",
     secretKeyCopied: "恢复密钥已复制到剪贴板。请将其保存在安全的地方！",
     secretKeyCopyFailed: "复制恢复密钥失败",
     privacy: "隐私",
@@ -11531,10 +11999,13 @@ settingsSession: {
   settingsLanguage: {
     // Language settings screen
     title: "语言",
+    pageDescription: 'Happier 在你所有设备上使用的语言。',
+    appLanguageTitle: '应用语言',
+    listDescription: '更改后应用会重新启动。',
     description: "选择您希望应用界面使用的语言。此设置将在您的所有设备间同步。",
     currentLanguage: "当前语言",
     automatic: "自动",
-    automaticSubtitle: "从设备设置中检测",
+    automaticSubtitle: '跟随此设备',
     needsRestart: "语言已更改",
     needsRestartMessage: "应用需要重启以应用新的语言设置。",
     restartNow: "立即重启",
@@ -11547,17 +12018,9 @@ settingsSession: {
   },
 
   updateBanner: {
-    updateShort: "更新",
     updateAvailable: "有可用更新",
-    pressToApply: "点击应用更新",
-    whatsNew: "更新内容",
-    seeLatest: "查看最新更新和改进",
     nativeUpdateAvailable: "应用更新可用",
-    tapToUpdateAppStore: "点击在 App Store 中更新",
-    tapToUpdatePlayStore: "点击在 Play Store 中更新",
 
-    checkNowTitle: "立即检查",
-    checkNowSubtitle: "检查是否有可用的应用更新。",
     lastCheckedTitle: "上次检查",},
 
   changelog: {
@@ -12414,6 +12877,16 @@ settingsSession: {
     back: "返回",
     notFound: "未找到设备",
     unknownMachine: "未知设备",
+    unnamedMachine: "未命名的机器",
+    lockedMachine: "已锁定的机器",
+    removedMachine: "已移除的机器",
+    replacedMachine: "已替换的机器",
+    unlistedMachine: "未列出的机器",
+    lockedReason: {
+        missingKey: "已端到端加密，此设备还没有密钥",
+        unopenable: "已端到端加密，此设备的密钥无法打开",
+        unreadable: "此设备无法读取其详细信息",
+    },
     unknownPath: "未知路径",
     previousSessionsTitle: "之前的会话（最多最近 5 个）",
     tmux: {
@@ -12506,6 +12979,10 @@ settingsSession: {
     pluginAttributionExternalForwarded: ({ sender, pluginId }: { sender: string; pluginId: string }) => `由 ${sender} 转发，经由插件 ${pluginId}`,
     pluginAttributionExternalSender: '外部发送者',
     pluginAttributionExternalBot: '外部机器人',
+    provenanceFrom: ({ source }: { source: string }) => `来自 ${source}`,
+    provenanceSession: '会话',
+    provenanceAutomation: '自动化',
+    provenanceWorkflow: '工作流',
     unknownEvent: "未知事件",
     runtimeConfigOutcomeAppliesBeforeNextMessage: '将在你的下一条消息前生效',
     runtimeConfigOutcomeQueuedUntilReady: '已排队，待就绪后应用',
@@ -13344,6 +13821,8 @@ settingsSession: {
     projects: {
     emptyTitle: "还没有项目",
     emptyDescription: "项目让你在不创建会话的情况下浏览和编辑机器上的文件，并使用 Git。",
+    noneOpenTitle: "未打开项目",
+    noneOpenDescription: "从列表中选择一个项目，或从你的某台机器添加一个文件夹。",
     groups: {
       pinned: "已置顶",
       addFirst: "添加项目",
@@ -13395,6 +13874,19 @@ settingsSession: {
     },
   },
    ...apiTokenSettingsTranslations['zh-Hans'],
+   ...embedSettingsTranslations['zh-Hans'],
+   ...embedTranslations['zh-Hans'],
+   ...actionFamilyTranslations['zh-Hans'],
+   ...providerCollectionTranslations['zh-Hans'],
+   ...settingsSearchKeywordsTranslations['zh-Hans'],
+   ...automationPageTranslations['zh-Hans'],
+    ...settingsSessionPagesTranslations['zh-Hans'],
+    ...workspaceTabTranslations['zh-Hans'],
+    ...workspaceBarTranslations['zh-Hans'],
+   ...settingsProfilesRemoteHostsPageTranslations['zh-Hans'],
+   ...profilesPageTranslations['zh-Hans'],
+   ...machineDetailPageTranslations['zh-Hans'],
+   ...sessionPageTranslations['zh-Hans'],
    settingsPlugins: {
       updateReview: pluginUpdateReviewTranslations.zhHans,
       ...pluginWebhookAdministrationTranslations['zh-Hans'],
@@ -13413,6 +13905,11 @@ settingsSession: {
     administrationMachineTitle: "管理位置",
     executionOriginTitle: "运行位置",
     targetSelection: {
+      missingInHome: ({ home }: { home: string }) => `这台机器已不在 ${home} 中`,
+      missingInThisHome: "这台机器已不在此 Home 中",
+      unreachableHome: ({ home }: { home: string }) => `无法连接到 ${home}`,
+      unreachableThisHome: "无法连接到此 Home",
+      chooseAnother: "选择其他机器",
       clear: "清除选择",
       locked: "机器详情已锁定。请选择其他机器。",
       missing: "已找不到。请选择其他机器。",
@@ -13577,7 +14074,6 @@ settingsSession: {
     genericSettingsUnavailable: "此机器无法使用插件设置。",
     genericSettingsLoadError: "无法加载插件设置。",
     genericSettingsSaveError: "无法保存插件设置。",
-    genericSettingsEmpty: "此插件未提供可编辑设置。",
     registriesTitle: "私有 npm 注册表",
     registriesFooter: "注册表登录仅控制包访问权限。移除注册表或退出登录后，已安装且受信任的插件仍可使用。",
     registriesAdd: "添加注册表",
@@ -13646,7 +14142,137 @@ settingsSession: {
   cacheTitle: '摘要缓存',
   cacheSubtitle: '检查点摘要按回执复用；working tree 摘要保持临时。',
   },
+    updates: {
+        pageDescription: 'Happier 可以在此设备和你的机器上更新的一切。',
+        catalogSubtitle: '此应用、命令行和智能体工具',
+        title: "更新",
+        thisAppTitle: "Happier",
+        happierCliTitle: "Happier CLI",
+        sections: {
+          thisApp: "此应用",
+          thisComputer: "此电脑",
+          machine: "机器",
+        },
+        offline: "离线",
+        pill: {
+          updates: ({ count }: { count: number }) => "更新",
+          running: "正在更新…",
+          ready: "重启以更新",
+          failed: "更新未完成",
+          required: "需要更新",
+          completed: "已更新",
+        },
+        a11y: {
+          pillAvailable: ({ count }: { count: number }) => `更新，${count} 个可用`,
+          pillRunning: "更新，正在更新",
+          pillReady: "更新，重启以完成",
+          pillFailed: "更新，有更新未完成",
+          pillRequired: "更新，需要更新",
+          pillCompleted: "更新，已完成",
+          rowOn: ({ title, where }: { title: string; where: string }) => `${where} 上的 ${title}`,
+          actionOn: ({ action, title, where }: { action: string; title: string; where: string }) => `${action} ${where} 上的 ${title}`,
+          progress: ({ percent }: { percent: number }) => `百分之 ${percent}`,
+        },
+        summary: {
+          checking: "正在检查更新…",
+          available: ({ count }: { count: number }) => `有 ${count} 个可用更新`,
+          updatingBatch: ({ done, total }: { done: number; total: number }) => `正在更新第 ${Math.min(done + 1, total)} 个，共 ${total} 个…`,
+          updating: "正在更新…",
+          keepWorking: "你可以继续工作。",
+          ready: "重启以完成 Happier 的更新",
+          failedCount: ({ count }: { count: number }) => `${count} 个更新未完成`,
+          notCheckedYet: "尚未检查",
+          required: "需要更新",
+          upToDate: "已是最新",
+          unknown: "部分版本无法检查",
+          unchecked: "没有已知的更新",
+          uncheckedMeta: "部分工具尚未检查。",
+          offline: "部分机器处于离线状态",
+          checkedAt: ({ time }: { time: string }) => `上次检查：${time}`,
+          upToDateDescription: "Happier、其命令行工具和你的代理都已是最新版本。",
+          unknownDescription: "所有能检查的内容都已是最新。其余部分会在可以连接时重新检查。",
+          offlineDescription: "所有可连接的内容都已是最新。离线机器会在重新上线后检查。",
+        },
+        settingsSubtitle: {
+          upToDate: "已是最新",
+          available: ({ count }: { count: number }) => `有 ${count} 个可用更新`,
+          running: "正在更新…",
+          ready: "重启以完成更新",
+          required: "需要更新",
+          failed: "有更新未完成",
+          unknown: "无法检查所有更新",
+          unchecked: "部分工具未检查",
+          offline: "部分机器处于离线状态",
+          checking: "正在检查更新…",
+        },
+        action: {
+          update: "更新",
+          updateAll: "全部更新",
+          restart: "重启以更新",
+          reload: "重新加载",
+          storeIos: "在 App Store 中更新",
+          storeAndroid: "在 Google Play 中更新",
+          checkNow: "检查更新",
+          stopAfterThis: "完成这个后停止",
+          skipVersion: "跳过此版本",
+          openUpdates: "打开更新",
+          whatsNew: "新功能",
+          viewLog: "查看日志",
+        },
+        row: {
+            cliNotManaged: '此命令行不是 Happier 安装的，因此 Happier 不会替换它。',
+          versionChange: ({ from, to }: { from: string; to: string }) => `${from} → ${to}`,
+          upToDateVersion: ({ version }: { version: string }) => `已是最新 · ${version}`,
+          available: ({ version }: { version: string }) => `${version} 可用`,
+          downloading: ({ version }: { version: string }) => `正在下载 ${version}`,
+          downloadingUpdate: "正在下载更新",
+          updatingTo: ({ version }: { version: string }) => `正在更新到 ${version}…`,
+          updating: "正在更新…",
+          restarting: "正在重启…",
+          restartingService: "正在重启后台服务…",
+          readyVersion: ({ version }: { version: string }) => `${version} 已准备就绪`,
+          ready: "更新已就绪",
+          webNewBuild: "Happier 的新版本已准备就绪",
+          requiredApp: "此版本已不再受支持。请更新以继续使用 Happier。",
+          appCheckFailed: "无法检查是否有新版本。",
+          appDownloadFailed: "下载未完成。",
+          appInstallFailed: "无法安装更新。",
+          latestUnknown: "无法检查是否有新版本",
+          rolledBack: ({ kept, target }: { kept: string; target: string }) => `${target} 未能在这台机器上启动，因此仍保持 ${kept}。`,
+          installedByYou: "由你安装",
+          updateItYourWay: "请按你安装时的方式进行更新。",
+          offline: "离线时无法更新",
+          skipped: ({ version }: { version: string }) => `已跳过 ${version}`,
+          checking: "正在检查…",
+          failedGeneric: "更新未完成，请重试。",
+          remoteUnsupported: "这台机器无法远程更新其命令行工具。请在该机器上直接更新。",
+          updateNotVerified: "更新已运行，但版本没有变化。",
+          rolledBackLocal: "更新未能启动，因此这台电脑已恢复到之前的版本。",
+          smokeFailed: "新版本无法在这台电脑上运行，因此没有任何更改。",
+          waitingReconnect: "已安装，正在等待这台机器重新连接",
+          couldNotStart: ({ message }: { message: string }) => `无法开始更新：${message}`,
+          restartsService: '会重启后台服务；会话将重新连接。',
+          alreadyCurrent: '已是最新版本',
+          anotherUpdateRunning: '这台机器上正在进行另一个更新。完成后请重试。',
+          outcomeUnknown: '无法确认更新已开始。请重试以检查。',
+          othersUpToDate: ({ count }: { count: number }) => `另有 ${count} 项已是最新`,
+          waitingOffline: ({ count }: { count: number }) => `${count} 个更新正在等待其重新上线`,
+        },
+        footer: "更新会在每台机器上分别安装。命令行工具更新后，Happier 会重启该机器的后台服务。",
+        tray: {
+          available: ({ count }: { count: number }) => `有可用更新 (${count})…`,
+          running: "正在更新…",
+          ready: "重启以更新 Happier",
+          required: "需要更新…",
+          failed: "有更新未完成…",
+        },
+    },
     machinePools: machinePoolTranslations.zhHans,
+    settingsConnections: settingsConnectionsTranslations.zhHans,
+    settingsMachines: settingsMachinesTranslations.zhHans,
+    connectedServicesSettings: connectedServicesSettingsTranslations.zhHans,
+    connectedServicesPool: connectedServicesPoolTranslations.zhHans,
+    connectedServicesCollection: connectedServicesCollectionTranslations.zhHans,
     externalSessions: {
     ...externalSessionOperationTranslations.zhHans,
     ...externalSessionSettingsTranslations.zhHans,
@@ -13699,6 +14325,7 @@ settingsSession: {
     browseActivityIdle: "空闲",
     browseActivityUnknown: "未知",
         browseSearchPlaceholder: "搜索已加载的会话…",
+        browseSearchAgentPlaceholder: ({ agent }: { agent: string }) => `搜索 ${agent} 会话…`,
         browseNoSearchResults: "当前没有已加载的会话匹配此搜索。",
     browseIndexing: "正在为外部会话建立索引…",
     browseIndexingProgress: ({ scanned, total }: { scanned: number; total: number }) => `已索引 ${scanned}/${total} 个会话`,
@@ -13736,6 +14363,8 @@ settingsSession: {
     },
     workflows: workflowTranslations.zhHans,
     homeGovernance: homeGovernanceTranslations.zhHans,
+    homeFeatures: homeFeatureTranslations.zhHans,
+    homeSettings: homeSettingsTranslations.zhHans,
     teams: teamsTranslations.zhHans.teams,
     identityAdministration: identityAdministrationTranslations.zhHans.identityAdministration,
     personalHome: {
@@ -13764,6 +14393,8 @@ settingsSession: {
     },
     settingsSearch: {
     placeholder: "搜索设置",
+    pagesTitle: "页面",
+    settingsTitle: "设置",
   },
     onboardingJourney: {
         accessibility: {

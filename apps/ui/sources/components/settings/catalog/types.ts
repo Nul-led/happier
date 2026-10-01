@@ -1,7 +1,8 @@
 import type * as React from 'react';
 import type { UnistylesThemes } from 'react-native-unistyles';
+import type { FeatureId } from '@happier-dev/protocol';
 
-import type { TranslationKey } from '@/text';
+import type { TranslationKey, TranslationKeyNoParams } from '@/text';
 
 export const SETTINGS_PAGE_IDS = {
     settings: 'settings',
@@ -35,7 +36,10 @@ export const SETTINGS_PAGE_IDS = {
     providers: 'providers',
     subAgent: 'subAgent',
     profiles: 'profiles',
+    roles: 'roles',
+    delegation: 'delegation',
     connectedServices: 'connectedServices',
+    connectedServicesAgentSignIn: 'connectedServicesAgentSignIn',
     mcp: 'mcp',
     plugins: 'plugins',
     prompts: 'prompts',
@@ -55,6 +59,7 @@ export const SETTINGS_PAGE_IDS = {
     session: 'session',
     externalSessions: 'externalSessions',
     actions: 'actions',
+    embeds: 'embeds',
     transcript: 'transcript',
     permissions: 'permissions',
     toolRendering: 'toolRendering',
@@ -66,7 +71,9 @@ export const SETTINGS_PAGE_IDS = {
     attachments: 'attachments',
 
     servers: 'servers',
+    serversAdd: 'serversAdd',
     systemStatus: 'systemStatus',
+    updates: 'updates',
     notifications: 'notifications',
     notificationsPush: 'notificationsPush',
     desktop: 'desktop',
@@ -80,7 +87,7 @@ export type SettingsPageId =
     | `pluginSettingsGroup:${string}`;
 
 export type SettingsPageGate = Readonly<{
-    featureId?: string;
+    featureId?: FeatureId;
     requiresProfiles?: boolean;
     requiresDevMode?: boolean;
     requiresTauriDesktop?: boolean;
@@ -99,6 +106,9 @@ export type SettingsPageNode = Readonly<{
     subtitleKey?: TranslationKey;
     subtitle?: string;
     route?: string;
+    /** Built-in pages: translated search words, one comma-separated list. */
+    keywordsKey?: TranslationKeyNoParams;
+    /** Host-resolved search words (plugin rows, which have no translation keys). */
     keywords?: readonly string[];
     icon?: SettingsPageIconFactory;
     gate?: SettingsPageGate;
@@ -129,4 +139,11 @@ export type ResolvedSettingsPageNode = Readonly<{
 export type SettingsPageSearchResult = Readonly<{
     id: SettingsPageId;
     route: string;
+    /** Present when the result is an individual setting on page `id` rather than the page itself. */
+    setting?: Readonly<{
+        anchor: string;
+        title: string;
+        /** Page title, then section title when the setting has one. */
+        path: readonly string[];
+    }>;
 }>;

@@ -1,19 +1,26 @@
 import * as React from 'react';
-import { useRouter } from 'expo-router';
+import { useRouter } from '@/components/appShell/workspace/destinationRoute';
 import { useUnistyles } from 'react-native-unistyles';
 
 import type { DropdownMenuItem } from '@/components/ui/forms/dropdown/DropdownMenu';
 import { DropdownMenu } from '@/components/ui/forms/dropdown/DropdownMenu';
 import { Item } from '@/components/ui/lists/Item';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
+import { SectionActionButton } from '@/components/ui/lists/SectionActionButton';
 import { t } from '@/text';
 import { Icon } from '@/components/ui/icons/Icon';
+
+import { promptCollectionDraftHref, promptCollectionItemHref } from '../collection/promptCollectionModel';
 
 type PromptDocOption = Readonly<{
     id: string;
     title: string;
 }>;
 
+/**
+ * The prompt a template inserts: a field select of the library's prompts, a link to edit the chosen
+ * one, and (as the section's action) writing a new prompt.
+ */
 export const PromptDocSelectionGroup = React.memo(function PromptDocSelectionGroup(props: Readonly<{
     promptDocs: readonly PromptDocOption[];
     selectedArtifactId: string;
@@ -32,13 +39,21 @@ export const PromptDocSelectionGroup = React.memo(function PromptDocSelectionGro
         }))
     ), [props.promptDocs, theme.colors.text.secondary]);
 
-    const selectedPromptTitle = React.useMemo(() => {
-        const selectedPrompt = props.promptDocs.find((doc) => doc.id === props.selectedArtifactId) ?? null;
-        return selectedPrompt?.title ?? t('promptLibrary.templateTargetPromptPlaceholder');
-    }, [props.promptDocs, props.selectedArtifactId]);
+    const selectedPrompt = props.promptDocs.find((doc) => doc.id === props.selectedArtifactId) ?? null;
 
     return (
-        <ItemGroup title={t('promptLibrary.templateTarget')}>
+        <ItemGroup
+            title={t('promptLibrary.templateTarget')}
+            description={t('promptLibrary.surface.templateTargetDescription')}
+            action={(
+                <SectionActionButton
+                    testID="promptTemplate.target.new"
+                    title={t('promptLibrary.surface.addPrompt')}
+                    icon="plus"
+                    onPress={() => router.push(promptCollectionDraftHref('doc') as never)}
+                />
+            )}
+        >
             <DropdownMenu
                 open={props.menuOpen}
                 onOpenChange={props.onMenuOpenChange}
@@ -47,8 +62,7 @@ export const PromptDocSelectionGroup = React.memo(function PromptDocSelectionGro
                 onSelect={(id) => props.onSelect(String(id))}
                 itemTrigger={{
                     title: t('promptLibrary.templateTargetPromptLabel'),
-                    subtitle: selectedPromptTitle,
-                    icon: <Icon name="file-text" size={29} color={theme.colors.accent.blue} />,
+                    subtitle: selectedPrompt?.title ?? t('promptLibrary.templateTargetPromptPlaceholder'),
                 }}
                 rowKind="item"
                 connectToTrigger
@@ -56,21 +70,14 @@ export const PromptDocSelectionGroup = React.memo(function PromptDocSelectionGro
             />
             <Item
                 testID="promptTemplate.target.edit"
+                icon={<Icon name="pencil-simple" />}
                 title={t('promptLibrary.editSelectedPrompt')}
-                subtitle={props.selectedArtifactId ? selectedPromptTitle : t('promptLibrary.editSelectedPromptDisabled')}
-                icon={<Icon name="pencil" size={20} color={theme.colors.text.secondary} />}
-                disabled={!props.selectedArtifactId}
+                subtitle={selectedPrompt ? selectedPrompt.title : t('promptLibrary.editSelectedPromptDisabled')}
+                disabled={!selectedPrompt}
                 onPress={() => {
-                    if (!props.selectedArtifactId) return;
-                    router.push(`/(app)/settings/prompts/docs/${props.selectedArtifactId}`);
+                    if (!selectedPrompt) return;
+                    router.push(promptCollectionItemHref('doc', selectedPrompt.id) as never);
                 }}
-            />
-            <Item
-                testID="promptTemplate.target.new"
-                title={t('promptLibrary.addPrompt')}
-                subtitle={t('promptLibrary.addPromptSubtitle')}
-                icon={<Icon name="plus-circle" size={20} color={theme.colors.accent.blue} />}
-                onPress={() => router.push('/(app)/settings/prompts/docs/new')}
             />
         </ItemGroup>
     );

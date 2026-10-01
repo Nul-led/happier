@@ -124,6 +124,7 @@ function readyResponse(
         ...(entrySignInService ? { signInService: entrySignInService } : {}),
         actions,
         ...(currentAccountRecipientStatus ? { currentAccountRecipientStatus } : {}),
+        ...(entryInvitationPreview ? { preview: entryInvitationPreview } : {}),
         autoRedirect: null,
     }), { status: 200 });
 }
@@ -189,6 +190,7 @@ let entryScope: 'team' | 'invitation' = 'team';
 let entrySignInService: unknown;
 let previewResult: unknown;
 let invitationEmailVerificationRequired = true;
+let entryInvitationPreview: unknown;
 
 /** The endpoint calls a join page makes, separated from the preview reads. */
 function authEntryCalls(): unknown[][] {
@@ -204,6 +206,7 @@ describe('TeamAuthEntrySurface', () => {
         acceptTeamInvitation.mockReset();
         entryScope = 'team';
         entrySignInService = undefined;
+        entryInvitationPreview = undefined;
         accountServiceDiscovery.value = null;
         routerPushSpy.mockReset();
         invitationEmailVerificationRequired = true;
@@ -240,6 +243,7 @@ describe('TeamAuthEntrySurface', () => {
         const shell = screen.findAll((node) => node.props.testID === 'team-auth-entry-shell')
             .find((node) => 'allowMobileBrandHero' in node.props);
         expect(shell?.props.allowMobileBrandHero).toBe(false);
+        expect(shell?.props.showMobileWordmark).toBe(true);
         expect(screen.findAllByTestId('unauth-shell-mobile-hero')).toHaveLength(0);
         const heading = screen.findByTestId('team-auth-entry-heading');
         expect(heading?.props.role).toBe('heading');
@@ -353,18 +357,18 @@ describe('TeamAuthEntrySurface', () => {
         // teams-lane-03/01 §10.2 / TA-R17: the per-provider safe unavailable reason
         // is a real wire field, so the page says it instead of dropping the choice.
         const withUnavailable = () => readyResponse('team', undefined, undefined, 'Acme Home', [{
+            kind: 'provider_unavailable',
+            methodId: 'team-backup',
+            origin: 'team',
+            presentation: { displayName: 'Backup SSO', providerKind: 'oidc' },
+            reason: 'provider_setup_incomplete',
+        }, {
             kind: 'authenticate',
             methodId: 'team-oidc',
             action: 'connect',
             mode: 'either',
             origin: 'team',
             presentation: { displayName: 'Acme SSO', providerKind: 'oidc', connectButtonColor: '#0f62fe', supportsProfileBadge: false },
-        }, {
-            kind: 'provider_unavailable',
-            methodId: 'team-backup',
-            origin: 'team',
-            presentation: { displayName: 'Backup SSO', providerKind: 'oidc' },
-            reason: 'provider_setup_incomplete',
         }]);
         endpointFetch.mockImplementation(async (path: string) => (
             String(path).includes('/team-invitations/preview')
@@ -487,6 +491,24 @@ describe('TeamAuthEntrySurface', () => {
         expect(opaque.getTextContent()).toContain(t('teams.errors.notFound'));
         expect(opaque.getTextContent()).not.toContain(t('teams.entry.ssoRequiredTitle'));
         expect(opaque.findAllByTestId('team-auth-entry-unavailable-reason')).toHaveLength(0);
+    });
+
+    it('suppresses retry for the terminal non-enumerating entry-not-available answer', async () => {
+        endpointFetch.mockReset();
+        endpointFetch.mockResolvedValue(new Response(JSON.stringify({
+            v: 1,
+            state: 'unavailable',
+            scope: { kind: 'team' },
+            reason: 'entry_not_available',
+            autoRedirect: null,
+        }), { status: 200 }));
+        const screen = await renderScreen(
+            <TeamAuthEntrySurface teamId="team-1" target={target} onSelectAction={() => {}} />,
+        );
+        await waitForTestId(screen, 'team-auth-entry-unavailable');
+
+        expect(screen.findByTestId('team-auth-entry-unavailable-action')).toBeNull();
+        expect(screen.findByTestId('team-auth-entry-unavailable-secondary-action')).not.toBeNull();
     });
 
     it('says Teams are turned off on this Home instead of claiming the Team does not exist', async () => {
@@ -773,7 +795,9 @@ describe('TeamAuthEntrySurface', () => {
     });
 
     it('requires explicit Join for a server-held post-auth invitation continuation', async () => {
-        entryScope = 'team';
+        entryScope = 'invitation';
+        entryInvitationPreview = activePreview({ role: 'guest', recipientEmailMask: 'i•••@example.test' });
+        authorityFetch.mockImplementation(async () => readyResponse('invitation', 'verification_required'));
         acceptTeamInvitation.mockResolvedValueOnce({
             kind: 'succeeded',
             value: { outcome: 'joined', teamId: 'team-1' },
@@ -791,17 +815,55 @@ describe('TeamAuthEntrySurface', () => {
                 target={target}
                 onSelectAction={() => {}}
                 onAdmissionComplete={() => {}}
+                onRecoverIdentity={() => {}}
             />,
         );
         await waitForTestId(screen, 'team-auth-entry-ready');
         expect(acceptTeamInvitation).not.toHaveBeenCalled();
-        expect(screen.findByTestId('team-join-preview')).toBeNull();
+        expect(screen.findByTestId('team-join-preview')).not.toBeNull();
+        expect(screen.findByTestId('team-auth-entry-use-another-account')).not.toBeNull();
+        expect(screen.getTextContent()).toContain('i•••@example.test');
+        const entryRequest = JSON.parse(authorityFetch.mock.calls[0]?.[1]?.body as string);
+        expect(entryRequest.scope).toEqual({ kind: 'invitation', continuation });
 
         await screen.pressByTestIdAsync('team-auth-entry-join');
         expect(acceptTeamInvitation).toHaveBeenCalledWith(expect.objectContaining({
             scope: accountScope,
             admission: { continuation },
         }));
+    });
+
+    it.each([undefined, 'expired'] as const)('withholds held-continuation Join without an active offer (%s)', async (state) => {
+        entryScope = 'invitation';
+        entryInvitationPreview = state ? activePreview({ state }) : undefined;
+        const screen = await renderScreen(<TeamAuthEntrySurface
+            invitation={{
+                continuation: { v: 1, kind: 'post_auth_invitation', reference: 'oauth_pending_exact_1', teamId: 'team-1' },
+                accountScope: { serverId: 'home-team', accountId: 'account-1' },
+            }}
+            target={target}
+            onSelectAction={() => {}}
+            onAdmissionComplete={() => {}}
+        />);
+        await waitForTestId(screen, 'team-auth-entry-ready');
+        expect(screen.findByTestId('team-auth-entry-join')).toBeNull();
+        expect(acceptTeamInvitation).not.toHaveBeenCalled();
+    });
+
+    it.each([200, 404] as const)('does not infer an old Home from an unreadable preview (%s)', async (status) => {
+        entryScope = 'invitation';
+        endpointFetch.mockImplementation(async (path: string) => String(path).includes('/team-invitations/preview')
+            ? new Response(JSON.stringify({ malformed: true }), { status })
+            : readyResponse('invitation'));
+        const screen = await renderScreen(<TeamAuthEntrySurface
+            invitation={{ token: 'G'.repeat(43), accountScope: { serverId: 'home-team', accountId: 'account-1' } }}
+            target={target}
+            onSelectAction={() => {}}
+            onAdmissionComplete={() => {}}
+        />);
+        await waitForTestId(screen, 'team-auth-entry-ready');
+        expect(screen.getTextContent()).not.toContain(t('teams.join.updateRequiredTitle'));
+        expect(screen.findByTestId('team-auth-entry-join')).toBeNull();
     });
 
     it('offers explicit current-Account attachment or Account switching before accepting an addressed invitation', async () => {
@@ -1207,6 +1269,8 @@ describe('TeamAuthEntrySurface', () => {
                 <TeamAuthEntrySurface target={target} teamId="team-1" onSelectAction={vi.fn()} />,
             );
             await waitForTestId(screen, 'team-auth-entry-account-service');
+            expect(screen.findByTestId('team-auth-entry-sign-in-service-origin')).toBeTruthy();
+            expect(screen.getTextContent()).toContain('Acme Accounts');
             const card = screen.tree.root.findAll(
                 (node) => (node.props as { testID?: unknown }).testID === 'team-auth-entry-account-service'
                     && typeof (node.props as { title?: unknown }).title === 'string',
@@ -1216,8 +1280,7 @@ describe('TeamAuthEntrySurface', () => {
 
             await act(async () => { card.onPress(); });
             expect(routerPushSpy).toHaveBeenCalledWith(expect.objectContaining({
-                pathname: '/setup/wizard',
-                params: expect.objectContaining({ mode: 'account-entry' }),
+                pathname: '/homes/sign-in',
             }));
             // The Home's own methods stay available; the handoff is an addition,
             // never a narrowing of what this page offers.
@@ -1241,6 +1304,8 @@ describe('TeamAuthEntrySurface', () => {
                 <TeamAuthEntrySurface target={target} teamId="team-1" onSelectAction={vi.fn()} />,
             );
             await waitForTestId(screen, 'team-auth-entry-account-service-unavailable');
+            expect(screen.findByTestId('team-auth-entry-sign-in-service-origin')).toBeTruthy();
+            expect(screen.getTextContent()).toContain('accounts.example.test');
             // The Home's own methods stay available beside the statement.
             expect(screen.findByTestId('team-auth-entry-action:home-password')).toBeTruthy();
 
@@ -1264,6 +1329,7 @@ describe('TeamAuthEntrySurface', () => {
             );
             await waitForTestId(screen, 'team-auth-entry-action:home-password');
             expect(screen.findByTestId('team-auth-entry-account-service')).toBeNull();
+            expect(screen.findByTestId('team-auth-entry-sign-in-service-origin')).toBeNull();
         });
     });
 });

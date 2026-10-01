@@ -6,7 +6,7 @@ import Animated, { Easing, useAnimatedStyle, useSharedValue, withTiming } from '
 import { Text } from '@/components/ui/text/Text';
 import { Typography } from '@/constants/Typography';
 
-import { TactilePressable } from '@/components/voice/controls/VoiceControls';
+import { TactilePressable } from '@/components/ui/interactions/TactilePressable';
 import { PlanetOrb, VoiceWaveform } from '@/components/voice/light/VoiceLight';
 import { TranscriptStream } from '@/components/voice/surface/VoiceTranscriptStream';
 import { useVoiceEnergy } from '@/components/voice/light/useVoiceEnergy';
@@ -95,7 +95,7 @@ export function ComposerConcept(props: VoiceConceptProps) {
             <View style={{ paddingHorizontal: 12, paddingBottom: 12, paddingTop: 6 }}>
                 <View
                     style={{
-                        // COMPOSER_SURFACE_RADIUS in the shipped composer.
+                        // theme.parts.composer.radius in the shipped composer.
                         borderRadius: 16,
                         overflow: 'hidden',
                         borderWidth: 1,

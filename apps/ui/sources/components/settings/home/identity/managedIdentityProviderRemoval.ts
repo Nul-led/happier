@@ -1,6 +1,10 @@
-import type { ActionApprovalContinuation } from '@/components/approvals/actionApprovalContinuation';
+import type { ActionApprovalContinuation, ActionApprovalRegistration } from '@/components/approvals/actionApprovalContinuation';
 
-import type { ManagedIdentityProviderActionResult } from './managedIdentityProviderClient';
+import {
+    executeManagedIdentityProviderRead,
+    type ManagedIdentityProviderActionResult,
+    type ManagedIdentityProviderExecuteOptions,
+} from './managedIdentityProviderClient';
 
 type RemovalBlockers = Readonly<{
     identityCount: number;
@@ -23,13 +27,19 @@ export type ManagedIdentityProviderRemovalOutcome =
 
 export async function runManagedIdentityProviderRemoval(params: Readonly<{
     providerId: string;
-    readPreflight: () => Promise<ManagedIdentityProviderActionResult<RemovalPreflight>>;
+    readPreflight: (options?: ManagedIdentityProviderExecuteOptions<RemovalPreflight>) => Promise<ManagedIdentityProviderActionResult<RemovalPreflight>>;
+    onApprovalPending?: (registration: ActionApprovalRegistration) => void;
     confirm: (preflight: RemovalPreflight) => Promise<boolean>;
     remove: (expectedRevision: number) => Promise<ManagedIdentityProviderActionResult<Readonly<{ outcome: 'removed' }>>>;
 }>): Promise<ManagedIdentityProviderRemovalOutcome> {
-    const preflight = await params.readPreflight();
+    // A configured read may itself require approval. Keep the impact review
+    // mounted until the existing continuation settles; never issue the read a
+    // second time or confirm against a fabricated/partial projection.
+    const preflight = await executeManagedIdentityProviderRead(
+        params.readPreflight,
+        { onApprovalPending: params.onApprovalPending },
+    );
     if (preflight.kind === 'failed') return { kind: 'failed', code: preflight.failure.code };
-    if (preflight.kind === 'approval_pending') return { kind: 'failed', code: 'invalid_action_output' };
     if (preflight.value.provider.id !== params.providerId) {
         return { kind: 'failed', code: 'identity_provider_revision_conflict' };
     }

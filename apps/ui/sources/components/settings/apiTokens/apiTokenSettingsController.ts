@@ -4,11 +4,16 @@ import {
     formatAccountApiTokenCredentialV1,
     AccountApiTokensRevokeActionOutputV1Schema,
     AccountApiTokensRevokeAllActionOutputV1Schema,
+    AccountApiTokensUpdateActionOutputV1Schema,
     AccountSessionsSignOutEverywhereActionOutputV1Schema,
+    ApiTokenGrantV1Schema,
     parseAccountApiTokenBearerV1,
     type AccountApiTokenSummaryV1,
+    type AccountApiTokensUpdateActionInputV1,
     type ActionExecuteResult,
+    type ApiTokenGrantV1,
 } from '@happier-dev/protocol';
+import type { EmbedConfigV1 } from '@happier-dev/protocol/embed';
 
 import {
     captureActiveServerAccountScopeLifetime,
@@ -27,6 +32,7 @@ export type ApiTokenExpiryPreset = '30d' | '90d' | '1y' | 'none';
 
 export type ApiTokenSettingsErrorCode =
     | 'account_unavailable'
+    | 'account_changed'
     | 'auth_unavailable'
     | 'invalid_request'
     | 'invalid_response'
@@ -47,14 +53,28 @@ export type ApiTokenSettingsErrorCode =
     | 'credential_authentication_evidence_limit'
     | 'credential_authentication_evidence_unavailable'
     | 'outcome_unknown'
+    | 'grant_incomplete'
     | 'unavailable';
 
 export type ApiTokenSettingsExecute = ReturnType<typeof createFrontDoorActionExecute>;
 
+export type ApiTokenSettingsDestructiveTarget = ActiveServerAccountScopeLifetime;
+
+/**
+ * Whether this Account can hold an encrypted token from this device right now:
+ * - `unchecked`, `checking`: not known yet;
+ * - `plain`: a plain Account; tokens are keyless;
+ * - `ready`: an encrypted Account whose keys are usable here;
+ * - `unavailable`, `stale`: an encrypted Account whose keys are missing, or out of date, on this
+ *   device (restoring the secret key repairs both);
+ * - `unreadable`: the check itself failed (retry).
+ */
+export type ApiTokenEncryptionAvailability = 'unchecked' | 'checking' | 'plain' | 'ready' | 'unavailable' | 'stale' | 'unreadable';
+
 export type ApiTokenSettingsState = Readonly<{
     phase: 'idle' | 'loading' | 'ready' | 'error';
     tokens: readonly AccountApiTokenSummaryV1[];
-    canCreateEncrypted: boolean;
+    encryptionAvailability: ApiTokenEncryptionAvailability;
     recoveryTokenId: string | null;
     isRefreshing: boolean;
     listError: ApiTokenSettingsErrorCode | null;
@@ -63,6 +83,12 @@ export type ApiTokenSettingsState = Readonly<{
         expiryPreset: ApiTokenExpiryPreset;
         encryptionAccess?: boolean;
         authorizeUnattendedTeamAccess?: boolean;
+        /** Absent or `full`: the token gets the full grant (no `grant` is sent). */
+        access?: 'full' | 'limited';
+        /** The limited grant being chosen; sent only when `access` is `limited`. */
+        grant?: ApiTokenGrantV1;
+        /** Settings → Embeds: the token is an embed's parent (plan 04 §4.2); sent with its limited grant. */
+        embedConfig?: EmbedConfigV1;
     }>;
     createPending: boolean;
     createError: ApiTokenSettingsErrorCode | null;
@@ -75,6 +101,15 @@ export type ApiTokenSettingsState = Readonly<{
     operationTokenId: string | null;
     operationError: ApiTokenSettingsErrorCode | null;
     operationNotice: 'revoked' | 'revokedAll' | 'signedOutEverywhere' | null;
+    /** An existing token's access being edited (`account.apiTokens.update`). */
+    accessEdit: Readonly<{
+        tokenId: string;
+        grant: ApiTokenGrantV1;
+        pending: boolean;
+        error: ApiTokenSettingsErrorCode | null;
+        /** Saving a changed grant revokes this token's children (plan 01 INV-A3). */
+        signsOutEmbeddedCredentials: boolean;
+    }> | null;
 }>;
 
 export type ApiTokenSettingsControllerDependencies = Readonly<{
@@ -91,15 +126,38 @@ export type ApiTokenSettingsController = Readonly<{
     setCreateDraft(draft: ApiTokenSettingsState['createDraft']): void;
     resetCreateDraft(): void;
     createToken(): Promise<void>;
+    /** Adopts a human approval's show-once result for its captured Home, without another mint. */
+    adoptCreatedToken(input: Readonly<{
+        result: unknown;
+        tokenId: string;
+        target: ActiveServerAccountScopeLifetime;
+    }>): boolean;
     acknowledgeReveal(): void;
     clearReveal(): void;
     requestRevealDismiss(
         confirm: () => Promise<boolean>,
         reason: 'shared' | 'action',
     ): Promise<boolean>;
-    revokeToken(tokenId: string): Promise<boolean>;
-    revokeAllTokens(): Promise<number | null>;
-    signOutEverywhere(): Promise<boolean>;
+    /**
+     * The Account and Home a destructive confirmation is about, captured when it opens. Passing it to
+     * `revokeToken`, `revokeAllTokens` or `signOutEverywhere` makes them refuse (`account_changed`)
+     * rather than act on whichever Account is active by the time the person confirms.
+     */
+    captureDestructiveTarget(): ApiTokenSettingsDestructiveTarget | null;
+    revokeToken(tokenId: string, target?: ApiTokenSettingsDestructiveTarget): Promise<boolean>;
+    revokeAllTokens(target?: ApiTokenSettingsDestructiveTarget): Promise<number | null>;
+    signOutEverywhere(target?: ApiTokenSettingsDestructiveTarget): Promise<boolean>;
+    /** Starts editing a listed token's access from its current grant; false when it is not listed. */
+    beginAccessEdit(tokenId: string): boolean;
+    setAccessEditGrant(grant: ApiTokenGrantV1): void;
+    /** Saves the edited grant; true once the Home stored it. */
+    saveAccessEdit(): Promise<boolean>;
+    /**
+     * Stores exactly this change (label, grant and/or embed configuration) and adopts the returned
+     * row; `null` on success, else the error. A grant change revokes the token's children (01).
+     */
+    updateToken(input: AccountApiTokensUpdateActionInputV1): Promise<ApiTokenSettingsErrorCode | null>;
+    cancelAccessEdit(): void;
     clearOperationFeedback(): void;
     retire(): void;
 }>;
@@ -109,7 +167,7 @@ const DEFAULT_DRAFT = Object.freeze({ label: '', expiryPreset: '90d' as const })
 const INITIAL_STATE: ApiTokenSettingsState = Object.freeze({
     phase: 'idle',
     tokens: [],
-    canCreateEncrypted: false,
+    encryptionAvailability: 'unchecked',
     recoveryTokenId: null,
     isRefreshing: false,
     listError: null,
@@ -121,6 +179,7 @@ const INITIAL_STATE: ApiTokenSettingsState = Object.freeze({
     operationTokenId: null,
     operationError: null,
     operationNotice: null,
+    accessEdit: null,
 });
 
 const defaultDependencies: ApiTokenSettingsControllerDependencies = Object.freeze({
@@ -153,6 +212,7 @@ function normalizeActionErrorCode(errorCode: unknown): ApiTokenSettingsErrorCode
         case 'credential_authentication_evidence_limit':
         case 'credential_authentication_evidence_unavailable':
         case 'outcome_unknown':
+        case 'grant_incomplete':
         case 'unavailable':
             return code;
         case 'unsupported_action':
@@ -229,12 +289,18 @@ export function createApiTokenSettingsController(
             | 'account.apiTokens.create'
             | 'account.apiTokens.revoke'
             | 'account.apiTokens.revokeAll'
+            | 'account.apiTokens.update'
             | 'account.sessions.signOutEverywhere';
         input: unknown;
         parse(result: ActionExecuteResult): T | null;
+        target?: ApiTokenSettingsDestructiveTarget;
     }>): Promise<Readonly<{ value: T | null; error: ApiTokenSettingsErrorCode | 'scope_retired' | null }>> => {
         if (retired) return { value: null, error: 'scope_retired' };
         const lifetime = captureLifetime();
+        // A confirmed destructive action runs only for the Account and Home it was confirmed for.
+        if (params.target && (lifetime !== params.target || !params.target.isCurrent())) {
+            return { value: null, error: 'account_changed' };
+        }
         if (!lifetime) return { value: null, error: 'account_unavailable' };
         const controller = new AbortController();
         activeRequest = controller;
@@ -265,12 +331,41 @@ export function createApiTokenSettingsController(
         }
     };
 
+
+    /** The one `account.apiTokens.update` path: every edit stores exactly its change and adopts the row. */
+    const executeUpdate = async (input: AccountApiTokensUpdateActionInputV1): Promise<ApiTokenSettingsErrorCode | 'scope_retired' | null> => {
+        if (retired) return 'scope_retired';
+        const result = await run({
+            actionId: 'account.apiTokens.update',
+            input,
+            parse: parseWith(AccountApiTokensUpdateActionOutputV1Schema),
+        });
+        if (result.error === 'scope_retired' || retired) return 'scope_retired';
+        if (!result.value) return result.error ?? 'invalid_response';
+        const updated = result.value.apiToken;
+        publish({ ...state, tokens: state.tokens.map((row) => (row.tokenId === updated.tokenId ? updated : row)) });
+        return null;
+    };
     const parseWith = <T>(schema: Readonly<{ safeParse(value: unknown): { success: boolean; data?: T } }>) => (
         result: ActionExecuteResult,
     ): T | null => {
         if (!result.ok) return null;
         const parsed = schema.safeParse(result.result);
         return parsed.success ? parsed.data ?? null : null;
+    };
+
+    const readCreatedToken = (result: unknown, tokenId: string) => {
+        const parsed = AccountApiTokensCreateActionOutputV1Schema.safeParse(result);
+        return parsed.success && parsed.data.apiToken.tokenId === tokenId
+            && parseAccountApiTokenBearerV1(parsed.data.token)?.tokenId === tokenId
+            ? parsed.data : null;
+    };
+    const revealCreatedToken = (value: NonNullable<ReturnType<typeof readCreatedToken>>, token = value.token): void => {
+        publish({ ...state, phase: 'ready',
+            tokens: [value.apiToken, ...state.tokens.filter(row => row.tokenId !== value.apiToken.tokenId)],
+            createPending: false, createError: null,
+            reveal: { token, apiToken: value.apiToken, acknowledged: false },
+        });
     };
 
     const readEncryptionContext = async (lifetime: ActiveServerAccountScopeLifetime, signal: AbortSignal) => {
@@ -300,10 +395,11 @@ export function createApiTokenSettingsController(
         publish({ ...state, createPending: false, createError: null });
     };
 
-    const publishEncryptionAvailability = (available: boolean): void => {
+    const publishEncryptionAvailability = (availability: ApiTokenEncryptionAvailability): void => {
+        const available = availability === 'ready';
         publish({
             ...state,
-            canCreateEncrypted: available,
+            encryptionAvailability: availability,
             createDraft: !available && state.createDraft.encryptionAccess === true
                 ? { ...state.createDraft, encryptionAccess: false }
                 : state.createDraft,
@@ -358,20 +454,29 @@ export function createApiTokenSettingsController(
             if (!lifetime) return;
             // Availability is a live Home/Account/content-key fact. Do not keep
             // offering a previously verified capability while it is rechecked.
-            if (state.canCreateEncrypted) publish({ ...state, canCreateEncrypted: false });
+            if (state.encryptionAvailability !== 'checking') publish({ ...state, encryptionAvailability: 'checking' });
             const pending = new AbortController();
             availabilityRequest?.abort();
             availabilityRequest = pending;
             try {
                 const context = await readEncryptionContext(lifetime, pending.signal);
                 if (lifetime.isCurrent() && !pending.signal.aborted) {
-                    publishEncryptionAvailability(context.currentness.mode === 'e2ee'
-                        && context.currentness.recipientEnvelopeReadiness?.status === 'available'
-                        && ('secret' in context.credentials || 'encryption' in context.credentials));
+                    const { currentness, credentials } = context;
+                    publishEncryptionAvailability(currentness.mode !== 'e2ee'
+                        ? 'plain'
+                        : currentness.recipientEnvelopeReadiness?.status === 'available'
+                            && ('secret' in credentials || 'encryption' in credentials)
+                            ? 'ready'
+                            : 'unavailable');
                 }
-            } catch {
+            } catch (error) {
                 // Optional encrypted creation stays hidden; ordinary creation remains usable.
-                if (lifetime.isCurrent() && !pending.signal.aborted) publishEncryptionAvailability(false);
+                if (lifetime.isCurrent() && !pending.signal.aborted) {
+                    publishEncryptionAvailability(error instanceof AccountEncryptionCurrentnessReadinessError
+                        || (error instanceof Error && error.message === 'api_token_encryption_not_ready')
+                        ? 'unavailable'
+                        : 'unreadable');
+                }
             } finally {
                 if (availabilityRequest === pending) availabilityRequest = null;
             }
@@ -387,6 +492,12 @@ export function createApiTokenSettingsController(
             const draft = state.createDraft;
             const label = draft.label.trim();
             if (!label) { publish({ ...state, createError: 'label_required' }); return; }
+            // A limited token sends exactly the grant chosen, and only one the protocol accepts.
+            const grant = draft.access === 'limited' ? draft.grant ?? null : null;
+            if (draft.access === 'limited' && (!grant || !ApiTokenGrantV1Schema.safeParse(grant).success)) {
+                publish({ ...state, createError: 'grant_incomplete' });
+                return;
+            }
             const lifetime = captureLifetime();
             if (!lifetime) { publish({ ...state, createError: 'account_unavailable' }); return; }
             // The selector is captured before every attempt, ordinary or
@@ -423,7 +534,9 @@ export function createApiTokenSettingsController(
                         ...(draft.authorizeUnattendedTeamAccess === true
                             ? { authorizeUnattendedTeamAccess: true }
                             : {}),
-                        ...(prepared ? { encryption: { access: prepared.encryptionAccess } } : {}) },
+                        ...(prepared ? { encryption: { access: prepared.encryptionAccess } } : {}),
+                        ...(grant ? { grant } : {}),
+                        ...(grant && draft.embedConfig ? { embedConfig: draft.embedConfig } : {}) },
                     parse: parseWith(AccountApiTokensCreateActionOutputV1Schema),
                 });
                 if (attempt.cancelled || result.error === 'scope_retired' || retired || !lifetime.isCurrent()) return;
@@ -446,21 +559,16 @@ export function createApiTokenSettingsController(
                 // The response schema only proves the bearer and summary agree
                 // with each other; disclosure additionally requires both to be
                 // this attempt's selector.
-                if (parseAccountApiTokenBearerV1(result.value.token)?.tokenId !== attempt.tokenId
-                    || result.value.apiToken.tokenId !== attempt.tokenId) {
+                const created = readCreatedToken(result.value, attempt.tokenId);
+                if (!created) {
                     publish({ ...state, createPending: false, createError: 'invalid_response', recoveryTokenId: attempt.tokenId });
                     return;
                 }
                 const token = prepared && binding ? formatAccountApiTokenCredentialV1({
-                    bearer: result.value.token, wrappingSecret: encodeBase64(prepared.wrappingSecret, 'base64url'),
+                    bearer: created.token, wrappingSecret: encodeBase64(prepared.wrappingSecret, 'base64url'),
                     ...binding, contentPublicKey: prepared.encryptionAccess.contentPublicKey,
-                }) : result.value.token;
-                publish({ ...state, phase: 'ready',
-                    tokens: [result.value.apiToken,
-                        ...state.tokens.filter((row) => row.tokenId !== result.value!.apiToken.tokenId)],
-                    createPending: false, createError: null,
-                    reveal: { token, apiToken: result.value.apiToken, acknowledged: false },
-                });
+                }) : created.token;
+                revealCreatedToken(created, token);
             } catch (error) {
                 if (attempt.cancelled || retired || !lifetime.isCurrent()) return;
                 if (attempt.dismissed) {
@@ -472,12 +580,27 @@ export function createApiTokenSettingsController(
                     : normalizeActionErrorCode(error instanceof Error ? error.message : null);
                 publish({ ...state, createPending: false,
                     createError: code,
+                    // A refused encrypted attempt says why this device cannot hold the key, until rechecked.
+                    ...(code === 'api_token_encryption_stale' ? { encryptionAvailability: 'stale' as const }
+                        : code === 'api_token_encryption_not_ready' ? { encryptionAvailability: 'unavailable' as const } : {}),
                     recoveryTokenId: null });
             } finally {
                 prepared?.wrappingSecret.fill(0);
                 if (creation === attempt) { creation = null; activeRequest = null; }
                 if (!retired && lifetime.isCurrent() && state.recoveryTokenId) await controller.refresh();
             }
+        },
+        adoptCreatedToken({ result, tokenId, target }) {
+            if (retired || activeRequest || creation || state.reveal || !target.isCurrent()) return false;
+            // The caller captured this exact lifetime before deciding. Never
+            // adopt into a different active Account after that decision settles.
+            if (captureLifetime() !== target || !target.isCurrent()) return false;
+            const created = readCreatedToken(result, tokenId);
+            if (!created) return false;
+            // Approval results contain the raw bearer only. A requester-owned
+            // encryption wrapping secret is not reconstructed on the deciding device.
+            revealCreatedToken(created);
+            return true;
         },
         acknowledgeReveal() {
             if (!state.reveal) return;
@@ -495,12 +618,16 @@ export function createApiTokenSettingsController(
             publish({ ...state, reveal: null, createDraft: DEFAULT_DRAFT, createError: null });
             return true;
         },
-        async revokeToken(tokenId) {
+        captureDestructiveTarget() {
+            return retired ? null : captureLifetime();
+        },
+        async revokeToken(tokenId, target) {
             if (retired || activeRequest) return false;
             publish({ ...state, operation: 'revoke', operationTokenId: tokenId, operationError: null, operationNotice: null });
             const result = await run({
                 actionId: 'account.apiTokens.revoke',
                 input: { tokenId },
+                target,
                 parse: parseWith(AccountApiTokensRevokeActionOutputV1Schema),
             });
             if (result.error === 'scope_retired' || retired) return false;
@@ -519,12 +646,13 @@ export function createApiTokenSettingsController(
             });
             return true;
         },
-        async revokeAllTokens() {
+        async revokeAllTokens(target) {
             if (retired || activeRequest) return null;
             publish({ ...state, operation: 'revokeAll', operationTokenId: null, operationError: null, operationNotice: null });
             const result = await run({
                 actionId: 'account.apiTokens.revokeAll',
                 input: {},
+                target,
                 parse: parseWith(AccountApiTokensRevokeAllActionOutputV1Schema),
             });
             if (result.error === 'scope_retired' || retired) return null;
@@ -542,12 +670,13 @@ export function createApiTokenSettingsController(
             });
             return result.value.revokedCount;
         },
-        async signOutEverywhere() {
+        async signOutEverywhere(target) {
             if (retired || activeRequest) return false;
             publish({ ...state, operation: 'signOutEverywhere', operationTokenId: null, operationError: null, operationNotice: null });
             const result = await run({
                 actionId: 'account.sessions.signOutEverywhere',
                 input: {},
+                target,
                 parse: parseWith(AccountSessionsSignOutEverywhereActionOutputV1Schema),
             });
             if (result.error === 'scope_retired' || retired) return false;
@@ -557,6 +686,54 @@ export function createApiTokenSettingsController(
             }
             publish({ ...state, operation: null, operationError: null, operationNotice: 'signedOutEverywhere' });
             return true;
+        },
+        beginAccessEdit(tokenId) {
+            if (retired) return false;
+            const token = state.tokens.find((row) => row.tokenId === tokenId);
+            if (!token) return false;
+            publish({
+                ...state,
+                accessEdit: {
+                    tokenId,
+                    grant: token.grant,
+                    pending: false,
+                    error: null,
+                    signsOutEmbeddedCredentials: token.activeChildCount > 0,
+                },
+            });
+            return true;
+        },
+        setAccessEditGrant(grant) {
+            if (!state.accessEdit || state.accessEdit.pending) return;
+            publish({ ...state, accessEdit: { ...state.accessEdit, grant, error: null } });
+        },
+        async saveAccessEdit() {
+            const edit = state.accessEdit;
+            if (retired || !edit || edit.pending || activeRequest) return false;
+            if (!ApiTokenGrantV1Schema.safeParse(edit.grant).success) {
+                publish({ ...state, accessEdit: { ...edit, error: 'grant_incomplete' } });
+                return false;
+            }
+            publish({ ...state, accessEdit: { ...edit, pending: true, error: null } });
+            const result = await executeUpdate({ tokenId: edit.tokenId, grant: edit.grant });
+            if (result === 'scope_retired') return false;
+            const current = state.accessEdit;
+            if (result !== null) {
+                if (current?.tokenId === edit.tokenId) {
+                    publish({ ...state, accessEdit: { ...current, pending: false, error: result } });
+                }
+                return false;
+            }
+            publish({ ...state, accessEdit: current?.tokenId === edit.tokenId ? null : current });
+            return true;
+        },
+        async updateToken(input) {
+            const result = await executeUpdate(input);
+            return result === 'scope_retired' ? 'account_changed' : result;
+        },
+        cancelAccessEdit() {
+            if (!state.accessEdit) return;
+            publish({ ...state, accessEdit: null });
         },
         clearOperationFeedback() {
             publish({ ...state, operationError: null, operationNotice: null });

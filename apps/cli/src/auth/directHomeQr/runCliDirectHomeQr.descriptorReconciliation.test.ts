@@ -1,6 +1,16 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
-import { parseHomeQrInviteV2Payload, type HomeConnectionDescriptorV1 } from '@happier-dev/protocol';
+import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
+import {
+  computeHomeQrBindingProofV2,
+  decodeBase64,
+  encodeBase64,
+  parseHomeQrInviteV2Payload,
+  type HomeConnectionDescriptorV1,
+  type HomeQrInviteV2,
+} from '@happier-dev/protocol';
 
+import { reloadConfiguration } from '@/configuration';
+import * as profiles from '@/server/serverProfiles';
+import { writeCredentialsTokenOnlyForServerId } from '@/persistence';
 import { createEnvKeyScope } from '@/testkit/env/envScope';
 import { withTempDir } from '@/testkit/fs/tempDir';
 
@@ -37,6 +47,12 @@ function descriptor(input: Readonly<{
 }
 
 describe('CLI direct Home QR descriptor reconciliation', () => {
+  let runCliDirectHomeQr: typeof import('./runCliDirectHomeQr').runCliDirectHomeQr;
+
+  beforeAll(async () => {
+    ({ runCliDirectHomeQr } = await import('./runCliDirectHomeQr'));
+  });
+
   let envScope = createEnvKeyScope(['HAPPIER_HOME_DIR', 'HAPPIER_SERVER_URL', 'HAPPIER_WEBAPP_URL'] as const);
 
   afterEach(() => {
@@ -47,14 +63,19 @@ describe('CLI direct Home QR descriptor reconciliation', () => {
     carrierBoundary.close.mockClear();
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
-    vi.resetModules();
   });
 
   async function runCase(
     stored: HomeConnectionDescriptorV1,
     observed: HomeConnectionDescriptorV1,
     boundQrV2Enabled = true,
-    options: Readonly<{ abortDuringAcquire?: boolean; abortAfterFeatureRead?: boolean }> = {},
+    options: Readonly<{
+      abortDuringAcquire?: boolean;
+      abortAfterFeatureRead?: boolean;
+      observationProvenance?: 'authenticated' | 'public';
+      /** Let the requester claim the invite and drive the pairing through completion. */
+      completePairing?: boolean;
+    }> = {},
   ) {
     return await withTempDir('happier-cli-direct-qr-descriptor-', async (homeDir) => {
       envScope.patch({
@@ -62,12 +83,8 @@ describe('CLI direct Home QR descriptor reconciliation', () => {
         HAPPIER_SERVER_URL: undefined,
         HAPPIER_WEBAPP_URL: undefined,
       });
-      vi.resetModules();
-      const { reloadConfiguration } = await import('@/configuration');
+      // Configuration is a live binding re-derived from HAPPIER_HOME_DIR; the module graph stays warm.
       reloadConfiguration();
-      const profiles = await import('@/server/serverProfiles');
-      const { writeCredentialsTokenOnlyForServerId } = await import('@/persistence');
-      const { runCliDirectHomeQr } = await import('./runCliDirectHomeQr');
 
       const profile = await profiles.addServerProfile({
         name: 'qr-home',
@@ -103,8 +120,12 @@ describe('CLI direct Home QR descriptor reconciliation', () => {
       }
       featureBoundary.read.mockResolvedValue({
         status: 'ready',
+        provenance: options.observationProvenance ?? 'authenticated',
         features: {
           features: { auth: { pairing: { boundQrV2: { enabled: boundQrV2Enabled } } } },
+          capabilities: {
+            serverIdentity: { serverIdentityId: stored.homeServerIdentityId },
+          },
           homeConnectionDescriptor: observed,
         },
       });
@@ -113,8 +134,12 @@ describe('CLI direct Home QR descriptor reconciliation', () => {
           controller.abort(new DOMException('cancelled', 'AbortError'));
           return {
             status: 'ready',
+            provenance: options.observationProvenance ?? 'authenticated',
             features: {
               features: { auth: { pairing: { boundQrV2: { enabled: boundQrV2Enabled } } } },
+              capabilities: {
+                serverIdentity: { serverIdentityId: stored.homeServerIdentityId },
+              },
               homeConnectionDescriptor: observed,
             },
           };
@@ -122,10 +147,40 @@ describe('CLI direct Home QR descriptor reconciliation', () => {
       }
 
       const expiresAt = new Date(Date.now() + 60_000).toISOString();
+      const requesterPublicKey = new Uint8Array(32).fill(8);
+      let resolveEmittedInvite!: (invite: HomeQrInviteV2) => void;
+      const emittedInvite = new Promise<HomeQrInviteV2>((resolve) => { resolveEmittedInvite = resolve; });
+      const accountResponseBodies: unknown[] = [];
       vi.stubGlobal('fetch', vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
         const path = new URL(String(url)).pathname;
         if (path === '/v1/auth/pairing/start') {
           return new Response(JSON.stringify({ pairId: 'pair-1', expiresAt }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          });
+        }
+        if (path === '/v1/auth/pairing/status' && options.completePairing) {
+          const invite = await emittedInvite;
+          return new Response(JSON.stringify({
+            state: 'requested',
+            pairId: invite.pairId,
+            expiresAt: new Date(invite.expiresAtMs).toISOString(),
+            requestedPublicKey: encodeBase64(requesterPublicKey),
+            requestedDeviceLabel: 'Phone',
+            bindingProof: computeHomeQrBindingProofV2({
+              direction: invite.direction,
+              qrSecret: decodeBase64(invite.qrSecretBase64Url, 'base64url'),
+              pairId: invite.pairId,
+              homeServerIdentityId: invite.home.homeServerIdentityId,
+              requesterPublicKey,
+              expiresAtMs: invite.expiresAtMs,
+            }),
+            homeServerIdentityId: invite.home.homeServerIdentityId,
+          }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+        }
+        if (path === '/v1/auth/account/response') {
+          accountResponseBodies.push(JSON.parse(String(init?.body)));
+          return new Response(JSON.stringify({ success: true }), {
             status: 200,
             headers: { 'Content-Type': 'application/json' },
           });
@@ -155,14 +210,16 @@ describe('CLI direct Home QR descriptor reconciliation', () => {
               ? parseHomeQrInviteV2Payload(payload, { nowMs: Date.now() })
               : null;
             inviteDescriptor = invite?.home ?? null;
+            if (invite && options.completePairing) resolveEmittedInvite(invite);
           } finally {
-            controller.abort();
+            if (!options.completePairing) controller.abort();
           }
         },
       });
       return {
         result,
         inviteDescriptor,
+        accountResponseBodies,
         profile: await profiles.getServerProfile(profile.id),
       };
     });
@@ -175,6 +232,20 @@ describe('CLI direct Home QR descriptor reconciliation', () => {
     expect(outcome.result).toEqual({ kind: 'cancelled' });
     expect(outcome.inviteDescriptor).toEqual(current);
     expect(outcome.profile.homeConnectionDescriptor).toEqual(current);
+  });
+
+  it('completes an approved pairing for the pinned Home identity', async () => {
+    const stored = descriptor({ revision: 2 });
+    const outcome = await runCase(stored, stored, true, { completePairing: true });
+
+    expect(outcome.result).toEqual({ kind: 'completed', requestedDeviceLabel: 'Phone' });
+    expect(outcome.accountResponseBodies).toEqual([
+      expect.objectContaining({
+        pairId: 'pair-1',
+        homeServerIdentityId: stored.homeServerIdentityId,
+        responseKind: 'tokenOnly',
+      }),
+    ]);
   });
 
   it('reports cancellation when caller aborts during descriptor carrier acquisition', async () => {
@@ -228,6 +299,18 @@ describe('CLI direct Home QR descriptor reconciliation', () => {
     const stored = descriptor({ revision: 1 });
     const observed = descriptor({ revision: 2 });
     const outcome = await runCase(stored, observed, false);
+
+    expect(outcome.result).toEqual({ kind: 'update_required' });
+    expect(outcome.inviteDescriptor).toBeNull();
+    expect(outcome.profile.homeConnectionDescriptor).toEqual(stored);
+  });
+
+  it('does not publish a public compatibility projection as an exact QR descriptor', async () => {
+    const stored = descriptor({ revision: 1 });
+    const publicProjection = descriptor({ revision: 2 });
+    const outcome = await runCase(stored, publicProjection, true, {
+      observationProvenance: 'public',
+    });
 
     expect(outcome.result).toEqual({ kind: 'update_required' });
     expect(outcome.inviteDescriptor).toBeNull();

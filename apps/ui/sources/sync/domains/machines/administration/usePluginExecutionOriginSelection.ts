@@ -129,6 +129,8 @@ export type PluginExecutionOriginSelectionMutationResult =
 export function usePluginMachineExecutionOriginSelection(params: Readonly<{
     pluginId: string;
     classifyRelease: (materialization: PluginMachineMaterializationV1) => PluginMachineReleaseClassificationV1;
+    /** The plugin ships inside Happier (see `resolvePluginMachineExecutionOriginState`). */
+    includedWithHappier?: boolean;
 }>): PluginMachineExecutionOriginSelectionV1 {
     const reader = useActivePluginAccountAvailabilityReader();
     const machineSnapshots = useAllProfileMachineInventorySnapshots();
@@ -158,11 +160,13 @@ export function usePluginMachineExecutionOriginSelection(params: Readonly<{
         machineSnapshots,
         classifyRelease: params.classifyRelease,
     }), [machineSnapshots, materializationAdmission, params.classifyRelease, params.pluginId]);
+    const includedWithHappier = params.includedWithHappier === true;
     const state = React.useMemo(() => resolvePluginMachineExecutionOriginState({
         pluginId: params.pluginId,
         storedOrigin,
         candidates,
-    }), [candidates, params.pluginId, storedOrigin]);
+        includedWithHappier,
+    }), [candidates, includedWithHappier, params.pluginId, storedOrigin]);
 
     React.useEffect(() => {
         if (storedOrigin || state.kind !== 'selected' || state.selectionSource !== 'soleCandidate') return;

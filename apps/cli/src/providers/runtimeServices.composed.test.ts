@@ -10,6 +10,7 @@ import { createRunnerDaemonPluginServicesHost } from '@/daemon/agentRuntime/runn
 import { createProductionPluginInvocationServiceOwners } from '@/plugins/runtime/invocation/services/production';
 import { createUnavailablePluginServices } from '@/plugins/runtime/invocation/services/unavailable';
 import { createAgentSessionRunnerFactoryBinding } from '@/plugins/runtime/runner/agentSessionRunnerFactoryBinding';
+import { createManagedPluginSourceCustody } from '@/plugins/runtime/lifecycle/contributions/runtimeIdentity.testkit';
 import {
   PUBLIC_PROVIDER_OPERATION_IDS,
   runPublicProviderOperations,
@@ -72,12 +73,12 @@ function operationRequests(): PublicProviderOperationRequests {
       contributionKey: 'acme.gateway/gateway',
     },
     bindingStatus: {
-      agentTargetKey: 'backend:codex',
+      agentTargetKey: 'agent:happier.agent.codex/codex',
       selection: {
         v: 1,
         updatedAt: 1,
         ref: {
-          agentTargetKey: 'backend:codex',
+          agentTargetKey: 'agent:happier.agent.codex/codex',
           providerConnectionId: connectionId,
           modelId: 'model-a',
         },
@@ -106,7 +107,7 @@ function operationRequests(): PublicProviderOperationRequests {
       connectionId,
       modelId: 'model-a',
     },
-    projectModels: { agentTargetKey: 'backend:codex' },
+    projectModels: { agentTargetKey: 'agent:happier.agent.codex/codex' },
     mutateModelSettings: {
       action: 'resetVisibility',
       scope: { kind: 'connection', connectionId },
@@ -235,7 +236,7 @@ const runnerBinding = createAgentSessionRunnerFactoryBinding({
   pluginVersion: '1.0.0',
   agentId: 'fixture.agent',
   localAgentId: 'agent',
-  immutableGenerationId: 'generation-1',
+  sourceCustody: createManagedPluginSourceCustody('generation-1'),
   locator: {
     module: './agent.js',
     export: 'createRuntime',
@@ -274,11 +275,11 @@ describe('public Provider operations composed routing', () => {
         id: 'run',
         qualifiedId: 'fixture.plugin/actions/run',
       },
-      generation: 'generation-1',
+      occurrenceId: 'generation-1',
       correlationId: 'ordinary-provider-feature-gate',
       surface: 'cli',
       signal: controller.signal,
-      isGenerationCurrent: () => true,
+      isOccurrenceCurrent: () => true,
     }, owners.createOrdinaryServiceBinding(
       'generation-1',
       'ordinary-provider-feature-gate',
@@ -332,11 +333,11 @@ describe('public Provider operations composed routing', () => {
         id: 'run',
         qualifiedId: 'fixture.plugin/actions/run',
       },
-      generation: 'generation-1',
+      occurrenceId: 'generation-1',
       correlationId: 'ordinary-provider-workflow',
       surface: 'cli',
       signal: controller.signal,
-      isGenerationCurrent: () => true,
+      isOccurrenceCurrent: () => true,
     }, owners.createOrdinaryServiceBinding(
       'generation-1',
       'ordinary-provider-workflow',

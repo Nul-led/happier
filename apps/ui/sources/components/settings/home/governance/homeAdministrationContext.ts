@@ -1,6 +1,6 @@
 import type { HomeGovernanceProjectionV1 } from '@happier-dev/protocol/home/governance';
 
-import type { ServerAccountScope } from '@/sync/domains/scope/serverAccountScope';
+import type { ServerAccountScope, ServerAccountScopeLifetime } from '@/sync/domains/scope/serverAccountScope';
 import type { ActionApprovalRegistration } from '@/components/approvals/actionApprovalContinuation';
 
 /**
@@ -30,4 +30,10 @@ export type HomeAdministrationContext = Readonly<{
     requestApproval?: (registration: ActionApprovalRegistration) => void;
     /** Re-reads this exact Home; used by retry and after a rejected mutation. */
     refresh: () => void;
+    /**
+     * The exact Home and Account credential current right now, for a destructive confirmation to
+     * capture when it opens (`confirmForCapturedAccount`). `null` while the credential is re-checked;
+     * absent outside the shell (section tests), which a destructive action treats as unavailable.
+     */
+    captureDestructiveTarget?: () => ServerAccountScopeLifetime | null;
 }>;

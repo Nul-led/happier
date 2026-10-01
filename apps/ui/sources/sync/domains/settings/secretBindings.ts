@@ -4,6 +4,7 @@ import {
     shouldPreserveLegacyAiLaunchProfileBindingV1,
     parseSavedSecretRefV1,
     type AccountSettingsDefaults,
+    type AiLaunchProfile,
 } from '@happier-dev/protocol';
 
 type EnvVarRequirementLike = Readonly<{
@@ -119,12 +120,10 @@ function readCurrentSecretBindingMap(params: Readonly<{
     return { kind: 'current', bindings, changed };
 }
 
-function getAllowedSecretEnvVarNamesByProfileId(settings: SettingsLike): Record<string, Set<string>> {
+function getAllowedSecretEnvVarNamesByProfileId(settings: SettingsLike, profiles?: readonly AiLaunchProfile[]): Record<string, Set<string>> {
     const out: Record<string, Set<string>> = {};
 
-    for (const entry of readAiLaunchProfileCollection(settings.profiles ?? []).entries) {
-        if (entry.kind !== 'legacy') continue;
-        const p = entry.profile;
+    for (const p of profiles ?? readAiLaunchProfileCollection(settings.profiles ?? []).entries.flatMap((entry) => entry.kind === 'opaque' ? [] : [entry.profile])) {
         const names: Set<string> = new Set<string>(
             normalizeEnvVarRequirements(p.envVarRequirements)
                 .filter((r: EnvVarRequirementLike) => (r.kind ?? 'secret') === 'secret')
@@ -144,10 +143,17 @@ function getAllowedSecretEnvVarNamesByProfileId(settings: SettingsLike): Record<
  */
 export function projectCurrentSecretBindingsByProfileId(
     settings: SettingsLike,
+    profiles?: readonly AiLaunchProfile[],
 ): CurrentSecretBindingsByProfileId {
-    const bindings = settings.secretBindingsByProfileId ?? {};
+    const bindings: Record<string, unknown> = {};
+    for (const profile of profiles ?? []) {
+        if (profile.secretBindings) bindings[profile.id] = profile.secretBindings;
+    }
+    for (const [id, value] of Object.entries(settings.secretBindingsByProfileId ?? {})) {
+        bindings[id] = isRecord(bindings[id]) && isRecord(value) ? { ...bindings[id], ...value } : value;
+    }
     const secretIds = new Set((settings.secrets ?? []).map((secret) => secret.id));
-    const allowedByProfileId = getAllowedSecretEnvVarNamesByProfileId(settings);
+    const allowedByProfileId = getAllowedSecretEnvVarNamesByProfileId(settings, profiles);
     const current: CurrentSecretBindingsByProfileId = {};
 
     for (const [profileId, byEnv] of Object.entries(bindings)) {

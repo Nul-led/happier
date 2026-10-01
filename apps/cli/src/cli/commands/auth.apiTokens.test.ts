@@ -1,13 +1,20 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import fastify from 'fastify';
 import tweetnacl from 'tweetnacl';
-import { computeAccountEncryptionMigrateKeyFingerprintV1, deriveAccountMachineKeyFromRecoverySecret, formatAccountApiTokenCredentialV1, openApiTokenEncryptionAccessV1, parseAccountApiTokenCredentialV1 } from '@happier-dev/protocol';
+import { API_TOKEN_FULL_GRANT_V1, computeAccountEncryptionMigrateKeyFingerprintV1, deriveAccountMachineKeyFromRecoverySecret, formatAccountApiTokenCredentialV1, openApiTokenEncryptionAccessV1, parseAccountApiTokenCredentialV1 } from '@happier-dev/protocol';
 import { decodeBase64, encodeBase64 } from '@happier-dev/protocol/crypto/base64';
 
 import { createEnvKeyScope } from '@/testkit/env/envScope';
 import { createTempDir, removeTempDir } from '@/testkit/fs/tempDir';
 import { installAxiosFastifyAdapter } from '@/testkit/http/axiosAdapter';
 import { captureConsoleText } from '@/testkit/logger/captureOutput';
+
+const TOKEN_SCOPE_FIELDS = {
+  grant: API_TOKEN_FULL_GRANT_V1,
+  parentTokenId: null,
+  activeChildCount: 0,
+  embedConfig: null,
+};
 
 describe('trusted auth api-tokens commands', () => {
   const env = createEnvKeyScope([
@@ -51,6 +58,7 @@ describe('trusted auth api-tokens commands', () => {
       const tokenId = (request.body as { tokenId: string }).tokenId;
       const token = `hap_v1_${tokenId}_${'A'.repeat(43)}`;
       const apiToken = {
+        ...TOKEN_SCOPE_FIELDS,
         tokenId,
         label: 'build',
         displayPrefix: `hap_v1_${tokenId.slice(0, 8)}`,
@@ -97,6 +105,36 @@ describe('trusted auth api-tokens commands', () => {
     }
   });
 
+  it('does not invent token recovery when settings admission fails before the create request', async () => {
+    env.patch({ HAPPIER_ACCOUNT_SETTINGS_MODE: 'blocking' });
+    const app = fastify();
+    const requests: string[] = [];
+    app.addHook('onRequest', async (request) => { requests.push(request.url); });
+    app.get('/v2/account/settings', async () => ({
+      content: { t: 'encrypted', c: 'corrupt-e2ee-settings' }, version: 15,
+    }));
+    app.post('/v1/auth/api-tokens/create', async () => ({}));
+    const restore = installAxiosFastifyAdapter({ app, origin: 'http://account.test' });
+    const output = captureConsoleText();
+    try {
+      const { writeCredentialsDataKey } = await import('@/persistence');
+      const key = tweetnacl.box.keyPair();
+      await writeCredentialsDataKey({ token: 'interactive', machineKey: key.secretKey, publicKey: key.publicKey });
+      const { handleAuthCommand } = await import('./auth');
+      await handleAuthCommand(['api-tokens', 'create', '--label', 'build', '--yes', '--json']);
+
+      expect(requests).toContain('/v2/account/settings');
+      expect(requests).not.toContain('/v1/auth/api-tokens/create');
+      const result = JSON.parse(output.text());
+      expect(result).toMatchObject({ ok: false, error: { code: 'api_token_operation_failed' } });
+      expect(result.error).not.toHaveProperty('tokenId');
+    } finally {
+      output.restore();
+      restore();
+      await app.close();
+    }
+  });
+
   it('withholds a bearer-only credential when the Home acknowledges another selector', async () => {
     const app = fastify();
     let requestedTokenId: string | undefined;
@@ -106,6 +144,7 @@ describe('trusted auth api-tokens commands', () => {
       return {
         token: `hap_v1_${returnedTokenId}_${'A'.repeat(43)}`,
         apiToken: {
+          ...TOKEN_SCOPE_FIELDS,
           tokenId: returnedTokenId,
           label: 'build',
           displayPrefix: 'hap_v1_12345678',
@@ -113,6 +152,7 @@ describe('trusted auth api-tokens commands', () => {
           expiresAt: null,
           lastUsedAt: null,
           hasEncryptionAccess: false,
+          hasUnattendedTeamAccess: false,
         },
       };
     });
@@ -187,6 +227,7 @@ describe('trusted auth api-tokens commands', () => {
     const requests: string[] = [];
     const tokenId = '12345678-1234-4234-8234-123456789abc';
     const baseSummary = {
+      ...TOKEN_SCOPE_FIELDS,
       label: 'build',
       displayPrefix: 'hap_v1_12345678',
       createdAt: '2026-09-05T00:00:00Z',
@@ -206,6 +247,7 @@ describe('trusted auth api-tokens commands', () => {
             tokenId: '22345678-1234-4234-8234-123456789abc',
             displayPrefix: 'hap_v1_22345678',
             hasUnattendedTeamAccess: true,
+            grant: { ...API_TOKEN_FULL_GRANT_V1, actions: { families: [], ids: ['session.transcript.get'] } },
           },
         ],
       };
@@ -230,6 +272,11 @@ describe('trusted auth api-tokens commands', () => {
             .toEqual([false, true]);
         }
       }
+      output.lines.length = 0;
+      await handleAuthCommand(['api-tokens', 'list']);
+      expect(output.text()).toContain('Access');
+      expect(output.text()).toContain('Full access');
+      expect(output.text()).toContain('Limited');
       env.patch({ HAPPIER_TOKEN: `hap_v1_${tokenId}_${'A'.repeat(43)}` });
       for (const command of [['create', '--label', 'denied'], ['list'], ['revoke', tokenId], ['revoke-all']]) {
         output.lines.length = 0;
@@ -246,7 +293,7 @@ describe('trusted auth api-tokens commands', () => {
       output.lines.length = 0;
       await handleAuthCommand(['api-tokens', 'list', '--json']);
       expect(JSON.parse(output.text())).toMatchObject({ ok: false, error: { code: 'present_user_required' } });
-      expect(requests).toEqual(['list', 'revoke', 'revoke-all']);
+      expect(requests).toEqual(['list', 'revoke', 'revoke-all', 'list']);
     } finally { output.restore(); restore(); await app.close(); }
   });
 
@@ -296,7 +343,7 @@ describe('trusted auth api-tokens commands', () => {
       }
       if (kind === 'malformed') return { accepted: true };
       const tokenId = kind === 'mismatch' ? '12345678-1234-4234-8234-123456789abc' : captured!.tokenId;
-      return { token: `hap_v1_${tokenId}_${'A'.repeat(43)}`, apiToken: { tokenId, label: 'build', displayPrefix: `hap_v1_${tokenId.slice(0, 8)}`, createdAt: '2026-09-05T00:00:00Z', expiresAt: null, lastUsedAt: null, hasEncryptionAccess: true, hasUnattendedTeamAccess: false } };
+      return { token: `hap_v1_${tokenId}_${'A'.repeat(43)}`, apiToken: { ...TOKEN_SCOPE_FIELDS, tokenId, label: 'build', displayPrefix: `hap_v1_${tokenId.slice(0, 8)}`, createdAt: '2026-09-05T00:00:00Z', expiresAt: null, lastUsedAt: null, hasEncryptionAccess: true, hasUnattendedTeamAccess: false } };
     });
     // Features fetch is a network boundary; retain its actual response parser
     // without intercepting unrelated runtime fetches such as Yoga's WASM load.

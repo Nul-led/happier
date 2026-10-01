@@ -18,6 +18,7 @@ import {
   parseRemotePersonalHomeApprovalInput,
 } from '@happier-dev/cli-common/systemTasks';
 import { isHappierRuntimePathWithinRoot } from '@happier-dev/cli-common/happierRuntime';
+import { DEFAULT_HAPPIER_CLOUD_SERVER_URL } from '@happier-dev/cli-common/happierCloud';
 import {
   cleanupPersonalHomeRelocationUpload,
   consumePersonalHomeRelocationUpload,
@@ -37,6 +38,7 @@ import {
 } from '@happier-dev/protocol';
 
 import {
+  answerRemoteBackgroundServiceReplacementPrompt,
   answerSshHostTrustPrompt,
   isSshHostTrustPromptKind,
   normalizeTrustedHostKeyFlag,
@@ -97,7 +99,7 @@ type RemoteHomePairingResult = HomePairDeviceResult | Readonly<{ kind: 'not_requ
 export type HomeLinkAccountResult =
   | Readonly<{ kind: 'linked'; homeServerIdentityId: string }>
   | Readonly<{ kind: 'relink_required'; homeServerIdentityId: string }>
-  | Readonly<{ kind: 'unavailable'; reason: CliHomeLinkUnavailableReason }>
+  | Readonly<{ kind: 'unavailable'; reason: CliHomeLinkUnavailableReason; selectedEndpoint?: string }>
   | Readonly<{ kind: 'cancelled' | 'failed' }>;
 
 /** What stopping delegated sign-in for one Home can answer. */
@@ -328,8 +330,8 @@ async function showHomeHelp(): Promise<void> {
           { label: '--replace-services', description: 'Explicitly replaces conflicting managed services while creating this Home.' },
           { label: '--switch-channel', description: 'Explicitly changes the default managed release channel when creation requires it.' },
           { label: 'pair-device', description: 'Starts a new short-lived QR/link session.' },
-          { label: 'link-account', description: 'Publishes the Home for Account Service discovery.' },
-          { label: 'unlink-account', description: 'Stops new Account Service sign-in; already-issued credentials remain valid until revoked on the Home.' },
+          { label: 'link-account', description: 'Makes this Home available on your other devices.' },
+          { label: 'unlink-account', description: 'Stops future account-based sign-in; devices already signed in keep their access until revoked on the Home.' },
           { label: 'remote administration', description: 'status, backup, verify-backup, restore, recover-restore, and erase accept --ssh.' },
           { label: '--trusted-host-key LINE', description: '--yes trusts an unknown host on first use but never a changed key; this pins the exact new known_hosts line instead.' },
           { label: 'relocate', description: 'Moves this computer\'s Personal Home to the explicit SSH destination in --target.' },
@@ -363,7 +365,7 @@ function parseRuntimeMode(value: string | null): 'user' | 'system' {
 function parseLinkAccountMode(value: string | null): 'auto' | 'never' {
   if (value === null || value === 'auto') return 'auto';
   if (value === 'never') return 'never';
-  throw Object.assign(new Error(`Unsupported Account Service linking mode: ${value}`), { code: 'invalid_params' });
+  throw Object.assign(new Error(`Unsupported account linking mode: ${value}`), { code: 'invalid_params' });
 }
 
 function parseRelocationRecovery(value: unknown): PersonalHomeRelocationRecovery {
@@ -426,21 +428,51 @@ async function resolvePostCreateHomeLink(params: Readonly<{
   }
 }
 
+/**
+ * The sign-in-only command for the service this CLI already selected, or the
+ * built-in default service `happier setup` would use when none is selected.
+ */
+function signInCommand(selectedEndpoint: string | undefined): string {
+  return `happier auth service use ${selectedEndpoint ?? DEFAULT_HAPPIER_CLOUD_SERVER_URL}`;
+}
+
+/** One human sentence per typed reason a link or unlink could not start. */
+function describeHomeLinkUnavailable(
+  operation: 'link' | 'unlink',
+  reason: CliHomeLinkUnavailableReason,
+  selectedEndpoint?: string,
+): string {
+  switch (reason) {
+    case 'account_service_credentials_unavailable':
+      return operation === 'link'
+        ? `Sign in first with \`${signInCommand(selectedEndpoint)}\`, then run this command again.`
+        : 'No sign-in service is selected on this computer. Select the service this Home is linked to with `happier auth service use <address>`, then run this command again.';
+    case 'home_profile_unavailable':
+      return 'This computer has no verified connection to that Home. Connect to the Home first, then run this command again.';
+    case 'home_credentials_unavailable':
+      return 'This computer is not signed in to that Home. Sign in to the Home first, then run this command again.';
+    case 'home_transport_unavailable':
+      return 'The Home did not answer. Check that it is running and reachable, then run this command again.';
+  }
+}
+
 function renderPostCreateHomeLink(
   result: HomePostCreateLinkResult,
   homeServerIdentityId: string,
   reentryCommand = `happier home link-account --home ${homeServerIdentityId}`,
+  knownAccountServiceEndpoint?: string,
 ): void {
   if (result.kind === 'linked' || result.kind === 'not_requested') return;
   if (result.kind === 'unavailable' && result.reason === 'account_service_credentials_unavailable') {
-    console.log(`Account Service is not signed in. Link this Home later with \`happier home link-account --home ${homeServerIdentityId}\`.`);
+    const endpoint = result.selectedEndpoint ?? knownAccountServiceEndpoint;
+    console.log(`This Home is not linked to your account. Sign in first with \`${signInCommand(endpoint)}\`, then run \`happier home link-account --home ${homeServerIdentityId}\`.`);
     return;
   }
   if (result.kind === 'relink_required') {
-    console.log(`This Home is linked to different Account Service trust facts. Review and rerun \`happier home link-account --home ${homeServerIdentityId} --relink\`.`);
+    console.log(`This Home is linked using different trust facts. Review and rerun \`happier home link-account --home ${homeServerIdentityId} --relink\`.`);
     return;
   }
-  console.log(`The Home is ready, but Account Service linking did not complete. Retry with \`${reentryCommand}\`.`);
+  console.log(`The Home is ready, but account linking did not complete. Retry with \`${reentryCommand}\`.`);
 }
 
 async function runTask(params: Readonly<{
@@ -476,6 +508,22 @@ async function runTask(params: Readonly<{
   });
   if (!result.ok) throw Object.assign(new Error(result.error.message), { code: result.error.code, personalHomeTaskFailure: true });
   return result.data ?? null;
+}
+
+/**
+ * The manage-host task owns the host-neutral refusal sentence for its reconciliation codes. The
+ * CLI host only appends the remedy it can actually offer: the explicit create flag (also the
+ * way past a `--yes` decline).
+ */
+function withRemoteCreateCliRemedy(error: unknown): unknown {
+  const code = isRecord(error) && typeof error.code === 'string' ? error.code : null;
+  const flag = code === 'service_reconciliation_declined'
+    ? '--replace-services'
+    : code === 'release_channel_switch_declined'
+      ? '--switch-channel'
+      : null;
+  if (!flag || !(error instanceof Error)) return error;
+  return Object.assign(new Error(`${error.message} Or rerun with ${flag}.`), { code, personalHomeTaskFailure: true });
 }
 
 async function readPersonalHomePurpose(params: Readonly<{
@@ -835,10 +883,10 @@ export async function handleHomeCommand(
             ? `Storage: plaintext at rest on ${sshFlag.value}; continue only if you trust that remote host.`
             : 'Storage: plaintext on this computer; use only a machine you trust.',
           linkAccountMode === 'never'
-            ? 'Account Service publication: disabled.'
+            ? 'Availability on your other devices: disabled.'
             : confirmedAccountService
-              ? `Account Service publication: ${confirmedAccountService.displayName} (${confirmedAccountService.endpoint}).`
-              : 'Account Service publication: automatic only when the selected service can be verified.',
+              ? `Availability through ${confirmedAccountService.displayName}: enabled (${confirmedAccountService.endpoint}).`
+              : 'Availability on your other devices: automatic only when the selected service can be verified.',
           'This installs or reuses the managed server, creates the initial account, closes signup, and configures the local service.',
         ].join('\n'),
         deps,
@@ -877,20 +925,25 @@ export async function handleHomeCommand(
         sleep: deps.sleep,
         onPrompt: async (prompt, message) => {
           if (prompt.kind === 'daemon.replaceRemoteBackgroundServices') {
-            if (yesFlag.present) return { replaceExistingServices: false };
-            if (!interactive) {
+            if (!yesFlag.present && !interactive) {
               throw Object.assign(
                 new Error('Remote background-service replacement requires an interactive terminal or explicit --replace-services.'),
                 { code: 'prompt_required' },
               );
             }
-            return {
-              replaceExistingServices: await confirmYesNo({
-                message: message || 'Replace the conflicting remote Happier background services?',
+            // `home create --yes` never grants replacement: --replace-services does.
+            return await answerRemoteBackgroundServiceReplacementPrompt({
+              data: prompt.data,
+              assumeYes: yesFlag.present,
+              assumeYesMeans: 'decline',
+              interactive,
+              message,
+              confirm: async (promptMessage) => await confirmYesNo({
+                message: promptMessage,
                 deps,
                 ...(signal ? { signal } : {}),
               }),
-            };
+            });
           }
           if (prompt.kind === 'releaseChannel.switchDefaultForSetup') {
             if (yesFlag.present) return { switchDefaultReleaseChannel: false };
@@ -923,6 +976,8 @@ export async function handleHomeCommand(
             }),
           });
         },
+      }).catch((error: unknown) => {
+        throw withRemoteCreateCliRemedy(error);
       });
       const created = parseRemotePersonalHomeCreateTaskData(remoteData);
       const { pairing, invokingClientEnrollment, ...createdFacts } = created;
@@ -966,6 +1021,7 @@ export async function handleHomeCommand(
             invokingClientEnrollment.kind === 'enrolled'
               ? undefined
               : `happier home create --ssh ${sshFlag.value} --link-account auto`,
+            confirmedAccountService?.endpoint,
           );
         }
       }
@@ -1020,7 +1076,7 @@ export async function handleHomeCommand(
       await printJsonEnvelope({ ok: true, kind: 'personal_home_create', data: result }, { exitCode: 0 });
     } else {
       console.log(`Personal Home ready at ${created.canonicalServerUrl}`);
-      renderPostCreateHomeLink(accountServiceLink, created.homeServerIdentityId);
+      renderPostCreateHomeLink(accountServiceLink, created.homeServerIdentityId, undefined, confirmedAccountService?.endpoint);
     }
     return;
   }
@@ -1076,29 +1132,34 @@ export async function handleHomeCommand(
     const homeFlag = takeFlagValue(args, '--home');
     const relinkFlag = takeFlag(homeFlag.rest, '--relink');
     if (relinkFlag.rest.length > 0) throw new Error(`Unknown home link-account arguments: ${relinkFlag.rest.join(' ')}`);
-    if (!deps.linkAccount) throw Object.assign(new Error('Account Service Home linking is unavailable in this build.'), { code: 'link_account_unavailable' });
+    if (!deps.linkAccount) throw Object.assign(new Error('Account-based Home linking is unavailable in this build.'), { code: 'link_account_unavailable' });
     const outcome = await deps.linkAccount({
       ...(homeFlag.value ? { homeServerIdentityId: homeFlag.value } : {}),
       relink: relinkFlag.present,
       signal,
     });
     if (outcome.kind === 'linked') {
-      console.log('Home linked to Account Service.');
+      console.log('This Home is now available on your other devices.');
       return;
     }
     if (outcome.kind === 'relink_required' && !relinkFlag.present) {
-      throw Object.assign(new Error('This Home is already linked to different Account Service trust facts. Rerun with --relink only after reviewing that replacement.'), { code: 'relink_required' });
+      throw Object.assign(new Error('This Home is already linked using different trust facts. Rerun with --relink only after reviewing that replacement.'), { code: 'relink_required' });
     }
-    if (outcome.kind === 'unavailable') throw Object.assign(new Error(`Home linking is unavailable: ${outcome.reason}.`), { code: outcome.reason });
+    if (outcome.kind === 'unavailable') {
+      throw Object.assign(
+        new Error(describeHomeLinkUnavailable('link', outcome.reason, outcome.selectedEndpoint)),
+        { code: outcome.reason },
+      );
+    }
     if (outcome.kind === 'cancelled') throw Object.assign(new Error('Home linking was cancelled.'), { code: 'cancelled' });
-    if (outcome.kind === 'relink_required') throw Object.assign(new Error('Account Service relink was not accepted.'), { code: 'relink_required' });
-    throw Object.assign(new Error('Account Service Home linking failed.'), { code: 'link_account_failed' });
+    if (outcome.kind === 'relink_required') throw Object.assign(new Error('Account relinking was not accepted.'), { code: 'relink_required' });
+    throw Object.assign(new Error('Account-based Home linking failed.'), { code: 'link_account_failed' });
   }
   if (subcommand === 'unlink-account') {
     if (sshFlag.value) throw Object.assign(new Error('--ssh is not supported by home unlink-account.'), { code: 'invalid_params' });
     const homeFlag = takeFlagValue(args, '--home');
     if (homeFlag.rest.length > 0) throw new Error(`Unknown home unlink-account arguments: ${homeFlag.rest.join(' ')}`);
-    if (!deps.unlinkAccount) throw Object.assign(new Error('Account Service Home unlinking is unavailable in this build.'), { code: 'unlink_account_unavailable' });
+    if (!deps.unlinkAccount) throw Object.assign(new Error('Account-based Home unlinking is unavailable in this build.'), { code: 'unlink_account_unavailable' });
     const outcome = await deps.unlinkAccount({
       ...(homeFlag.value ? { homeServerIdentityId: homeFlag.value } : {}),
       signal,
@@ -1106,13 +1167,13 @@ export async function handleHomeCommand(
     if (outcome.kind === 'unlinked') {
       // Truthful about the exact boundary: the refusal is forward-looking, and
       // sessions the service already obtained are the Home's to revoke.
-      console.log('Stopped Account Service sign-in for this Home.');
+      console.log('Stopped future account-based sign-in for this Home.');
       console.log('Devices already signed in keep their access until signed out on the Home.');
       return;
     }
-    if (outcome.kind === 'unavailable') throw Object.assign(new Error(`Home unlinking is unavailable: ${outcome.reason}.`), { code: outcome.reason });
+    if (outcome.kind === 'unavailable') throw Object.assign(new Error(describeHomeLinkUnavailable('unlink', outcome.reason)), { code: outcome.reason });
     if (outcome.kind === 'cancelled') throw Object.assign(new Error('Home unlinking was cancelled.'), { code: 'cancelled' });
-    throw Object.assign(new Error('Account Service Home unlinking failed.'), { code: 'unlink_account_failed' });
+    throw Object.assign(new Error('Account-based Home unlinking failed.'), { code: 'unlink_account_failed' });
   }
   if (subcommand === 'relocate') {
     if (sshFlag.value) throw Object.assign(new Error('Use --target, not --ssh, to select the relocation destination.'), { code: 'invalid_params' });

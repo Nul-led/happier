@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { useRouter } from 'expo-router';
+import { useNavigation, useRouter } from '@/components/appShell/workspace/destinationRoute';
 import {
     TEAM_NAME_MAX_LENGTH_V1,
     validateTeamDescriptionV1,
@@ -10,9 +10,12 @@ import {
     type SessionHistoryAccessV1,
 } from '@happier-dev/protocol/teams';
 
+import { RoundButton } from '@/components/ui/buttons/RoundButton';
+import { FieldTextInput } from '@/components/ui/forms/FieldTextInput';
+import { AttentionBanner } from '@/components/ui/lists/AttentionBanner';
 import { Item } from '@/components/ui/lists/Item';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
-import { TextInput } from '@/components/ui/text/Text';
+import { SectionButtonRow } from '@/components/ui/lists/SectionButtonRow';
 import { Modal } from '@/modal';
 import {
     archiveTeam,
@@ -24,6 +27,7 @@ import {
 } from '@/sync/ops/teams/teamOperations';
 import { isTeamActionApprovalPendingError } from '@/sync/ops/teams/teamActionClient';
 import { t } from '@/text';
+import { useUnsavedDraftNavigationGuard } from '@/utils/navigation/useUnsavedDraftNavigationGuard';
 
 import { TeamSection } from './TeamSection';
 import { TeamLogoPicker } from './TeamLogoPicker';
@@ -80,10 +84,11 @@ const TeamIdentitySection = React.memo(function TeamIdentitySection(props: Reado
     context: TeamSectionContext;
 }>) {
     const { context } = props;
+    const navigation = useNavigation();
     const [saving, setSaving] = React.useState(false);
     const [error, setError] = React.useState<string | null>(null);
     const [saved, setSaved] = React.useState(false);
-    const nameInputRef = React.useRef<{ focus(): void } | null>(null);
+    const nameInputRef = React.useRef<React.ComponentRef<typeof FieldTextInput> | null>(null);
     const saveInFlightRef = React.useRef(false);
 
     React.useEffect(() => () => {
@@ -97,6 +102,12 @@ const TeamIdentitySection = React.memo(function TeamIdentitySection(props: Reado
     const publishedDescription = context.team.description ?? '';
     const draft = useEditedMetadataDraft({ name: publishedName, description: publishedDescription });
     const { name, description, conflict } = draft;
+    useUnsavedDraftNavigationGuard({
+        navigation,
+        isDirty: draft.isDirty,
+        onDiscard: draft.reset,
+        tag: 'TeamSettingsScreen.beforeRemove',
+    });
 
     const nameValidation = validateTeamNameV1(name);
     const descriptionValidation = validateTeamDescriptionV1(description);
@@ -150,78 +161,92 @@ const TeamIdentitySection = React.memo(function TeamIdentitySection(props: Reado
         setSaved(false);
     }, [draft]);
 
+    const editable = context.team.capabilities.manageSettings && !context.archived;
     return (
         <>
-            {/* Each field keeps its own visible label once it holds a value;
-                the placeholder is an example, not a label. */}
-            <ItemGroup title={t('teams.create.nameLabel')}>
-                <TextInput
-                    ref={nameInputRef}
-                    testID="team-settings-name"
-                    value={name}
-                    onChangeText={(next) => { draft.setName(next); setSaved(false); }}
-                    placeholder={t('teams.create.namePlaceholder')}
-                    accessibilityLabel={t('teams.create.nameLabel')}
-                    maxLength={TEAM_NAME_MAX_LENGTH_V1}
-                    editable={context.team.capabilities.manageSettings && !context.archived}
-                />
-            </ItemGroup>
-            <ItemGroup
-                title={t('teams.create.descriptionLabel')}
-                // Same contract as the Group forms: the canonical validator
-                // decides, and an overlong description says so instead of
-                // leaving a disabled Save with no explanation.
-                footer={error
-                    ?? (descriptionValidation.status !== 'ok'
-                        ? t('teams.errors.invalidDescription')
-                        : saved && !changed ? t('teams.settings.saved') : undefined)}
-            >
-                <TextInput
-                    testID="team-settings-description"
-                    value={description}
-                    onChangeText={(next) => { draft.setDescription(next); setSaved(false); }}
-                    placeholder={t('teams.create.descriptionPlaceholder')}
-                    accessibilityLabel={t('teams.create.descriptionLabel')}
-                    multiline
-                    editable={context.team.capabilities.manageSettings && !context.archived}
-                />
+            {/* Somebody else changed the Team while this draft was open: the Home's answer is
+                shown, and continuing adopts it as the basis the draft is compared against. */}
             {conflict ? (
-                <Item
-                    testID="team-settings-identity-conflict"
+                <AttentionBanner
+                    testID="team-settings-identity-conflict-notice"
                     title={t('teams.errors.conflict')}
-                    subtitle={[publishedName, publishedDescription].filter(Boolean).join('\n')}
-                    detail={t('common.continue')}
+                    description={[publishedName, publishedDescription].filter(Boolean).join('\n')}
                     accessibilityLiveRegion="assertive"
-                    disabled={saving}
-                    onPress={acceptCurrentBasis}
-                    showChevron={false}
+                    action={{
+                        label: t('common.continue'),
+                        onPress: acceptCurrentBasis,
+                        disabled: saving,
+                        testID: 'team-settings-identity-conflict',
+                    }}
                 />
             ) : null}
-            <Item
-                testID="team-settings-save"
-                title={t('common.save')}
-                loading={saving}
-                disabled={!changed || conflict || saving || !context.canMutate}
-                onPress={() => void save()}
-                showChevron={false}
-            />
-            {changed || conflict ? (
+            <ItemGroup title={t('teams.create.detailsSection')}>
                 <Item
-                    testID="team-settings-cancel"
-                    title={t('common.cancel')}
-                    disabled={saving}
-                    onPress={cancel}
+                    title={t('teams.create.nameLabel')}
+                    accessoryLayout="adaptive"
                     showChevron={false}
+                    rightElement={(
+                        <FieldTextInput
+                            ref={nameInputRef}
+                            testID="team-settings-name"
+                            value={name}
+                            onChangeText={(next) => { draft.setName(next); setSaved(false); }}
+                            placeholder={t('teams.create.namePlaceholder')}
+                            accessibilityLabel={t('teams.create.nameLabel')}
+                            maxLength={TEAM_NAME_MAX_LENGTH_V1}
+                            editable={editable}
+                            error={nameValidation.status !== 'ok' ? t('teams.errors.invalidName') : null}
+                        />
+                    )}
                 />
-            ) : null}
-            {error ? (
                 <Item
-                    testID="team-settings-identity-error"
-                    title={error}
-                    accessibilityLiveRegion="assertive"
+                    title={t('teams.create.descriptionLabel')}
+                    accessoryLayout="stacked"
                     showChevron={false}
+                    rightElement={(
+                        // Same contract as the Group forms: the canonical validator
+                        // decides, and an overlong description says so instead of
+                        // leaving a disabled Save with no explanation.
+                        <FieldTextInput
+                            testID="team-settings-description"
+                            value={description}
+                            onChangeText={(next) => { draft.setDescription(next); setSaved(false); }}
+                            placeholder={t('teams.create.descriptionPlaceholder')}
+                            accessibilityLabel={t('teams.create.descriptionLabel')}
+                            multiline
+                            minLines={2}
+                            editable={editable}
+                            error={descriptionValidation.status !== 'ok' ? t('teams.errors.invalidDescription') : null}
+                        />
+                    )}
                 />
-            ) : null}
+                <TeamLogoSection context={context} />
+            </ItemGroup>
+            <ItemGroup surface="none">
+                    <SectionButtonRow
+                        footnote={error ?? (saved && !changed ? t('teams.settings.saved') : null)}
+                        footnoteTone={error ? 'danger' : 'secondary'}
+                        footnoteTestID={error ? 'team-settings-identity-error' : 'team-settings-saved'}
+                    >
+                        <RoundButton
+                            testID="team-settings-save"
+                            size="small"
+                            title={t('common.save')}
+                            loading={saving}
+                            disabled={!changed || conflict || saving || !context.canMutate}
+                            onPress={() => void save()}
+                        />
+                        {changed || conflict ? (
+                            <RoundButton
+                                testID="team-settings-cancel"
+                                size="small"
+                                display="inverted"
+                                title={t('common.cancel')}
+                                disabled={saving}
+                                onPress={cancel}
+                            />
+                        ) : null}
+                    </SectionButtonRow>
             </ItemGroup>
         </>
     );
@@ -239,18 +264,26 @@ const TeamLogoSection = React.memo(function TeamLogoSection(props: Readonly<{
         removeInFlightRef.current = false;
     }, []);
 
-    const use = React.useCallback(async (image: Parameters<typeof setTeamLogo>[0]['image']) => {
+    const use = React.useCallback<React.ComponentProps<typeof TeamLogoPicker>['onUse']>(async (image, onSettled) => {
         try {
             const outcome = await setTeamLogo({
                 scope: context.scope,
                 address: context.address,
                 image,
+                onApprovalSucceeded: () => onSettled({ kind: 'succeeded' }),
+                onApprovalFailed: (code) => onSettled({
+                    kind: 'failed',
+                    message: code === 'approval_rejected' ? t('teams.errors.forbidden') : t('teams.logo.failed'),
+                }),
             });
             return outcome.kind === 'succeeded'
                 ? { kind: 'succeeded' as const }
                 : { kind: 'failed' as const, message: teamMutationFailureLabel(outcome.failure) };
         } catch (cause) {
-            if (isTeamActionApprovalPendingError(cause)) context.requestApproval(cause.artifactId);
+            if (isTeamActionApprovalPendingError(cause)) {
+                context.requestApproval(cause.registration);
+                return { kind: 'pending' as const };
+            }
             return { kind: 'failed' as const, message: t('teams.logo.failed') };
         }
     }, [context]);
@@ -285,28 +318,19 @@ const TeamLogoSection = React.memo(function TeamLogoSection(props: Readonly<{
     }, [context]);
 
     return (
-        <>
-            <TeamLogoPicker
-                identityId={context.address.teamId}
-                testIDPrefix="team-settings"
-                currentLogo={context.team.logo}
-                disabled={!context.team.capabilities.manageSettings || !context.canMutate || removing}
-                onUse={use}
-            />
-            {context.team.logo ? (
-                <ItemGroup footer={error ?? undefined}>
-                    <Item
-                        testID="team-settings-logo-remove"
-                        title={t('teams.logo.remove')}
-                        destructive
-                        loading={removing}
-                        disabled={!context.canMutate || removing}
-                        onPress={() => void remove()}
-                        showChevron={false}
-                    />
-                </ItemGroup>
-            ) : null}
-        </>
+        <TeamLogoPicker
+            identityId={context.address.teamId}
+            testIDPrefix="team-settings"
+            currentLogo={context.team.logo}
+            disabled={!context.team.capabilities.manageSettings || !context.canMutate || removing}
+            onUse={use}
+            remove={{
+                onPress: () => void remove(),
+                busy: removing,
+                disabled: !context.canMutate || removing,
+                error,
+            }}
+        />
     );
 });
 
@@ -351,9 +375,17 @@ const TeamPolicySections = React.memo(function TeamPolicySections(props: Readonl
 
     return (
         <>
+            {error ? (
+                <AttentionBanner
+                    testID="team-settings-policy-error"
+                    title={t('homeGovernance.changeFailedTitle')}
+                    description={error}
+                    accessibilityLiveRegion="assertive"
+                />
+            ) : null}
             <ItemGroup
                 title={t('teams.settings.sessionDefaultsSection')}
-                footer={error ?? t('teams.policy.sessionCreationHelp')}
+                description={t('teams.policy.sessionCreationHelp')}
                 accessibilityRole="radiogroup"
                 accessibilityLabel={t('teams.settings.sessionDefaultsSection')}
             >
@@ -375,7 +407,7 @@ const TeamPolicySections = React.memo(function TeamPolicySections(props: Readonl
 
             <ItemGroup
                 title={t('teams.settings.externalSharingSection')}
-                footer={t('teams.policy.externalSharingHelp')}
+                description={t('teams.policy.externalSharingHelp')}
                 accessibilityRole="radiogroup"
                 accessibilityLabel={t('teams.settings.externalSharingSection')}
             >
@@ -397,7 +429,7 @@ const TeamPolicySections = React.memo(function TeamPolicySections(props: Readonl
 
             <ItemGroup
                 title={t('teams.settings.historyDefaultSection')}
-                footer={t('teams.policy.historyDefaultHelp')}
+                description={t('teams.policy.historyDefaultHelp')}
                 accessibilityRole="radiogroup"
                 accessibilityLabel={t('teams.settings.historyDefaultSection')}
             >
@@ -506,27 +538,37 @@ const TeamLifecycleSection = React.memo(function TeamLifecycleSection(props: Rea
     if (!showArchive && !showRestore) return null;
 
     return (
-        <ItemGroup title={t('teams.settings.lifecycleSection')} footer={error ?? undefined}>
-            {showArchive ? (
-                <Item
-                    testID="team-settings-archive"
-                    title={t('teams.archive.action', { name })}
-                    loading={busy}
-                    disabled={busy || !context.canMutate}
-                    onPress={() => void archive()}
-                    showChevron={false}
-                />
-            ) : null}
-            {showRestore ? (
-                <Item
-                    testID="team-settings-restore"
-                    title={t('teams.archive.restoreAction', { name })}
-                    loading={busy}
-                    disabled={busy || !context.mutationsAvailable || context.approvalPending}
-                    onPress={() => void restore()}
-                    showChevron={false}
-                />
-            ) : null}
+        <ItemGroup
+            title={t('teams.settings.lifecycleSection')}
+            description={showArchive ? t('teams.settings.archiveDescription') : t('teams.archive.readOnly')}
+            surface="none"
+        >
+            <SectionButtonRow footnote={error} footnoteTone="danger" footnoteTestID="team-settings-lifecycle-error">
+                {showArchive ? (
+                    <RoundButton
+                        testID="team-settings-archive"
+                        size="small"
+                        display="destructive"
+                        title={t('teams.archive.action', { name })}
+                        titleNumberOfLines="complete"
+                        loading={busy}
+                        disabled={busy || !context.canMutate}
+                        onPress={() => void archive()}
+                    />
+                ) : null}
+                {showRestore ? (
+                    <RoundButton
+                        testID="team-settings-restore"
+                        size="small"
+                        display="secondary"
+                        title={t('teams.archive.restoreAction', { name })}
+                        titleNumberOfLines="complete"
+                        loading={busy}
+                        disabled={busy || !context.mutationsAvailable || context.approvalPending}
+                        onPress={() => void restore()}
+                    />
+                ) : null}
+            </SectionButtonRow>
         </ItemGroup>
     );
 });
@@ -536,15 +578,17 @@ export const TeamSettingsScreen = React.memo(function TeamSettingsScreen(props: 
     teamId: string;
 }>) {
     return (
-        <TeamSection serverId={props.serverId} teamId={props.teamId} title={t('teams.tabs.settings')}>
+        <TeamSection
+            serverId={props.serverId}
+            teamId={props.teamId}
+            title={t('teams.tabs.settings')}
+            description={t('teams.pages.settings')}
+            restoresHere
+        >
             {(context) => (
                 <>
-                    {context.team.capabilities.manageSettings ? (
-                        <>
-                            <TeamIdentitySection context={context} />
-                            <TeamLogoSection context={context} />
-                        </>
-                    ) : null}
+                    {/* The Team section carries the logo row with the name and description. */}
+                    {context.team.capabilities.manageSettings ? <TeamIdentitySection context={context} /> : null}
                     {context.team.capabilities.managePolicy ? (
                         <TeamPolicySections context={context} />
                     ) : null}

@@ -4,7 +4,6 @@ import {
     readExternalSessionFollowStatusV1,
     readExternalSessionsSettingsV1,
 } from '@happier-dev/protocol';
-import { useUnistyles } from 'react-native-unistyles';
 
 import { resolveAgentCatalogProjection } from '@/agents/backendCatalog/agentCatalogProjection';
 import { useDaemonMergedProjectionInputs } from '@/agents/backendCatalog/useDaemonMergedProjectionInputs';
@@ -12,6 +11,10 @@ import { MachineAdministrationTargetSelector } from '@/components/settings/machi
 import { Switch } from '@/components/ui/forms/Switch';
 import { Item } from '@/components/ui/lists/Item';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
+import { ListPresentationProvider } from '@/components/ui/lists/listPresentation';
+import { SettingsPageHeader } from '@/components/settings/shell/SettingsPageHeader';
+import { SettingRow } from '@/components/settings/shell/SettingRow';
+import { EXTERNAL_SESSIONS_SETTINGS } from '@/components/settings/externalSessions/externalSessionsSettings';
 import { Modal } from '@/modal';
 import {
     readExternalSessionFollowPolicy,
@@ -40,7 +43,6 @@ import {
 } from './ExternalSessionsIntegrationSection';
 import { useExternalSessionsIntegrationController } from './externalSessionsIntegrationController';
 import { useExternalSessionsAutoLinkSources } from './useExternalSessionsAutoLinkSources';
-import { Icon } from '@/components/ui/icons/Icon';
 import type {
     ExternalSessionsAutoLinkSourceDescriptor,
     ExternalSessionsIntegrationDescriptor,
@@ -125,7 +127,6 @@ const ExternalSessionFollowItem = React.memo(function ExternalSessionFollowItem(
      */
     showDivider?: boolean;
 }>) {
-    const { theme } = useUnistyles();
     const link = readExternalSessionLink(readSessionOwnerMetadataView(props.row.session));
     const daemonMergedProjection = useDaemonMergedProjectionInputs({
         machineId: link?.machineId ?? null,
@@ -149,7 +150,6 @@ const ExternalSessionFollowItem = React.memo(function ExternalSessionFollowItem(
                 {...(props.showDivider === undefined ? {} : { showDivider: props.showDivider })}
                 title={props.row.title}
                 subtitle={resolveFollowStatusSubtitle('unsupported')}
-                icon={<Icon name="link" size={29} color={theme.colors.text.secondary} />}
                 showChevron={false}
             />
         );
@@ -174,7 +174,6 @@ const ExternalSessionFollowItem = React.memo(function ExternalSessionFollowItem(
             {...(props.showDivider === undefined ? {} : { showDivider: props.showDivider })}
             title={props.row.title}
             subtitle={capabilityUnavailable ? resolveFollowStatusSubtitle('unknown') : resolveFollowStatusSubtitle(status)}
-            icon={<Icon name="link" size={29} color={theme.colors.text.secondary} />}
             loading={props.pending || capabilityPending}
             disabled={disabled}
             rightElement={(
@@ -210,7 +209,6 @@ export type ExternalSessionsSettingsViewProps = Readonly<{
 export const ExternalSessionsSettingsView = React.memo(function ExternalSessionsSettingsView(
     props: ExternalSessionsSettingsViewProps,
 ) {
-    const { theme } = useUnistyles();
     const machines = useAllMachines();
     const sessions = useAllSessions();
     const backendEnabledByTargetKey = useSetting('backendEnabledByTargetKey');
@@ -408,15 +406,14 @@ export const ExternalSessionsSettingsView = React.memo(function ExternalSessions
             render: () => (
                 <ItemGroup
                     title={t('externalSessions.settingsFollowGroupTitle')}
-                    footer={t('externalSessions.settingsRestoreFooter')}
+                    description={t('externalSessions.settingsRestoreFooter')}
                 >
-                    <Item
+                    <SettingRow
                         testID="settings-external-sessions-restore-item"
-                        title={t('externalSessions.settingsRestoreTitle')}
+                        setting={EXTERNAL_SESSIONS_SETTINGS.settings.keepFollowingAfterRestart}
                         subtitle={settings.keepPassivelyFollowingAfterRestart
                             ? t('externalSessions.settingsRestoreEnabledSubtitle')
                             : t('externalSessions.settingsRestoreDisabledSubtitle')}
-                        icon={<Icon name="arrow-clockwise" size={29} color={theme.colors.accent.blue} />}
                         rightElement={(
                             <Switch
                                 testID="settings-external-sessions-restore-toggle"
@@ -439,7 +436,6 @@ export const ExternalSessionsSettingsView = React.memo(function ExternalSessions
                         subtitle={hasActiveFollowPolicy
                             ? t('externalSessions.settingsNotificationsActiveSubtitle')
                             : t('externalSessions.settingsNotificationsInactiveSubtitle')}
-                        icon={<Icon name="bell" size={29} color={theme.colors.text.secondary} />}
                         showChevron={false}
                     />
                 </ItemGroup>
@@ -456,7 +452,7 @@ export const ExternalSessionsSettingsView = React.memo(function ExternalSessions
                 render: () => (
                     <ItemGroup
                         title={isFirst ? t('externalSessions.settingsActiveFollowsGroupTitle') : undefined}
-                        footer={isLast ? t('externalSessions.settingsActiveFollowsFooter') : undefined}
+                        description={isFirst ? t('externalSessions.settingsActiveFollowsFooter') : undefined}
                         virtualizedSegment={{ first: isFirst, last: isLast }}
                     >
                         {chunk.length === 0 ? (
@@ -465,7 +461,6 @@ export const ExternalSessionsSettingsView = React.memo(function ExternalSessions
                                 mode="info"
                                 title={t('externalSessions.settingsActiveFollowsEmptyTitle')}
                                 subtitle={t('externalSessions.settingsActiveFollowsEmptySubtitle')}
-                                icon={<Icon name="link" size={29} color={theme.colors.text.secondary} />}
                                 showChevron={false}
                             />
                         ) : chunk.map((row) => (
@@ -491,7 +486,6 @@ export const ExternalSessionsSettingsView = React.memo(function ExternalSessions
                         mode="info"
                         title={t('externalSessions.settingsPassiveTitle')}
                         subtitle={t('externalSessions.settingsPassiveSubtitle')}
-                        icon={<Icon name="eye" size={29} color={theme.colors.text.secondary} />}
                         showChevron={false}
                     />
                 </ItemGroup>
@@ -507,17 +501,25 @@ export const ExternalSessionsSettingsView = React.memo(function ExternalSessions
         setRestartFollowEnabled,
         setSessionFollowEnabled,
         settings.keepPassivelyFollowingAfterRestart,
-        theme.colors.accent.blue,
-        theme.colors.text.secondary,
     ]);
 
     return (
+        // A virtualized page: the list is not an `ItemList`, so it takes the page anatomy here.
+        <ListPresentationProvider value="page">
         <ExternalSessionsIntegrationSection
             virtualized
-            virtualizedHeader={<MachineAdministrationTargetSelector
-                selection={administrationTargetSelection}
-                testIDPrefix="settings-external-sessions-target"
-            />}
+            virtualizedHeader={(
+                <SettingsPageHeader
+                    description={t('externalSessions.settingsEntrySubtitle')}
+                    actions={(
+                        <MachineAdministrationTargetSelector
+                            selection={administrationTargetSelection}
+                            testIDPrefix="settings-external-sessions-target"
+                            presentation="chip"
+                        />
+                    )}
+                />
+            )}
             integrations={props.integrations === undefined
                 ? integrationController.integrations
                 : props.integrations}
@@ -546,6 +548,7 @@ export const ExternalSessionsSettingsView = React.memo(function ExternalSessions
                 : null}
             supplementalRows={supplementalRows}
         />
+        </ListPresentationProvider>
     );
 });
 

@@ -1,6 +1,7 @@
 import {
   acquireHomeCarrierByPolicy,
   resolveHomeCarrierPreferredTransport,
+  readHomeApplicationCarrierEligibilityFromEnv,
   type HomeCarrierPreferredTransport,
 } from '@happier-dev/cli-common/homeEnrollment';
 import {
@@ -9,9 +10,7 @@ import {
   type NodeIrohHomeTunnelSession,
 } from '@happier-dev/iroh-native/node';
 import type { HomeConnectionDescriptorV1 } from '@happier-dev/protocol';
-import { resolveHappyHomeDirFromEnvironment } from '@happier-dev/cli-common/agents';
-
-import { resolveCliIrohEndpointKeyPath } from '@/daemon/peer/iroh/irohEndpointIdentity';
+import { borrowServerHttpRuntimeHomeTunnel } from '@/api/client/serverHttpBaseUrl';
 import type { TerminalAuthEnrollmentRuntime } from './terminalAuthEnrollmentClient';
 
 export type AcquiredTerminalAuthEnrollmentRuntime =
@@ -27,17 +26,12 @@ export type AcquiredTerminalAuthEnrollmentRuntime =
     }>;
 
 type TerminalAuthEnrollmentRuntimeDeps = Readonly<{
-  createSession(input: Readonly<{ endpointKeyPath: string }>): Promise<NodeIrohHomeTunnelSession>;
+  createSession(input: Readonly<{ keylessEndpoint: 'account_client' }>): Promise<NodeIrohHomeTunnelSession>;
   classifyFailure(error: unknown): Readonly<{ fallbackAllowed: boolean }>;
 }>;
 
-export type TerminalAuthEnrollmentRuntimeOptions = Readonly<{
-  /** Request-scoped CLI home that owns the one canonical Iroh endpoint key. */
-  happyHomeDir?: string;
-}>;
-
 const DEFAULT_DEPS: TerminalAuthEnrollmentRuntimeDeps = {
-  createSession: async ({ endpointKeyPath }) => await createNodeIrohHomeTunnelSession({ endpointKeyPath }),
+  createSession: async (input) => await createNodeIrohHomeTunnelSession(input),
   classifyFailure: classifyIrohHomeCarrierFailure,
 };
 
@@ -45,15 +39,11 @@ export async function acquireTerminalAuthEnrollmentRuntime(
   descriptor: HomeConnectionDescriptorV1,
   preferredTransportOrDeps: HomeCarrierPreferredTransport | TerminalAuthEnrollmentRuntimeDeps = DEFAULT_DEPS,
   signal?: AbortSignal,
-  options: TerminalAuthEnrollmentRuntimeOptions = {},
 ): Promise<AcquiredTerminalAuthEnrollmentRuntime> {
   const preferredTransport = typeof preferredTransportOrDeps === 'string'
     ? preferredTransportOrDeps
     : resolveHomeCarrierPreferredTransport(descriptor);
   const deps = typeof preferredTransportOrDeps === 'string' ? DEFAULT_DEPS : preferredTransportOrDeps;
-  const endpointKeyPath = resolveCliIrohEndpointKeyPath(
-    options.happyHomeDir ?? resolveHappyHomeDirFromEnvironment(process.env),
-  );
   let session: NodeIrohHomeTunnelSession | null = null;
   const shutdownCreatedSession = async (): Promise<void> => {
     const current = session;
@@ -61,12 +51,16 @@ export async function acquireTerminalAuthEnrollmentRuntime(
   };
   const result = await acquireHomeCarrierByPolicy({
     mode: 'initial_selection',
-    applicationCarrierEligibility: 'automatic',
+    applicationCarrierEligibility: readHomeApplicationCarrierEligibilityFromEnv(process.env),
     descriptor,
     preferredTransport,
     acquireIroh: async ({ descriptor: requestedDescriptor }) => {
+      const borrowed = await borrowServerHttpRuntimeHomeTunnel(requestedDescriptor, signal);
+      if (borrowed) return { ...borrowed, value: borrowed.runtimeOrigin };
       if (!session) {
-        const createdSession = await deps.createSession({ endpointKeyPath });
+        // A finite Account-client helper must never register the Machine's
+        // persisted EndpointId, even when it runs in an independent process.
+        const createdSession = await deps.createSession({ keylessEndpoint: 'account_client' });
         session = createdSession;
       }
       const lease = await session.ensureHomeTunnel({

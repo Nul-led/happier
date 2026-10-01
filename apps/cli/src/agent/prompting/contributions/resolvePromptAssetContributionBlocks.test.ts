@@ -1,16 +1,19 @@
 import { describe, expect, it } from 'vitest';
+import { createPluginRuntimeOccurrenceId } from '@/plugins/runtime/runtimeSlots';
 
 import { resolvePromptAssetContributionBlocks } from './resolvePromptAssetContributionBlocks';
 
 describe('resolvePromptAssetContributionBlocks', () => {
-  it('qualifies same-local ids, orders deterministically, and reads resources through the generation-bound owner', async () => {
+  it('qualifies same-local ids, orders deterministically, and reads resources through the occurrence-bound owner', async () => {
     const reads: string[] = [];
+    const betaOccurrenceId = createPluginRuntimeOccurrenceId('beta.prompts');
+    const alphaOccurrenceId = createPluginRuntimeOccurrenceId('alpha.prompts');
     const blocks = await resolvePromptAssetContributionBlocks({
       agent: { pluginId: 'acme.agent', localId: 'worker' },
       contributions: [
         {
           pluginId: 'beta.prompts',
-          generationId: 'generation-beta',
+          occurrenceId: betaOccurrenceId,
           definition: {
             id: 'shared',
             kind: 'context',
@@ -21,7 +24,7 @@ describe('resolvePromptAssetContributionBlocks', () => {
         },
         {
           pluginId: 'alpha.prompts',
-          generationId: 'generation-alpha',
+          occurrenceId: alphaOccurrenceId,
           definition: {
             id: 'shared',
             kind: 'systemPrompt',
@@ -32,14 +35,14 @@ describe('resolvePromptAssetContributionBlocks', () => {
         },
       ],
       readResourceText: async (request) => {
-        reads.push(`${request.pluginId}/${request.resourceLocalId}@${request.generationId}`);
+        reads.push(`${request.pluginId}/${request.resourceLocalId}@${request.occurrenceId}`);
         return `${request.pluginId} prompt`;
       },
     });
 
     expect(reads).toEqual([
-      'alpha.prompts/body@generation-alpha',
-      'beta.prompts/body@generation-beta',
+      `alpha.prompts/body@${alphaOccurrenceId}`,
+      `beta.prompts/body@${betaOccurrenceId}`,
     ]);
     expect(blocks).toEqual([
       {
@@ -55,13 +58,13 @@ describe('resolvePromptAssetContributionBlocks', () => {
     ]);
   });
 
-  it('fails closed for unavailable policy, stale generation reads, and cross-target assets', async () => {
+  it('fails closed for unavailable policy, stale occurrence reads, and cross-target assets', async () => {
     const readResourceText = async () => {
-      throw new Error('stale generation');
+      throw new Error('stale occurrence');
     };
     const base = {
       pluginId: 'acme.prompts',
-      generationId: 'old-generation',
+      occurrenceId: createPluginRuntimeOccurrenceId('acme.prompts'),
       definition: {
         id: 'instructions',
         kind: 'guidelines' as const,
@@ -92,16 +95,16 @@ describe('resolvePromptAssetContributionBlocks', () => {
       agent: { pluginId: 'acme.agent', localId: 'worker' },
       contributions: [base],
       readResourceText,
-    })).rejects.toThrow('stale generation');
+    })).rejects.toThrow('stale occurrence');
 
     await expect(resolvePromptAssetContributionBlocks({
       agent: { pluginId: 'acme.agent', localId: 'worker' },
-      contributions: [{ ...base, generationId: 'current-generation' }],
+      contributions: [{ ...base, occurrenceId: createPluginRuntimeOccurrenceId('acme.prompts') }],
       readResourceText: async () => '   ',
     })).rejects.toMatchObject({ code: 'PLUGIN_PROMPT_ASSET_RESOURCE_INVALID' });
   });
 
-  it('rejects two active generations for the same qualified prompt asset', async () => {
+  it('rejects two active occurrences for the same qualified prompt asset', async () => {
     const definition = {
       id: 'instructions',
       kind: 'systemPrompt' as const,
@@ -112,8 +115,8 @@ describe('resolvePromptAssetContributionBlocks', () => {
     await expect(resolvePromptAssetContributionBlocks({
       agent: { pluginId: 'acme.agent', localId: 'worker' },
       contributions: [
-        { pluginId: 'acme.prompts', generationId: 'old', definition },
-        { pluginId: 'acme.prompts', generationId: 'new', definition },
+        { pluginId: 'acme.prompts', occurrenceId: createPluginRuntimeOccurrenceId('acme.prompts'), definition },
+        { pluginId: 'acme.prompts', occurrenceId: createPluginRuntimeOccurrenceId('acme.prompts'), definition },
       ],
       readResourceText: async () => 'prompt',
     })).rejects.toMatchObject({ code: 'PLUGIN_PROMPT_ASSET_IDENTITY_CONFLICT' });
@@ -123,7 +126,7 @@ describe('resolvePromptAssetContributionBlocks', () => {
     await expect(resolvePromptAssetContributionBlocks({
       agent: { pluginId: 'acme.agent', localId: 'worker' },
       contributions: [{
-        pluginId: 'acme.prompts', generationId: 'current',
+        pluginId: 'acme.prompts', occurrenceId: createPluginRuntimeOccurrenceId('acme.prompts'),
         definition: {
           id: 'instructions', kind: 'systemPrompt', resource: 'body',
           target: { kind: 'agent', agent: { pluginId: 'acme.agent', localId: 'worker' } },
@@ -143,14 +146,14 @@ describe('resolvePromptAssetContributionBlocks', () => {
       selectedAsset: { pluginId: 'happier.review.deepsec', localId: 'repository-security-audit-prompt' },
       contributions: [
         {
-          pluginId: 'happier.review.deepsec', generationId: 'current',
+          pluginId: 'happier.review.deepsec', occurrenceId: createPluginRuntimeOccurrenceId('happier.review.deepsec'),
           definition: {
             id: 'review-prompt', kind: 'systemPrompt', resource: 'review-body',
             target: { kind: 'agent', agent: 'deepsec' },
           },
         },
         {
-          pluginId: 'happier.review.deepsec', generationId: 'current',
+          pluginId: 'happier.review.deepsec', occurrenceId: createPluginRuntimeOccurrenceId('happier.review.deepsec'),
           definition: {
             id: 'repository-security-audit-prompt', kind: 'systemPrompt', resource: 'audit-body',
             target: { kind: 'agent', agent: 'deepsec' },

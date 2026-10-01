@@ -65,6 +65,31 @@ function success(
 }
 
 describe('runAccountEncryptionModeMigration', () => {
+  it('requires exact authoring-memory coverage before adopting the target mode', async () => {
+    const { sessionDrafts: _drafts, ...withoutDrafts } = request;
+    const content = { t: 'plain' as const, v: 'profile-a' };
+    const withMemory = { ...withoutDrafts, authoringMemory: {
+      items: [{ key: 'lastUsedProfile' as const, expectedRevision: 7, content }],
+    } };
+    const activateTargetMode = vi.fn();
+    const acknowledgeSessionDrafts = vi.fn();
+    for (const rows of [undefined, [], [{ key: 'lastUsedProfile' as const, revision: 7, content }],
+      [{ key: 'lastUsedProfile' as const, revision: 8, content: { t: 'plain' as const, v: 'wrong-profile' } }]]) {
+      await expect(runAccountEncryptionModeMigration({
+        request: withMemory,
+        migrate: async () => success(rows ? { authoringMemory: { rows } } : {}),
+        activateTargetMode, acknowledgeSessionDrafts,
+      })).rejects.toThrow('authoring memory migration response');
+    }
+    expect(activateTargetMode).not.toHaveBeenCalled();
+    await expect(runAccountEncryptionModeMigration({
+      request: withMemory,
+      migrate: async () => success({ authoringMemory: { rows: [{ key: 'lastUsedProfile', revision: 8, content }] } }),
+      activateTargetMode, acknowledgeSessionDrafts,
+    })).resolves.toMatchObject({ mode: 'plain' });
+    expect(activateTargetMode).toHaveBeenCalledOnce();
+  });
+
   it('requires the selected draft response epoch before changing local encryption state', async () => {
     const capableRequest = { ...request, sessionDrafts: { ...request.sessionDrafts, v: 2 as const } };
     const activateTargetMode = vi.fn();

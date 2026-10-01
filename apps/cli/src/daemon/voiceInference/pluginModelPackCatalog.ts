@@ -1,5 +1,6 @@
 import {
   evaluatePluginFinalPolicy,
+  type PluginSourceCustodyV1,
   type VoiceModelPackContributionV1,
 } from '@happier-dev/protocol';
 import {
@@ -23,7 +24,7 @@ import type { PluginCatalogEntry } from '@/plugins/projection/catalog/installed'
 import {
   resolvePluginFinalPolicyAuthorizationFacts,
   resolveRequiredPluginNetworkOrigins,
-  type PluginFinalPolicyCurrentGeneration,
+  type PluginFinalPolicyCurrentRuntime,
 } from '@/plugins/runtime/policy/facts';
 
 /**
@@ -43,12 +44,13 @@ export type DaemonVoiceModelPackPluginRecordV1 = Readonly<{
 
 function resolveInstalledVoiceModelPackArtifactBinding(
   plugin: PluginCatalogEntry,
-  current: PluginFinalPolicyCurrentGeneration,
+  sourceCustody: PluginSourceCustodyV1 | null,
 ): VoiceModelPackArtifactBindingV1 | null {
   if (plugin.source.kind === 'path') {
+    if (sourceCustody?.kind !== 'development') return null;
     return Object.freeze({
       kind: 'materialization',
-      immutableGenerationId: current.immutableGenerationId,
+      sourceCustody,
     });
   }
   if (
@@ -89,7 +91,8 @@ export type DaemonInstalledVoiceModelPackPlacementV1 = InstalledVoiceModelPackLi
  */
 export async function projectInstalledDaemonPluginVoiceModelPackCatalogV1(params: Readonly<{
   installedPlugins: readonly PluginCatalogEntry[];
-  currentPluginGenerations: ReadonlyMap<string, PluginFinalPolicyCurrentGeneration>;
+  currentPluginRuntimes: ReadonlyMap<string, PluginFinalPolicyCurrentRuntime>;
+  resolvePluginSourceCustody?: (pluginId: string) => PluginSourceCustodyV1 | null;
   host: VoiceModelPackHostCapabilitiesV1;
   acceptedLicenses?: readonly VoiceModelPackLicenseAcceptanceV1[];
   licenseScope?: VoiceModelPackLicenseScopeV1;
@@ -99,9 +102,16 @@ export async function projectInstalledDaemonPluginVoiceModelPackCatalogV1(params
   const records: DaemonVoiceModelPackPluginRecordV1[] = [];
   for (const plugin of params.installedPlugins) {
     if (!plugin.manifest) continue;
-    const current = params.currentPluginGenerations.get(plugin.pluginId) ?? null;
-    if (!current || plugin.desiredGeneration !== current.immutableGenerationId) continue;
-    const artifactBinding = resolveInstalledVoiceModelPackArtifactBinding(plugin, current);
+    const current = params.currentPluginRuntimes.get(plugin.pluginId) ?? null;
+    if (
+      !current
+      || current.sourceCustody.kind !== 'managed'
+      || plugin.desiredGeneration !== current.sourceCustody.immutableGenerationId
+    ) continue;
+    const artifactBinding = resolveInstalledVoiceModelPackArtifactBinding(
+      plugin,
+      params.resolvePluginSourceCustody?.(plugin.pluginId) ?? null,
+    );
     if (!artifactBinding) continue;
     const authorization = evaluatePluginFinalPolicy({
       ...resolvePluginFinalPolicyAuthorizationFacts({

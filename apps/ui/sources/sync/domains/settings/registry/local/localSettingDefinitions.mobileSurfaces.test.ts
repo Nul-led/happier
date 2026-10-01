@@ -28,6 +28,7 @@ describe('LOCAL_SETTING_DEFINITIONS mobile surfaces', () => {
 
         expect(surfaces).toContain('navigation');
         expect(surfaces).toContain('companion');
+        expect(surfaces).toContain('agents');
         for (const surface of surfaces) {
             expect(
                 { surface, accepted: schema.safeParse({ 'session-1': surface }).success },
@@ -39,7 +40,6 @@ describe('LOCAL_SETTING_DEFINITIONS mobile surfaces', () => {
         const schema = LOCAL_SETTING_DEFINITIONS.sessionLastMobileSurfaceBySessionId.schema;
 
         expect(schema.safeParse({ 'session-1': 'browser-preview' }).success).toBe(false);
-        expect(schema.safeParse({ 'session-1': 'agents' }).success).toBe(false);
     });
 
     it('bounds persisted cockpit pins to three qualified non-empty surface ids', () => {

@@ -56,6 +56,18 @@ import type {
 } from '../actionDeclarations.js';
 
 export {
+    ConversationSessionLastDeliveryV1Schema,
+    ConversationSessionLastDeliveryV1JsonSchema,
+    ConversationSessionLastDeliveriesV1Schema,
+    ConversationSessionLastDeliveriesV1JsonSchema,
+} from './sessionConversations.js';
+export type {
+    ConversationSessionLastDeliveryV1,
+    ConversationSessionLastDeliveryOutcomeV1,
+    ConversationSessionLastDeliveriesV1,
+} from './sessionConversations.js';
+
+export {
     conversationBindingInputModesForEndpointV1,
     conversationBindingPolicyForOmittedFieldsV1,
     conversationSessionBindingDeliveryModeForOmittedFieldV1,

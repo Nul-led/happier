@@ -55,6 +55,7 @@ export class CodexLikePermissionHandler extends BasePermissionHandler {
     isWriteLikeToolName?: (toolName: string) => boolean;
     pushSender?: PermissionRequestPushSender | null;
     getAccountSettings?: (() => AccountSettings | null) | null;
+    getWorkspaceWrites?: (() => 'allow' | 'deny' | undefined) | null;
     getAccountSettingsSecretsReadKeys?: (() => ReadonlyArray<Uint8Array | null | undefined>) | null;
     onAbortRequested?: (() => void | Promise<void>) | null;
     toolTrace?: { protocol: ToolTraceProtocol; provider: string } | null;
@@ -68,6 +69,7 @@ export class CodexLikePermissionHandler extends BasePermissionHandler {
     super(params.session, {
       pushSender: params.pushSender ?? null,
       getAccountSettings: params.getAccountSettings ?? null,
+      getWorkspaceWrites: params.getWorkspaceWrites ?? null,
       getAccountSettingsSecretsReadKeys: params.getAccountSettingsSecretsReadKeys ?? null,
       onAbortRequested: params.onAbortRequested,
       toolTrace: params.toolTrace ?? null,
@@ -81,6 +83,11 @@ export class CodexLikePermissionHandler extends BasePermissionHandler {
 
   protected getLogPrefix(): string {
     return this.logPrefix;
+  }
+
+  protected override getApprovalReviewerPermissionMode(): string {
+    this.syncPermissionModeFromMetadataSnapshotIfNewer();
+    return this.currentPermissionMode;
   }
 
   protected isCurrentRemoteMediationAllowEligible(params: Readonly<{
@@ -173,6 +180,8 @@ export class CodexLikePermissionHandler extends BasePermissionHandler {
     input: unknown,
     context?: AcpPermissionCallContext,
   ): PermissionResult | null {
+    const workspaceDecision = this.resolveWorkspaceWriteDecision(toolName, input);
+    if (workspaceDecision) return workspaceDecision;
     const effective = resolveCausalPermissionMode({
       currentPermissionMode: this.currentPermissionMode,
       context,

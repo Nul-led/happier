@@ -33,9 +33,13 @@ const SOURCE = Object.freeze({ kind: 'packedFixtureStore', scope: 'primary' });
 const identity = Object.freeze({
     pluginId: PLUGIN_ID,
     agentId: AGENT_ID,
-    generation: 'packed-external-sessions-generation',
+    occurrenceId: 'packed-external-sessions-occurrence',
     contributionQualifiedId: `${PLUGIN_ID}/agents/${AGENT_ID}`,
-    immutableGenerationId: 'packed-external-sessions-immutable-generation',
+    sourceCustody: Object.freeze({
+        kind: 'managed' as const,
+        immutableGenerationId: 'packed-external-sessions-immutable-generation',
+        installSource: 'localPath' as const,
+    }),
 });
 
 /**
@@ -263,7 +267,7 @@ describe('packed External Sessions Agent contract', () => {
                 v: 1,
                 p: PLUGIN_ID,
                 a: AGENT_ID,
-                g: identity.generation,
+                g: identity.occurrenceId,
                 m: 'listCandidates',
                 r: null,
                 c: '1',

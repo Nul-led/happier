@@ -84,6 +84,13 @@ describe('scaffoldLocalPlugin authoring guidance', () => {
       expect(skill).toContain('happier plugins dev typecheck .');
       expect(skill).toContain('happier plugins dev build .');
       expect(skill).toContain('happier plugins pack .');
+      expect(skill).toContain(
+        'A failed in-process replacement keeps the incumbent plugin occurrence active only while that daemon lives.',
+      );
+      expect(skill).toContain(
+        'After a daemon restart, Happier rebuilds the current source; if it cannot build and activate, the development plugin is unavailable until corrected.',
+      );
+      expect(skill).not.toContain('retained last-known-good generation');
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -172,6 +179,7 @@ describe('scaffoldLocalPlugin authoring guidance', () => {
         });
         expect(inPackedInventory, `${reference} is not in the plugin-sdk files inventory`).toBe(true);
       }
+
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -203,7 +211,7 @@ describe('scaffoldLocalPlugin authoring guidance', () => {
     }
   });
 
-  it('links cross-plugin contributors to the generic guide without teaching feature-specific ceremony', async () => {
+  it('links broader composition guidance only to examples shipped in the SDK package', async () => {
     const root = await mkdtemp(join(tmpdir(), 'happier-plugin-scaffold-contributions-'));
     try {
       const scaffold = await scaffoldLocalPlugin({
@@ -223,12 +231,14 @@ describe('scaffoldLocalPlugin authoring guidance', () => {
         'SKILL.md',
       ), 'utf8');
 
-      expect(skill).toContain('node_modules/@happier-dev/plugin-sdk/examples/operation-only-channel-provider/');
-      expect(skill).toContain('@happier-dev/channels-protocol/v1');
-      expect(skill).toContain('does not declare a target, descriptor, or surface');
-      expect(skill).toContain('the same public contracts serve external and bundled plugins');
-      expect(skill).not.toContain('first-party Preview product');
+      expect(skill).toContain('node_modules/@happier-dev/plugin-sdk/examples/public-authoring/');
+      expect(skill).toContain('node_modules/@happier-dev/plugin-sdk/examples/advanced-package-root/');
+      expect(skill).toContain('families marked available in the capability matrix');
+      expect(skill).toContain('does not create product availability');
       expect(skill).toContain('This beginner scaffold does not declare a feature integration.');
+      expect(skill).not.toContain('operation-only-channel-provider');
+      expect(skill).not.toContain('action-contract-producer');
+      expect(skill).not.toContain('action-contract-consumer');
       expect(skill).not.toContain('defineTargetedContributionProtocol');
       expect(skill).not.toContain('defineTargetedContributionPoint');
       expect(skill).not.toContain('defineContributionProtocol');

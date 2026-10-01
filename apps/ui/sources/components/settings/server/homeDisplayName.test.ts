@@ -20,6 +20,27 @@ function profile(overrides: Partial<ServerProfile>): ServerProfile {
 }
 
 describe('resolveHomeDisplayName', () => {
+    it('names a Home by the name the Home itself publishes, the same on every device', async () => {
+        const { primeServerFeaturesSnapshot, deleteServerFeaturesSnapshot } = await import('@/sync/api/capabilities/serverFeaturesClient');
+        const { createRootLayoutFeaturesResponse } = await import('@/dev/testkit/fixtures/featureFixtures');
+        const { resolveHomeDisplayName } = await import('./homeDisplayName');
+        primeServerFeaturesSnapshot({
+            serverId: 'home-a',
+            snapshot: {
+                status: 'ready',
+                features: { ...createRootLayoutFeaturesResponse(), homePresentation: { v: 1, displayName: 'Leeroy’s Home' } },
+            },
+        });
+        try {
+            // The Home's published name wins over this device's own label for it.
+            expect(resolveHomeDisplayName(profile({ name: 'Studio' }))).toBe('Leeroy’s Home');
+        } finally {
+            deleteServerFeaturesSnapshot({ serverId: 'home-a' });
+        }
+        // Until the Home publishes one, this device's label stands.
+        expect(resolveHomeDisplayName(profile({ name: 'Studio' }))).toBe('Studio');
+    });
+
     it('names a Home by the name it was given', async () => {
         const { resolveHomeDisplayName } = await import('./homeDisplayName');
         expect(resolveHomeDisplayName(profile({ name: 'Studio' }))).toBe('Studio');
@@ -93,14 +114,5 @@ describe('resolveHomeDisplayLabel', () => {
     it('falls back to the id only when there is no address to qualify the Home', async () => {
         const { resolveHomeDisplayLabel } = await import('./homeDisplayName');
         expect(resolveHomeDisplayLabel(null, 'home-a')).toBe('home-a');
-    });
-});
-
-describe('resolveHomeMarkSource', () => {
-    it('draws an unnamed Home’s mark from its host only when the host starts with a letter', async () => {
-        const { resolveHomeMarkSource } = await import('./homeDisplayName');
-        expect(resolveHomeMarkSource(profile({ name: 'devbox.internal', serverUrl: 'https://devbox.internal' }), 'home-a')).toBe('devbox.internal');
-        expect(resolveHomeMarkSource(profile({}), 'home-a')).toBe('server.homeOnHost(host=127.0.0.1:53288)');
-        expect(resolveHomeMarkSource(profile({ name: 'Studio' }), 'home-a')).toBe('Studio');
     });
 });

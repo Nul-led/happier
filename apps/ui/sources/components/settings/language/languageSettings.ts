@@ -7,7 +7,8 @@ export const LANGUAGE_SETTINGS = defineSettingsPage({
         appLanguage: {
             titleKey: 'settingsLanguage.appLanguageTitle',
             settings: {
-                appLanguage: { titleKey: 'settingsLanguage.appLanguageTitle', descriptionKey: 'settingsLanguage.listDescription' },
+                // Changing language also owns confirmation and app reload; generic Actions only read it.
+                appLanguage: { titleKey: 'settingsLanguage.appLanguageTitle', descriptionKey: 'settingsLanguage.listDescription', storage: { scope: 'account', key: 'preferredLanguage', access: 'read_only' } },
             },
         },
     },

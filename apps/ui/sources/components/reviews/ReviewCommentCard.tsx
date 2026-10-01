@@ -25,6 +25,7 @@ export type ReviewCommentCardActions = Readonly<{
     onEdit?: (comment: ReviewCommentV1) => void;
     onTransition?: (input: ReviewCommentCardTransitionInput) => void;
     onRedact?: (comment: ReviewCommentV1) => void;
+    onDelegate?: (comment: ReviewCommentV1) => void;
 }>;
 
 function anchorPath(comment: ReviewCommentV1): string | null {
@@ -36,6 +37,7 @@ function anchorPath(comment: ReviewCommentV1): string | null {
 function authorLabel(comment: ReviewCommentV1): string {
     if (comment.author.kind === 'plugin') return comment.author.pluginId;
     if (comment.author.kind === 'agent') return comment.author.agentId;
+    if (comment.author.kind === 'workflow') return comment.author.runId;
     return comment.author.userId;
 }
 
@@ -138,6 +140,14 @@ export function ReviewCommentCard(props: ReviewCommentCardProps) {
                             disabled={disabled}
                             onPress={() => props.actions?.onRedact?.(props.comment)}
                             testID={`${testID}-redact`}
+                        />
+                    ) : null}
+                    {props.actions.onDelegate && ['proposed', 'open', 'pending_review', 'delegated'].includes(props.comment.state) ? (
+                        <ActionButton
+                            label={props.labels.delegate ?? props.labels.states.delegated}
+                            disabled={disabled}
+                            onPress={() => props.actions?.onDelegate?.(props.comment)}
+                            testID={`${testID}-delegate`}
                         />
                     ) : null}
                 </View>

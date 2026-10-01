@@ -8,11 +8,50 @@ vi.mock('@/text', async () => {
     return createTextModuleMock({ translate: (key: string) => key });
 });
 
+// Saved Home profiles are persisted device state: the testkit owns that storage boundary, while the
+// real naming rules (`readServerProfileHomeName`) stay under test.
+const savedProfiles: Record<string, Record<string, unknown>> = {};
+vi.mock('@/sync/domains/server/serverProfiles', async (importOriginal) => {
+    const { createPartialServerProfilesModuleMock } = await import('@/dev/testkit/mocks/serverProfiles');
+    return createPartialServerProfilesModuleMock(importOriginal, {
+        overrides: { getServerProfileById: (id: string) => (savedProfiles[id] ?? null) as never },
+    });
+});
+
 import { HappyError } from '@/utils/errors/errors';
 
-import { accountErasureFailureNotice, homeGovernanceFailureNotice } from './homeGovernanceLabels';
+import { accountErasureFailureNotice, homeDisplayName, homeGovernanceFailureNotice } from './homeGovernanceLabels';
+
+describe('homeDisplayName', () => {
+    it('names a Home the way the rest of the app does, never by its address when a name exists', () => {
+        savedProfiles['home-named'] = { id: 'home-named', name: 'Studio', serverUrl: 'https://studio.example' };
+        savedProfiles['home-personal'] = {
+            id: 'home-personal',
+            name: '127.0.0.1:53288',
+            serverUrl: 'http://127.0.0.1:53288',
+            personalHomeBootstrapCompleted: true,
+        };
+        savedProfiles['home-unnamed'] = { id: 'home-unnamed', name: 'unnamed.example', serverUrl: 'https://unnamed.example' };
+
+        expect(homeDisplayName('home-named')).toBe('Studio');
+        // The Personal Home of this device is "Personal Home", not the host it happens to run on.
+        expect(homeDisplayName('home-personal')).toBe('personalHome.settings.defaultHomeLabel');
+        // Without any name, the Home is named in a sentence with its host as the qualifier.
+        expect(homeDisplayName('home-unnamed')).toBe('server.homeOnHost');
+        expect(homeDisplayName('home-unknown')).toBe('home-unknown');
+    });
+});
 
 describe('accountErasureFailureNotice', () => {
+    it('explains encryption cleanup pending before erasure as retryable without claiming retirement', () => {
+        const failure = { kind: 'conflict', retryable: true, code: 'account_erasure_transition_cleanup_pending' } as const;
+        const notice = homeGovernanceFailureNotice(failure);
+        expect(notice.body).toBe('homeGovernance.errorErasureTransitionCleanupPending');
+        expect(accountErasureFailureNotice(new HappyError(failure.code, true, {
+            status: 409, kind: 'server', code: failure.code,
+        }))).toEqual(notice);
+    });
+
     it('tells the last owner to transfer ownership instead of inviting a retry', () => {
         const home = accountErasureFailureNotice(new HappyError('home_owner_transfer_required', true, {
             status: 409, kind: 'server', code: 'home_owner_transfer_required',

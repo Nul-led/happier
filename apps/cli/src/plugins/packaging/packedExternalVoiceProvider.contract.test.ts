@@ -6,7 +6,6 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { describe, expect, it } from 'vitest';
 import * as tar from 'tar';
-import * as React from 'react';
 
 import { ingestPluginManifestV2 } from '@happier-dev/protocol';
 import {
@@ -562,6 +561,9 @@ describe('packed external Voice provider author contract', () => {
   });
 
   it('materializes and opens the raw conversation runtime through public client activation on every declared platform', async () => {
+    // Same-realm packed CJS activation belongs to the UI loader/evaluator suite.
+    // This CLI contract keeps client behavior source-owned and exercises the
+    // independently executable packed daemon below.
     const clientModule = await import(pathToFileURL(
       join(fixtureRoot, 'src', 'voiceRuntime.tsx'),
     ).href) as SourceClientModule;
@@ -626,10 +628,6 @@ describe('packed external Voice provider author contract', () => {
       daemon: './dist/daemon.js',
       development: './src/voiceDaemon.ts',
     });
-    const sourceDistribution = {
-      kind: 'localPath' as const,
-      canonicalPath: fixtureRoot,
-    };
     const daemonModule = await loadPluginModule<SourceDaemonModule>({
       source: {
         kind: 'file_backed',
@@ -640,14 +638,6 @@ describe('packed external Voice provider author contract', () => {
         committedAuthorization: {
           pluginId: 'acme.packed-voice',
           immutableGenerationId: 'packed-external-voice-source-contract',
-          distribution: sourceDistribution,
-          trust: {
-            pluginId: 'acme.packed-voice',
-            distribution: sourceDistribution,
-            state: 'trusted',
-            approvedAtMs: 1,
-          },
-          isCurrent: async () => true,
         },
       },
     });
@@ -855,7 +845,7 @@ describe('packed external Voice provider author contract', () => {
     ]);
   });
 
-  it('activates exact contribution runtimes and carries cancellation into raw and speech work', async () => {
+  it('activates source client and packed daemon runtimes and carries cancellation into raw and speech work', async () => {
     const registered = new Map<string, Record<string, unknown>>();
     const registeredAgents = new Set<string>();
     const registeredActions = new Set<string>();
@@ -887,24 +877,9 @@ describe('packed external Voice provider author contract', () => {
         },
       },
     };
-    const hostRuntime = globalThis as typeof globalThis & {
-      __happierPluginHostRuntime__?: Readonly<{ react: typeof React }>;
-    };
-    const priorHostRuntime = hostRuntime.__happierPluginHostRuntime__;
-    hostRuntime.__happierPluginHostRuntime__ = { react: React };
-    let clientModule: Readonly<{ activate(input: typeof api): void }>;
-    try {
-      clientModule = await import(new URL(
-        '../testkit/fixtures/packed-external-voice-provider/dist/happier-plugin-ui/react-native-web/voice-runtime-web/entry.mjs.bundle',
-        import.meta.url,
-      ).href) as Readonly<{ activate(input: typeof api): void }>;
-    } finally {
-      if (priorHostRuntime) {
-        hostRuntime.__happierPluginHostRuntime__ = priorHostRuntime;
-      } else {
-        delete hostRuntime.__happierPluginHostRuntime__;
-      }
-    }
+    const clientModule = await import(pathToFileURL(
+      join(fixtureRoot, 'src', 'voiceRuntime.tsx'),
+    ).href) as Readonly<{ activate(input: typeof api): void }>;
     const daemonModule = await import(new URL(
       '../testkit/fixtures/packed-external-voice-provider/dist/daemon.js',
       import.meta.url,
@@ -1040,7 +1015,7 @@ describe('packed external Voice provider author contract', () => {
       expect(staged.ok).toBe(true);
       if (!staged.ok) return;
 
-      expect(staged.candidate.generatedUiArtifacts.contributionIds)
+      expect(staged.candidate.generatedUiArtifacts.artifactIds)
         .toEqual(['voice-runtime-web']);
       const archiveEntries: string[] = [];
       await tar.t({

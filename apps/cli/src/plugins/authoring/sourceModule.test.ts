@@ -18,11 +18,12 @@ import {
 import { serializeCanonicalPluginManifest } from '@/plugins/manifest/serialize';
 
 import {
-  evaluateOwnedPluginAuthorGeneration,
+  evaluatePluginDevelopmentCandidate,
+  evaluatePluginAuthorStagingSource,
   evaluatePluginAuthorSource,
   projectEvaluatedPluginDevelopmentSource,
   projectPluginAuthorModule,
-  resolveOwnedPluginAuthorGenerationModule,
+  resolvePluginAuthorStagingModule,
   resolvePluginAuthoringSource,
   resolvePluginAuthorSourceEntrypoint,
 } from './sourceModule';
@@ -37,18 +38,273 @@ function projectDefinedPlugin(defined: ReturnType<typeof definePlugin>) {
 }
 
 describe('plugin author source module owner', () => {
-  it('resolves exact one-file and directory entry rules without a manifest', async () => {
+  it('evaluates each source-in-place candidate in a fresh scope without an immutable generation', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'happier-plugin-author-in-place-'));
+    const entryPath = join(root, 'plugin.ts');
+    const writeCandidate = async (marker: string) => {
+      await writeFile(entryPath, [
+        `export const actionContracts = { marker: '${marker}' };`,
+        'export const manifest = {',
+        "  schemaVersion: 2, id: 'example.in-place', version: '0.1.0', displayName: 'In place',",
+        "  engines: { happier: '>=0.0.0' }, runtime: { apiVersion: 1 },",
+        '  hostAccess: { required: [], optional: [] }, contributes: {},',
+        '};',
+        'export function activate() {}',
+      ].join('\n'), 'utf8');
+    };
+
+    try {
+      await writeCandidate('first');
+      const first = await evaluatePluginDevelopmentCandidate({
+        locator: entryPath,
+        sourceAuthority: {
+          kind: 'development',
+          registeredRootId: 'root-a',
+          canonicalRoot: root,
+          observedRevision: 1,
+        },
+      });
+      await writeCandidate('second');
+      const second = await evaluatePluginDevelopmentCandidate({
+        locator: entryPath,
+        sourceAuthority: {
+          kind: 'development',
+          registeredRootId: 'root-a',
+          canonicalRoot: root,
+          observedRevision: 2,
+        },
+      });
+
+      expect(first.evaluated.actionContracts).toEqual({ marker: 'first' });
+      expect(second.evaluated.actionContracts).toEqual({ marker: 'second' });
+      expect(second.graph).toMatchObject({
+        sourceAuthority: {
+          kind: 'development',
+          registeredRootId: 'root-a',
+          observedRevision: 2,
+        },
+        rootPath: root,
+        entryPath,
+      });
+      expect(second.graph).not.toHaveProperty('immutableGenerationId');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps dependency-free single-file development on public host SDK imports only', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'happier-plugin-author-sdk-boundary-'));
+    const publicEntry = join(root, 'public.ts');
+    const privateEntry = join(root, 'private.ts');
+    const authority = {
+      kind: 'development' as const,
+      registeredRootId: 'single-file-sdk-boundary',
+      canonicalRoot: root,
+      observedRevision: 1,
+    };
+    const manifest = [
+      "id: 'example.sdk-boundary', version: '0.1.0', displayName: 'SDK boundary',",
+      "engines: { happier: '>=0.0.0' }, runtime: { apiVersion: 1 },",
+      'hostAccess: { required: [], optional: [] }, contributes: {},',
+    ].join('\n');
+    const definePluginManifest = [
+      "id: 'example.sdk-boundary', version: '0.1.0', displayName: 'SDK boundary',",
+      "engines: { happier: '>=0.0.0' }, runtime: { apiVersion: 1 },",
+      'hostAccess: { required: [], optional: [] },',
+    ].join('\n');
+    try {
+      await writeFile(publicEntry, [
+        "import { definePlugin } from '@happier-dev/plugin-sdk';",
+        `const plugin = definePlugin({ ${definePluginManifest} });`,
+        'export const manifest = plugin.manifest;',
+        'export const activate = plugin.activate;',
+      ].join('\n'), 'utf8');
+      await writeFile(privateEntry, [
+        "import { normalizePluginDaemonDatabaseRuntimeProjection } from '@happier-dev/plugin-sdk/host/registration';",
+        `export const manifest = { ${manifest} };`,
+        'export function activate() { void normalizePluginDaemonDatabaseRuntimeProjection; }',
+      ].join('\n'), 'utf8');
+
+      await expect(evaluatePluginDevelopmentCandidate({ locator: publicEntry, sourceAuthority: authority }))
+        .resolves.toMatchObject({ evaluated: { manifest: { id: 'example.sdk-boundary' } } });
+      await expect(evaluatePluginDevelopmentCandidate({
+        locator: privateEntry,
+        sourceAuthority: { ...authority, observedRevision: 2 },
+      })).rejects.toThrow(/host-private plugin SDK module/i);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('resolves public SDK root and subpath imports from the running host for a lone file', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'happier-plugin-author-lone-host-'));
+    const entryPath = join(root, 'lone.ts');
+    await writeFile(entryPath, [
+      "import { defineProtocolString } from '@happier-dev/plugin-sdk/protocol';",
+      'export const actionContracts = { marker: \'lone\' };',
+      "export const protocolValue = defineProtocolString('lone-file');",
+      'export const manifest = {',
+      "  schemaVersion: 2, id: 'example.lone-host', version: '0.1.0', displayName: 'Lone host',",
+      "  engines: { happier: '>=0.0.0' }, runtime: { apiVersion: 1 },",
+      '  hostAccess: { required: [], optional: [] }, contributes: {},',
+      '};',
+      'export function activate() {}',
+      '',
+    ].join('\n'), 'utf8');
+    try {
+      // The doctor/author evaluation path must serve the same narrow host
+      // resolution as the daemon development candidate path.
+      await expect(evaluatePluginAuthorSource({ locator: entryPath })).resolves.toMatchObject({
+        entry: { kind: 'singleFile' },
+        manifest: { id: 'example.lone-host' },
+        actionContracts: { marker: 'lone' },
+      });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('prefers a resolvable local SDK copy over the host alias', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'happier-plugin-author-local-sdk-'));
+    const entryPath = join(root, 'lone.ts');
+    await writeFile(entryPath, [
+      "export { actionContracts } from '@happier-dev/plugin-sdk';",
+      'export const manifest = {',
+      "  schemaVersion: 2, id: 'example.local-sdk', version: '0.1.0', displayName: 'Local SDK',",
+      "  engines: { happier: '>=0.0.0' }, runtime: { apiVersion: 1 },",
+      '  hostAccess: { required: [], optional: [] }, contributes: {},',
+      '};',
+      'export function activate() {}',
+      '',
+    ].join('\n'), 'utf8');
+    const stubPackageRoot = join(root, 'node_modules', '@happier-dev', 'plugin-sdk');
+    await mkdir(join(stubPackageRoot, 'dist'), { recursive: true });
+    await writeFile(join(stubPackageRoot, 'package.json'), JSON.stringify({
+      name: '@happier-dev/plugin-sdk',
+      version: '0.0.0',
+      type: 'module',
+      main: './dist/index.js',
+      exports: { '.': './dist/index.js' },
+    }), 'utf8');
+    await writeFile(join(stubPackageRoot, 'dist', 'index.js'), 'export const actionContracts = { source: \'local-stub\' };\n', 'utf8');
+    try {
+      const evaluated = await evaluatePluginAuthorSource({ locator: entryPath });
+      expect(evaluated.actionContracts).toEqual({ source: 'local-stub' });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('guides non-SDK single-file imports to a declared package root', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'happier-plugin-author-lone-foreign-'));
+    const entryPath = join(root, 'lone.ts');
+    await writeFile(entryPath, [
+      "import { nothing } from 'left-path';",
+      'export const manifest = {',
+      "  schemaVersion: 2, id: 'example.lone-foreign', version: '0.1.0', displayName: 'Lone foreign',",
+      "  engines: { happier: '>=0.0.0' }, runtime: { apiVersion: 1 },",
+      '  hostAccess: { required: [], optional: [] }, contributes: {},',
+      '};',
+      'export function activate() { void nothing; }',
+      '',
+    ].join('\n'), 'utf8');
+    try {
+      await expect(evaluatePluginAuthorSource({ locator: entryPath }))
+        .rejects.toThrow(/package root/i);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('does not extend host SDK resolution to package-root development', async () => {
+    const packageRoot = await mkdtemp(join(tmpdir(), 'happier-plugin-author-pkg-host-'));
+    await mkdir(join(packageRoot, 'src'), { recursive: true });
+    await writeFile(join(packageRoot, 'package.json'), JSON.stringify({
+      name: 'example.pkg-host',
+      version: '0.1.0',
+      type: 'module',
+      dependencies: { '@happier-dev/plugin-sdk': '0.0.0' },
+    }), 'utf8');
+    await writeFile(join(packageRoot, 'src', 'index.ts'), [
+      "import { definePlugin } from '@happier-dev/plugin-sdk';",
+      'export const { manifest, activate } = definePlugin({',
+      "  id: 'example.pkg-host', version: '0.1.0', displayName: 'Pkg host',",
+      "  engines: { happier: '>=0.0.0' }, runtime: { apiVersion: 1 },",
+      '  hostAccess: { required: [], optional: [] }, contributes: {},',
+      '});',
+      '',
+    ].join('\n'), 'utf8');
+    try {
+      // The package declares the SDK but nothing prepared it; the host alias
+      // must not substitute for the declared dependency closure.
+      await expect(evaluatePluginAuthorSource({ locator: packageRoot }))
+        .rejects.toThrow(/@happier-dev\/plugin-sdk/);
+    } finally {
+      await rm(packageRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('resolves declared package-root dependencies through normal package semantics', async () => {
+    const packageRoot = await mkdtemp(join(tmpdir(), 'happier-plugin-author-pkg-declared-'));
+    await mkdir(join(packageRoot, 'src'), { recursive: true });
+    await writeFile(join(packageRoot, 'package.json'), JSON.stringify({
+      name: 'example.pkg-declared',
+      version: '0.1.0',
+      type: 'module',
+      dependencies: { '@happier-dev/plugin-sdk': '0.0.0' },
+    }), 'utf8');
+    await writeFile(join(packageRoot, 'src', 'index.ts'), [
+      "export { actionContracts } from '@happier-dev/plugin-sdk';",
+      'export const manifest = {',
+      "  schemaVersion: 2, id: 'example.pkg-declared', version: '0.1.0', displayName: 'Pkg declared',",
+      "  engines: { happier: '>=0.0.0' }, runtime: { apiVersion: 1 },",
+      '  hostAccess: { required: [], optional: [] }, contributes: {},',
+      '};',
+      'export function activate() {}',
+      '',
+    ].join('\n'), 'utf8');
+    const stubPackageRoot = join(packageRoot, 'node_modules', '@happier-dev', 'plugin-sdk');
+    await mkdir(join(stubPackageRoot, 'dist'), { recursive: true });
+    await writeFile(join(stubPackageRoot, 'package.json'), JSON.stringify({
+      name: '@happier-dev/plugin-sdk',
+      version: '0.0.0',
+      type: 'module',
+      main: './dist/index.js',
+      exports: { '.': './dist/index.js' },
+    }), 'utf8');
+    await writeFile(join(stubPackageRoot, 'dist', 'index.js'), 'export const actionContracts = { source: \'declared-stub\' };\n', 'utf8');
+    try {
+      const evaluated = await evaluatePluginAuthorSource({ locator: packageRoot });
+      expect(evaluated.manifest.id).toBe('example.pkg-declared');
+      expect(evaluated.actionContracts).toEqual({ source: 'declared-stub' });
+    } finally {
+      await rm(packageRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('resolves every supported one-file extension and preserves directory entry rules without a manifest', async () => {
     const root = await mkdtemp(join(tmpdir(), 'happier-plugin-author-source-'));
     try {
-      const single = join(root, 'single.ts');
-      await writeFile(single, 'export const value = true;\n', 'utf8');
       const physicalRoot = await realpath(root);
-      const physicalSingle = await realpath(single);
-      await expect(resolvePluginAuthorSourceEntrypoint(single)).resolves.toMatchObject({
-        kind: 'singleFile',
-        entryPath: physicalSingle,
-        packageRoot: physicalRoot,
-      });
+      for (const extension of ['ts', 'mts', 'js', 'mjs'] as const) {
+        const single = join(root, `single.${extension}`);
+        await writeFile(single, 'export const value = true;\n', 'utf8');
+        const physicalSingle = await realpath(single);
+        await expect(resolvePluginAuthorSourceEntrypoint(single)).resolves.toMatchObject({
+          kind: 'singleFile',
+          entryPath: physicalSingle,
+          packageRoot: physicalRoot,
+        });
+        await expect(resolvePluginAuthoringSource(single)).resolves.toMatchObject({
+          ok: true,
+          kind: 'code',
+          entry: {
+            kind: 'singleFile',
+            entryPath: physicalSingle,
+            packageRoot: physicalRoot,
+          },
+        });
+      }
 
       const packageRoot = join(root, 'package');
       await mkdir(join(packageRoot, 'src'), { recursive: true });
@@ -74,7 +330,7 @@ describe('plugin author source module owner', () => {
     }
   });
 
-  it('rejects ambiguous roots and daemon TSX entries', async () => {
+  it('rejects ambiguous roots and unsupported daemon source extensions', async () => {
     const root = await mkdtemp(join(tmpdir(), 'happier-plugin-author-ambiguous-'));
     try {
       await mkdir(join(root, 'src'), { recursive: true });
@@ -87,6 +343,12 @@ describe('plugin author source module owner', () => {
       const tsx = join(root, 'plugin.tsx');
       await writeFile(tsx, 'export {};\n', 'utf8');
       await expect(resolvePluginAuthorSourceEntrypoint(tsx)).rejects.toMatchObject({
+        code: 'plugin_author_entry_kind_unsupported',
+      });
+
+      const cjs = join(root, 'plugin.cjs');
+      await writeFile(cjs, 'module.exports = {};\n', 'utf8');
+      await expect(resolvePluginAuthorSourceEntrypoint(cjs)).rejects.toMatchObject({
         code: 'plugin_author_entry_kind_unsupported',
       });
 
@@ -617,7 +879,55 @@ describe('plugin author source module owner', () => {
     expect(typeof evaluated.module.activate).toBe('function');
   });
 
-  it('projects a contained runner leaf structurally from its owned author generation', async () => {
+  it.each(['js', 'mjs'] as const)(
+    'loads and re-evaluates a literal .%s development plugin through the canonical author source loader',
+    async (extension) => {
+      const root = await mkdtemp(join(tmpdir(), `happier-plugin-author-javascript-${extension}-`));
+      const entryPath = join(root, `plugin.${extension}`);
+      await writeFile(join(root, 'package.json'), JSON.stringify({ type: 'module' }), 'utf8');
+      const writeCandidate = async (marker: string) => {
+        await writeFile(entryPath, [
+          `export const actionContracts = { marker: '${marker}' };`,
+          'export const manifest = {',
+          `  schemaVersion: 2, id: 'example.javascript-${extension}', version: '0.1.0', displayName: 'JavaScript ${extension}',`,
+          "  engines: { happier: '>=0.0.0' }, runtime: { apiVersion: 1 },",
+          '  hostAccess: { required: [], optional: [] }, contributes: {},',
+          '};',
+          'export function activate() {}',
+          '',
+        ].join('\n'), 'utf8');
+      };
+
+      try {
+        await writeCandidate('author-evaluation');
+        await expect(evaluatePluginAuthorSource({ locator: entryPath })).resolves.toMatchObject({
+          entry: { kind: 'singleFile', entryPath },
+          manifest: { id: `example.javascript-${extension}` },
+          actionContracts: { marker: 'author-evaluation' },
+        });
+
+        await writeCandidate('development-candidate');
+        await expect(evaluatePluginDevelopmentCandidate({
+          locator: entryPath,
+          sourceAuthority: {
+            kind: 'development',
+            registeredRootId: `javascript-${extension}`,
+            canonicalRoot: root,
+            observedRevision: 2,
+          },
+        })).resolves.toMatchObject({
+          evaluated: {
+            entry: { kind: 'singleFile', entryPath },
+            actionContracts: { marker: 'development-candidate' },
+          },
+        });
+      } finally {
+        await rm(root, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it('projects a contained runner leaf from source staging without fabricating generation custody', async () => {
     const root = await mkdtemp(join(tmpdir(), 'happier-plugin-author-runner-leaf-'));
     const entryPath = join(root, 'index.ts');
     const runnerPath = join(root, 'runner.ts');
@@ -638,13 +948,13 @@ describe('plugin author source module owner', () => {
     await writeFile(runnerPath, 'export function createRuntime() { return {}; }\n', 'utf8');
 
     try {
-      const owned = await evaluateOwnedPluginAuthorGeneration({
+      const owned = await evaluatePluginAuthorStagingSource({
         locator: entryPath,
-        immutableGenerationId: 'gen-time-fixture',
         rootPath: root,
       });
 
-      const runner = await resolveOwnedPluginAuthorGenerationModule({
+      expect(owned.graph).not.toHaveProperty('immutableGenerationId');
+      const runner = await resolvePluginAuthorStagingModule({
         graph: owned.graph,
         module: './runner',
       });

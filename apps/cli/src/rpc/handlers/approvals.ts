@@ -14,6 +14,7 @@ type ApprovalRpcActionExecutor = RpcActionExecutor & Readonly<{
   replayApprovedApprovalRequest?: (args: Readonly<{
     artifactId: string;
     signal?: AbortSignal;
+    callerAuthority?: RpcHandlerContext['callerAuthority'];
   }>) => Promise<unknown>;
 }>;
 
@@ -84,6 +85,7 @@ export function registerApprovalRpcHandlers(params: Readonly<{
       return await executor.replayApprovedApprovalRequest({
         artifactId,
         ...(context?.signal ? { signal: context.signal } : {}),
+        ...(context?.callerAuthority ? { callerAuthority: context.callerAuthority } : {}),
       });
     },
   );

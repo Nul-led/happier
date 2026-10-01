@@ -142,6 +142,7 @@ function createPreviewState() {
 const browserPanelPlacement = {
     id: 'surfacePlacement:acme.browser:hosted-panel',
     pluginId: 'acme.browser',
+    occurrenceId: 'acme-browser-occurrence',
     contributionKind: 'surfacePlacement',
     descriptorId: 'hosted-panel',
     binding: browserPanelBinding,
@@ -175,6 +176,7 @@ const pluginUiProjection: PluginUiProjectionModel = {
         'hostedWeb:acme.browser:panel': {
             id: 'hostedWeb:acme.browser:panel',
             pluginId: 'acme.browser',
+            occurrenceId: 'acme-browser-occurrence-1',
             contributionKind: 'hostedWeb',
             contributionId: 'panel',
             service: { kind: 'sessionEndpoint', endpointIdPath: '/endpointId' },

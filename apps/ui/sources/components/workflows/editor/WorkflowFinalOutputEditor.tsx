@@ -42,7 +42,11 @@ export function WorkflowFinalOutputEditor(props: Readonly<{
         <View testID={`${props.testIDPrefix}-final-output-editor`} style={styles.root}>
             <Text style={styles.title}>{t('workflows.finalOutput.title')}</Text>
             <Text style={styles.help}>{t('workflows.finalOutput.explain')}</Text>
-            <View style={styles.options}>
+            <View
+                style={styles.options}
+                accessibilityRole="radiogroup"
+                accessibilityLabel={t('workflows.finalOutput.title')}
+            >
                 <Pressable
                     testID={`${props.testIDPrefix}-final-output-clear`}
                     accessibilityRole="radio"

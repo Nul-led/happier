@@ -1,10 +1,8 @@
 import * as React from 'react';
-import { useUnistyles } from 'react-native-unistyles';
 
 import { Item } from '@/components/ui/lists/Item';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
 import { Text } from '@/components/ui/text/Text';
-import { Icon } from '@/components/ui/icons/Icon';
 import { t } from '@/text';
 
 export type PluginUiDiagnostic = Readonly<{
@@ -40,7 +38,6 @@ export function PluginDiagnosticsSection(props: Readonly<{
     diagnostics: readonly PluginUiDiagnostic[];
     testIDPrefix: string;
 }>) {
-    const { theme } = useUnistyles();
     if (props.diagnostics.length === 0) return null;
 
     return (
@@ -68,7 +65,6 @@ export function PluginDiagnosticsSection(props: Readonly<{
                         </Text>
                     )}
                     subtitleLines={0}
-                    icon={<Icon name="bug" size={29} color={theme.colors.text.secondary} />}
                     showChevron={false}
                     mode="info"
                 />

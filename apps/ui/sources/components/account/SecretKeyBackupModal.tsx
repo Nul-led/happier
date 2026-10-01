@@ -45,19 +45,6 @@ const stylesheet = StyleSheet.create((theme) => ({
         borderColor: theme.colors.border.default,
         marginBottom: 12,
     },
-    keyLabelRow: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        justifyContent: 'space-between',
-        marginBottom: 8,
-    },
-    keyLabel: {
-        fontSize: 11,
-        color: theme.colors.text.secondary,
-        letterSpacing: 0.5,
-        textTransform: 'uppercase',
-        ...Typography.default('semiBold'),
-    },
     keyText: {
         fontSize: 13,
         letterSpacing: 0.5,
@@ -70,6 +57,11 @@ const stylesheet = StyleSheet.create((theme) => ({
         alignItems: 'center',
         justifyContent: 'space-between',
         marginTop: 4,
+    },
+    revealToggle: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 6,
     },
     link: {
         fontSize: 14,
@@ -141,7 +133,7 @@ export function SecretKeyBackupModal(props: Props) {
     const footer = React.useMemo(() => (
         <View style={[styles.footerContent, { gap: 8 }]}>
             <RoundButton testID="recovery-key-saved" title={t('settingsApiTokens.reveal.savedIt')} onPress={() => finish('saved')} size="normal" />
-            <RoundButton testID="recovery-key-later" title={t('settingsAccount.nativePassword.recoveryKeyLater')} onPress={() => finish('later')} size="normal" />
+            <RoundButton testID="recovery-key-later" display="inverted" title={t('settingsAccount.nativePassword.recoveryKeyLater')} onPress={() => finish('later')} size="normal" />
         </View>
     ), [finish]);
 
@@ -162,20 +154,19 @@ export function SecretKeyBackupModal(props: Props) {
             <Text style={styles.description}>{t('settingsAccount.backupDescription')}</Text>
 
             <View style={styles.keyContainer}>
-                <View style={styles.keyLabelRow}>
-                    <Text style={styles.keyLabel}>{t('settingsAccount.secretKeyLabel')}</Text>
-                    <Icon
-                        name={revealed ? 'eye-slash' : 'eye'}
-                        size={16}
-                        color={theme.colors.text.secondary}
-                    />
-                </View>
                 <Text style={styles.keyText}>{revealed ? formattedSecret : maskedSecret}</Text>
                 <View style={styles.row}>
                     <Pressable
                         onPress={() => setRevealed((v) => !v)}
                         hitSlop={8}
+                        accessibilityRole="button"
+                        style={styles.revealToggle}
                     >
+                        <Icon
+                            name={revealed ? 'eye-slash' : 'eye'}
+                            size={16}
+                            color={theme.colors.text.secondary}
+                        />
                         <Text style={styles.link}>
                             {revealed ? t('settingsAccount.tapToHide') : t('settingsAccount.tapToReveal')}
                         </Text>
@@ -183,13 +174,14 @@ export function SecretKeyBackupModal(props: Props) {
                     {copyFeedback.isCopied() ? (
                         <CopiedPill visible testID="secret-key-backup-copy-feedback" />
                     ) : (
-                        <RoundButton testID="recovery-key-copy" title={t('common.copy')} onPress={handleCopy} size="normal" />
+                        <RoundButton testID="recovery-key-copy" display="secondary" title={t('common.copy')} onPress={handleCopy} size="normal" />
                     )}
                 </View>
             </View>
             <RoundButton
                 testID="recovery-key-download"
                 title={Platform.OS === 'web' ? t('settingsAccount.nativePassword.recoveryKeyDownload') : t('common.share')}
+                display="secondary"
                 onPress={handleExport}
                 size="normal"
             />

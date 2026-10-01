@@ -54,7 +54,13 @@ export type ExecuteHomeAuthenticationOptions = Readonly<{
     onProvisioned?: () => void | Promise<void>;
     onExternalAuthStarted?: () => void | Promise<void>;
     /** Explicit Team entry context for a Team-bound OAuth action. */
-    teamAdmission?: Readonly<{ teamId: string; invitationToken?: string; origin?: 'home' | 'team' }>;
+    teamAdmission?: Readonly<{
+        teamId: string;
+        invitationToken?: string;
+        origin?: 'home' | 'team';
+        /** Another Account authenticates afresh; the saved Account is never linked instead. */
+        accountSelection?: 'current' | 'another';
+    }>;
 }>;
 
 async function openExternalAuthUrl(url: string): Promise<void> {
@@ -321,7 +327,7 @@ async function runExecutableHomeAuthentication(options: ExecuteHomeAuthenticatio
     };
     if (request.execution.kind === 'oauth') {
         const providerId = request.execution.providerId;
-        if (options.teamAdmission) {
+        if (options.teamAdmission && options.teamAdmission.accountSelection !== 'another') {
             const existing = await TokenStorage.getCredentialsForServerUrl(
                 persistenceTarget.serverUrl,
                 { serverId: persistenceTarget.serverId },

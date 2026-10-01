@@ -1,5 +1,9 @@
-import type { ActionId } from '@happier-dev/protocol';
-import { isActionEnabledByActionsSettings, normalizeActionsSettingsV1 } from '@happier-dev/protocol';
+import type { ActionId, ActionSettingsActionId } from '@happier-dev/protocol';
+import {
+    isActionEnabledByActionsSettings,
+    isApprovalRequiredByActionsSettings,
+    normalizeActionsSettingsV1,
+} from '@happier-dev/protocol';
 
 import { isExecutionRunsFeatureAction } from '@/sync/domains/actions/isExecutionRunsFeatureAction';
 import { resolveLocalFeaturePolicyEnabled } from '@/sync/domains/features/featureLocalPolicy';
@@ -20,4 +24,13 @@ export function isActionEnabledInState(
 
     const settings = resolveActionsSettingsV1FromState(state);
     return isActionEnabledByActionsSettings(actionId, settings as any, ctx as any);
+}
+
+/** The person's own Ask-first policy for one Action on one invoking surface. */
+export function isActionApprovalRequiredInState(
+    state: Readonly<{ settings?: unknown }>,
+    actionId: ActionSettingsActionId,
+    ctx: Parameters<typeof isApprovalRequiredByActionsSettings>[2],
+): boolean {
+    return isApprovalRequiredByActionsSettings(actionId, resolveActionsSettingsV1FromState(state), ctx);
 }

@@ -1,76 +1,70 @@
 import * as React from 'react';
-import { useUnistyles } from 'react-native-unistyles';
 
+import { FieldValueItem } from '@/components/ui/forms/FieldValueItem';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
-import { Item } from '@/components/ui/lists/Item';
-import { Modal } from '@/modal';
+import { SettingAnchor } from '@/components/settings/shell/SettingRow';
+import { MEMORY_SETTINGS } from '@/components/settings/memory/memorySettings';
 import { t } from '@/text';
 
 import type { MemorySettingsV1 } from '@happier-dev/protocol';
-import { Icon } from '@/components/ui/icons/Icon';
+
+/** A budget is a positive whole number of MB; anything else keeps the saved budget. */
+function parseBudgetMb(draft: string): number | null {
+    const parsed = Number.parseInt(draft, 10);
+    return Number.isFinite(parsed) && parsed > 0 ? Math.trunc(parsed) : null;
+}
 
 export const MemorySettingsBudgetsSection = React.memo(function MemorySettingsBudgetsSection(props: Readonly<{
     settings: MemorySettingsV1;
     writeSettings: (next: MemorySettingsV1) => void | Promise<void>;
 }>) {
-    const { theme } = useUnistyles();
     const { settings } = props;
 
     return (
         <ItemGroup
             title={t('memorySearchSettings.budgets.groupTitle')}
-            footer={t('memorySearchSettings.budgets.groupFooter')}
+            description={t('memorySearchSettings.budgets.groupFooter')}
         >
-            <Item
-                testID="memory-settings-budget-light"
-                title={t('memorySearchSettings.budgets.lightTitle')}
-                subtitle={t('memorySearchSettings.budgets.mbLabel', { mb: settings.budgets.maxDiskMbLight })}
-                icon={<Icon name="hard-drives" size={29} color={theme.colors.accent.blue} />}
-                onPress={async () => {
-                    const next = await Modal.prompt(
-                        t('memorySearchSettings.budgets.lightPromptTitle'),
-                        t('memorySearchSettings.budgets.lightPromptBody'),
-                        {
-                            defaultValue: String(settings.budgets.maxDiskMbLight),
-                            placeholder: '250',
-                            confirmText: t('common.save'),
-                            cancelText: t('common.cancel'),
-                        },
-                    );
-                    const parsed = typeof next === 'string' ? Number.parseInt(next, 10) : NaN;
-                    if (!Number.isFinite(parsed) || parsed <= 0) return;
-                    void props.writeSettings({
-                        ...settings,
-                        budgets: { ...settings.budgets, maxDiskMbLight: Math.trunc(parsed) },
-                    });
-                }}
-                showChevron={false}
-            />
-            <Item
-                testID="memory-settings-budget-deep"
-                title={t('memorySearchSettings.budgets.deepTitle')}
-                subtitle={t('memorySearchSettings.budgets.mbLabel', { mb: settings.budgets.maxDiskMbDeep })}
-                icon={<Icon name="hard-drives" size={29} color={theme.colors.accent.purple} />}
-                onPress={async () => {
-                    const next = await Modal.prompt(
-                        t('memorySearchSettings.budgets.deepPromptTitle'),
-                        t('memorySearchSettings.budgets.deepPromptBody'),
-                        {
-                            defaultValue: String(settings.budgets.maxDiskMbDeep),
-                            placeholder: '1500',
-                            confirmText: t('common.save'),
-                            cancelText: t('common.cancel'),
-                        },
-                    );
-                    const parsed = typeof next === 'string' ? Number.parseInt(next, 10) : NaN;
-                    if (!Number.isFinite(parsed) || parsed <= 0) return;
-                    void props.writeSettings({
-                        ...settings,
-                        budgets: { ...settings.budgets, maxDiskMbDeep: Math.trunc(parsed) },
-                    });
-                }}
-                showChevron={false}
-            />
+            <SettingAnchor setting={MEMORY_SETTINGS.settings.lightBudget}>
+                <FieldValueItem
+                    testID="memory-settings-budget-light"
+                    fieldTestID="memory-settings-budget-light-field"
+                    title={t(MEMORY_SETTINGS.settings.lightBudget.titleKey)}
+                    subtitle={t('memorySearchSettings.budgets.lightPromptBody')}
+                    kind="integer"
+                    placeholder="250"
+                    value={String(settings.budgets.maxDiskMbLight)}
+                    onCommit={(draft) => {
+                        const next = parseBudgetMb(draft);
+                        if (next === null) return String(settings.budgets.maxDiskMbLight);
+                        void props.writeSettings({
+                            ...settings,
+                            budgets: { ...settings.budgets, maxDiskMbLight: next },
+                        });
+                        return String(next);
+                    }}
+                />
+            </SettingAnchor>
+            <SettingAnchor setting={MEMORY_SETTINGS.settings.deepBudget}>
+                <FieldValueItem
+                    testID="memory-settings-budget-deep"
+                    fieldTestID="memory-settings-budget-deep-field"
+                    title={t(MEMORY_SETTINGS.settings.deepBudget.titleKey)}
+                    subtitle={t('memorySearchSettings.budgets.deepPromptBody')}
+                    kind="integer"
+                    placeholder="1500"
+                    value={String(settings.budgets.maxDiskMbDeep)}
+                    onCommit={(draft) => {
+                        const next = parseBudgetMb(draft);
+                        if (next === null) return String(settings.budgets.maxDiskMbDeep);
+                        void props.writeSettings({
+                            ...settings,
+                            budgets: { ...settings.budgets, maxDiskMbDeep: next },
+                        });
+                        return String(next);
+                    }}
+                />
+            </SettingAnchor>
         </ItemGroup>
     );
 });

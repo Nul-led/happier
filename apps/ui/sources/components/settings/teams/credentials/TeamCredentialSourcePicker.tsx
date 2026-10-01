@@ -8,7 +8,7 @@ import {
     type SelectionListStep,
 } from '@/components/ui/selectionList';
 import { Modal } from '@/modal';
-import { t } from '@/text';
+import { getPreferredLanguage, t } from '@/text';
 
 import { sourceKindLabel } from './teamCredentialPresentation';
 
@@ -98,6 +98,7 @@ export const TeamCredentialSourcePicker = React.memo(function TeamCredentialSour
     const { candidates, selected, disabled, unavailableReason, onSelect } = props;
     const reselectableResourceId = props.reselectableResourceId ?? null;
     const modalIdRef = React.useRef<string | null>(null);
+    const locale = getPreferredLanguage();
 
     const rootStep = React.useMemo<SelectionListStep>(() => {
         const sections: SelectionListSectionDescriptor[] = [{
@@ -120,7 +121,7 @@ export const TeamCredentialSourcePicker = React.memo(function TeamCredentialSour
             emptyStateLabel: t('teams.credentials.create.sourceEmpty'),
             sections,
         };
-    }, [candidates, reselectableResourceId]);
+    }, [candidates, locale, reselectableResourceId]);
 
     const close = React.useCallback(() => {
         if (!modalIdRef.current) return;
@@ -151,7 +152,7 @@ export const TeamCredentialSourcePicker = React.memo(function TeamCredentialSour
             },
             closeOnBackdrop: true,
         });
-    }, [candidates, close, disabled, onSelect, reselectableResourceId, rootStep, selected]);
+    }, [candidates, close, disabled, locale, onSelect, reselectableResourceId, rootStep, selected]);
 
     // The create route can stay mounted behind another Settings destination
     // while this picker remains portaled; unmount closes it with the screen.

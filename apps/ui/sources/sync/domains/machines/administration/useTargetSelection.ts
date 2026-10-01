@@ -1,6 +1,5 @@
 import * as React from 'react';
 import type {
-    MachineAdministrationSelectionsV1,
     MachineAdministrationTargetV1,
 } from '@happier-dev/protocol';
 
@@ -10,7 +9,7 @@ import {
 import { getActiveServerSnapshot } from '@/sync/domains/server/serverRuntime';
 import { resolveMachinePickerPresence } from '@/sync/domains/machines/identity/resolveMachinePickerPresence';
 import type { MachineDisplayRenderable } from '@/sync/domains/machines/machineDisplayRenderable';
-import type { ServerMachineInventorySnapshotV1 } from '@/sync/domains/machines/machineInventorySnapshots';
+import { isMachineInventorySettled, type ServerMachineInventorySnapshotV1 } from '@/sync/domains/machines/machineInventorySnapshots';
 import { useAllProfileMachineInventorySnapshots } from '@/sync/domains/machines/useMachineInventorySnapshots';
 import {
     resolvePortableMachineAdministrationTarget,
@@ -21,20 +20,18 @@ import { storage } from '@/sync/domains/state/storageStore';
 import {
     useSetting,
     useActiveServerAccountScope,
-    useSettingsVersion,
 } from '@/sync/store/hooks';
-import { fireAndForget } from '@/utils/system/fireAndForget';
-import { requireOneShotAccountSettingsMutationApplied } from '@/sync/engine/settings/syncSettings';
-import { useAccountSettingsScope } from '@/sync/store/settingsWriters';
+import { useApplySettings, useAccountSettingsScope } from '@/sync/store/settingsWriters';
+import { areAccountSettingsScopesEqual } from '@/sync/domains/settings/scope/accountSettingsScope';
 
 import {
     clearMachineAdministrationTargetPreference,
-    persistMachineAdministrationSelectionMutation,
     setMachineAdministrationTargetPreference,
 } from './selectionPreferences';
 import {
-    isMachineAdministrationCandidateSelectable,
+    isMachineAdministrationCandidateExplicitlySelectable,
     resolveMachineAdministrationTargetState,
+    type MachineAdministrationExplicitSelectionPolicy,
     type MachineAdministrationCandidateV1,
     type MachineAdministrationTargetStateV1,
 } from './targetSelection';
@@ -96,6 +93,7 @@ function areAllProfileInventoriesKnown(snapshots: readonly ServerMachineInventor
     return snapshots.every((snapshot) => snapshot.kind === 'resolved');
 }
 
+/** Whether the Home with this portable identity has answered with its machine list. */
 function hasLiveExactInventoryRow(params: Readonly<{
     activeServerId: string;
     isDataReady: boolean;
@@ -126,7 +124,7 @@ function hasLiveExactInventoryRow(params: Readonly<{
 }
 
 /**
- * Re-resolves the Account-portable preference from current raw owner state.
+ * Re-resolves the device preference from current raw owner state.
  * Warm-cache rows never enter this path, and availability is checked again at
  * invocation time so a presentation snapshot cannot authorize a later effect.
  */
@@ -177,12 +175,20 @@ export type MachineAdministrationTargetSelectionV1 = Readonly<{
 }>;
 
 export type MachineAdministrationTargetSelectionOptions = Readonly<{
+    /** Defer detailed inventory and execution while the consuming surface is idle. */
+    enabled?: boolean;
     /**
      * Most administration screens may initialize a sole verified machine.
      * Consumers whose catalog depends on an explicit machine scope opt out so
      * they never imply account-wide availability from one observed daemon.
      */
     allowSoleCandidate?: boolean;
+    /**
+     * Which machines an explicit choice may name (default `live`). Consumers that show a machine's
+     * last known state and disable its operations while it is away pass `lastKnown`. Automatic
+     * initialization still takes only a sole live online candidate.
+     */
+    explicitSelection?: MachineAdministrationExplicitSelectionPolicy;
 }>;
 
 /** Presentation-only canonical Administration rows, without creating a persisted selection. */
@@ -195,7 +201,7 @@ export function useMachineAdministrationTargetPickerRows(): readonly MachineAdmi
 }
 
 /**
- * Administration's Account-level exact target controller. It consumes the raw
+ * Administration's device-local exact target controller. It consumes the raw
  * all-profile machine producer plus its presentation-only warm fallback; it
  * never derives authority from launch lists, active-machine heuristics, or row
  * order.
@@ -204,11 +210,13 @@ export function useMachineAdministrationTargetSelection(
     selectionKey: string,
     options: MachineAdministrationTargetSelectionOptions = {},
 ): MachineAdministrationTargetSelectionV1 {
-    const selections = useSetting('machineAdministrationSelectionsV1');
-    const settingsVersion = useSettingsVersion();
+    const enabled = options.enabled !== false;
+    const explicitSelection = options.explicitSelection ?? 'live';
+    const selections = useSetting('machineAdministrationTargetsLocalV1');
+    const applySettings = useApplySettings();
     const expectedSettingsScope = useAccountSettingsScope();
     const activeAccountScope = useActiveServerAccountScope();
-    const storedTarget = selections.targetsByKey[selectionKey] ?? null;
+    const storedTarget = selections[selectionKey] ?? null;
     const selectionRevisionRef = React.useRef<MachineAdministrationSelectionRevisionState>({
         selectionKey,
         target: storedTarget,
@@ -223,7 +231,7 @@ export function useMachineAdministrationTargetSelection(
         target: storedTarget,
         activeAccountServerId: activeAccountScope?.serverId,
     });
-    const snapshots = useAllProfileMachineInventorySnapshots();
+    const snapshots = useAllProfileMachineInventorySnapshots(enabled);
     const candidates = React.useMemo(
         () => buildMachineAdministrationCandidatesFromSnapshots({ snapshots }),
         [snapshots],
@@ -232,52 +240,49 @@ export function useMachineAdministrationTargetSelection(
         () => buildMachineAdministrationCandidateInventoryRowsFromSnapshots({ snapshots }),
         [snapshots],
     );
-    const allowSoleCandidate = areAllProfileInventoriesKnown(snapshots)
+    const allowSoleCandidate = enabled && areAllProfileInventoriesKnown(snapshots)
         && options.allowSoleCandidate !== false;
     const targetState = React.useMemo(() => resolveMachineAdministrationTargetState({
         storedTarget,
         candidates,
         allowSoleCandidate,
-    }), [allowSoleCandidate, candidates, storedTarget]);
+        isInventoryKnown: (serverIdentityId) => isMachineInventorySettled(snapshots, serverIdentityId),
+    }), [allowSoleCandidate, candidates, snapshots, storedTarget]);
 
     React.useEffect(() => {
         if (storedTarget || !allowSoleCandidate || targetState.kind !== 'online') return;
-        if (settingsVersion === null) return;
-        fireAndForget(
-            persistMachineAdministrationSelectionMutation(expectedSettingsScope, settingsVersion, (current) => (
-                setMachineAdministrationTargetPreference(current, selectionKey, targetState.target)
-            )).then(requireOneShotAccountSettingsMutationApplied),
-            { tag: 'useMachineAdministrationTargetSelection.initialize' },
-        );
-    }, [allowSoleCandidate, expectedSettingsScope, selectionKey, settingsVersion, storedTarget, targetState]);
+        const current = storage.getState();
+        if (!expectedSettingsScope || !areAccountSettingsScopesEqual(expectedSettingsScope, current.settingsScope)) return;
+        // Sole-candidate memory is local; mounting a route never mutates Account policy.
+        applySettings({ machineAdministrationTargetsLocalV1: setMachineAdministrationTargetPreference(
+            current.settings.machineAdministrationTargetsLocalV1, selectionKey, targetState.target,
+        ) });
+    }, [allowSoleCandidate, applySettings, expectedSettingsScope, selectionKey, storedTarget, targetState]);
 
     const selectTarget = React.useCallback((target: MachineAdministrationTargetV1) => {
         const candidate = candidates.find((item) => (
             item.target.serverIdentityId === target.serverIdentityId
             && item.target.machineId === target.machineId
         ));
-        if (!candidate || !isMachineAdministrationCandidateSelectable(candidate)) return;
-        if (settingsVersion === null) return;
-        fireAndForget(
-            persistMachineAdministrationSelectionMutation(expectedSettingsScope, settingsVersion, (current) => (
-                setMachineAdministrationTargetPreference(current, selectionKey, candidate.target)
-            )).then(requireOneShotAccountSettingsMutationApplied),
-            { tag: 'useMachineAdministrationTargetSelection.select' },
-        );
-    }, [candidates, expectedSettingsScope, selectionKey, settingsVersion]);
+        if (!candidate || !isMachineAdministrationCandidateExplicitlySelectable(candidate, explicitSelection)) return;
+        const current = storage.getState();
+        if (!expectedSettingsScope || !areAccountSettingsScopesEqual(expectedSettingsScope, current.settingsScope)) return;
+        applySettings({ machineAdministrationTargetsLocalV1: setMachineAdministrationTargetPreference(
+            current.settings.machineAdministrationTargetsLocalV1, selectionKey, candidate.target,
+        ) });
+    }, [applySettings, candidates, expectedSettingsScope, explicitSelection, selectionKey]);
 
     const clearTarget = React.useCallback(() => {
-        if (settingsVersion === null) return;
-        fireAndForget(
-            persistMachineAdministrationSelectionMutation(expectedSettingsScope, settingsVersion, (current) => (
-                clearMachineAdministrationTargetPreference(current, selectionKey)
-            )).then(requireOneShotAccountSettingsMutationApplied),
-            { tag: 'useMachineAdministrationTargetSelection.clear' },
-        );
-    }, [expectedSettingsScope, selectionKey, settingsVersion]);
+        const current = storage.getState();
+        if (!expectedSettingsScope || !areAccountSettingsScopesEqual(expectedSettingsScope, current.settingsScope)) return;
+        applySettings({ machineAdministrationTargetsLocalV1: clearMachineAdministrationTargetPreference(
+            current.settings.machineAdministrationTargetsLocalV1, selectionKey,
+        ) });
+    }, [applySettings, expectedSettingsScope, selectionKey]);
 
     const resolveExecutionTarget = React.useCallback(() => {
-        const target = storage.getState().settings.machineAdministrationSelectionsV1.targetsByKey[selectionKey] ?? null;
+        if (!enabled) return null;
+        const target = storage.getState().settings.machineAdministrationTargetsLocalV1[selectionKey] ?? null;
         selectionRevisionRef.current = advanceMachineAdministrationSelectionRevision(
             selectionRevisionRef.current,
             selectionKey,
@@ -290,7 +295,7 @@ export function useMachineAdministrationTargetSelection(
                 ...resolved,
                 selectionRevision: selectionRevisionRef.current.revision,
             });
-    }, [selectionKey]);
+    }, [enabled, selectionKey]);
 
     return React.useMemo(() => ({
         candidates,
@@ -298,11 +303,12 @@ export function useMachineAdministrationTargetSelection(
         state: targetState,
         selectedTarget: storedTarget,
         selectedTargetServerMatchesActiveAccount,
-        canExecute: resolveFreshMachineAdministrationExecutionTarget(storedTarget) !== null,
+        canExecute: enabled && resolveFreshMachineAdministrationExecutionTarget(storedTarget) !== null,
         selectTarget,
         clearTarget,
         resolveExecutionTarget,
     }), [
+        enabled,
         candidates,
         clearTarget,
         pickerRows,

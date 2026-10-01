@@ -1,25 +1,25 @@
 import * as React from 'react';
-import { useRouter } from 'expo-router';
+import { useRouter } from '@/components/appShell/workspace/destinationRoute';
 import { Pressable } from 'react-native';
-import { useUnistyles } from 'react-native-unistyles';
 import { TEAMS_ACCOUNT_CHANGE_ENTITY_ID_V1 } from '@happier-dev/protocol';
 import {
-    TEAM_PRINCIPAL_ROLES_V1,
-    type TeamCapabilitiesV1,
-    type TeamMembershipCapabilitiesV1,
     type TeamMembershipV1,
     type TeamRoleV1,
 } from '@happier-dev/protocol/teams';
 
 import { Avatar } from '@/components/ui/avatar/Avatar';
-import { Icon } from '@/components/ui/icons/Icon';
+import { RoundButton } from '@/components/ui/buttons/RoundButton';
+import { PageHeader } from '@/components/ui/layout/PageHeader';
+import { AttentionBanner } from '@/components/ui/lists/AttentionBanner';
 import { Item } from '@/components/ui/lists/Item';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
+import { SectionButtonRow } from '@/components/ui/lists/SectionButtonRow';
+import { SurfaceStateCard } from '@/components/ui/surfaces/SurfaceStateCard';
 import { teamReadFailureLabel } from '@/components/settings/teams/teamMutationPresentation';
 import { useTeamMemberGroups } from '@/hooks/teams/useTeamMemberGroups';
 import { restoreFocusToBestTarget } from '@/keyboard/focusReturn';
 import { Modal } from '@/modal';
-import { formatAccountDisplayName } from '@/sync/domains/account/formatAccountDisplayName';
+import { resolveAccountDisplayName } from '@/sync/domains/account/formatAccountDisplayName';
 import {
     getTeamMember,
     reactivateTeamMember,
@@ -48,39 +48,9 @@ import { teamMutationFailureLabel } from '../teamMutationPresentation';
 import { teamDirectorySourcePath, teamGroupDetailPath, teamIdentityConnectionPath } from '../teamsRoutes';
 import { useDirectoryAdministration } from '../identity/useDirectoryAdministration';
 import type { TeamMemberSectionRenderer } from './teamMemberSectionContext';
+import { Icon } from '@/components/ui/icons/Icon';
 
-const MEMBER_AVATAR_SIZE = 44;
-
-const ALL_ROLES: readonly TeamRoleV1[] = Object.freeze(
-    ['owner', ...TEAM_PRINCIPAL_ROLES_V1.filter((role) => role !== 'owner'), 'guest'] as TeamRoleV1[],
-);
-
-/**
- * The roles this actor can actually confer on this member.
- *
- * All inputs are the Home's own projections, and none is reinterpreted:
- * `setRole` says this member is an eligible target, while `manageOwners` says
- * owner is among the roles ordinary Team administration may confer. The narrow
- * Home recovery path additionally requires `recovery.canAppointOwner`: target
- * eligibility cannot manufacture actor authority. That path may only promote
- * to owner, so offering its actor the other three roles would expose controls
- * the Home has already said it will refuse.
- */
-export function assignableTeamRoles(input: Readonly<{
-    team: TeamCapabilitiesV1;
-    membership: TeamMembershipCapabilitiesV1;
-    canAppointOwner: boolean;
-}>): readonly TeamRoleV1[] {
-    if (!input.membership.setRole) return Object.freeze([]);
-    if (!input.team.manageMembers) {
-        return input.canAppointOwner
-            ? Object.freeze(['owner'] as TeamRoleV1[])
-            : Object.freeze([]);
-    }
-    return input.team.manageOwners
-        ? ALL_ROLES
-        : Object.freeze(ALL_ROLES.filter((role) => role !== 'owner'));
-}
+const MEMBER_HEADER_AVATAR_SIZE = 44;
 
 type MembershipLoad =
     | Readonly<{ kind: 'loading' }>
@@ -111,7 +81,6 @@ const MemberGroupsSection = React.memo(function MemberGroupsSection(props: Reado
     context: TeamSectionContext;
     membershipId: string;
 }>) {
-    const { theme } = useUnistyles();
     const router = useRouter();
     const { context, membershipId } = props;
     const groups = useTeamMemberGroups({
@@ -128,14 +97,13 @@ const MemberGroupsSection = React.memo(function MemberGroupsSection(props: Reado
         // not an empty one either: each says exactly what it knows.
         if (groups.error) {
             return (
-                <ItemGroup title={t('teams.members.detailGroups')} footer={t('teams.unavailable.offline')}>
-                    <Item
+                <ItemGroup title={t('teams.members.detailGroups')} description={teamReadFailureLabel(groups.error)}>
+                    {groups.error.retryable ? <Item
                         testID="team-member-groups-retry"
                         title={t('teams.unavailable.retry')}
-                        icon={<Icon name="arrow-clockwise" size={29} color={theme.colors.text.secondary} />}
                         onPress={() => void groups.reload()}
                         showChevron={false}
-                    />
+                    /> : null}
                 </ItemGroup>
             );
         }
@@ -174,12 +142,11 @@ const MemberGroupsSection = React.memo(function MemberGroupsSection(props: Reado
             </ItemGroup>
             {/* Rows already read stay on screen through a failure. */}
             {groups.error ? (
-                <ItemGroup footer={teamReadFailureLabel(groups.error)}>
+                <ItemGroup description={teamReadFailureLabel(groups.error)}>
                     {groups.error.retryable ? (
                         <Item
                             testID="team-member-groups-retry"
                             title={t('teams.unavailable.retry')}
-                            icon={<Icon name="arrow-clockwise" size={29} color={theme.colors.text.secondary} />}
                             onPress={() => void groups.reload()}
                             showChevron={false}
                         />
@@ -251,7 +218,7 @@ const MemberManagementSection = React.memo(function MemberManagementSection(prop
 
     return (
         <>
-            <ItemGroup title={t('teams.members.managementTitle')} footer={t('teams.members.managementHelp')}>
+            <ItemGroup title={t('teams.members.managementTitle')} description={t('teams.members.managementHelp')}>
                 <Item
                     testID="team-member-management"
                     title={t('teams.members.detailManagedBy')}
@@ -316,8 +283,9 @@ const MemberDetail = React.memo(function MemberDetail(props: Readonly<{
     context: TeamSectionContext;
     membershipId: string;
     renderEncryptionSection?: TeamMemberSectionRenderer;
+    /** The Team's condition banners; they sit under this page's identity header. */
+    banners?: React.ReactNode;
 }>) {
-    const { theme } = useUnistyles();
     const router = useRouter();
     const { context, membershipId } = props;
     const [load, setLoad] = React.useState<MembershipLoad>(LOADING);
@@ -461,47 +429,46 @@ const MemberDetail = React.memo(function MemberDetail(props: Readonly<{
 
     if (load.kind === 'loading') {
         return (
-            <ItemGroup>
-                <Item testID="team-member-loading" title={t('teams.tabs.members')} loading showChevron={false} />
-            </ItemGroup>
+            <>
+                <PageHeader testID="team-member-header" title={t('teams.tabs.members')} alwaysShowTitle meta={[
+                    { key: 'team', text: context.team.name },
+                    { key: 'home', icon: 'house', text: context.homeName },
+                ]} />
+                {props.banners}
+                <ItemGroup>
+                    <Item testID="team-member-loading" title={t('teams.tabs.members')} loading mode="info" showChevron={false} />
+                </ItemGroup>
+            </>
         );
     }
 
     if (load.kind === 'unavailable') {
         return (
-            <ItemGroup footer={readFailure ? teamReadFailureLabel(readFailure) : t('teams.errors.notFound')}>
-                {readFailure?.retryable ? (
-                    <Item
-                        testID="team-member-retry"
-                        title={t('teams.unavailable.retry')}
-                        icon={<Icon name="arrow-clockwise" size={29} color={theme.colors.text.secondary} />}
-                        onPress={reload}
-                        showChevron={false}
-                    />
-                ) : (
-                    <Item
-                        testID="team-member-unavailable"
-                        mode="info"
-                        title={readFailure ? teamReadFailureLabel(readFailure) : t('teams.errors.notFound')}
-                        showChevron={false}
-                    />
-                )}
-            </ItemGroup>
+            <>
+                <PageHeader testID="team-member-header" title={t('teams.tabs.members')} alwaysShowTitle meta={[
+                    { key: 'team', text: context.team.name },
+                    { key: 'home', icon: 'house', text: context.homeName },
+                ]} />
+                {props.banners}
+                <SurfaceStateCard
+                    testID="team-member-unavailable"
+                    kind="unavailable"
+                    title={readFailure ? teamReadFailureLabel(readFailure) : t('teams.errors.notFound')}
+                    action={readFailure?.retryable ? { label: t('teams.unavailable.retry'), onPress: reload } : undefined}
+                    accessibilitySemantics="alert"
+                />
+            </>
         );
     }
 
     const { membership } = load;
-    const displayName = formatAccountDisplayName(membership.account) ?? membership.accountId;
+    const person = resolveAccountDisplayName({ profile: membership.account, accountId: membership.accountId, viewerAccountId: context.scope.accountId });
+    const displayName = person.name;
     const managedBy = membershipManagementLabel(membership);
     // Every control is gated by the host's readiness *and* the server's own
     // per-membership capability. Neither alone is sufficient.
     const canAct = context.canMutate && !busy;
-    const assignableRoles = assignableTeamRoles({
-        team: context.team.capabilities,
-        membership: membership.capabilities,
-        canAppointOwner: context.team.recovery?.kind === 'owner_required'
-            && context.team.recovery.canAppointOwner,
-    });
+    const assignableRoles = membership.capabilities.assignableRoles;
     // Withheld rather than offered and refused; the footer says why.
     const ownerWithheld = membership.capabilities.setRole
         && context.team.capabilities.manageMembers
@@ -519,22 +486,102 @@ const MemberDetail = React.memo(function MemberDetail(props: Readonly<{
         },
     };
 
+    const removeButton = (
+        <RoundButton
+            testID="team-member-remove"
+            size="small"
+            display="destructive"
+            title={t('teams.members.remove')}
+            disabled={!canAct}
+            onPress={async () => {
+                const confirmed = await Modal.confirm(
+                    t('teams.members.removeTitle', { name: displayName }),
+                    t('teams.members.removeBody'),
+                    { confirmText: t('teams.members.remove'), destructive: true },
+                );
+                if (!confirmed) return;
+                if (transitionInFlightRef.current) return;
+                transitionInFlightRef.current = true;
+                setNotice(null);
+                setBusy(true);
+                let outcome: Awaited<ReturnType<typeof removeTeamMember>>;
+                try {
+                    outcome = await removeTeamMember({
+                        scope: context.scope,
+                        address: context.address,
+                        membershipId: membership.id,
+                    });
+                } catch (cause) {
+                    transitionInFlightRef.current = false;
+                    setBusy(false);
+                    if (isTeamActionApprovalPendingError(cause)) {
+                        context.requestApproval(cause.artifactId);
+                        return;
+                    }
+                    throw cause;
+                }
+                transitionInFlightRef.current = false;
+                setBusy(false);
+                context.refresh();
+                // A removed lifetime no longer addresses anything,
+                // so success leaves. A refusal keeps the member
+                // on screen with the Home's own reason.
+                if (outcome.kind === 'succeeded') router.back();
+                else {
+                    setNotice(teamMutationFailureLabel(outcome.failure));
+                    reload();
+                }
+            }}
+        />
+    );
+
     return (
         <>
-            <ItemGroup title={displayName} footer={managedBy ? t('teams.members.managedReadOnly') : undefined}>
-                <Item
-                    testID="team-member-identity"
-                    title={displayName}
-                    subtitle={teamRoleLabel(membership.role)}
-                    leftElement={(
-                        <Avatar
-                            id={membership.accountId}
-                            size={MEMBER_AVATAR_SIZE}
-                            imageUrl={membership.account.avatarUrl}
-                        />
-                    )}
-                    showChevron={false}
+            <PageHeader
+                testID="team-member-identity"
+                alwaysShowTitle
+                title={displayName}
+                leading={(
+                    <Avatar
+                        id={membership.accountId}
+                        size={MEMBER_HEADER_AVATAR_SIZE}
+                        imageUrl={membership.account.avatarUrl}
+                    />
+                )}
+                meta={[
+                    { key: 'team', text: context.team.name },
+                    { key: 'home', icon: 'house', text: context.homeName },
+                    { key: 'role', text: teamRoleLabel(membership.role) },
+                    ...(person.viewer && person.named
+                        ? [{ key: 'you', text: t('teams.members.you') }]
+                        : []),
+                ]}
+            />
+            {props.banners}
+            {notice ? (
+                <AttentionBanner
+                    testID="team-member-notice"
+                    title={t('teams.members.managementTitle')}
+                    description={notice}
+                    accessibilityLiveRegion="polite"
                 />
+            ) : null}
+            {readFailure ? (
+                <AttentionBanner
+                    testID="team-member-read-failure"
+                    title={teamReadFailureLabel(readFailure)}
+                    action={readFailure.retryable ? {
+                        label: t('teams.unavailable.retry'),
+                        onPress: reload,
+                        testID: 'team-member-retry',
+                    } : undefined}
+                />
+            ) : null}
+
+            <ItemGroup
+                title={t('teams.members.membershipSection')}
+                description={managedBy ? t('teams.members.managedReadOnly') : undefined}
+            >
                 <Item
                     testID="team-member-status"
                     title={t('teams.authentication.detail.status')}
@@ -569,6 +616,7 @@ const MemberDetail = React.memo(function MemberDetail(props: Readonly<{
                         return (
                         <Item
                             testID="team-member-open-source"
+                            icon={<Icon name="tree-structure" />}
                             title={t('teams.members.detailOpenSource')}
                             detail={management.label}
                             onPress={() => router.push(
@@ -587,38 +635,13 @@ const MemberDetail = React.memo(function MemberDetail(props: Readonly<{
                     })() : null}
             </ItemGroup>
 
-            {notice ? (
-                <ItemGroup footer={notice}>
-                    <Item
-                        testID="team-member-notice"
-                        mode="info"
-                        title={t('teams.members.managementTitle')}
-                        subtitle={notice}
-                        accessibilityLiveRegion="polite"
-                        showChevron={false}
-                    />
-                </ItemGroup>
-            ) : null}
-
-            {readFailure ? (
-                <ItemGroup footer={teamReadFailureLabel(readFailure)}>
-                    <Item
-                        testID="team-member-retry"
-                        title={t('teams.unavailable.retry')}
-                        icon={<Icon name="arrow-clockwise" size={29} color={theme.colors.text.secondary} />}
-                        onPress={reload}
-                        showChevron={false}
-                    />
-                </ItemGroup>
-            ) : null}
-
             {/* Every offered role carries its one sentence of consequence, and
                 the set itself is the Home's answer rather than the whole enum:
                 a control the Home would refuse is not rendered. */}
             {assignableRoles.length > 0 ? (
                 <ItemGroup
                     title={t('teams.members.roleLabel')}
-                    footer={ownerWithheld ? t('teams.members.ownerOnlyAction') : undefined}
+                    description={ownerWithheld ? t('teams.members.ownerOnlyAction') : undefined}
                     accessibilityRole="radiogroup"
                     accessibilityLabel={t('teams.members.roleLabel')}
                 >
@@ -660,10 +683,15 @@ const MemberDetail = React.memo(function MemberDetail(props: Readonly<{
 
             {membership.capabilities.suspend || membership.capabilities.reactivate
                 || membership.capabilities.remove ? (
-                <ItemGroup>
+                <ItemGroup surface="none">
+                    <SectionButtonRow
+                        trailing={membership.capabilities.remove ? removeButton : undefined}
+                    >
                     {membership.capabilities.suspend ? (
-                        <Item
+                        <RoundButton
                             testID="team-member-suspend"
+                            size="small"
+                            display="secondary"
                             title={t('teams.members.suspend')}
                             disabled={!canAct}
                             onPress={async () => {
@@ -679,12 +707,13 @@ const MemberDetail = React.memo(function MemberDetail(props: Readonly<{
                                     membershipId: membership.id,
                                 }));
                             }}
-                            showChevron={false}
                         />
                     ) : null}
                     {membership.capabilities.reactivate ? (
-                        <Item
+                        <RoundButton
                             testID="team-member-reactivate"
+                            size="small"
+                            display="secondary"
                             title={t('teams.members.reactivate')}
                             disabled={!canAct}
                             onPress={async () => {
@@ -700,57 +729,9 @@ const MemberDetail = React.memo(function MemberDetail(props: Readonly<{
                                     membershipId: membership.id,
                                 }));
                             }}
-                            showChevron={false}
                         />
                     ) : null}
-                    {membership.capabilities.remove ? (
-                        <Item
-                            testID="team-member-remove"
-                            title={t('teams.members.remove')}
-                            destructive
-                            disabled={!canAct}
-                            onPress={async () => {
-                                const confirmed = await Modal.confirm(
-                                    t('teams.members.removeTitle', { name: displayName }),
-                                    t('teams.members.removeBody'),
-                                    { confirmText: t('teams.members.remove'), destructive: true },
-                                );
-                                if (!confirmed) return;
-                                if (transitionInFlightRef.current) return;
-                                transitionInFlightRef.current = true;
-                                setNotice(null);
-                                setBusy(true);
-                                let outcome: Awaited<ReturnType<typeof removeTeamMember>>;
-                                try {
-                                    outcome = await removeTeamMember({
-                                        scope: context.scope,
-                                        address: context.address,
-                                        membershipId: membership.id,
-                                    });
-                                } catch (cause) {
-                                    transitionInFlightRef.current = false;
-                                    setBusy(false);
-                                    if (isTeamActionApprovalPendingError(cause)) {
-                                        context.requestApproval(cause.artifactId);
-                                        return;
-                                    }
-                                    throw cause;
-                                }
-                                transitionInFlightRef.current = false;
-                                setBusy(false);
-                                context.refresh();
-                                // A removed lifetime no longer addresses anything,
-                                // so success leaves. A refusal keeps the member
-                                // on screen with the Home's own reason.
-                                if (outcome.kind === 'succeeded') router.back();
-                                else {
-                                    setNotice(teamMutationFailureLabel(outcome.failure));
-                                    reload();
-                                }
-                            }}
-                            showChevron={false}
-                        />
-                    ) : null}
+                    </SectionButtonRow>
                 </ItemGroup>
             ) : null}
         </>
@@ -772,12 +753,13 @@ export const TeamMemberDetailScreen = React.memo(function TeamMemberDetailScreen
     renderEncryptionSection?: TeamMemberSectionRenderer;
 }>) {
     return (
-        <TeamSection serverId={props.serverId} teamId={props.teamId} title={t('teams.tabs.members')}>
-            {(context) => (
+        <TeamSection serverId={props.serverId} teamId={props.teamId} title={t('teams.tabs.members')} childRendersHeader>
+            {(context, banners) => (
                 <MemberDetail
                     context={context}
                     membershipId={props.membershipId}
                     renderEncryptionSection={props.renderEncryptionSection}
+                    banners={banners}
                 />
             )}
         </TeamSection>

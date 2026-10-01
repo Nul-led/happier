@@ -17,6 +17,8 @@ ${chalk.bold('Usage:')}
   happier auth api-tokens revoke <tokenId> [--yes] [--json]
   happier auth api-tokens revoke-all [--yes] [--json]
   happier auth security get [--json]   View Account security (sign-in email, password state)
+  happier auth cli-approvals get [--json]   View the Account's CLI/daemon approval policy
+  happier auth cli-approvals set allowed|disallowed [--yes] [--json]
   happier auth password change [--current-password <password>] --new-password <password> [--revision <n>] [--recover] [--yes] [--json]
   happier auth password remove [--current-password <password>] [--revision <n>] [--yes] [--json]
   happier auth password enroll-email-request --email <email> [--json]
@@ -31,9 +33,9 @@ ${chalk.bold('Usage:')}
   happier auth email change-complete --verification-token <token> [--json]
   happier auth recovery-key validate --key <recovery-key> [--json]
   happier auth recovery-key login --key <recovery-key> [--json]
-  happier auth service status     Show the selected Account Service, verified against its current identity and role
-  happier auth service use <endpoint>   Select an Account Service and sign in through it
-  happier auth service logout     Drop this CLI's Account Service credential (Homes already entered keep theirs)
+  happier auth service status     Show the selected sign-in service, verified against its current identity and role
+  happier auth service use <endpoint>   Select a sign-in service and sign in through it
+  happier auth service logout     Sign out of the selected service (Homes already entered keep their access)
   happier auth status             Show authentication status
   happier auth help               Show this help message
 
@@ -75,6 +77,7 @@ ${chalk.gray('Password and recovery-key operations never leave this host: they a
 ${chalk.gray('E2EE password and recovery-key login derive and open Account material locally; passwords, wrapping keys, and recovery keys never reach the Home.')}
 ${chalk.gray('E2EE Account Security changes reuse the current recovery secret and never rotate Account signing or content keys.')}
 ${chalk.gray('API-token revocation stops future API authorization; keys or data already obtained cannot be recalled.')}
+${chalk.gray('CLI/daemon approvals are allowed by default. HAPPIER_CLI_PRESENT_USER=disallowed narrows this machine; Account allowed cannot override it.')}
 ${chalk.gray('Keep Account recovery keys private: anyone with one may be able to recover the Account.')}
 ${chalk.gray('The CLI stores credentials only for the selected Home and uses Account material only')}
 ${chalk.gray('when that Account is E2EE; plaintext Accounts do not require fabricated key material.')}

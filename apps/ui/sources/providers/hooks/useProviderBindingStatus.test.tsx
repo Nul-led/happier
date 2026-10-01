@@ -65,7 +65,7 @@ describe('useProviderBindingStatus', () => {
         const value: { current: ReturnType<typeof useProviderBindingStatus> | null } = { current: null };
         const selection = {
             v: 1 as const, updatedAt: 2,
-            ref: { agentTargetKey: 'backend:codex', providerConnectionId: ProviderConnectionIdSchema.parse('pc_launch'), modelId: 'next' },
+            ref: { agentTargetKey: 'agent:happier.agent.codex/codex', providerConnectionId: ProviderConnectionIdSchema.parse('pc_launch'), modelId: 'next' },
         };
         const launchBinding = {
             v: 1 as const, connectionId: ProviderConnectionIdSchema.parse('pc_launch'), contributionKey: null, connectionRevision: 1,
@@ -101,7 +101,7 @@ describe('useProviderBindingStatus', () => {
             v: 1 as const,
             updatedAt: 2,
             ref: {
-                agentTargetKey: 'backend:codex',
+                agentTargetKey: 'agent:happier.agent.codex/codex',
                 providerConnectionId: ProviderConnectionIdSchema.parse('pc_launch'),
                 modelId: 'next',
             },
@@ -167,7 +167,7 @@ describe('useProviderBindingStatus', () => {
                 enabled: true, machineId: 'machine-a', serverId: 'server-a',
                 selection: {
                     v: 1, updatedAt: 2,
-                    ref: { agentTargetKey: 'backend:codex', providerConnectionId: ProviderConnectionIdSchema.parse('pc_next'), modelId: 'next' },
+                    ref: { agentTargetKey: 'agent:happier.agent.codex/codex', providerConnectionId: ProviderConnectionIdSchema.parse('pc_next'), modelId: 'next' },
                 },
                 launchBinding: {
                     v: 1, connectionId: ProviderConnectionIdSchema.parse('pc_launch'), contributionKey: null, connectionRevision: 1,
@@ -197,7 +197,7 @@ describe('useProviderBindingStatus', () => {
                     v: 1,
                     updatedAt: 2,
                     ref: {
-                        agentTargetKey: 'backend:codex',
+                        agentTargetKey: 'agent:happier.agent.codex/codex',
                         providerConnectionId: ProviderConnectionIdSchema.parse('pc_launch'),
                         modelId: 'next',
                     },
@@ -267,7 +267,7 @@ describe('useProviderBindingStatus', () => {
                 selectionIntentPresent: true,
                 selection: {
                     v: 1, updatedAt: 2,
-                    ref: { agentTargetKey: 'backend:codex', providerConnectionId: ProviderConnectionIdSchema.parse('pc_launch'), modelId: 'next' },
+                    ref: { agentTargetKey: 'agent:happier.agent.codex/codex', providerConnectionId: ProviderConnectionIdSchema.parse('pc_launch'), modelId: 'next' },
                 },
                 launchBinding: {
                     v: 1, connectionId: ProviderConnectionIdSchema.parse('pc_launch'), contributionKey: null, connectionRevision: 1,

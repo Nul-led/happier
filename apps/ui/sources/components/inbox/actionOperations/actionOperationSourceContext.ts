@@ -14,6 +14,7 @@ import { readSessionOwnerMetadataView } from '@/sync/domains/session/readSession
 import type { Machine } from '@/sync/domains/state/storageTypes';
 import { getMachineDisplayName } from '@/utils/sessions/machineUtils';
 import { getSessionName } from '@/utils/sessions/sessionUtils';
+import { resolveHomeDisplayName } from '@/components/settings/server/homeDisplayName';
 
 export type ActionOperationSourceContext = Readonly<{
     address: SessionAddress | null;
@@ -59,7 +60,7 @@ export function projectActionOperationSourceContext(params: Readonly<{
 
     const machineTitle = getMachineDisplayName(params.machine);
     if (!address) {
-        const homeName = params.serverProfile?.name?.trim() || null;
+        const homeName = resolveHomeDisplayName(params.serverProfile);
         return {
             address: null,
             sessionTitle: null,
@@ -85,7 +86,7 @@ export function projectActionOperationSourceContext(params: Readonly<{
     }));
     return {
         address,
-        sessionTitle: session && context.mayShowDecryptedContent === true ? getSessionName(session) : null,
+        sessionTitle: session && context.mayShowDecryptedContent === true ? getSessionName(session, address.serverId) : null,
         machineTitle,
         contextLine: context.contextLine,
         accessibilityContext: context.accessibilityContext,

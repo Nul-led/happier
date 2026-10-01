@@ -155,6 +155,7 @@ describe('ProviderIdentityItems', () => {
         await vi.waitFor(() => expect(itemProps.some((item) => item.detail === '@alice')).toBe(true));
         const linkedRow = itemProps.find((item) => item.detail === '@alice');
         expect(linkedRow?.onPress).toBeUndefined();
+        expect(linkedRow?.rightElement).toBeUndefined();
         expect(itemProps.some((item) => String(item.title).includes('showProviderOnProfile'))).toBe(false);
     });
 
@@ -184,7 +185,7 @@ describe('ProviderIdentityItems', () => {
         // The catalog answer settles after the first render, so the row as the
         // user finally sees it is the last one rendered.
         const latestLinkedRow = () => [...itemProps].reverse().find((item) => item.detail === '@alice');
-        await vi.waitFor(() => expect(typeof latestLinkedRow()?.onPress).toBe('function'));
+        await vi.waitFor(() => expect(typeof latestLinkedRow()?.rightElement?.props.onPress).toBe('function'));
         expect(itemProps.some((item) => String(item.title).includes('showProviderOnProfile'))).toBe(true);
     });
 
@@ -397,10 +398,10 @@ describe('ProviderIdentityItems', () => {
         );
 
         await vi.waitFor(() => {
-            expect(itemProps.find((p) => p.title === 'Corporate SSO')).toMatchObject({
-                disabled: false,
-                showChevron: false,
-            });
+            const row = itemProps.find((p) => p.title === 'Corporate SSO');
+            expect(row).toMatchObject({ showChevron: false });
+            // Connecting is the row's inline action, not a press on the row.
+            expect(row?.rightElement?.props).toMatchObject({ disabled: false });
         });
     });
 
@@ -436,10 +437,10 @@ describe('ProviderIdentityItems', () => {
         );
 
         await vi.waitFor(() => {
-            expect(itemProps.find((p) => p.title === 'Acme Workforce')).toMatchObject({
-                disabled: false,
-                showChevron: false,
-            });
+            const row = itemProps.find((p) => p.title === 'Acme Workforce');
+            expect(row).toMatchObject({ showChevron: false });
+            // Connecting is the row's inline action, not a press on the row.
+            expect(row?.rightElement?.props).toMatchObject({ disabled: false });
         });
     });
 
@@ -485,10 +486,10 @@ describe('ProviderIdentityItems', () => {
         );
 
         await vi.waitFor(() => {
-            expect(itemProps.find((p) => p.title === 'Acme Workforce')).toMatchObject({
-                disabled: false,
-                showChevron: false,
-            });
+            const row = itemProps.find((p) => p.title === 'Acme Workforce');
+            expect(row).toMatchObject({ showChevron: false });
+            // Connecting is the row's inline action, not a press on the row.
+            expect(row?.rightElement?.props).toMatchObject({ disabled: false });
         });
         expect(itemProps.some((p) => p.title === 'Conflicting later presentation')).toBe(false);
     });
@@ -566,12 +567,12 @@ describe('ProviderIdentityItems', () => {
         );
 
         await vi.waitFor(() => {
-            expect([...itemProps].reverse().find((item) => item.title === 'Acme Workforce')?.onPress)
+            expect([...itemProps].reverse().find((item) => item.title === 'Acme Workforce')?.rightElement?.props.onPress)
                 .toEqual(expect.any(Function));
         });
         const connect = () => [...itemProps].reverse()
-            .find((item) => item.title === 'Acme Workforce' && typeof item.onPress === 'function')
-            ?.onPress();
+            .find((item) => item.title === 'Acme Workforce' && typeof item.rightElement?.props.onPress === 'function')
+            ?.rightElement.props.onPress();
 
         shared.getConnectUrlError.current = new HappyError(
             'raw provider response that must stay private',
@@ -623,12 +624,12 @@ describe('ProviderIdentityItems', () => {
         );
 
         await vi.waitFor(() => {
-            expect([...itemProps].reverse().find((p) => p.title === 'GitHub' && typeof p.onPress === 'function')).toBeTruthy();
+            expect([...itemProps].reverse().find((p) => p.title === 'GitHub' && typeof p.rightElement?.props.onPress === 'function')).toBeTruthy();
         });
-        const connectItem = [...itemProps].reverse().find((p) => p.title === 'GitHub' && typeof p.onPress === 'function');
+        const connectItem = [...itemProps].reverse().find((p) => p.title === 'GitHub' && typeof p.rightElement?.props.onPress === 'function');
 
         await act(async () => {
-            await connectItem.onPress();
+            await connectItem.rightElement.props.onPress();
         });
 
         expect(shared.setPendingExternalConnect).toHaveBeenCalledWith({ provider: 'github', returnTo: '/settings/account' });

@@ -20,7 +20,7 @@ export function applyActiveModelFacts(
   const state = existingState?.agentId === agentId ? existingState : {
     v: 1 as const,
     agentId,
-    updatedAt: Date.now(),
+    updatedAt: 0,
     currentModelId: target.selection.modelId,
     availableModels: [],
   };
@@ -92,7 +92,7 @@ export function applyActiveModelFacts(
     sessionModelsV1: {
       ...stateWithoutActiveSelection,
       agentId,
-      updatedAt: Date.now(),
+      updatedAt: state.updatedAt,
       currentModelId: target.selection.modelId,
       availableModels,
       ...(activeSelectionV1 ? { activeSelectionV1 } : {}),

@@ -271,10 +271,15 @@ describe('syncSettings account settings ciphertext', () => {
         mocks.getRandomBytes.mockClear();
         mocks.persistenceValues.clear();
         mocks.persistenceSet.mockClear();
-        mocks.storageState.settings = {
-            analyticsOptOut: false,
+        mocks.storageState = {
+            ...mocks.storageState,
+            settings: {
+                analyticsOptOut: false,
+                clientEncryptionRequirementLocalV1: 'follow_account',
+                clientEncryptionRequirementV1: 'follow_account',
+            },
+            settingsVersion: 9,
         };
-        mocks.storageState.settingsVersion = 9;
         mocks.storageState.applySettings.mockReset();
         mocks.storageState.applySettingsForScope.mockReset();
         mocks.storageState.applySettingsLocal.mockReset();
@@ -647,6 +652,63 @@ describe('syncSettings account settings ciphertext', () => {
             }),
             5,
         );
+    });
+
+    it('rebases independent field mutations after a concurrent Account Settings write', async () => {
+        let serverVersion = 4;
+        let serverRaw: Record<string, unknown> = { analyticsOptOut: false, pluginEndpoint: 'https://initial.example.test' };
+        mocks.serverFetch.mockImplementation(async (path: string, init?: RequestInit) => {
+            if (path === '/v1/account/encryption') return Response.json({ mode: 'plain', updatedAt: Date.now() });
+            if (path === '/v2/account/settings' && init?.method !== 'POST') {
+                return Response.json({ content: { t: 'plain', v: serverRaw }, version: serverVersion });
+            }
+            if (path === '/v2/account/settings' && init?.method === 'POST') {
+                const body = JSON.parse(String(init.body)) as {
+                    content: { t: 'plain'; v: Record<string, unknown> };
+                    expectedVersion: number;
+                };
+                if (body.expectedVersion !== serverVersion) {
+                    return Response.json({
+                        success: false,
+                        error: 'version-mismatch',
+                        currentVersion: serverVersion,
+                        currentContent: { t: 'plain', v: serverRaw },
+                    });
+                }
+                serverRaw = body.content.v;
+                serverVersion += 1;
+                return Response.json({ success: true, version: serverVersion });
+            }
+            throw new Error(`Unexpected settings request: ${path}`);
+        });
+
+        const common = {
+            credentials,
+            encryption: null,
+            pendingSettings: {},
+            clearPendingSettings: vi.fn(),
+        } as const;
+        const [first, second] = await Promise.all([
+            syncSettings({
+                ...common,
+                oneShotServerSettingsMutation: {
+                    rebaseOnConflict: true,
+                    expectedSettingsVersion: 4,
+                    mutate: (raw) => ({ settings: { ...raw, analyticsOptOut: true }, value: 'analytics' }),
+                },
+            }),
+            syncSettings({
+                ...common,
+                oneShotServerSettingsMutation: {
+                    rebaseOnConflict: true,
+                    expectedSettingsVersion: 4,
+                    mutate: (raw) => ({ settings: { ...raw, pluginEndpoint: 'https://concurrent.example.test' }, value: 'endpoint' }),
+                },
+            }),
+        ]);
+
+        expect([first, second].map((result) => result?.status)).toEqual(['applied', 'applied']);
+        expect(serverRaw).toMatchObject({ analyticsOptOut: true, pluginEndpoint: 'https://concurrent.example.test' });
     });
 
     it('reports a response-lost one-shot Account Settings write as outcomeUnknown after one safe readback without replaying', async () => {

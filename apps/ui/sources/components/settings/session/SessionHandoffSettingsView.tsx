@@ -1,13 +1,10 @@
 import * as React from 'react';
-import { View } from 'react-native';
-import { useUnistyles } from 'react-native-unistyles';
 
-import { DropdownMenu } from '@/components/ui/forms/dropdown/DropdownMenu';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
 import { ItemList } from '@/components/ui/lists/ItemList';
 import { Item } from '@/components/ui/lists/Item';
 import { ExpandableItem } from '@/components/ui/lists/ExpandableItem';
-import { Text, TextInput } from '@/components/ui/text/Text';
+import { SegmentedChoiceItem } from '@/components/ui/lists/SegmentedChoiceItem';
 import { t } from '@/text';
 import {
     normalizeSessionHandoffDefaults,
@@ -21,23 +18,31 @@ import {
     type SessionHandoffWorkspaceMode,
 } from '@/sync/domains/sessionHandoff/sessionHandoffDefaults';
 import { useSettingMutable } from '@/sync/domains/state/storage';
-import { Icon } from '@/components/ui/icons/Icon';
 import { WorkspaceSyncRelationshipList } from '@/components/workspaces/sync/WorkspaceSyncRelationshipList';
 import { WorkspaceSyncLegacyStateRecovery } from '@/components/workspaces/sync/WorkspaceSyncLegacyStateRecovery';
+import { FieldValueItem } from '@/components/ui/forms/FieldValueItem';
+import { SettingsPageHeader } from '@/components/settings/shell/SettingsPageHeader';
+import { SettingAnchor, SettingSection } from '@/components/settings/shell/SettingRow';
+import { HANDOFF_SETTINGS } from '@/components/settings/session/handoffSettings';
+
+/** Rows inside the Advanced disclosure: a search reveal of one of them opens it. */
+const ADVANCED_SETTINGS = [
+    HANDOFF_SETTINGS.settings.mode,
+    HANDOFF_SETTINGS.settings.includeIgnoredMode,
+    HANDOFF_SETTINGS.settings.ignoredIncludeGlobs,
+];
 
 export const SessionHandoffSettingsView = React.memo(function SessionHandoffSettingsView() {
-    const { theme } = useUnistyles();
-    const popoverBoundaryRef = React.useRef<any>(null);
     const [rawDefaults, setRawDefaults] = useSettingMutable('sessionHandoffDefaultsV1');
     const defaults = React.useMemo(() => normalizeSessionHandoffDefaults(rawDefaults), [rawDefaults]);
     const defaultsRef = React.useRef(defaults);
-    const [openWorkspaceModeMenu, setOpenWorkspaceModeMenu] = React.useState(false);
-    const [openIgnoredModeMenu, setOpenIgnoredModeMenu] = React.useState(false);
-    const [openAdvancedWorkspaceModeMenu, setOpenAdvancedWorkspaceModeMenu] = React.useState(false);
+    const advancedModeActive = defaults.workspaceSyncMode === 'mirror_exactly' || defaults.workspaceSyncMode === 'keep_both_in_sync';
+    // Open on arrival when something inside needs attention: an advanced mode is in force,
+    // or "Include selected" needs its patterns (a required field is never hidden).
     const [advancedExpanded, setAdvancedExpanded] = React.useState(
-        defaults.workspaceSyncMode === 'mirror_exactly' || defaults.workspaceSyncMode === 'keep_both_in_sync',
+        advancedModeActive
+        || defaults.includeIgnoredMode === 'include_selected',
     );
-    const [openDirectModeMenu, setOpenDirectModeMenu] = React.useState(false);
 
     React.useEffect(() => {
         defaultsRef.current = defaults;
@@ -57,196 +62,125 @@ export const SessionHandoffSettingsView = React.memo(function SessionHandoffSett
             ?? SESSION_HANDOFF_WORKSPACE_SYNC_MODE_OPTIONS[0],
         [defaults.workspaceSyncMode],
     );
+    const selectedIgnoredMode = SESSION_HANDOFF_INCLUDE_IGNORED_MODE_OPTIONS.find((option) => option.id === defaults.includeIgnoredMode)
+        ?? SESSION_HANDOFF_INCLUDE_IGNORED_MODE_OPTIONS[0];
+    const advancedSummary = [
+        advancedModeActive ? t(selectedWorkspaceMode.titleKey) : null,
+        t(selectedIgnoredMode.titleKey),
+    ].filter(Boolean).join(' · ');
 
     return (
-        <ItemList ref={popoverBoundaryRef} style={{ paddingTop: 0 }}>
+        <ItemList style={{ paddingTop: 0 }} presentation="page">
+            <SettingsPageHeader description={t('settingsSessionPages.handoff.pageDescription')} />
+            {/* The globs row exists only while ignored files are "Include selected"; the section answers otherwise. */}
+            <SettingSection section={HANDOFF_SETTINGS.sectionRefs.workspace}>
             <ItemGroup
-                title={t('settingsSession.handoff.groupTitle')}
-                footer={t('settingsSession.handoff.groupFooter')}
+                title={t('settingsSessionPages.handoff.workspaceSection')}
+                description={t('settingsSessionPages.handoff.workspaceDescription')}
             >
-                <DropdownMenu
-                    open={openWorkspaceModeMenu}
-                    onOpenChange={setOpenWorkspaceModeMenu}
-                    variant="selectable"
-                    search={false}
-                    selectedId={defaults.workspaceSyncMode}
-                    showCategoryTitles={false}
-                    matchTriggerWidth={true}
-                    connectToTrigger={true}
-                    rowKind="item"
-                    popoverBoundaryRef={popoverBoundaryRef}
-                    itemTrigger={{
-                        title: t('settingsSession.handoff.workspaceMode.title'),
-                        subtitle: t(selectedWorkspaceMode.subtitleKey),
-                        icon: <Icon name="folder-open" size={29} color={theme.colors.accent.blue} />,
-                        itemProps: { testID: 'session-handoff-workspace-sync-mode-trigger' },
-                    }}
-                    items={SESSION_HANDOFF_COMMON_WORKSPACE_SYNC_MODE_OPTIONS.map((item) => ({
-                        id: item.id,
-                        title: t(item.titleKey),
-                        subtitle: t(item.subtitleKey),
-                        icon: (
-                            <View style={{ width: 32, height: 32, alignItems: 'center', justifyContent: 'center' }}>
-                                <Icon
-                                    name={item.id === 'none' ? 'eye-slash' : 'folder'}
-                                    size={20}
-                                    color={theme.colors.text.secondary}
-                                />
-                            </View>
-                        ),
-                    }))}
-                    onSelect={(itemId) => {
-                        const nextMode = itemId as SessionHandoffWorkspaceMode;
-                        updateDefaults({ workspaceSyncMode: nextMode });
-                        setOpenWorkspaceModeMenu(false);
-                    }}
-                />
-                <ExpandableItem
+                <SettingAnchor setting={HANDOFF_SETTINGS.settings.workspaceMode}>
+                    <SegmentedChoiceItem<SessionHandoffWorkspaceMode>
+                        subtitleLines={0}
+                        testID="session-handoff-workspace-sync-mode-trigger"
+                        testIDPrefix="session-handoff-workspace-sync-mode"
+                        title={t(HANDOFF_SETTINGS.settings.workspaceMode.titleKey)}
+                        // An advanced mode is chosen in the disclosure below; this row then describes it.
+                        subtitle={t(selectedWorkspaceMode.subtitleKey)}
+                        options={SESSION_HANDOFF_COMMON_WORKSPACE_SYNC_MODE_OPTIONS.map((item) => ({
+                            id: item.id,
+                            label: item.id === 'keep_synced' ? t('settingsSessionPages.handoff.keepUpdated') : t(item.titleKey),
+                            description: t(item.subtitleKey),
+                        }))}
+                        value={defaults.workspaceSyncMode}
+                        onChange={(nextMode) => updateDefaults({ workspaceSyncMode: nextMode })}
+                    />
+                </SettingAnchor>
+                <SettingAnchor settings={ADVANCED_SETTINGS}><ExpandableItem
                     testID="session-handoff-settings-advanced"
                     expanded={advancedExpanded}
                     onExpandedChange={setAdvancedExpanded}
-                    header={(state) => (
+                    header={({ headerProps }) => (
                         <Item
-                            {...state.headerProps}
+                            {...headerProps}
                             title={t('settingsSession.handoff.advanced.title')}
                             subtitle={t('settingsSession.handoff.advanced.subtitle')}
-                            icon={<Icon name="sliders-horizontal" size={20} color={theme.colors.text.secondary} />}
-                            rightElement={<Icon name={state.expanded ? 'caret-down' : 'caret-right'} size={16} color={theme.colors.text.secondary} />}
-                            showChevron={false}
+                            detail={advancedExpanded ? undefined : advancedSummary}
                         />
                     )}
                 >
-                    <ItemGroup>
-                <DropdownMenu
-                    open={openAdvancedWorkspaceModeMenu}
-                    onOpenChange={setOpenAdvancedWorkspaceModeMenu}
-                    variant="selectable"
-                    search={false}
-                    selectedId={defaults.workspaceSyncMode}
-                    showCategoryTitles={false}
-                    matchTriggerWidth={true}
-                    connectToTrigger={true}
-                    rowKind="item"
-                    popoverBoundaryRef={popoverBoundaryRef}
-                    itemTrigger={{
-                        title: t('settingsSession.handoff.advanced.modeTitle'),
-                        subtitle: t(selectedWorkspaceMode.subtitleKey),
-                        icon: <Icon name="warning" size={29} color={theme.colors.accent.orange} />,
-                        itemProps: { testID: 'session-handoff-settings-advanced-mode-trigger' },
-                    }}
-                    items={SESSION_HANDOFF_ADVANCED_WORKSPACE_SYNC_MODE_OPTIONS.map((item) => ({
-                        id: item.id,
-                        title: t(item.titleKey),
-                        subtitle: t(item.subtitleKey),
-                    }))}
-                    onSelect={(itemId) => {
-                        updateDefaults({ workspaceSyncMode: itemId as SessionHandoffWorkspaceMode });
-                        setOpenAdvancedWorkspaceModeMenu(false);
-                    }}
-                />
-                <DropdownMenu
-                    open={openIgnoredModeMenu}
-                    onOpenChange={setOpenIgnoredModeMenu}
-                    variant="selectable"
-                    search={false}
-                    selectedId={defaults.includeIgnoredMode}
-                    showCategoryTitles={false}
-                    matchTriggerWidth={true}
-                    connectToTrigger={true}
-                    rowKind="item"
-                    popoverBoundaryRef={popoverBoundaryRef}
-                    itemTrigger={{
-                        title: t('settingsSession.handoff.includeIgnoredMode.title'),
-                        subtitle: t('settingsSession.handoff.includeIgnoredMode.subtitle'),
-                        icon: <Icon name="funnel-simple" size={29} color={theme.colors.accent.indigo} />,
-                        itemProps: { testID: 'session-handoff-ignored-mode-trigger' },
-                    }}
-                    items={SESSION_HANDOFF_INCLUDE_IGNORED_MODE_OPTIONS.map((item) => ({
-                        id: item.id,
-                        title: t(item.titleKey),
-                        subtitle: t(item.subtitleKey),
-                        icon: (
-                            <View style={{ width: 32, height: 32, alignItems: 'center', justifyContent: 'center' }}>
-                                <Icon
-                                    name={item.id === 'include_selected' ? 'funnel-simple' : 'eye-slash'}
-                                    size={20}
-                                    color={theme.colors.text.secondary}
-                                />
-                            </View>
-                        ),
-                    }))}
-                    onSelect={(itemId) => {
-                        updateDefaults({ includeIgnoredMode: itemId as SessionHandoffDefaultsV1['includeIgnoredMode'] });
-                        setOpenIgnoredModeMenu(false);
-                    }}
-                />
-                {defaults.includeIgnoredMode === 'include_selected' ? (
-                    <View style={{ paddingHorizontal: 16, paddingTop: 8, paddingBottom: 16 }}>
-                        <Text style={{ fontSize: 14, marginBottom: 8, color: theme.colors.text.secondary }}>
-                            {t('settingsSession.handoff.includeIgnoredMode.globsTitle')}
-                        </Text>
-                        <TextInput
-                            accessibilityLabel={t('settingsSession.handoff.includeIgnoredMode.globsTitle')}
-                            value={defaults.ignoredIncludeGlobs.join(', ')}
-                            onChangeText={(value) => updateDefaults({ ignoredIncludeGlobs: parseSessionHandoffIgnoredIncludeGlobs(value) })}
-                            placeholder={t('settingsSession.handoff.includeIgnoredMode.globsPlaceholder')}
-                            autoCapitalize="none"
-                            autoCorrect={false}
-                            style={{
-                                minHeight: 44,
-                                borderRadius: 10,
-                                borderWidth: 1,
-                                borderColor: theme.colors.border.default,
-                                paddingHorizontal: 12,
-                                paddingVertical: 10,
-                                color: theme.colors.text.primary,
-                            }}
+                    <SettingAnchor setting={HANDOFF_SETTINGS.settings.mode}>
+                        <SegmentedChoiceItem<SessionHandoffWorkspaceMode>
+                            subtitleLines={0}
+                            testID="session-handoff-settings-advanced-mode-trigger"
+                            testIDPrefix="session-handoff-settings-advanced-mode"
+                            title={t(HANDOFF_SETTINGS.settings.mode.titleKey)}
+                            subtitle={t('settingsSessionPages.handoff.advancedModeDescription')}
+                            options={SESSION_HANDOFF_ADVANCED_WORKSPACE_SYNC_MODE_OPTIONS.map((item) => ({
+                                id: item.id,
+                                label: t(item.titleKey),
+                                description: t(item.subtitleKey),
+                            }))}
+                            value={defaults.workspaceSyncMode}
+                            onChange={(nextMode) => updateDefaults({ workspaceSyncMode: nextMode })}
                         />
-                    </View>
-                ) : null}
-                    </ItemGroup>
-                </ExpandableItem>
+                    </SettingAnchor>
+                    <SettingAnchor setting={HANDOFF_SETTINGS.settings.includeIgnoredMode}>
+                        <SegmentedChoiceItem<SessionHandoffDefaultsV1['includeIgnoredMode']>
+                            subtitleLines={0}
+                            testID="session-handoff-ignored-mode-trigger"
+                            testIDPrefix="session-handoff-ignored-mode"
+                            title={t(HANDOFF_SETTINGS.settings.includeIgnoredMode.titleKey)}
+                            options={SESSION_HANDOFF_INCLUDE_IGNORED_MODE_OPTIONS.map((item) => ({
+                                id: item.id,
+                                label: item.id === 'exclude'
+                                    ? t('settingsSessionPages.handoff.ignoredExclude')
+                                    : t('settingsSessionPages.handoff.ignoredIncludeSelected'),
+                                description: t(item.subtitleKey),
+                            }))}
+                            value={defaults.includeIgnoredMode}
+                            onChange={(nextMode) => updateDefaults({ includeIgnoredMode: nextMode })}
+                        />
+                    </SettingAnchor>
+                    {defaults.includeIgnoredMode === 'include_selected' ? (
+                        <SettingAnchor setting={HANDOFF_SETTINGS.settings.ignoredIncludeGlobs}>
+                            <FieldValueItem
+                                title={t(HANDOFF_SETTINGS.settings.ignoredIncludeGlobs.titleKey)}
+                                placeholder={t('settingsSession.handoff.includeIgnoredMode.globsPlaceholder')}
+                                monospace
+                                // The shared field keeps an unfinished comma while typing and follows the stored
+                                // list when it changes elsewhere; the list is normalized only here, on commit.
+                                value={defaults.ignoredIncludeGlobs.join(', ')}
+                                onCommit={(draft) => {
+                                    const patterns = parseSessionHandoffIgnoredIncludeGlobs(draft);
+                                    updateDefaults({ ignoredIncludeGlobs: patterns });
+                                    return patterns.join(', ');
+                                }}
+                            />
+                        </SettingAnchor>
+                    ) : null}
+                </ExpandableItem></SettingAnchor>
             </ItemGroup>
+            </SettingSection>
 
             <ItemGroup
                 title={t('settingsSession.handoff.directTargetMode.groupTitle')}
-                footer={t('settingsSession.handoff.directTargetMode.groupFooter')}
+                description={t('settingsSession.handoff.directTargetMode.groupFooter')}
             >
-                <DropdownMenu
-                    open={openDirectModeMenu}
-                    onOpenChange={setOpenDirectModeMenu}
-                    variant="selectable"
-                    search={false}
-                    selectedId={defaults.directTargetMode}
-                    showCategoryTitles={false}
-                    matchTriggerWidth={true}
-                    connectToTrigger={true}
-                    rowKind="item"
-                    popoverBoundaryRef={popoverBoundaryRef}
-                    itemTrigger={{
-                        title: t('settingsSession.handoff.directTargetMode.title'),
-                        subtitle: t('settingsSession.handoff.directTargetMode.subtitle'),
-                        icon: <Icon name="arrows-left-right" size={29} color={theme.colors.accent.green} />,
-                    }}
-                    items={SESSION_HANDOFF_DIRECT_TARGET_MODE_OPTIONS.map((item) => ({
-                        id: item.id,
-                        title: t(item.titleKey),
-                        subtitle: t(item.subtitleKey),
-                        icon: (
-                            <View style={{ width: 32, height: 32, alignItems: 'center', justifyContent: 'center' }}>
-                                <Icon
-                                    name={item.id === 'convert_to_persisted' ? 'floppy-disk' : 'arrow-right'}
-                                    size={20}
-                                    color={theme.colors.text.secondary}
-                                />
-                            </View>
-                        ),
-                    }))}
-                    onSelect={(itemId) => {
-                        updateDefaults({ directTargetMode: itemId as SessionHandoffDefaultsV1['directTargetMode'] });
-                        setOpenDirectModeMenu(false);
-                    }}
-                />
+                <SettingAnchor setting={HANDOFF_SETTINGS.settings.directTargetMode}>
+                    <SegmentedChoiceItem<SessionHandoffDefaultsV1['directTargetMode']>
+                        subtitleLines={0}
+                        testID="session-handoff-direct-target-mode"
+                        testIDPrefix="session-handoff-direct-target-mode"
+                        title={t(HANDOFF_SETTINGS.settings.directTargetMode.titleKey)}
+                        options={SESSION_HANDOFF_DIRECT_TARGET_MODE_OPTIONS.map((item) => ({
+                            id: item.id,
+                            label: t(item.titleKey),
+                            description: t(item.subtitleKey),
+                        }))}
+                        value={defaults.directTargetMode}
+                        onChange={(nextMode) => updateDefaults({ directTargetMode: nextMode })}
+                    />
+                </SettingAnchor>
             </ItemGroup>
 
             <WorkspaceSyncLegacyStateRecovery />

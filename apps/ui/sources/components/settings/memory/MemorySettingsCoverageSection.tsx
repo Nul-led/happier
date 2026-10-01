@@ -1,46 +1,45 @@
 import * as React from 'react';
-import { useUnistyles } from 'react-native-unistyles';
 
-import { DropdownMenu } from '@/components/ui/forms/dropdown/DropdownMenu';
-import { ItemGroup } from '@/components/ui/lists/ItemGroup';
+import { SegmentedChoiceItem } from '@/components/ui/lists/SegmentedChoiceItem';
 import { t } from '@/text';
 
 import type { MemorySettingsV1 } from '@happier-dev/protocol';
-import { Icon } from '@/components/ui/icons/Icon';
 import {
     readMemoryCoveragePolicy,
     withMemoryCoveragePolicy,
 } from './memorySettingsPolicies';
+import { SettingAnchor } from '@/components/settings/shell/SettingRow';
+import { MEMORY_SETTINGS } from '@/components/settings/memory/memorySettings';
 
 type CoveragePolicyId = MemorySettingsV1['coveragePolicy']['type'];
 
-export const MemorySettingsCoverageSection = React.memo(function MemorySettingsCoverageSection(props: Readonly<{
+export const MemorySettingsCoverageRow = React.memo(function MemorySettingsCoverageRow(props: Readonly<{
     settings: MemorySettingsV1;
     writeSettings: (next: MemorySettingsV1) => void | Promise<void>;
+    /** Set by the enclosing `ItemGroup`. */
+    showDivider?: boolean;
 }>) {
-    const { theme } = useUnistyles();
-    const [coverageMenuOpen, setCoverageMenuOpen] = React.useState(false);
     const coveragePolicy = readMemoryCoveragePolicy(props.settings);
-    const items = React.useMemo<ReadonlyArray<Readonly<{ id: CoveragePolicyId; title: string; subtitle: string }>>>(() => [
+    const options = React.useMemo<ReadonlyArray<Readonly<{ id: CoveragePolicyId; label: string; description: string }>>>(() => [
         {
             id: 'full',
-            title: t('memorySearchSettings.coverage.options.fullTitle'),
-            subtitle: t('memorySearchSettings.coverage.options.fullSubtitle'),
+            label: t('memorySearchSettings.coverage.options.fullTitle'),
+            description: t('memorySearchSettings.coverage.options.fullSubtitle'),
         },
         {
             id: 'latest_messages',
-            title: t('memorySearchSettings.coverage.options.latestMessagesTitle'),
-            subtitle: t('memorySearchSettings.coverage.options.latestMessagesSubtitle'),
+            label: t('memorySearchSettings.coverage.options.latestMessagesTitle'),
+            description: t('memorySearchSettings.coverage.options.latestMessagesSubtitle'),
         },
         {
             id: 'latest_days',
-            title: t('memorySearchSettings.coverage.options.latestDaysTitle'),
-            subtitle: t('memorySearchSettings.coverage.options.latestDaysSubtitle'),
+            label: t('memorySearchSettings.coverage.options.latestDaysTitle'),
+            description: t('memorySearchSettings.coverage.options.latestDaysSubtitle'),
         },
         {
             id: 'since_enabled',
-            title: t('memorySearchSettings.coverage.options.sinceEnabledTitle'),
-            subtitle: t('memorySearchSettings.coverage.options.sinceEnabledSubtitle'),
+            label: t('memorySearchSettings.coverage.options.sinceEnabledTitle'),
+            description: t('memorySearchSettings.coverage.options.sinceEnabledSubtitle'),
         },
     ], []);
 
@@ -67,24 +66,17 @@ export const MemorySettingsCoverageSection = React.memo(function MemorySettingsC
     }, [coveragePolicy]);
 
     return (
-        <ItemGroup
-            title={t('memorySearchSettings.coverage.title')}
-            footer={t('memorySearchSettings.coverage.footer')}
-        >
-            <DropdownMenu
-                open={coverageMenuOpen}
-                onOpenChange={setCoverageMenuOpen}
-                selectedId={coveragePolicy.type}
-                items={items}
-                onSelect={(id) => {
+        <SettingAnchor setting={MEMORY_SETTINGS.settings.coverage} showDivider={props.showDivider}>
+            <SegmentedChoiceItem<CoveragePolicyId>
+                title={t(MEMORY_SETTINGS.settings.coverage.titleKey)}
+                subtitleLines={0}
+                testIDPrefix="memory-settings-coverage"
+                value={coveragePolicy.type}
+                options={options}
+                onChange={(id) => {
                     void props.writeSettings(withMemoryCoveragePolicy(props.settings, buildPolicy(id)));
-                    setCoverageMenuOpen(false);
-                }}
-                itemTrigger={{
-                    title: t('memorySearchSettings.coverage.triggerTitle'),
-                    icon: <Icon name="funnel-simple" size={29} color={theme.colors.accent.indigo} />,
                 }}
             />
-        </ItemGroup>
+        </SettingAnchor>
     );
 });

@@ -2,13 +2,46 @@ import {
     defineProtocolArray,
     defineProtocolLiteral,
     defineProtocolObject,
+    defineProtocolUnion,
 } from '@happier-dev/plugin-sdk/protocol';
 
+import {
+    MAX_TRIAGE_DETAIL_TABS_V1,
+    TRIAGE_DETAIL_ACTIONS_PANEL_V1,
+    TRIAGE_DETAIL_SHARED_TABS_V1,
+} from './bounds.js';
 import {
     TriageIdentifierV1ProtocolSchema,
     TriageSourceWorkflowSubjectV1Schema,
     TriageTextV1ProtocolSchema,
 } from './identity.js';
+
+/**
+ * One tab a source's detail offers for an entry kind (r0.42).
+ *
+ * `shared` names a tab of the target's vocabulary: the target owns its title,
+ * order and frame, and the source renders its content when asked for that
+ * `panel`. `source` is a view only this source has (a stack trace, occurrences,
+ * a release); the source names it, and the target renders it after the shared
+ * tabs in declared order. Both are closed: a tab id routes a mount.
+ */
+export const TriageSourceDetailTabV1Schema = defineProtocolUnion([
+    defineProtocolObject({
+        kind: defineProtocolLiteral('shared'),
+        id: defineProtocolUnion([
+            defineProtocolLiteral(TRIAGE_DETAIL_SHARED_TABS_V1[0]),
+            defineProtocolLiteral(TRIAGE_DETAIL_SHARED_TABS_V1[1]),
+            defineProtocolLiteral(TRIAGE_DETAIL_SHARED_TABS_V1[2]),
+            defineProtocolLiteral(TRIAGE_DETAIL_SHARED_TABS_V1[3]),
+        ]),
+    }, { policy: 'closed' }),
+    defineProtocolObject({
+        kind: defineProtocolLiteral('source'),
+        id: TriageIdentifierV1ProtocolSchema,
+        title: TriageTextV1ProtocolSchema,
+    }, { policy: 'closed' }),
+]);
+export type TriageSourceDetailTabV1 = ReturnType<typeof TriageSourceDetailTabV1Schema.parse>;
 
 /**
  * @internal One declared source-local entry kind. Kind entries are closed: a
@@ -20,6 +53,20 @@ export const TriageSourceKindDescriptorV1ProtocolSchema = defineProtocolObject({
     workflowSubject: TriageSourceWorkflowSubjectV1Schema,
     displayName: TriageTextV1ProtocolSchema,
     pluralDisplayName: TriageTextV1ProtocolSchema.optional(),
+    /**
+     * The detail tabs this kind supports (r0.42). Absent: the source keeps its
+     * whole detail body, mounted without a `panel`, exactly as before.
+     */
+    detailTabs: defineProtocolArray(TriageSourceDetailTabV1Schema, {
+        minItems: 1,
+        maxItems: MAX_TRIAGE_DETAIL_TABS_V1,
+    }).optional(),
+    /**
+     * This kind's write controls render as the `actions` panel, which the
+     * target places in the detail header (r0.42). Only meaningful with
+     * `detailTabs`; a whole-detail source keeps its controls in its body.
+     */
+    detailActions: defineProtocolLiteral(true).optional(),
 }, { policy: 'closed' });
 
 /**
@@ -66,7 +113,7 @@ export type TriageSourceDescriptorV1 = ReturnType<typeof TriageSourceDescriptorV
 
 export type TriageSourceDescriptorAdmissionV1 =
     | Readonly<{ ok: true; descriptor: TriageSourceDescriptorV1 }>
-    | Readonly<{ ok: false; reason: 'invalid' | 'duplicateKindId' }>;
+    | Readonly<{ ok: false; reason: 'invalid' | 'duplicateKindId' | 'duplicateDetailTabId' }>;
 
 /**
  * The target-owned semantic admission for one source descriptor.
@@ -82,6 +129,18 @@ export function admitTriageSourceDescriptorV1(input: unknown): TriageSourceDescr
     const kindIds = parsed.data.kinds.map((kind) => kind.id);
     if (new Set(kindIds).size !== kindIds.length) {
         return Object.freeze({ ok: false, reason: 'duplicateKindId' });
+    }
+    // A tab id is what a `panel` request names, so one kind's tab ids must be
+    // one unambiguous set: shared and source ids share the namespace.
+    for (const kind of parsed.data.kinds) {
+        const tabs = kind.detailTabs ?? [];
+        const tabIds = tabs.map((tab) => tab.id);
+        const reusesSharedId = tabs.some((tab) => tab.kind === 'source'
+            && ((TRIAGE_DETAIL_SHARED_TABS_V1 as readonly string[]).includes(tab.id)
+                || tab.id === TRIAGE_DETAIL_ACTIONS_PANEL_V1));
+        if (reusesSharedId || new Set(tabIds).size !== tabIds.length) {
+            return Object.freeze({ ok: false, reason: 'duplicateDetailTabId' });
+        }
     }
     return Object.freeze({ ok: true, descriptor: parsed.data });
 }

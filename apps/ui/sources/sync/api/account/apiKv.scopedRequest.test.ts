@@ -4,9 +4,14 @@ const activeRequest = vi.hoisted(() => vi.fn());
 // HTTP is the system boundary; the real KV adapters run below it.
 vi.mock('@/sync/http/client', () => ({ serverFetch: activeRequest }));
 
-import { kvGet, kvMutate } from './apiKv';
+import { kvGet, kvList, kvMutate } from './apiKv';
 
 describe('Account KV captured request', () => {
+    it('passes the exact read-only list cursor to the captured Home', async () => {
+        const request = vi.fn(async (_path: string) => Response.json({ items: [] }));
+        await kvList({ token: 'captured' }, { request, retry: 'none', prefix: 'workspace:', limit: 1000, afterKey: 'workspace:tabs:v1' });
+        expect(new URL(request.mock.calls[0]![0], 'https://home').searchParams.get('afterKey')).toBe('workspace:tabs:v1');
+    });
     it('uses the captured Account request for reads and CAS conflicts', async () => {
         activeRequest.mockResolvedValue(new Response(JSON.stringify({ key: 'workspace:tabs:v1', value: 'wrong-Account', version: 9 })));
         const request = vi.fn()

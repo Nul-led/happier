@@ -2,11 +2,10 @@ import * as React from 'react';
 
 import { Modal } from '@/modal';
 import { t } from '@/text';
-import { TokenStorage } from '@/auth/storage/tokenStorage';
 import { getActiveServerId, resolveServerProfileScopeId, type ServerProfile } from '@/sync/domains/server/serverProfiles';
 import type { ServerSelectionGroup } from '@/sync/domains/server/selection/serverSelectionTypes';
 
-import type { ServerAuthStatus } from './useServerAuthStatusByServerId';
+import { readServerAuthStatus, type ServerAuthStatus } from './useServerAuthStatusByServerId';
 import type { ActiveServerSwitchResult } from '@/sync/domains/server/activeServerSwitch';
 import type { HomeViewSelectionSettings } from '@/hooks/server/useHomeViewSelectionSettings';
 import { normalizeServerSelectionGroupsForSettings } from '@/sync/domains/server/selection/serverSelectionSettingsAdapter';
@@ -33,13 +32,10 @@ async function resolveServerAuthStatus(params: Readonly<{
     const known = params.authStatusByServerId[params.serverId]
         ?? (profile ? params.authStatusByServerId[profile.id] : undefined)
         ?? 'unknown';
-    if (known !== 'unknown' || !profile) return known;
-    try {
-        const credentials = await TokenStorage.getCredentialsForServerUrl(profile.serverUrl, { serverId: profile.id });
-        return credentials ? 'signedIn' : 'signedOut';
-    } catch {
-        return 'unknown';
-    }
+    if (known !== 'unknown') return known;
+    // Still resolving (or never projected): read it through the canonical
+    // resolver, which keeps an unreadable store `unknown`, never `signedOut`.
+    return await readServerAuthStatus(profile ? resolveServerProfileScopeId(profile) : params.serverId);
 }
 
 export function useServerSettingsGroupActions(params: Readonly<{

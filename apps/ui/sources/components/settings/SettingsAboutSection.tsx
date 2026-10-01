@@ -1,15 +1,16 @@
-import { Platform, Linking } from 'react-native';
+import { Linking } from 'react-native';
 import * as React from 'react';
 
 import type { SettingsBelowFoldSectionsProps } from '@/components/settings/settingsBelowFoldSectionTypes';
+import { OVERVIEW_SETTINGS } from '@/components/settings/overview/overviewSettings';
+import { SettingRow, SettingSection } from '@/components/settings/shell/SettingRow';
+import { settingRendersOnHost } from '@/components/settings/catalog/settingDeclarations';
 import { HAPPIER_PRIVACY_POLICY_URL } from '@/constants/legalUrls';
-import { SafeIonicons } from '@/components/ui/icons/SafeIonicons';
-import { Item } from '@/components/ui/lists/Item';
+import { Icon } from '@/components/ui/icons/Icon';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
 import { t } from '@/text';
 import { trackWhatsNewClicked } from '@/track';
 import { requestReview } from '@/utils/system/requestReview';
-import { Icon } from '@/components/ui/icons/Icon';
 
 type SettingsAboutSectionProps = Readonly<Pick<SettingsBelowFoldSectionsProps,
     | 'appVersion'
@@ -18,8 +19,17 @@ type SettingsAboutSectionProps = Readonly<Pick<SettingsBelowFoldSectionsProps,
     | 'router'
     | 'showChangelog'
     | 'showRateUs'
-    | 'theme'
+    | 'supportUs'
 >>;
+
+async function openExternalUrl(url: string) {
+    const supported = await Linking.canOpenURL(url);
+    if (supported) {
+        await Linking.openURL(url);
+    }
+}
+
+const ABOUT = OVERVIEW_SETTINGS.settings;
 
 export const SettingsAboutSection = React.memo(function SettingsAboutSection({
     appVersion,
@@ -28,15 +38,16 @@ export const SettingsAboutSection = React.memo(function SettingsAboutSection({
     router,
     showChangelog,
     showRateUs,
-    theme,
+    supportUs,
 }: SettingsAboutSectionProps) {
+    // What's new, Rate us and Support us are page state (build, store, developer mode): the section answers.
     return (
-        <ItemGroup title={t('settings.about')} footer={t('settings.aboutFooter')}>
+        <SettingSection section={OVERVIEW_SETTINGS.sectionRefs.about}>
+        <ItemGroup title={t('settings.about')} description={t('settingsOverview.aboutDescription')}>
             {showChangelog ? (
-                <Item
-                    title={t('settings.whatsNew')}
-                    subtitle={t('settings.whatsNewSubtitle')}
-                    icon={<Icon name="sparkle" size={29} color={theme.colors.accent.orange} />}
+                <SettingRow
+                    setting={ABOUT.whatsNew}
+                    icon={<Icon name="sparkle" />}
                     onPress={() => {
                         trackWhatsNewClicked();
                         router.push('/(app)/changelog');
@@ -44,63 +55,52 @@ export const SettingsAboutSection = React.memo(function SettingsAboutSection({
                 />
             ) : null}
             {showRateUs ? (
-                <Item
-                    title={t('settings.rateUs')}
-                    subtitle={t('settings.rateUsSubtitle')}
-                    icon={<Icon name="star" size={29} color={theme.colors.accent.orange} />}
+                <SettingRow
+                    setting={ABOUT.rateUs}
+                    icon={<Icon name="star" />}
                     onPress={() => {
                         void requestReview();
                     }}
                 />
             ) : null}
-            <Item
-                title={t('settings.github')}
-                icon={<Icon name="github-logo" size={29} color={theme.colors.text.primary} />}
+            {supportUs ? (
+                <SettingRow
+                    setting={ABOUT.supportUs}
+                    subtitle={supportUs.subtitle}
+                    showChevron={false}
+                    onPress={supportUs.onPress}
+                />
+            ) : null}
+            <SettingRow
+                setting={ABOUT.github}
+                icon={<Icon name="github-logo" />}
                 subtitle="happier-dev/happier"
                 onPress={handleGitHub}
             />
-            <Item
-                title={t('settings.privacyPolicy')}
-                icon={<Icon name="shield-check" size={29} color={theme.colors.accent.blue} />}
-                onPress={async () => {
-                    const url = HAPPIER_PRIVACY_POLICY_URL;
-                    const supported = await Linking.canOpenURL(url);
-                    if (supported) {
-                        await Linking.openURL(url);
-                    }
-                }}
+            <SettingRow
+                setting={ABOUT.privacyPolicy}
+                icon={<Icon name="shield-check" />}
+                onPress={() => openExternalUrl(HAPPIER_PRIVACY_POLICY_URL)}
             />
-            <Item
-                title={t('settings.termsOfService')}
-                icon={<Icon name="file-text" size={29} color={theme.colors.accent.blue} />}
-                onPress={async () => {
-                    const url = 'https://docs.happier.dev/legal/terms';
-                    const supported = await Linking.canOpenURL(url);
-                    if (supported) {
-                        await Linking.openURL(url);
-                    }
-                }}
+            <SettingRow
+                setting={ABOUT.termsOfService}
+                icon={<Icon name="file-text" />}
+                onPress={() => openExternalUrl('https://docs.happier.dev/legal/terms')}
             />
-            {Platform.OS === 'ios' ? (
-                <Item
-                    title={t('settings.eula')}
-                    icon={<Icon name="file-text" size={29} color={theme.colors.accent.blue} />}
-                    onPress={async () => {
-                        const url = 'https://www.apple.com/legal/internet-services/itunes/dev/stdeula/';
-                        const supported = await Linking.canOpenURL(url);
-                        if (supported) {
-                            await Linking.openURL(url);
-                        }
-                    }}
+            {settingRendersOnHost(ABOUT.eula) ? (
+                <SettingRow
+                    setting={ABOUT.eula}
+                    icon={<Icon name="file-text" />}
+                    onPress={() => openExternalUrl('https://www.apple.com/legal/internet-services/itunes/dev/stdeula/')}
                 />
             ) : null}
-            <Item
-                title={t('common.version')}
+            <SettingRow
+                setting={ABOUT.version}
                 detail={appVersion}
-                icon={<Icon name="info" size={29} color={theme.colors.text.secondary} />}
                 onPress={handleVersionClick}
                 showChevron={false}
             />
         </ItemGroup>
+        </SettingSection>
     );
 });

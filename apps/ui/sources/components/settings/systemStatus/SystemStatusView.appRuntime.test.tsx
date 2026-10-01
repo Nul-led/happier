@@ -131,6 +131,9 @@ vi.mock('@/sync/runtime/irohHomeTransportDiagnostics', () => ({
     retireIrohHomeTransportDiagnostics: vi.fn(),
     readIrohHomeTransportDiagnostics: () => homeTransportDiagnostics,
     readIrohHomeTransportDiagnosticsRevision: () => 0,
+    isIrohHomeTransportDiagnosticsCurrent: (diagnostics: { state?: unknown; current?: unknown } | null | undefined) => (
+        diagnostics?.state === 'connected' && diagnostics.current !== undefined
+    ),
     subscribeIrohHomeTransportDiagnostics: () => () => {},
 }));
 
@@ -159,7 +162,19 @@ vi.mock('@/sync/domains/state/storage', async () => {
         useIsDataReady: () => true,
         useRealtimeStatus: () => 'connected',
         useSocketStatus: () => ({ status: 'connected', lastError: socketState.lastError, lastErrorAt: 1_788_200_000_000 }),
+        useEndpointConnectivity: () => ({
+            status: 'online',
+            reason: null,
+            attempt: 1,
+            nextRetryAt: null,
+            lastConnectedAt: null,
+            lastDisconnectedAt: null,
+            lastErrorMessage: null,
+        }),
+        useSyncError: () => null,
         useLastSyncAt: () => null,
+        useMachineListForServer: () => [],
+        useMachineListStatusForServer: () => 'loaded',
         useMachineListByServerId: () => ({}),
         useMachineListStatusByServerId: () => ({}),
     });

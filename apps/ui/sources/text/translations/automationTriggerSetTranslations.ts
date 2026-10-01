@@ -2,7 +2,7 @@ const expandedLifecycleEnglish = {
     lifecycleTitle: 'When a Session event occurs',
     lifecycleSource: ({ session, ordinal }: { session: string; ordinal: number }) =>
         `${session} · Session event trigger ${ordinal}`,
-    lifecycleSourceTitle: 'Source Session',
+    lifecycleSourceTitle: 'Source session',
     changeLifecycleSource: 'Choose a different Session',
     lifecycleEventsTitle: 'Events',
     lifecycleEvent: {
@@ -10,6 +10,8 @@ const expandedLifecycleEnglish = {
         parentTurnFailed: 'Turn failed',
         parentTurnCancelled: 'Turn was cancelled or stopped',
         userActionRequired: 'Needs your attention',
+        sessionStarted: 'When the session starts',
+        sessionArchived: 'When the session is archived',
     },
     lifecycleAttentionPrivacy: 'Uses only the request identity and turn—not its private contents.',
     lifecyclePolicyTitle: 'Occurrence',
@@ -39,8 +41,12 @@ export const automationTriggerSetTranslations = {
     ru: {
         pluralEditor: {
             ...expandedLifecycleEnglish,
+            lifecycleEvent: {
+                ...expandedLifecycleEnglish.lifecycleEvent,
+                sessionStarted: 'Когда начинается сессия',
+                sessionArchived: 'Когда сессия архивируется',
+            },
             triggersTitle: 'Триггеры',
-            triggersFooter: 'Каждый включённый триггер работает независимо. Совпадение любого из них запускает автоматизацию.',
             emptyBody: 'Автоматических триггеров нет. Автоматизацию всё равно можно запустить вручную.',
             orSemantics: 'Добавьте любое количество триггеров. Они работают независимо: автоматизация запускается при совпадении любого из них.',
             enabledSubtitle: 'Приостановить всю автоматизацию, не меняя её триггеры.',
@@ -86,8 +92,12 @@ export const automationTriggerSetTranslations = {
     pl: {
         pluralEditor: {
             ...expandedLifecycleEnglish,
+            lifecycleEvent: {
+                ...expandedLifecycleEnglish.lifecycleEvent,
+                sessionStarted: 'Gdy rozpoczyna się sesja',
+                sessionArchived: 'Gdy sesja zostaje zarchiwizowana',
+            },
             triggersTitle: 'Wyzwalacze',
-            triggersFooter: 'Każdy włączony wyzwalacz działa niezależnie. Dopasowanie dowolnego z nich uruchamia automatyzację.',
             emptyBody: 'Brak automatycznych wyzwalaczy. Nadal możesz uruchomić tę automatyzację ręcznie.',
             orSemantics: 'Dodaj dowolną liczbę wyzwalaczy. Działają niezależnie — automatyzacja uruchomi się, gdy zadziała którykolwiek z nich.',
             enabledSubtitle: 'Wstrzymaj całą automatyzację bez zmieniania wyzwalaczy.',
@@ -121,7 +131,12 @@ export const automationTriggerSetTranslations = {
     es: {
         pluralEditor: {
             ...expandedLifecycleEnglish,
-            triggersTitle: 'Activadores', triggersFooter: 'Cada activador habilitado funciona de forma independiente. Una coincidencia en cualquiera de ellos inicia la automatización.',
+            lifecycleEvent: {
+                ...expandedLifecycleEnglish.lifecycleEvent,
+                sessionStarted: 'Cuando comienza la sesión',
+                sessionArchived: 'Cuando se archiva la sesión',
+            },
+            triggersTitle: 'Activadores',
             emptyBody: 'No hay activadores automáticos. Aun así, puedes ejecutar esta automatización manualmente.',
             orSemantics: 'Añade tantos activadores como quieras. Funcionan de forma independiente: la automatización se ejecuta cuando coincide cualquiera de ellos.',
             enabledSubtitle: 'Pausa toda la automatización sin cambiar sus activadores.', addTrigger: 'Añadir activador',
@@ -153,7 +168,12 @@ export const automationTriggerSetTranslations = {
     fr: {
         pluralEditor: {
             ...expandedLifecycleEnglish,
-            triggersTitle: 'Déclencheurs', triggersFooter: 'Chaque déclencheur activé fonctionne indépendamment. Une correspondance sur l’un d’eux lance l’automatisation.',
+            lifecycleEvent: {
+                ...expandedLifecycleEnglish.lifecycleEvent,
+                sessionStarted: 'Quand la session démarre',
+                sessionArchived: 'Quand la session est archivée',
+            },
+            triggersTitle: 'Déclencheurs',
             emptyBody: 'Aucun déclencheur automatique. Vous pouvez toujours lancer cette automatisation manuellement.',
             orSemantics: 'Ajoutez autant de déclencheurs que nécessaire. Ils fonctionnent indépendamment : l’automatisation se lance dès que l’un d’eux correspond.',
             enabledSubtitle: 'Mettre toute l’automatisation en pause sans modifier ses déclencheurs.', addTrigger: 'Ajouter un déclencheur',
@@ -185,7 +205,12 @@ export const automationTriggerSetTranslations = {
     it: {
         pluralEditor: {
             ...expandedLifecycleEnglish,
-            triggersTitle: 'Trigger', triggersFooter: 'Ogni trigger abilitato funziona in modo indipendente. La corrispondenza di uno qualsiasi avvia l’automazione.',
+            lifecycleEvent: {
+                ...expandedLifecycleEnglish.lifecycleEvent,
+                sessionStarted: 'Quando inizia la sessione',
+                sessionArchived: 'Quando la sessione viene archiviata',
+            },
+            triggersTitle: 'Trigger',
             emptyBody: 'Nessun trigger automatico. Puoi comunque avviare questa automazione manualmente.',
             orSemantics: 'Aggiungi tutti i trigger che vuoi. Funzionano in modo indipendente: l’automazione parte quando ne corrisponde uno qualsiasi.',
             enabledSubtitle: 'Metti in pausa l’intera automazione senza modificare i trigger.', addTrigger: 'Aggiungi trigger',
@@ -217,7 +242,12 @@ export const automationTriggerSetTranslations = {
     pt: {
         pluralEditor: {
             ...expandedLifecycleEnglish,
-            triggersTitle: 'Acionadores', triggersFooter: 'Cada acionador ativado funciona de forma independente. Uma correspondência em qualquer um inicia a automação.',
+            lifecycleEvent: {
+                ...expandedLifecycleEnglish.lifecycleEvent,
+                sessionStarted: 'Quando a sessão começa',
+                sessionArchived: 'Quando a sessão é arquivada',
+            },
+            triggersTitle: 'Acionadores',
             emptyBody: 'Sem acionadores automáticos. Ainda pode executar esta automação manualmente.',
             orSemantics: 'Adicione quantos acionadores quiser. Funcionam de forma independente — a automação é executada quando qualquer um corresponde.',
             enabledSubtitle: 'Pause toda a automação sem alterar os acionadores.', addTrigger: 'Adicionar acionador',
@@ -249,7 +279,12 @@ export const automationTriggerSetTranslations = {
     ca: {
         pluralEditor: {
             ...expandedLifecycleEnglish,
-            triggersTitle: 'Activadors', triggersFooter: 'Cada activador habilitat funciona de manera independent. Una coincidència en qualsevol d’ells inicia l’automatització.',
+            lifecycleEvent: {
+                ...expandedLifecycleEnglish.lifecycleEvent,
+                sessionStarted: 'Quan comença la sessió',
+                sessionArchived: 'Quan s’arxiva la sessió',
+            },
+            triggersTitle: 'Activadors',
             emptyBody: 'No hi ha activadors automàtics. Encara pots executar aquesta automatització manualment.',
             orSemantics: 'Afegeix tants activadors com vulguis. Funcionen independentment: l’automatització s’executa quan qualsevol coincideix.',
             enabledSubtitle: 'Posa en pausa tota l’automatització sense canviar els activadors.', addTrigger: 'Afegeix un activador',
@@ -281,7 +316,12 @@ export const automationTriggerSetTranslations = {
     de: {
         pluralEditor: {
             ...expandedLifecycleEnglish,
-            triggersTitle: 'Auslöser', triggersFooter: 'Jeder aktivierte Auslöser arbeitet unabhängig. Ein Treffer bei einem beliebigen Auslöser startet die Automation.',
+            lifecycleEvent: {
+                ...expandedLifecycleEnglish.lifecycleEvent,
+                sessionStarted: 'Wenn die Sitzung beginnt',
+                sessionArchived: 'Wenn die Sitzung archiviert wird',
+            },
+            triggersTitle: 'Auslöser',
             emptyBody: 'Keine automatischen Auslöser. Du kannst diese Automation weiterhin manuell starten.',
             orSemantics: 'Füge beliebig viele Auslöser hinzu. Sie arbeiten unabhängig — sobald einer zutrifft, läuft die Automation.',
             enabledSubtitle: 'Die gesamte Automation pausieren, ohne ihre Auslöser zu verändern.', addTrigger: 'Auslöser hinzufügen',
@@ -313,7 +353,12 @@ export const automationTriggerSetTranslations = {
     'zh-Hans': {
         pluralEditor: {
             ...expandedLifecycleEnglish,
-            triggersTitle: '触发器', triggersFooter: '每个已启用的触发器都独立工作。任意一个匹配都会启动此自动化。',
+            lifecycleEvent: {
+                ...expandedLifecycleEnglish.lifecycleEvent,
+                sessionStarted: '会话开始时',
+                sessionArchived: '会话归档时',
+            },
+            triggersTitle: '触发器',
             emptyBody: '没有自动触发器。你仍可手动运行此自动化。', orSemantics: '可添加任意数量的触发器。它们彼此独立，任意一个匹配时都会运行自动化。',
             enabledSubtitle: '暂停整个自动化，而不更改任何触发器。', addTrigger: '添加触发器', addTriggerSubtitle: '设置计划、连接事件，或等待某个指定轮次结束。',
             scheduleTitle: '计划', eventTitle: '插件事件', turnCompletedTitle: '当此轮次结束时', turnCompletedSubtitle: '在所选的确切父轮次完成后运行一次。', selectedSession: '已选会话',
@@ -340,7 +385,12 @@ export const automationTriggerSetTranslations = {
     'zh-Hant': {
         pluralEditor: {
             ...expandedLifecycleEnglish,
-            triggersTitle: '觸發器', triggersFooter: '每個已啟用的觸發器都獨立運作。任意一個符合條件都會啟動此自動化。',
+            lifecycleEvent: {
+                ...expandedLifecycleEnglish.lifecycleEvent,
+                sessionStarted: '工作階段開始時',
+                sessionArchived: '工作階段封存時',
+            },
+            triggersTitle: '觸發器',
             emptyBody: '沒有自動觸發器。你仍可手動執行此自動化。', orSemantics: '可新增任意數量的觸發器。它們彼此獨立，任意一個符合條件時都會執行自動化。',
             enabledSubtitle: '暫停整個自動化，而不變更任何觸發器。', addTrigger: '新增觸發器', addTriggerSubtitle: '設定排程、連接事件，或等待某個指定輪次結束。',
             scheduleTitle: '排程', eventTitle: '外掛事件', turnCompletedTitle: '當此輪次結束時', turnCompletedSubtitle: '在所選的確切父輪次完成後執行一次。', selectedSession: '已選工作階段',
@@ -367,7 +417,12 @@ export const automationTriggerSetTranslations = {
     ja: {
         pluralEditor: {
             ...expandedLifecycleEnglish,
-            triggersTitle: 'トリガー', triggersFooter: '有効なトリガーはそれぞれ独立して動作します。どれか一つが一致すると、このオートメーションが開始します。',
+            lifecycleEvent: {
+                ...expandedLifecycleEnglish.lifecycleEvent,
+                sessionStarted: 'セッションの開始時',
+                sessionArchived: 'セッションのアーカイブ時',
+            },
+            triggersTitle: 'トリガー',
             emptyBody: '自動トリガーはありません。このオートメーションは引き続き手動で実行できます。',
             orSemantics: 'トリガーはいくつでも追加できます。それぞれが独立して動作し、どれか一つが一致するとオートメーションが実行されます。',
             enabledSubtitle: 'トリガーを変更せずに、オートメーション全体を一時停止します。', addTrigger: 'トリガーを追加',

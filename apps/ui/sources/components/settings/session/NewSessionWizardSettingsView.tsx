@@ -1,9 +1,6 @@
 import * as React from 'react';
-import { useUnistyles } from 'react-native-unistyles';
 
-import { DropdownMenu, type DropdownMenuItem } from '@/components/ui/forms/dropdown/DropdownMenu';
 import { Switch } from '@/components/ui/forms/Switch';
-import { Item } from '@/components/ui/lists/Item';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
 import { ItemList } from '@/components/ui/lists/ItemList';
 import { useSettingMutable } from '@/sync/domains/state/storage';
@@ -13,91 +10,45 @@ import {
     type NewSessionWizardSelectionSectionId,
 } from '@/sync/domains/settings/registry/account/accountSessionCreationSettingDefinitions';
 import { t } from '@/text';
-import { Icon, type IconName } from '@/components/ui/icons/Icon';
+import { SettingsPageHeader } from '@/components/settings/shell/SettingsPageHeader';
+import { SettingAnchor, SettingRow } from '@/components/settings/shell/SettingRow';
+import { NEW_SESSION_WIZARD_SETTINGS } from '@/components/settings/session/newSessionWizardSettings';
+import { SegmentedChoiceItem } from '@/components/ui/lists/SegmentedChoiceItem';
 
-type WizardPresentationSectionDefinition = Readonly<{
-    id: NewSessionWizardSelectionSectionId;
-    titleKey:
-        | 'newSession.selectAiProfileTitle'
-        | 'newSession.selectAiBackendTitle'
-        | 'newSession.selectModelTitle'
-        | 'newSession.selectMachineTitle'
-        | 'newSession.selectWorkingDirectoryTitle'
-        | 'newSession.selectPermissionModeTitle';
-    iconName: IconName;
-}>;
-
-const SECTION_DEFINITIONS: readonly WizardPresentationSectionDefinition[] = [
-    { id: 'profiles', titleKey: 'newSession.selectAiProfileTitle', iconName: 'person' },
-    { id: 'backends', titleKey: 'newSession.selectAiBackendTitle', iconName: 'cpu' },
-    { id: 'models', titleKey: 'newSession.selectModelTitle', iconName: 'sparkle' },
-    { id: 'machines', titleKey: 'newSession.selectMachineTitle', iconName: 'desktop' },
-    { id: 'paths', titleKey: 'newSession.selectWorkingDirectoryTitle', iconName: 'folder' },
-    { id: 'permissions', titleKey: 'newSession.selectPermissionModeTitle', iconName: 'shield' },
-];
+const STEP_IDS = ['profiles', 'backends', 'models', 'machines', 'paths', 'permissions'] as const satisfies readonly NewSessionWizardSelectionSectionId[];
 
 function isWizardPresentation(value: string): value is NewSessionWizardSectionPresentation {
     return value === 'auto' || value === 'list' || value === 'dropdown';
 }
 
-function WizardPresentationDropdown(props: Readonly<{
-    section: WizardPresentationSectionDefinition;
+function WizardStepPresentationRow(props: Readonly<{
+    stepId: (typeof STEP_IDS)[number];
     value: NewSessionWizardSectionPresentation;
-    onChange: (value: NewSessionWizardSectionPresentation) => void;
-    popoverBoundaryRef: React.RefObject<any>;
+    onChange: (stepId: NewSessionWizardSelectionSectionId, value: NewSessionWizardSectionPresentation) => void;
 }>) {
-    const { theme } = useUnistyles();
-    const [open, setOpen] = React.useState(false);
-    const presentationOptions: readonly DropdownMenuItem[] = [
-        {
-            id: 'auto',
-            title: t('settingsSession.sessionCreation.wizardPresentationAutoTitle'),
-            subtitle: t('settingsSession.sessionCreation.wizardPresentationAutoSubtitle'),
-        },
-        {
-            id: 'list',
-            title: t('settingsSession.sessionCreation.wizardPresentationListTitle'),
-            subtitle: t('settingsSession.sessionCreation.wizardPresentationListSubtitle'),
-        },
-        {
-            id: 'dropdown',
-            title: t('settingsSession.sessionCreation.wizardPresentationDropdownTitle'),
-            subtitle: t('settingsSession.sessionCreation.wizardPresentationDropdownSubtitle'),
-        },
-    ];
-    const selectedPresentation = presentationOptions.find((option) => option.id === props.value) ?? presentationOptions[0];
+    const setting = NEW_SESSION_WIZARD_SETTINGS.settings[props.stepId];
     return (
-        <DropdownMenu
-            open={open}
-            onOpenChange={setOpen}
-            variant="selectable"
-            search={false}
-            selectedId={props.value}
-            showCategoryTitles={false}
-            matchTriggerWidth={true}
-            connectToTrigger={true}
-            rowKind="item"
-            popoverBoundaryRef={props.popoverBoundaryRef}
-            itemTrigger={{
-                title: t(props.section.titleKey),
-                subtitle: selectedPresentation.title,
-                icon: <Icon name={props.section.iconName} size={29} color={theme.colors.text.secondary} />,
-                showSelectedDetail: false,
-                showSelectedSubtitle: false,
-                itemProps: { testID: `settings-new-session-wizard-${props.section.id}` },
-            }}
-            items={presentationOptions}
-            onSelect={(itemId) => {
-                if (!isWizardPresentation(itemId)) return;
-                props.onChange(itemId);
-            }}
-        />
+        <SettingAnchor setting={setting}>
+            <SegmentedChoiceItem
+                testID={`settings-new-session-wizard-${props.stepId}`}
+                title={t(setting.titleKey)}
+                // The section says what each layout means; six rows repeating it would be noise.
+                options={[
+                    { id: 'auto', label: t('settingsSession.sessionCreation.wizardPresentationAutoTitle') },
+                    { id: 'list', label: t('settingsSession.sessionCreation.wizardPresentationListTitle') },
+                    { id: 'dropdown', label: t('settingsSession.sessionCreation.wizardPresentationDropdownTitle') },
+                ]}
+                value={props.value}
+                onChange={(itemId) => {
+                    if (!isWizardPresentation(itemId)) return;
+                    props.onChange(props.stepId, itemId);
+                }}
+            />
+        </SettingAnchor>
     );
 }
 
 export const NewSessionWizardSettingsView = React.memo(function NewSessionWizardSettingsView() {
-    const { theme } = useUnistyles();
-    const popoverBoundaryRef = React.useRef<any>(null);
     const [presentationBySection, setPresentationBySection] = useSettingMutable('newSessionWizardSectionPresentationV1');
     const [columnsEnabled, setColumnsEnabled] = useSettingMutable('newSessionWizardColumnsEnabled');
 
@@ -129,20 +80,20 @@ export const NewSessionWizardSettingsView = React.memo(function NewSessionWizard
     }, [normalizedPresentationBySection, setPresentationBySection]);
 
     return (
-        <ItemList ref={popoverBoundaryRef} style={{ paddingTop: 0 }}>
+        <ItemList style={{ paddingTop: 0 }} presentation="page">
+            <SettingsPageHeader description={t('settingsSessionPages.wizard.pageDescription')} />
             <ItemGroup
-                title={t('settingsSession.sessionCreation.wizardLayoutTitle')}
-                footer={t('settingsSession.sessionCreation.wizardLayoutFooter')}
+                title={t('settingsSessionPages.wizard.wideScreensSection')}
+                description={t('settingsSession.sessionCreation.wizardLayoutFooter')}
             >
-                <Item
+                <SettingRow
+                    setting={NEW_SESSION_WIZARD_SETTINGS.settings.columns}
                     testID="settings-new-session-wizard-columns"
-                    title={t('settingsSession.sessionCreation.wizardColumnsTitle')}
                     subtitle={t(
                         columnsEnabled === true
                             ? 'settingsSession.sessionCreation.wizardColumnsEnabledSubtitle'
                             : 'settingsSession.sessionCreation.wizardColumnsDisabledSubtitle',
                     )}
-                    icon={<Icon name="grid-four" size={29} color={theme.colors.text.secondary} />}
                     rightElement={(
                         <Switch
                             value={columnsEnabled === true}
@@ -154,16 +105,15 @@ export const NewSessionWizardSettingsView = React.memo(function NewSessionWizard
                 />
             </ItemGroup>
             <ItemGroup
-                title={t('settingsSession.sessionCreation.wizardPresentationTitle')}
-                footer={t('settingsSession.sessionCreation.wizardPresentationFooter')}
+                title={t('settingsSessionPages.wizard.stepsSection')}
+                description={t('settingsSession.sessionCreation.wizardPresentationFooter')}
             >
-                {SECTION_DEFINITIONS.map((section) => (
-                    <WizardPresentationDropdown
-                        key={section.id}
-                        section={section}
-                        value={normalizedPresentationBySection[section.id] ?? 'auto'}
-                        onChange={(value) => handleChange(section.id, value)}
-                        popoverBoundaryRef={popoverBoundaryRef}
+                {STEP_IDS.map((stepId) => (
+                    <WizardStepPresentationRow
+                        key={stepId}
+                        stepId={stepId}
+                        value={normalizedPresentationBySection[stepId] ?? 'auto'}
+                        onChange={handleChange}
                     />
                 ))}
             </ItemGroup>

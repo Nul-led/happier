@@ -182,3 +182,15 @@ describe('Triage review-workspace result', () => {
             .toBe(false);
     });
 });
+
+describe('the requested detail panel (r0.42)', () => {
+    it('carries the one panel the target asks the source to render', () => {
+        const parsed = TriageDetailSurfaceInputV1Schema.parse({ ...fixture.detailInput, panel: 'files' });
+        expect(parsed.panel).toBe('files');
+    });
+
+    it('omits the panel for a whole-detail mount', () => {
+        const parsed = TriageDetailSurfaceInputV1Schema.parse(fixture.detailInput);
+        expect('panel' in parsed).toBe(false);
+    });
+});

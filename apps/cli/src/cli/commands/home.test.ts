@@ -16,6 +16,8 @@ import {
 import {
   createRemoteSshPersonalHomeRelocationDestination,
   PERSONAL_HOME_SYSTEM_TASK_KINDS,
+  releaseChannelSwitchDeclinedMessage,
+  SERVICE_RECONCILIATION_DECLINED_MESSAGE,
 } from '@happier-dev/cli-common/systemTasks';
 import {
   cleanupPersonalHomeRelocationUpload,
@@ -296,7 +298,7 @@ describe('handleHomeCommand', () => {
     });
 
     await expect(handleHomeCommand(['create'], deps)).rejects.toMatchObject({ code: 'confirmation_declined' });
-    expect(prompt).toContain('Account Service publication: Work Accounts (https://accounts.example.test).');
+    expect(prompt).toContain('Availability through Work Accounts: enabled (https://accounts.example.test).');
   });
 
   it('creates the Home without automatic publication when no Account Service can be verified before confirmation', async () => {
@@ -508,6 +510,54 @@ describe('handleHomeCommand', () => {
     expect(linkAccount).toHaveBeenLastCalledWith({ homeServerIdentityId: 'srv_home', relink: true, signal: undefined });
   });
 
+  it('turns missing sign-in credentials into an actionable link-account refusal', async () => {
+    const { deps } = createDeps([], {
+      linkAccount: async () => ({ kind: 'unavailable' as const, reason: 'account_service_credentials_unavailable' as const }),
+    });
+
+    await expect(handleHomeCommand(['link-account', '--home', 'srv_home'], deps)).rejects.toMatchObject({
+      code: 'account_service_credentials_unavailable',
+      message: expect.stringContaining('happier auth service use'),
+    });
+  });
+
+  it('names the selected sign-in service in the link-account sign-in command instead of a placeholder', async () => {
+    const { deps } = createDeps([], {
+      linkAccount: async () => ({
+        kind: 'unavailable' as const,
+        reason: 'account_service_credentials_unavailable' as const,
+        selectedEndpoint: 'https://accounts.example.test',
+      }),
+    });
+
+    const error = await handleHomeCommand(['link-account', '--home', 'srv_home'], deps).catch((cause: unknown) => cause);
+
+    expect(error).toMatchObject({ code: 'account_service_credentials_unavailable' });
+    expect((error as Error).message).toContain('happier auth service use https://accounts.example.test');
+    expect((error as Error).message).not.toContain('<endpoint>');
+  });
+
+  it('explains every other link and unlink refusal in words instead of its raw reason code', async () => {
+    const reasons = ['home_profile_unavailable', 'home_credentials_unavailable', 'home_transport_unavailable'] as const;
+    for (const reason of reasons) {
+      const { deps } = createDeps([], {
+        linkAccount: async () => ({ kind: 'unavailable' as const, reason }),
+        unlinkAccount: async () => ({ kind: 'unavailable' as const, reason }),
+      });
+      for (const subcommand of ['link-account', 'unlink-account']) {
+        const error = await handleHomeCommand([subcommand, '--home', 'srv_home'], deps).catch((cause: unknown) => cause);
+        expect(error).toMatchObject({ code: reason });
+        expect((error as Error).message).not.toContain(reason);
+      }
+    }
+    const { deps } = createDeps([], {
+      unlinkAccount: async () => ({ kind: 'unavailable' as const, reason: 'account_service_credentials_unavailable' as const }),
+    });
+    const error = await handleHomeCommand(['unlink-account', '--home', 'srv_home'], deps).catch((cause: unknown) => cause);
+    expect(error).toMatchObject({ code: 'account_service_credentials_unavailable' });
+    expect((error as Error).message).not.toContain('account_service_credentials_unavailable');
+  });
+
   it('stops Account Service sign-in for one Home and says exactly what unlinking does not revoke', async () => {
     const unlinkAccount = vi.fn(async () => ({
       kind: 'unlinked' as const,
@@ -521,7 +571,7 @@ describe('handleHomeCommand', () => {
 
     expect(unlinkAccount).toHaveBeenCalledWith({ homeServerIdentityId: 'srv_home', signal: undefined });
     const text = output.mock.calls.flat().join('\n');
-    expect(text).toContain('Stopped Account Service sign-in for this Home.');
+    expect(text).toContain('Stopped future account-based sign-in for this Home.');
     expect(text).toContain('Devices already signed in keep their access until signed out on the Home.');
   });
 
@@ -923,6 +973,8 @@ describe('handleHomeCommand', () => {
 
     await handleHomeCommand(['create', '--ssh', 'dev@example.test'], deps);
 
+    expect(output.mock.calls.flat().join('\n')).toContain('happier auth service use https://accounts.example.test');
+    expect(output.mock.calls.flat().join('\n')).not.toContain('<endpoint>');
     expect(output.mock.calls.flat().join('\n')).toContain('happier home link-account --home srv_remote_home');
     expect(process.exitCode).toBeUndefined();
   });
@@ -993,6 +1045,46 @@ describe('handleHomeCommand', () => {
     expect(respond).toHaveBeenCalledWith({ taskId: 'task-1', answer: expectedAnswer });
   });
 
+  it('shows the conflicting remote services and keeps them when the replacement prompt is answered with Enter', async () => {
+    const remoteCreated = success('remote-create-service-keep', {
+      action: 'personalHome.create',
+      personalHome: {
+        status: 'complete', homeServerIdentityId: 'srv_remote_home', canonicalServerUrl: 'http://127.0.0.1:43123',
+        accountCreated: true, channel: 'preview', mode: 'user',
+        descriptor: { v: 1, homeServerIdentityId: 'srv_remote_home', canonicalServerUrl: 'http://127.0.0.1:43123', revision: 1, endpoints: [{ kind: 'iroh', endpointId: 'a'.repeat(64) }] },
+        pairing: { kind: 'not_requested' },
+        invokingClientEnrollment: { kind: 'enrolled' },
+      },
+    });
+    const prompts: string[] = [];
+    const { deps, respond } = createDeps([{
+      prompt: {
+        kind: 'daemon.replaceRemoteBackgroundServices',
+        data: {
+          targetReleaseChannel: 'preview',
+          targetServerUrl: null,
+          services: [{ label: 'happier-daemon.stable', releaseChannel: 'stable', targetMode: 'pinned', running: true }],
+        },
+      },
+      result: remoteCreated,
+    }], {
+      isInteractiveTerminal: () => true,
+      promptInput: async (message: string) => {
+        prompts.push(message);
+        return prompts.length === 1 ? 'yes' : '';
+      },
+    });
+
+    await handleHomeCommand(['create', '--ssh', 'dev@example.test', '--channel', 'preview'], deps);
+
+    expect(respond).toHaveBeenCalledWith({ taskId: 'task-1', answer: { replaceExistingServices: false } });
+    const replacePrompt = prompts.at(-1) ?? '';
+    expect(replacePrompt).toContain('happier-daemon.stable');
+    expect(replacePrompt).toContain('Target release channel: preview');
+    expect(replacePrompt).not.toContain('Target server:');
+    expect(replacePrompt).toContain('[y/N]');
+  });
+
   it.each([
     ['daemon.replaceRemoteBackgroundServices', { replaceExistingServices: false }],
     ['releaseChannel.switchDefaultForSetup', { switchDefaultReleaseChannel: false }],
@@ -1017,6 +1109,34 @@ describe('handleHomeCommand', () => {
     await handleHomeCommand(['create', '--ssh', 'dev@example.test', '--channel', 'preview', '--yes'], deps);
 
     expect(respond).toHaveBeenCalledWith({ taskId: 'task-1', answer: expectedAnswer });
+  });
+
+  it.each([
+    // The task's own host-neutral refusals (cli-common SERVICE_RECONCILIATION_DECLINED_MESSAGE /
+    // releaseChannelSwitchDeclinedMessage) pass through verbatim.
+    [
+      'daemon.replaceRemoteBackgroundServices',
+      'service_reconciliation_declined',
+      SERVICE_RECONCILIATION_DECLINED_MESSAGE,
+      '--replace-services',
+    ],
+    [
+      'releaseChannel.switchDefaultForSetup',
+      'release_channel_switch_declined',
+      releaseChannelSwitchDeclinedMessage({ currentDefaultReleaseChannel: 'stable', targetReleaseChannel: 'preview' }),
+      '--switch-channel',
+    ],
+  ] as const)('keeps the task-owned refusal and appends only the CLI flag when --yes declines the remote %s conflict', async (kind, code, taskMessage, flag) => {
+    const { deps } = createDeps([{
+      prompt: { kind, data: { targetReleaseChannel: 'preview' } },
+      result: failure(`remote-create-${code}`, code, taskMessage),
+    }], {
+      promptInput: async () => { throw new Error('--yes must not prompt'); },
+    });
+    const error = await handleHomeCommand(['create', '--ssh', 'dev@example.test', '--channel', 'preview', '--yes'], deps)
+      .then(() => null, (thrown: unknown) => thrown);
+
+    expect(error).toMatchObject({ code, personalHomeTaskFailure: true, message: `${taskMessage} Or rerun with ${flag}.` });
   });
 
   it('keeps remote create mutation-free without confirmation and makes JSON output secret-free', async () => {

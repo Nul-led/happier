@@ -5,7 +5,6 @@ import { describe, expect, it, vi } from 'vitest';
 import { flushHookEffects, renderScreen } from '@/dev/testkit';
 import type { SystemTaskRunState, SystemTaskRunner } from '@/components/systemTasks/types';
 import type { SystemTaskEvent, SystemTaskResult, SystemTaskSpec } from '@happier-dev/protocol';
-import type { RemoteHost } from '@/sync/domains/remoteHosts/remoteHostModel';
 
 vi.mock('react-native', async () => {
     const { createReactNativeWebMock } = await import('@/dev/testkit/mocks/reactNative');
@@ -143,55 +142,27 @@ function createDiscoveryRunner(): SystemTaskRunner {
     };
 }
 
-describe('RemoteHostForm', () => {
-    it('hides the test connection action when remote maintenance is unsupported', async () => {
-        const existingRemoteHost: RemoteHost = {
-            id: 'host-a',
-            name: 'Dev box',
-            ssh: {
-                target: 'dev@10.0.0.5',
-                port: 22,
-                authMode: 'agent',
-            },
-            linkedMachineId: null,
-            linkedRelayProfileId: null,
-            createdAt: 1,
-            updatedAt: 1,
-            lastUsedAt: 0,
-        };
-        const { RemoteHostForm } = await import('./RemoteHostForm');
-        const screen = await renderScreen(React.createElement(RemoteHostForm, {
-            remoteHost: existingRemoteHost,
-            localOverrides: null,
-            savedRemoteHosts: [],
-            systemTaskRunner: createDiscoveryRunner(),
-            secretMaterialAllowed: false,
-            remoteMaintenanceSupported: false,
-            setChrome: vi.fn(),
-            onClose: vi.fn(),
-            onSave: vi.fn(),
-            onDelete: vi.fn(),
-            onTestConnection: vi.fn(),
-        }));
-
-        expect(screen.root.findAllByProps({ title: 'settings.remoteHostsTestConnectionTitle' })).toHaveLength(0);
-    });
-
-    it('prefills SSH credential fields from a configured-host suggestion without saving', async () => {
-        const onSave = vi.fn();
-        const { RemoteHostForm } = await import('./RemoteHostForm');
-        const screen = await renderScreen(React.createElement(RemoteHostForm, {
+async function renderEditor(runner: SystemTaskRunner) {
+    const { RemoteHostEditorSections, useRemoteHostEditor } = await import('./RemoteHostForm');
+    const editorSpy: { current: ReturnType<typeof useRemoteHostEditor> | null } = { current: null };
+    function Harness() {
+        const editor = useRemoteHostEditor({ remoteHost: null, localOverrides: null, secretMaterialAllowed: false });
+        editorSpy.current = editor;
+        return React.createElement(RemoteHostEditorSections, {
+            editor,
             remoteHost: null,
-            localOverrides: null,
             savedRemoteHosts: [],
-            systemTaskRunner: createDiscoveryRunner(),
+            systemTaskRunner: runner,
             secretMaterialAllowed: false,
-            setChrome: vi.fn(),
-            onClose: vi.fn(),
-            onSave,
-            onDelete: vi.fn(),
-            onTestConnection: vi.fn(),
-        }));
+        });
+    }
+    const screen = await renderScreen(React.createElement(Harness));
+    return { screen, editorSpy };
+}
+
+describe('RemoteHostEditorSections', () => {
+    it('prefills SSH credential fields from a configured-host suggestion as an unsaved change', async () => {
+        const { screen, editorSpy } = await renderEditor(createDiscoveryRunner());
 
         await flushHookEffects({ cycles: 3, turns: 3 });
 
@@ -205,6 +176,7 @@ describe('RemoteHostForm', () => {
         expect(screen.findByTestId('remote-host-form-ssh-sshUsernameInput')?.props.value).toBe('ubuntu');
         expect(screen.findByTestId('remote-host-form-ssh-sshHostInput')?.props.value).toBe('devbox');
         expect(screen.findByTestId('remote-host-form-ssh-sshPortInput')?.props.value).toBe('2222');
-        expect(onSave).not.toHaveBeenCalled();
+        // Picking a suggestion fills the draft; nothing is saved until the page's Save.
+        expect(editorSpy.current?.dirty).toBe(true);
     });
 });

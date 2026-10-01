@@ -144,7 +144,10 @@ describe('BrowserMobileSurfaceScreen (scoped workspace)', () => {
         expect(host?.props.productModels?.browserRecording?.state).toBeTruthy();
         expect(host?.props.productModels?.browserContext?.state).toBe(sessionRuntimeState.runtime.browserShellContext.state);
         expect(host?.props.productModels?.browserContext?.contextCapabilities.supportedContextKinds).toContain('browserAnnotation');
-        expect(host?.props.productModels?.browserContext?.annotationCaptureProvider).toBeNull();
+        // One session browser host (H-UX F-21): the phone tab binds the managed-Chromium capture
+        // provider to the session's machine, as the right panel and Details always did.
+        expect(host?.props.productModels?.browserContext?.annotationCaptureProvider).toMatchObject({ available: true });
+        expect(host?.props.productModels?.browserContext?.managedAnnotationCaptureProvider).toBe(true);
     });
 
     it('mounts the engine with the launchpad new-tab page when there are no open tabs', async () => {
@@ -190,5 +193,32 @@ describe('BrowserMobileSurfaceScreen (scoped workspace)', () => {
             serverId: 'server-projection',
             sessionId: 'session_1',
         });
+    });
+
+    it('tells its pane header where the previews come from (session-tabs lab Wp)', async () => {
+        paneStub.current = {
+            ...basePane(),
+            scopeState: { details: buildDetailsWorkspaceStateView(createEmptyPaneDetailsState()) },
+        } as AppPaneScopeApi;
+        const { BrowserMobileSurfaceScreen } = await import('./BrowserMobileSurfaceScreen');
+        const slot = await import('@/components/appShell/panes/paneHeaderSlot');
+        function HeaderLineProbe(): React.ReactElement {
+            const published = slot.usePublishedPaneHeaderContent('browser');
+            return React.createElement('HeaderLineProbe', {
+                segments: published?.line?.segments ?? null,
+            });
+        }
+
+        const screen = await renderScreen(
+            <slot.PaneHeaderSlotProvider>
+                <HeaderLineProbe />
+                <slot.PaneHeaderSlotScope slotKey="browser">
+                    <BrowserMobileSurfaceScreen sessionId="session_1" scopeId="session:session_1:mobile-browser" />
+                </slot.PaneHeaderSlotScope>
+            </slot.PaneHeaderSlotProvider>,
+        );
+
+        const probe = screen.root.findAllByType('HeaderLineProbe')[0];
+        expect(JSON.stringify(probe?.props.segments)).toContain('browserLaunchpad.pane.previews');
     });
 });

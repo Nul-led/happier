@@ -26,11 +26,21 @@ export const ACCOUNT_SETTINGS = defineSettingsPage({
                 },
             },
         },
+        connections: {
+            titleKey: 'settingsConnections.sectionTitle',
+            settings: {
+                directConnections: {
+                    titleKey: 'settingsConnections.directTitle',
+                    descriptionKey: 'settingsConnections.directOnDescription',
+                    keywordKeys: ['settingsConnections.machineOptionRelay'],
+                },
+            },
+        },
         privacy: {
             titleKey: 'settingsAccount.privacy',
             settings: {
-                analytics: { titleKey: 'settingsAccount.shareUsageData', descriptionKey: 'settingsAccount.shareUsageDataDescription', keywordKeys: ['settingsAccount.analytics'] },
-                crashReports: { titleKey: 'settingsAccount.shareCrashReports', keywordKeys: ['settingsAccount.crashReports'] },
+                analytics: { storage: { scope: 'account', key: 'analyticsOptOut', access: 'read_write', invertBoolean: true }, titleKey: 'settingsAccount.shareUsageData', descriptionKey: 'settingsAccount.shareUsageDataDescription', keywordKeys: ['settingsAccount.analytics'] },
+                crashReports: { storage: { scope: 'account', key: 'crashReportsOptOut', access: 'read_write', invertBoolean: true }, titleKey: 'settingsAccount.shareCrashReports', keywordKeys: ['settingsAccount.crashReports'] },
                 settingsHistory: { titleKey: 'settingsAccount.history.title', descriptionKey: 'settingsAccount.history.footer' },
             },
         },

@@ -94,7 +94,7 @@ function record(options: Readonly<{
     }],
     catalog: { source: 'manual', manualModelPolicy: 'allowed' },
     compatibilityOverrides: [{
-      agentTargetKey: options.overrideAgentTargetKey ?? 'backend:codex', protocol, status: 'verified',
+      agentTargetKey: options.overrideAgentTargetKey ?? 'agent:happier.agent.codex/codex', protocol, status: 'verified',
       reason: 'Integration tested',
       evidence: { sourceUrls: ['https://docs.example.test/codex'], verifiedAt: '2026-07-11', testIds: ['codex-provider-live'] },
     }],
@@ -129,10 +129,10 @@ function record(options: Readonly<{
 describe('provider connection compatibility summary', () => {
   it('uses the leased executable adapter and canonical compatibility resolver per agent', () => {
     expect(projectProviderConnectionCompatibility({ lease: lease(), connection: record() })).toEqual([
-      { agentTargetKey: 'backend:claude', agentName: 'Claude', status: 'incompatible', reasons: ['no_compatible_protocol'] },
-      { agentTargetKey: 'backend:codex', agentName: 'Codex', status: 'verified', reasons: [] },
+      { agentTargetKey: 'agent:happier.agent.claude/claude', agentName: 'Claude', status: 'incompatible', reasons: ['no_compatible_protocol'] },
+      { agentTargetKey: 'agent:happier.agent.codex/codex', agentName: 'Codex', status: 'verified', reasons: [] },
       { agentTargetKey: 'backend:external', agentName: 'External Agent', status: 'incompatible', reasons: ['agent_external_providers_unsupported'] },
-      { agentTargetKey: 'backend:gemini', agentName: 'Gemini', status: 'incompatible', reasons: ['agent_external_providers_unsupported'] },
+      { agentTargetKey: 'agent:happier.agent.gemini/gemini', agentName: 'Gemini', status: 'incompatible', reasons: ['agent_external_providers_unsupported'] },
     ]);
   });
 

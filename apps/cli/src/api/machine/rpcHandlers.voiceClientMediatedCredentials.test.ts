@@ -34,21 +34,11 @@ function accountTarget(accountId: string) {
   });
 }
 
-function projectedAuthority(projectionGeneration: number) {
+function projectedAuthority(_projectionGeneration: number) {
   return Object.freeze({
     kind: 'projected' as const,
     cacheIdentity: Object.freeze({
-      pluginId: contribution.pluginId,
-      contributionId: contribution.localId,
       artifactDigest: `sha256:${'a'.repeat(64)}`,
-      hostAppVersion: '1.0.0',
-      hostUiApiVersion: '1',
-      reactVersion: '19.0.0',
-      reactNativeVersion: '0.79.0',
-      platform: 'web',
-      channel: 'stable',
-      nativeCapabilitiesDigest: `sha256:${'b'.repeat(64)}`,
-      projectionGeneration,
     }),
   });
 }
@@ -116,7 +106,7 @@ function manifest() {
         response: { maxBytes: 65_536, contentTypes: ['application/json'] },
       }] },
     },
-    client: { artifactId: 'browser-client', modulePath: './voice', exportName: 'activate' },
+    client: { artifactId: 'browser-client', exportName: 'activate' },
   });
   return {
     id: contribution.pluginId,
@@ -361,7 +351,7 @@ describe('Voice client mediated Connected Account credential RPC', () => {
     });
   });
 
-  it('rejects a caller whose projected declaration generation is not the daemon registry generation, before materializing', async () => {
+  it('does not use registry generation as executable byte or credential authority', async () => {
     const owner = connectedAccountsOwner({ resolvedAccountId: 'account-a' });
     const handler = registerHandler({
       registryGeneration: DAEMON_REGISTRY_GENERATION + 1,
@@ -377,10 +367,13 @@ describe('Voice client mediated Connected Account credential RPC', () => {
       declarationAuthority: projectedAuthority(DAEMON_REGISTRY_GENERATION),
       expectedSelection: accountTarget('account-a'),
     })).resolves.toEqual({
-      ok: false,
-      errorCode: 'plugin_voice_credential_access_unavailable',
+      ok: true,
+      headers: {
+        authorization: 'Bearer account-a',
+        'chatgpt-account-id': 'account-a',
+      },
     });
-    expect(owner.materialize).not.toHaveBeenCalled();
+    expect(owner.materialize).toHaveBeenCalledTimes(1);
   });
 
   it('produces no headers when the caller captured Account A and this daemon has already selected Account B', async () => {

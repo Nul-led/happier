@@ -1,16 +1,17 @@
 import type { AuthCredentialLifecycleResult, HomeCredentialTarget } from '@/auth/context/AuthContext';
-import { TokenStorage, type AuthCredentials } from '@/auth/storage/tokenStorage';
+import { TokenStorage, type AuthCredentials, type RecoveryKeyReminderTarget } from '@/auth/storage/tokenStorage';
 import { SecretKeyBackupModal } from '@/components/account/SecretKeyBackupModal';
 import { Modal } from '@/modal';
 import { HappyError } from '@/utils/errors/errors';
+import { presentFirstKeyCredentialLifecycle } from '@/components/account/presentFirstKeyCredentialLifecycle';
 
 import type { EmailPasswordAuthOutcome } from './EmailPasswordAuthPanel';
 
-type CompletionResult = 'completed' | 'retired';
+export type EmailPasswordAuthenticationCompletion = 'completed' | 'retired';
 
 async function discloseProvisionedRecoveryKey(
     recoverySecret: Uint8Array,
-    target: HomeCredentialTarget,
+    target: RecoveryKeyReminderTarget,
 ): Promise<'saved' | 'later' | 'interrupted'> {
     const disclosureSecret = recoverySecret.slice();
     recoverySecret.fill(0);
@@ -76,13 +77,19 @@ async function discloseProvisionedRecoveryKey(
 export async function completeEmailPasswordAuthentication(params: Readonly<{
     outcome: EmailPasswordAuthOutcome;
     target: HomeCredentialTarget;
+    /**
+     * Whose recovery key the reminder is about. Defaults to the Home `target`; an Account created on
+     * an account service names that service, so the Home's own reminder is never touched.
+     */
+    reminderTarget?: RecoveryKeyReminderTarget;
     signal?: AbortSignal;
     loginWithCredentials: (
         credentials: AuthCredentials,
         options: Readonly<{ target: HomeCredentialTarget }>,
     ) => Promise<AuthCredentialLifecycleResult>;
     onCompleted: () => void | Promise<void>;
-}>): Promise<CompletionResult> {
+}>): Promise<EmailPasswordAuthenticationCompletion> {
+    const reminderTarget: RecoveryKeyReminderTarget = params.reminderTarget ?? params.target;
     let persistence: AuthCredentialLifecycleResult;
     try {
         persistence = await params.loginWithCredentials(params.outcome.credentials, {
@@ -93,23 +100,47 @@ export async function completeEmailPasswordAuthentication(params: Readonly<{
         throw cause;
     }
     if (persistence.kind !== 'completed') {
-        // The Account exists; only this device's credential lifecycle did not
-        // complete. The recovery key is the one process-held handle to it, so
-        // it is disclosed here — the terminal disposition — instead of being
-        // discarded, and the refusal is then raised so the mounted host keeps
-        // its flow open and presents it. A silent fall-through would navigate
-        // away from an Account this device cannot sign in to.
-        if (params.outcome.recoverySecret) {
-            await TokenStorage.setRecoveryKeyReminderDismissed(false, params.target).catch(() => false);
-            await discloseProvisionedRecoveryKey(params.outcome.recoverySecret, params.target);
+        if (persistence.kind === 'finish_encryption_setup') {
+            // Keep the exact custody handle and let the existing presenter own
+            // Finish/Abandon/Keep. Its retry still enters canonical adoption.
+            const pending = persistence;
+            let initial = true;
+            let adopted = false;
+            await presentFirstKeyCredentialLifecycle({
+                run: async () => {
+                    if (initial) {
+                        initial = false;
+                        return pending;
+                    }
+                    if (params.signal?.aborted) return { kind: 'recovery_failed' };
+                    return await params.loginWithCredentials(params.outcome.credentials, { target: params.target });
+                },
+                onCompleted: () => { adopted = true; },
+            }).catch((cause: unknown) => {
+                params.outcome.recoverySecret?.fill(0);
+                throw cause;
+            });
+            if (!adopted) {
+                // A created Account still owns its process-held recovery key,
+                // even when this device keeps its earlier pending migration.
+                if (params.outcome.recoverySecret) {
+                    await TokenStorage.setRecoveryKeyReminderDismissed(false, reminderTarget).catch(() => false);
+                    await discloseProvisionedRecoveryKey(params.outcome.recoverySecret, reminderTarget);
+                }
+                return 'retired';
+            }
+        } else {
+            // A provisioned Account still needs its one process-held recovery
+            // key disclosed when this device's credential adoption fails.
+            if (params.outcome.recoverySecret) {
+                await TokenStorage.setRecoveryKeyReminderDismissed(false, reminderTarget).catch(() => false);
+                await discloseProvisionedRecoveryKey(params.outcome.recoverySecret, reminderTarget);
+            }
+            throw new HappyError('Native credentials did not complete their lifecycle on this device', false, {
+                kind: 'auth',
+                code: 'operation_failed',
+            });
         }
-        throw new HappyError('Native credentials did not complete their lifecycle on this device', false, {
-            kind: 'auth',
-            // The Home applied the change and this device cannot confirm it is
-            // usable here: the shared unconfirmed-outcome presentation, which
-            // also re-reads the Account, is exactly that statement.
-            code: 'operation_failed',
-        });
     }
 
     if (params.outcome.recoverySecret) {
@@ -118,8 +149,8 @@ export async function completeEmailPasswordAuthentication(params: Readonly<{
         // not cancel the one canonical disclosure. Only Save/Later completes
         // the intended destination; process/modal-host loss retires it while
         // the persisted Account remains recoverable through existing Settings.
-        await TokenStorage.setRecoveryKeyReminderDismissed(false, params.target).catch(() => false);
-        const decision = await discloseProvisionedRecoveryKey(params.outcome.recoverySecret, params.target);
+        await TokenStorage.setRecoveryKeyReminderDismissed(false, reminderTarget).catch(() => false);
+        const decision = await discloseProvisionedRecoveryKey(params.outcome.recoverySecret, reminderTarget);
         if (decision === 'interrupted') return 'retired';
     } else if (params.signal?.aborted) {
         return 'retired';

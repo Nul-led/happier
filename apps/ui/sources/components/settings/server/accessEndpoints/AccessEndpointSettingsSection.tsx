@@ -77,9 +77,8 @@ export const AccessEndpointSettingsSection = React.memo(function AccessEndpointS
                             <Item
                                 testID={scopeTestId(direction)}
                                 title={t(buildAccessChannelScopeCopyKey(directionChannels[0]))}
-                                subtitle={title}
+                                titleLines={0}
                                 showChevron={false}
-                                mode="info"
                             />
                             {directionChannels.map((channel) => (
                                 <AccessChannelChoiceCard

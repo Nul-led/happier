@@ -1,5 +1,5 @@
 import {
-  WorkflowDocumentV1Schema,
+  parseWorkflowDocumentJsonIngressV1,
   serializeWorkflowDocumentJsonV1,
   type WorkflowDocumentV1,
 } from '@happier-dev/protocol/workflows/workflowDocumentV1';
@@ -22,9 +22,10 @@ import type { WorkflowEditorDraft } from './workflowEditorDraft';
 /**
  * JSON interchange for authored workflows.
  *
- * This is an adapter, not a parser: `WorkflowDocumentV1Schema` owns the
- * envelope and `validateWorkflowDefinition` owns the definition, exactly as
- * they do at save and at run admission. The module is pure string-in/string-out
+ * This is an adapter, not a parser: Protocol's ingress-aware document parser
+ * owns the envelope and delegates definition normalization to the canonical
+ * workflow validator, exactly as save and run admission do. The module is
+ * pure string-in/string-out
  * so the editor, a test and any CLI caller share one behavior; the platform
  * file, share and download boundary stays with the caller.
  *
@@ -99,23 +100,6 @@ const IMPORT_FAILURE_MESSAGE_KEYS = {
   TranslationKeyNoParams
 >>;
 
-type EnvelopeFailureCode = keyof typeof IMPORT_FAILURE_MESSAGE_KEYS;
-
-/**
- * Which half of the document the canonical schema rejected. `kind` and the
- * document shape decide "is this a Happier workflow at all", `version` decides
- * "can this app read it", and anything else is a definition concern the
- * canonical validator reports with repairable paths.
- */
-function classifyEnvelopeFailure(
-  error: Readonly<{ issues: readonly Readonly<{ path: readonly PropertyKey[] }>[] }>,
-): Exclude<EnvelopeFailureCode, 'invalid_json'> | null {
-  const heads = error.issues.map((issue) => issue.path[0]);
-  if (heads.some((head) => head === undefined || head === 'kind')) return 'invalid_document';
-  if (heads.some((head) => head === 'version')) return 'unsupported_version';
-  return null;
-}
-
 export function importWorkflowDocument(params: Readonly<{
   source: string;
   /** The draft currently open in the editor; returned unchanged on failure. */
@@ -139,35 +123,15 @@ export function importWorkflowDocument(params: Readonly<{
     ...(repairDraft === undefined ? {} : { repairDraft }),
   });
 
-  let value: unknown;
-  try {
-    value = JSON.parse(params.source) as unknown;
-  } catch {
-    return failure('invalid_json');
-  }
-
-  const parsedDocument = WorkflowDocumentV1Schema.safeParse(value);
-  if (!parsedDocument.success) {
-    const envelopeFailure = classifyEnvelopeFailure(parsedDocument.error);
-    if (envelopeFailure !== null) return failure(envelopeFailure);
-  }
-
-  // The envelope is a Happier workflow of a readable version, so the definition
-  // goes to the one canonical validator. It accepts the documented ingress
-  // dialect a hand-written file may use and returns the normalized definition
-  // the editor stores, or the path-addressed issues that prevented it.
-  const definitionInput = parsedDocument.success
-    ? parsedDocument.data.definition
-    : (value as Readonly<Record<string, unknown>>).definition;
-  const validation = validateWorkflowDefinition(
-    definitionInput,
-    params.context === undefined ? {} : { context: params.context },
-  );
-  const definition = validation.normalizedDefinition;
-  if (!validation.valid || definition === undefined) {
+  const parsed = parseWorkflowDocumentJsonIngressV1(params.source, params.context);
+  if (!parsed.ok) {
+    if (parsed.code === 'workflow_document_invalid_json') return failure('invalid_json');
+    if (parsed.code === 'workflow_document_unsupported_version') return failure('unsupported_version');
+    if (parsed.code === 'workflow_document_invalid') return failure('invalid_document');
+    const definition = parsed.normalizedDefinition;
     return failure(
       'invalid_definition',
-      validation.issues,
+      parsed.issues,
       definition === undefined
         ? undefined
         : buildWorkflowEditorDraftFromDefinition({
@@ -177,6 +141,7 @@ export function importWorkflowDocument(params: Readonly<{
         }),
     );
   }
+  const definition = parsed.document.definition;
 
   return {
     ok: true,

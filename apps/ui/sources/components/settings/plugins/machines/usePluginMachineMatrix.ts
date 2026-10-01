@@ -21,6 +21,8 @@ const UNLOADED: PluginMachineMaterializationAdmission = Object.freeze({
  */
 export function usePluginMachineMatrix(params: Readonly<{
     pluginId?: string;
+    /** Plugins that ship inside Happier (see `buildPluginMachineMatrix`). */
+    includedWithHappierPluginIds?: ReadonlySet<string>;
 }> = {}): PluginMachineMatrixV1 {
     const reader = useActivePluginAccountAvailabilityReader();
     const machineSnapshots = useAllProfileMachineInventorySnapshots();
@@ -29,11 +31,12 @@ export function usePluginMachineMatrix(params: Readonly<{
         () => reader?.readMaterializations() ?? UNLOADED,
         [reader],
     );
-    const pluginId = params.pluginId;
+    const { pluginId, includedWithHappierPluginIds } = params;
     return React.useMemo(() => buildPluginMachineMatrix({
         admission,
         machineSnapshots,
         classifyRelease,
         ...(pluginId === undefined ? {} : { pluginId }),
-    }), [admission, classifyRelease, machineSnapshots, pluginId]);
+        ...(includedWithHappierPluginIds === undefined ? {} : { includedWithHappierPluginIds }),
+    }), [admission, classifyRelease, includedWithHappierPluginIds, machineSnapshots, pluginId]);
 }

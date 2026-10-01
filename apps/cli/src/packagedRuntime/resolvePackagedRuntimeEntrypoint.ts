@@ -4,10 +4,15 @@ import { fileURLToPath } from 'node:url';
 
 import cliDistBuildManifest from '@happier-dev/cli-common/cliDistBuildManifest';
 import {
+  FirstPartyVersionRootIdentityError,
   readDefaultManagedReleaseChannelSync,
+  resolveFirstPartyInstallLayout,
+  resolveFirstPartyVersionRootIdentity,
   resolveInstalledFirstPartyComponentPaths,
   resolveFirstPartyComponentPublicReleaseVariant,
 } from '@happier-dev/cli-common/firstPartyRuntime';
+import { PUBLIC_RELEASE_RING_IDS } from '@happier-dev/release-runtime/releaseRings';
+import type { BundledPackagedRuntimeCustodyV1 } from '@happier-dev/protocol';
 import { projectPath, projectPathFromModuleUrl } from '@/projectPath';
 import { isEmbeddedBunBundlePath } from '@/packagedRuntime/js/isEmbeddedBunBundlePath';
 import {
@@ -157,6 +162,12 @@ export type AuthoritativePackagedRuntimeProjectRoot = Readonly<{
     | 'packaged-shim';
 }>;
 
+type AuthoritativeRuntimeAuthority = Readonly<{
+  projectRoot: string;
+  runtimeRoot: string;
+  provenance: AuthoritativePackagedRuntimeProjectRoot['provenance'];
+}>;
+
 function isExplicitStackSourceRoot(
   root: string,
   processEnv: NodeJS.ProcessEnv,
@@ -190,7 +201,7 @@ function isExplicitStackSourceRoot(
 function resolveModuleRuntimeAuthority(
   moduleUrl: string,
   processEnv: NodeJS.ProcessEnv,
-): AuthoritativePackagedRuntimeProjectRoot | null {
+): AuthoritativeRuntimeAuthority | null {
   try {
     const modulePath = normalizePathLike(fileURLToPath(moduleUrl));
     if (isEmbeddedBunBundlePath(modulePath)) {
@@ -201,7 +212,8 @@ function resolveModuleRuntimeAuthority(
       const backingRoot = resolveRunnerSnapshotBackingRuntimeRootFromPath(snapshotRoot);
       if (!backingRoot) return null;
       return {
-        root: backingRoot,
+        projectRoot: backingRoot,
+        runtimeRoot: snapshotRoot,
         provenance: isExplicitStackSourceRoot(backingRoot, processEnv)
           ? 'source-snapshot'
           : 'packaged-snapshot',
@@ -214,7 +226,11 @@ function resolveModuleRuntimeAuthority(
       ? modulePath.slice(normalizedModuleProjectRoot.length + 1).split('/')[0]
       : null;
     if (moduleTree === 'src') {
-      return { root: moduleProjectRoot, provenance: 'source-module' };
+      return {
+        projectRoot: moduleProjectRoot,
+        runtimeRoot: moduleProjectRoot,
+        provenance: 'source-module',
+      };
     }
     // `.dist.hstack-backup` is the stack PM's rename-aside layout for `dist`
     // while a rebuild is in flight, and `bin/_resolveRuntimeEntrypoint.mjs`
@@ -224,14 +240,19 @@ function resolveModuleRuntimeAuthority(
     // unavailable runtime root even though the checkout is right there.
     if (moduleTree === 'dist' || moduleTree === '.dist.hstack-backup') {
       return {
-        root: moduleProjectRoot,
+        projectRoot: moduleProjectRoot,
+        runtimeRoot: moduleProjectRoot,
         provenance: existsSync(join(moduleProjectRoot, 'src'))
           ? 'source-module'
           : 'packaged-module',
       };
     }
     if (moduleTree === 'package-dist') {
-      return { root: moduleProjectRoot, provenance: 'packaged-module' };
+      return {
+        projectRoot: moduleProjectRoot,
+        runtimeRoot: moduleProjectRoot,
+        provenance: 'packaged-module',
+      };
     }
   } catch {
     // Runtime process evidence remains available below.
@@ -239,12 +260,16 @@ function resolveModuleRuntimeAuthority(
   return null;
 }
 
-export function resolveAuthoritativePackagedRuntimeProjectRoot(params: Readonly<{
+type RuntimeAuthorityParams = Readonly<{
   moduleUrl?: string;
   argv?: readonly string[];
   currentExecPath?: string;
   processEnv?: NodeJS.ProcessEnv;
-}> = {}): AuthoritativePackagedRuntimeProjectRoot | null {
+}>;
+
+function resolveAuthoritativeRuntimeAuthority(
+  params: RuntimeAuthorityParams = {},
+): AuthoritativeRuntimeAuthority | null {
   const processEnv = params.processEnv ?? process.env;
   const moduleAuthority = resolveModuleRuntimeAuthority(params.moduleUrl ?? import.meta.url, processEnv);
   if (moduleAuthority) {
@@ -260,18 +285,113 @@ export function resolveAuthoritativePackagedRuntimeProjectRoot(params: Readonly<
     const backingRoot = resolveRunnerSnapshotBackingRuntimeRootFromPath(launchedRoot);
     if (backingRoot) {
       return {
-        root: backingRoot,
+        projectRoot: backingRoot,
+        runtimeRoot: launchedRoot,
         provenance: isExplicitStackSourceRoot(backingRoot, processEnv)
           ? 'source-snapshot'
           : 'packaged-snapshot',
       };
     }
-    return { root: launchedRoot, provenance: 'packaged-launch' };
+    return {
+      projectRoot: launchedRoot,
+      runtimeRoot: launchedRoot,
+      provenance: 'packaged-launch',
+    };
   }
 
   const exactShimRoot = resolveRuntimeRootFromInstalledShimPath(params.currentExecPath ?? process.execPath)
     ?? resolveRuntimeRootFromInstalledShimPath(argv[0] ?? '');
-  return exactShimRoot ? { root: exactShimRoot, provenance: 'packaged-shim' } : null;
+  return exactShimRoot
+    ? {
+        projectRoot: exactShimRoot,
+        runtimeRoot: exactShimRoot,
+        provenance: 'packaged-shim',
+      }
+    : null;
+}
+
+export function resolveAuthoritativePackagedRuntimeProjectRoot(
+  params: RuntimeAuthorityParams = {},
+): AuthoritativePackagedRuntimeProjectRoot | null {
+  const authority = resolveAuthoritativeRuntimeAuthority(params);
+  return authority
+    ? Object.freeze({ root: authority.projectRoot, provenance: authority.provenance })
+    : null;
+}
+
+export type AuthoritativePackagedRuntimeCustody = Readonly<{
+  root: string;
+  packagedRuntime: BundledPackagedRuntimeCustodyV1;
+  provenance: Extract<
+    AuthoritativePackagedRuntimeProjectRoot['provenance'],
+    `packaged-${string}`
+  >;
+}>;
+
+/**
+ * Resolve first-party packaged custody to either the exact executing runner
+ * snapshot or an immutable managed version root. Source modules intentionally
+ * return null. Snapshot custody is selected before managed-layout validation;
+ * snapshots are already immutable runtime roots, not version-layout aliases.
+ */
+export function resolveAuthoritativePackagedRuntimeCustody(
+  params: RuntimeAuthorityParams = {},
+): AuthoritativePackagedRuntimeCustody | null {
+  const authority = resolveAuthoritativeRuntimeAuthority(params);
+  if (authority && isRunnerSnapshotRuntimeRoot(authority.runtimeRoot)) {
+    const snapshotRoot = realpathSync(authority.runtimeRoot);
+    return Object.freeze({
+      root: snapshotRoot,
+      packagedRuntime: Object.freeze({
+        kind: 'pinned_runner_snapshot',
+        snapshotId: basename(snapshotRoot),
+      }),
+      provenance: 'packaged-snapshot',
+    });
+  }
+  if (
+    !authority
+    || authority.provenance === 'source-module'
+    || authority.provenance === 'source-snapshot'
+  ) return null;
+
+  const processEnv = params.processEnv ?? process.env;
+  let outsideLayoutError: FirstPartyVersionRootIdentityError | null = null;
+  for (const channel of PUBLIC_RELEASE_RING_IDS) {
+    const layout = resolveFirstPartyInstallLayout({
+      componentId: 'happier-cli',
+      channel,
+      processEnv,
+    });
+    try {
+      const identity = resolveFirstPartyVersionRootIdentity({
+        layout,
+        runtimeRoot: authority.runtimeRoot,
+      });
+      return Object.freeze({
+        root: identity.root,
+        packagedRuntime: Object.freeze({
+          kind: 'cli_version_root',
+          versionRootId: identity.versionRootId,
+        }),
+        provenance: authority.provenance,
+      });
+    } catch (error) {
+      if (
+        error instanceof FirstPartyVersionRootIdentityError
+        && error.code === 'FIRST_PARTY_VERSION_ROOT_OUTSIDE_LAYOUT'
+      ) {
+        outsideLayoutError = error;
+        continue;
+      }
+      throw error;
+    }
+  }
+  throw outsideLayoutError ?? new FirstPartyVersionRootIdentityError(
+    'FIRST_PARTY_VERSION_ROOT_OUTSIDE_LAYOUT',
+    authority.runtimeRoot,
+    'The packaged CLI runtime root is outside every managed install layout',
+  );
 }
 
 const PACKAGED_RUNTIME_TREES = ['package-dist', 'dist'] as const;

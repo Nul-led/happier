@@ -1,7 +1,9 @@
 import * as React from 'react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { renderScreen } from '@/dev/testkit';
+import type { ConnectedAccountIndexFacts } from './index/ConnectedAccountIndexRow';
+import type { ConnectedServicesConnectMore } from './setup/ConnectedServicesConnectMore';
 
 import { installConnectedServicesCommonModuleMocks } from './connectedServicesTestHelpers';
 
@@ -37,6 +39,7 @@ vi.mock('@/sync/domains/features/featureDecisionRuntime', () => ({
 
 vi.mock('@/sync/store/hooks', () => ({
     useActiveServerAccountScope: () => null,
+    useAllMachines: () => [],
     useProfile: () => ({
         connectedServicesV2: profileState.connectedServicesV2,
         connectedAccountsV4: profileState.connectedAccountsV4,
@@ -49,8 +52,12 @@ vi.mock('@/sync/store/hooks', () => ({
         connectedServicesDefaultAuthByAgentIdV1: {},
     }),
     useSettingMutable: () => [{}, vi.fn()],
-    useLocalSetting: () => 1,
+    useSetting: () => undefined,
+    useLocalSetting: () => undefined,
+    useLocalSettingMutable: () => [undefined, vi.fn()],
 }));
+
+vi.mock('@/sync/store/settingsWriters', () => ({ useApplySettings: () => vi.fn() }));
 
 vi.mock('@/hooks/teams/useHomeTeamCredentialModelCatalog', () => ({
     useHomeTeamCredentialModelCatalog: () => ({
@@ -90,13 +97,33 @@ vi.mock('@/hooks/server/connectedServices/useConnectedServiceQuotaBadges', () =>
 vi.mock('@/hooks/server/connectedServices/useConnectedServiceQuotaSummaries', () => ({
     useConnectedServiceQuotaSummaries: () => ({
         summaries: [],
+        accountsWithoutUsage: [],
+        accountsNeedingSignIn: [],
+        keysWithoutLimits: 0,
+        inUseAccountKeys: new Set(),
         isRefreshing: false,
         hasConnectedProfiles: false,
     }),
 }));
+vi.mock('@/sync/domains/state/warmCachePersistence', () => ({
+    loadUsageSummaryWarmCache: () => null,
+    saveUsageSummaryWarmCache: () => {},
+}));
+// The agent projection is a machine read; without it, every service stays with the agent accounts.
+vi.mock('@/agents/backendCatalog/useDaemonMergedProjectionInputs', () => ({
+    useDaemonMergedProjectionInputs: () => ({ phase: 'ready', inputs: null }),
+}));
 
-vi.mock('./account/QualifiedAccountBlock', () => ({
-    QualifiedAccountBlock: (props: Record<string, unknown>) => React.createElement('QualifiedAccountBlock', props),
+vi.mock('./index/ConnectedAccountIndexRow', async (importOriginal) => ({
+    ...(await importOriginal<typeof import('./index/ConnectedAccountIndexRow')>()),
+    ConnectedAccountIndexLiveFacts: ({ render }: { render: (facts: ConnectedAccountIndexFacts) => React.ReactElement }) => render({
+        usage: { kind: 'none' }, planLabel: null, subscription: null, recoveryCredits: null,
+        fetchedAt: null, staleSince: null, refreshing: false, refresh: null,
+    }),
+}));
+vi.mock('./setup/ConnectedServicesConnectMore', () => ({
+    ConnectedServicesConnectMore: (props: React.ComponentProps<typeof ConnectedServicesConnectMore>) =>
+        React.createElement('ConnectedServicesConnectMore', props),
 }));
 
 vi.mock('./ConnectedServicesDefaultAuthRow', () => ({
@@ -124,8 +151,8 @@ vi.mock('@/components/ui/lists/ItemGroup', () => ({
 // `Item` owns the fixed leading slot; render `leftElement` and `titleAccessory` so the brand mark
 // and the state pill are actually mounted and inspectable in the tree.
 vi.mock('@/components/ui/lists/Item', () => ({
-    Item: (props: { leftElement?: React.ReactNode; titleAccessory?: React.ReactNode }) =>
-        React.createElement('Item', props, props.leftElement, props.titleAccessory),
+    Item: (props: { leftElement?: React.ReactNode; rightElement?: React.ReactNode }) =>
+        React.createElement('Item', props, props.leftElement, props.rightElement),
 }));
 
 // The generic fallback glyph draws through Hugeicons/Phosphor primitives; a host
@@ -189,6 +216,11 @@ function serviceHeaders(tree: Awaited<ReturnType<typeof renderView>>) {
 }
 
 describe('ConnectedServicesSettingsView row presentation', () => {
+    // The page's module graph is large; loading it once up front keeps each case's own time honest.
+    beforeAll(async () => {
+        await import('./ConnectedServicesSettingsView');
+    }, 180_000);
+
     beforeEach(() => {
         registryState.status = 'ready';
         registryState.errorReason = null;
@@ -198,7 +230,7 @@ describe('ConnectedServicesSettingsView row presentation', () => {
         profileState.connectedAccountGroupsV4 = [];
     });
 
-    it('orders services attention-first, then by label, leaving services without accounts to the invitation', async () => {
+    it('orders services attention-first, then by label, leaving services without accounts to setup', async () => {
         const headers = serviceHeaders(await renderView());
 
         expect(headers.map((row) => row.props.title)).toEqual([
@@ -208,14 +240,18 @@ describe('ConnectedServicesSettingsView row presentation', () => {
         ]);
     });
 
-    it('says a service needs a sign-in only when one of its accounts does', async () => {
-        const headers = serviceHeaders(await renderView());
-        const pillFor = (title: string) => headers.find((row) => row.props.title === title)!
-            .findAll((node) => String(node.props?.testID ?? '').endsWith(':needs-sign-in'));
+    it('says only on the account that needs a new sign-in that it does, never for a retrying refresh', async () => {
+        const tree = await renderView();
+        const signedOut = tree.root.findAll((node) => node.props.facts && node.props.accountId)
+            .filter((row) => row.props.signedOut !== null)
+            .map((row) => row.props.testID);
 
-        expect(pillFor('OpenAI Codex')).not.toHaveLength(0);
-        expect(pillFor('Anthropic')).toHaveLength(0);
-        expect(pillFor('GitHub')).toHaveLength(0);
+        expect(signedOut).toEqual(['connected-services-account:happier.agent.codex/openai-codex:work']);
+        expect(tree.findHostByTestId(`${signedOut[0]}:sign-in-again`)).not.toBeNull();
+        expect(tree.findHostByTestId('connected-services-account:happier.agent.claude/anthropic:work:sign-in-again')).toBeNull();
+        // The summary line counts it once as "needs you".
+        const summary = tree.root.findAll((node) => node.props?.testID === 'connected-services-summary-needs-you');
+        expect(summary).not.toHaveLength(0);
     });
 
     it('renders the service brand mark, falling back to the generic key glyph when no mark exists', async () => {
@@ -237,7 +273,7 @@ describe('ConnectedServicesSettingsView row presentation', () => {
         expect(fallbackRow.findAllByType('Icon' as never)[0]?.props.name).toBe('key');
     });
 
-    it('holds the invitation place while the machines are still asked for services', async () => {
+    it('keeps the first-run setup loading while machines are still asked for services', async () => {
         registryState.status = 'loading';
         registryState.entries = [];
         profileState.connectedServicesV2 = [];
@@ -245,10 +281,10 @@ describe('ConnectedServicesSettingsView row presentation', () => {
 
         const tree = await renderView();
 
+        // Nothing is claimed empty while the machines are still asked: the first run says so in place.
         expect(tree.root.findAll((node) => node.props?.testID === 'connected-services-empty')).toHaveLength(0);
-        expect(tree.root.findAll((node) =>
-            node.props?.testID === 'connected-services-projection-loading',
-        )).not.toHaveLength(0);
+        const firstRun = tree.root.findByType('ConnectedServicesConnectMore' as never);
+        expect(firstRun.props).toMatchObject({ layout: 'firstRun', loading: true });
     });
 
     it('explains a failed service read instead of claiming there is nothing to connect', async () => {

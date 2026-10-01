@@ -1,4 +1,5 @@
 import type { CustomModalDismissReason, IModal } from '@/modal';
+import type { ReactNode } from 'react';
 import { Modal } from '@/modal';
 import { t } from '@/text';
 
@@ -10,8 +11,10 @@ type ApiTokenCreateModalHost = Pick<IModal, 'show' | 'confirm'>;
 export function showApiTokenCreateModal(
     controller: ApiTokenSettingsController,
     modal: ApiTokenCreateModalHost = Modal,
+    onHostUnmount?: () => void,
+    options?: Readonly<{ revealAccessory?: ReactNode }>,
 ): string {
-    void controller.refreshEncryptionAvailability();
+    if (!controller.getState().reveal) void controller.refreshEncryptionAvailability();
     const confirmRevealDismiss = async (): Promise<boolean> => {
         try {
             return await modal.confirm(
@@ -29,12 +32,37 @@ export function showApiTokenCreateModal(
     };
     return modal.show({
         component: ApiTokenCreateModal,
-        props: { controller },
+        props: { controller, ...options },
         closeOnBackdrop: true,
         onDismissRequest: async (reason: CustomModalDismissReason) => await controller.requestRevealDismiss(
             confirmRevealDismiss,
             reason,
         ),
-        onHostUnmount: controller.clearReveal,
+        onHostUnmount: () => {
+            controller.clearReveal();
+            onHostUnmount?.();
+        },
+    });
+}
+
+/**
+ * Edit an existing token's access in the same modal. Nothing opens when the token is no longer
+ * listed; closing without saving discards the edit.
+ */
+export function showApiTokenEditAccessModal(
+    controller: ApiTokenSettingsController,
+    tokenId: string,
+    modal: Pick<IModal, 'show'> = Modal,
+): string | null {
+    if (!controller.beginAccessEdit(tokenId)) return null;
+    return modal.show({
+        component: ApiTokenCreateModal,
+        props: { controller, mode: 'editAccess' as const },
+        closeOnBackdrop: true,
+        onDismissRequest: async () => {
+            controller.cancelAccessEdit();
+            return true;
+        },
+        onHostUnmount: controller.cancelAccessEdit,
     });
 }

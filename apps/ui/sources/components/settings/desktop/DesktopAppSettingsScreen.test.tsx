@@ -8,9 +8,11 @@ import { installSettingsViewCommonModuleMocks } from '../settingsViewTestHelpers
 
 const autostartState = vi.hoisted(() => ({
     supported: true,
-    enabled: false,
+    mode: 'at-login' as 'at-login' | 'on-demand' | null,
+    installed: true as boolean | null,
     loading: false,
     error: null as string | null,
+    setMode: async (_mode: 'at-login' | 'on-demand') => {},
 }));
 const localSettingsState = vi.hoisted(() => ({
     current: {} as Record<string, unknown>,
@@ -132,14 +134,15 @@ vi.mock('@/activity/adapters/desktop/runtime/desktopActivityOverlayBridge', () =
         listenDesktopActivityOverlayWindowStateMock(handler),
 }));
 
-vi.mock('./useDesktopAutostart', () => ({
-    useDesktopAutostart: () => autostartState,
+vi.mock('./useDesktopLoginStart', () => ({
+    useDesktopLoginStart: () => autostartState,
 }));
 
 describe('DesktopAppSettingsScreen', () => {
     beforeEach(() => {
         autostartState.supported = true;
-        autostartState.enabled = false;
+        autostartState.mode = 'at-login';
+        autostartState.installed = true;
         autostartState.loading = false;
         autostartState.error = null;
         desktopHostState.value = true;

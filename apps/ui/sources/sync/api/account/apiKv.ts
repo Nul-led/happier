@@ -15,6 +15,7 @@ export interface KvItem {
 
 export interface KvListParams {
     prefix?: string;
+    afterKey?: string;
     limit?: number;
     retry?: 'default' | 'none';
     request?: ServerFetch;
@@ -119,6 +120,7 @@ export async function kvList(
     if (params.limit !== undefined) {
         queryParams.append('limit', params.limit.toString());
     }
+    if (params.afterKey !== undefined) queryParams.append('afterKey', params.afterKey);
 
     const url = queryParams.toString()
         ? `/v1/kv?${queryParams.toString()}`

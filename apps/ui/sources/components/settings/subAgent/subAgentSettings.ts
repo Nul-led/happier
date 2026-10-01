@@ -7,9 +7,7 @@ export const SUB_AGENT_SETTINGS = defineSettingsPage({
         instructions: {
             titleKey: 'subAgentGuidance.settings.instructionsTitle',
             settings: {
-                enableInjection: { titleKey: 'subAgentGuidance.settings.enableInjection.title', descriptionKey: 'subAgentGuidance.settings.enableInjection.subtitle' },
-                notifyParentOnCompletion: { titleKey: 'subAgentGuidance.settings.notifyParentOnCompletion.title', descriptionKey: 'subAgentGuidance.settings.notifyParentOnCompletion.subtitle' },
-                characterBudget: { titleKey: 'subAgentGuidance.settings.characterBudget.title' },
+                notifyParentOnCompletion: { storage: { scope: 'account', key: 'executionRunsNotifyParentOnCompletionDefault', access: 'read_write' }, titleKey: 'subAgentGuidance.settings.notifyParentOnCompletion.title', descriptionKey: 'subAgentGuidance.settings.notifyParentOnCompletion.subtitle' },
             },
         },
         disabled: {

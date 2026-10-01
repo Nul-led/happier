@@ -5,12 +5,16 @@ import {
   SessionProviderBindingSecurityChangeConfirmationV1Schema,
   buildBackendTargetKeyV2,
   createProviderErrorV1,
+  isModelRefGrantedV1,
+  isPermissionModeGrantedV1,
+  type CallerInputConstraintsV1,
   readBackendTargetRefV2,
   type BackendTargetRefV2Input,
   type ConnectedServiceBindingsV2,
   type ProviderErrorV1,
   type QualifiedConnectedAccountPurposeBindingsV1,
   type SessionModelSelectionV1,
+  type SessionPermissionMode,
   type SessionProviderBindingMetadataV1,
   type SessionProviderBindingSecurityChangeConfirmationV1,
 } from '@happier-dev/protocol';
@@ -56,6 +60,8 @@ export type PrepareProviderLaunchResult =
  */
 export async function prepareProviderLaunch(input: Readonly<{
   selection?: SessionModelSelectionV1;
+  callerInputConstraints?: CallerInputConstraintsV1;
+  permissionMode?: SessionPermissionMode;
   backendTarget: BackendTargetRefV2Input;
   machineId?: string;
   agentId: string | null;
@@ -78,6 +84,14 @@ export async function prepareProviderLaunch(input: Readonly<{
   >>;
 }>): Promise<PrepareProviderLaunchResult> {
   const selection = input.selection ? SessionModelSelectionV1Schema.parse(input.selection) : undefined;
+  if (input.callerInputConstraints) {
+    if (!isModelRefGrantedV1(input.callerInputConstraints, selection?.ref ?? 'automatic')) {
+      return { ok: false, error: createProviderErrorV1('model_not_granted') };
+    }
+    if (!isPermissionModeGrantedV1(input.callerInputConstraints, input.permissionMode ?? 'default')) {
+      return { ok: false, error: createProviderErrorV1('permission_mode_not_granted') };
+    }
+  }
   if (!selection) {
     if (input.previousBinding) {
       return {

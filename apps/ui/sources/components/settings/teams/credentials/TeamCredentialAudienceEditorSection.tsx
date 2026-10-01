@@ -54,10 +54,42 @@ export const TeamCredentialAudienceEditorSection = React.memo(function TeamCrede
         disclosureCeiling: draft.disclosureCeiling,
         directExportSupport: resource.directExportSupport,
     });
-    const savedGroupIds = resource.groupGrants.map((grant) => grant.teamGroupId);
-    const savedMemberIds = resource.memberGrants.map((grant) => grant.teamMembershipId);
-    const groupPrincipals = [...new Set([...savedGroupIds, ...draft.audience.groups.keys()])];
-    const memberPrincipals = [...new Set([...savedMemberIds, ...draft.audience.members.keys()])];
+    const savedGroupIds = React.useMemo(
+        () => resource.groupGrants.map((grant) => grant.teamGroupId),
+        [resource.groupGrants],
+    );
+    const savedMemberIds = React.useMemo(
+        () => resource.memberGrants.map((grant) => grant.teamMembershipId),
+        [resource.memberGrants],
+    );
+    const selectedGroupIds = React.useMemo(
+        () => [...new Set([...savedGroupIds, ...draft.audience.groups.keys()])],
+        [draft.audience.groups, savedGroupIds],
+    );
+    const selectedMemberIds = React.useMemo(
+        () => [...new Set([...savedMemberIds, ...draft.audience.members.keys()])],
+        [draft.audience.members, savedMemberIds],
+    );
+
+    // A saved grant can point past the roster's first page. Continue the same
+    // canonical paged directory until every selected subject has a display row,
+    // preserving the grant while the next page is loading.
+    React.useEffect(() => {
+        if (groups.status !== 'loading_more'
+            && groups.hasMore
+            && selectedGroupIds.some((groupId) => !groups.rows.some((row) => row.id === groupId))) {
+            void groups.loadMore();
+        }
+    }, [groups.hasMore, groups.loadMore, groups.rows, groups.status, selectedGroupIds]);
+    React.useEffect(() => {
+        if (members.status !== 'loading_more'
+            && members.hasMore
+            && selectedMemberIds.some((membershipId) => !members.rows.some((row) => row.id === membershipId))) {
+            void members.loadMore();
+        }
+    }, [members.hasMore, members.loadMore, members.rows, members.status, selectedMemberIds]);
+    const groupPrincipals = selectedGroupIds;
+    const memberPrincipals = selectedMemberIds;
 
     const requestAudienceChange = (audience: TeamCredentialResourceDraft['audience']) => {
         onRequestDraftChange({ ...draft, audience });
@@ -85,7 +117,7 @@ export const TeamCredentialAudienceEditorSection = React.memo(function TeamCrede
         <>
             <ItemGroup
                 title={t('teams.credentials.audience.title')}
-                footer={draft.disclosureCeiling === 'brokered_only'
+                description={draft.disclosureCeiling === 'brokered_only'
                     ? t('teams.credentials.audience.ceilingBlocked')
                     : t('teams.credentials.audience.limitsNote')}
             >

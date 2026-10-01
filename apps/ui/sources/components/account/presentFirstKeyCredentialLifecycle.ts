@@ -16,7 +16,8 @@ import {
 
 export async function presentFirstKeyCredentialLifecycle(
     params: Readonly<{
-        run: () => Promise<AuthCredentialLifecycleResult>;
+        /** `kept`: the mutation deliberately did not go ahead (it already told the person why). */
+        run: () => Promise<AuthCredentialLifecycleResult | Readonly<{ kind: 'kept' }>>;
         finish?: () => Promise<FirstKeyRecoveryActionResult>;
         afterAbandon?: () => Promise<AuthCredentialLifecycleResult>;
         onFinishCompleted?: () => void | Promise<void>;
@@ -28,7 +29,7 @@ export async function presentFirstKeyCredentialLifecycle(
         await params.onCompleted?.();
         return;
     }
-    if (result.kind === 'recovery_failed') return;
+    if (result.kind === 'recovery_failed' || result.kind === 'kept') return;
 
     let exactCustodyAbandoned = false;
     const outcome = await new Promise<

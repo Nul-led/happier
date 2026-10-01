@@ -160,11 +160,11 @@ describe('packed external WebSocket client contract', () => {
             const service = host.bind(Object.freeze({
                 plugin: Object.freeze({ id: 'acme.packed-websocket', version: '1.0.0' }),
                 contribution: Object.freeze({ id: 'connect', qualifiedId: 'acme.packed-websocket/actions/connect' }),
-                generation: 'packed-websocket-generation',
+                occurrenceId: 'packed-websocket-occurrence',
                 correlationId: 'packed-websocket-correlation',
                 surface: 'cli' as const,
                 signal: new AbortController().signal,
-                isGenerationCurrent: () => true,
+                isOccurrenceCurrent: () => true,
             }), createLoggerAndEventsAvailablePluginInvocationServiceBinding(
                 'packed-websocket-generation',
                 'packed-websocket-binding',

@@ -129,6 +129,8 @@ export type VoiceAgentTurnStreamState = {
   suppressActionDeltas: boolean;
   outputSeq: number;
   outputSegmentIndex: number;
+  onEventsChanged: () => void;
+  eventWaiters: Set<() => void>;
 };
 
 export type VoiceAgentInstance = {

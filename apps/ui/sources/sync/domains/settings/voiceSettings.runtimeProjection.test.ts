@@ -35,7 +35,6 @@ import {
     type CurrentSecretBindingsByProfileId,
 } from './secretBindings';
 import type { FavoriteModelSelectionV1 } from '@/sync/domains/models/favoriteModelSelections';
-import type { RememberedEngineSelectionsByScopeV1 } from '@/sync/domains/session/authoring/rememberedEngineSelections';
 
 function projectProtocolSettingsForTypeContract(parsed: AccountSettings) {
     return projectRuntimeAccountSettings(projectVoiceSettingsIntoRuntimeSettings({ parsed, raw: {} }));
@@ -84,9 +83,8 @@ describe('Voice Account Settings runtime projection', () => {
         expectTypeOf(settingsDefaults.currentFavoriteModelSelectionsV1).not.toBeAny();
         expectTypeOf(settingsDefaults.currentFavoriteModelSelectionsV1)
             .toEqualTypeOf<readonly FavoriteModelSelectionV1[]>();
-        expectTypeOf(settingsDefaults.currentRememberedEngineSelectionsByScopeV1).not.toBeAny();
-        expectTypeOf(settingsDefaults.currentRememberedEngineSelectionsByScopeV1)
-            .toEqualTypeOf<RememberedEngineSelectionsByScopeV1>();
+        expectTypeOf<Extract<'currentRememberedEngineSelectionsByScopeV1', keyof typeof settingsDefaults>>()
+            .toEqualTypeOf<never>();
         expectTypeOf<Extract<'currentSecretBindingsByProfileId', WritableSettingsKey>>()
             .toEqualTypeOf<never>();
         expectTypeOf<Extract<'currentFavoriteModelSelectionsV1', WritableSettingsKey>>()
@@ -127,8 +125,8 @@ describe('Voice Account Settings runtime projection', () => {
             .toEqualTypeOf<CurrentSecretBindingsByProfileId>();
         expectTypeOf<DirectProtocolProjection['currentFavoriteModelSelectionsV1']>()
             .toEqualTypeOf<readonly FavoriteModelSelectionV1[]>();
-        expectTypeOf<DirectProtocolProjection['currentRememberedEngineSelectionsByScopeV1']>()
-            .toEqualTypeOf<RememberedEngineSelectionsByScopeV1>();
+        expectTypeOf<Extract<'currentRememberedEngineSelectionsByScopeV1', keyof DirectProtocolProjection>>()
+            .toEqualTypeOf<never>();
         expectTypeOf<Extract<'secretBindingsByProfileId', keyof DirectProtocolProjection>>()
             .toEqualTypeOf<never>();
         expectTypeOf<Extract<'sessionFoldersV1', keyof DirectProtocolProjection>>().toEqualTypeOf<never>();

@@ -32,9 +32,6 @@ export function SimulatorPreviewPane(props: Readonly<{
                             <View style={simulatorStreamStyles.bodyOverlayHost}>
                                 <SimulatorStreamView
                                     controls={props.viewModel.controls}
-                                    lease={props.viewModel.lease}
-                                    onLowerQuality={props.actions.lowerQuality}
-                                    onRequestKeyframe={props.actions.requestKeyframe}
                                     playerState={props.viewModel.stream}
                                     resource={props.viewModel.resource}
                                     testID={`${props.testID}-stream`}

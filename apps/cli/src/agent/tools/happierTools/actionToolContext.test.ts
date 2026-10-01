@@ -6,6 +6,32 @@ import type { ProjectedPluginToolCatalogEntry } from '@/plugins/runtime/toolCata
 import { bindContextualActionToolInput, projectSessionBoundActionToolInputSchema } from './actionToolContext';
 
 describe('session-bound Action tool context', () => {
+  it('binds the browser target to the invoking Happier session before input validation', () => {
+    const schema = getActionSpec('browser.automation.snapshot').inputSchema;
+    const input = {
+      v: 1, automationRequestId: 'request', viewId: 'view', navigationGeneration: 0,
+      requestedBy: 'agent', requesterRef: { kind: 'session', id: 'happier_session' },
+      actionKind: 'snapshot', payload: {}, timeoutMs: 30_000,
+    };
+    const context = { defaultSessionId: 'happier_session' };
+    const projected = projectSessionBoundActionToolInputSchema({
+      actionId: 'browser.automation.snapshot', inputSchema: schema, context,
+    }) as z.ZodType;
+    expect(projected.safeParse(input).success).toBe(true);
+    expect(schema.safeParse(bindContextualActionToolInput({
+      actionId: 'browser.automation.snapshot', input, context,
+    })).data).toMatchObject({ browserSessionId: 'happier_session', viewId: 'view' });
+    expect(bindContextualActionToolInput({
+      actionId: 'browser.automation.snapshot', input: { browserSessionId: 'explicit', viewId: 'view' }, context,
+    })).toEqual({ browserSessionId: 'explicit', viewId: 'view' });
+    expect(bindContextualActionToolInput({
+      actionId: 'browser.recording.stop', input: { recordingId: 'recording' }, context,
+    })).toEqual({ recordingId: 'recording' });
+    expect(projectSessionBoundActionToolInputSchema({
+      actionId: 'browser.automation.snapshot', inputSchema: schema, context: {},
+    })).toBe(schema);
+  });
+
   it('preserves explicit detached execution-run scope while binding only omitted scope', () => {
     expect(bindContextualActionToolInput({
       actionId: 'execution.run.start',

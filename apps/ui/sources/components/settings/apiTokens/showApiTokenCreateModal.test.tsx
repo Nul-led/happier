@@ -9,6 +9,7 @@ import { showApiTokenCreateModal } from './showApiTokenCreateModal';
 describe('showApiTokenCreateModal', () => {
     it('routes shared/action dismissal and host teardown through the secret lifecycle owner', async () => {
         const controller = {
+            getState: () => ({ reveal: null }),
             refreshEncryptionAvailability: vi.fn(async () => {}),
             requestRevealDismiss: vi.fn(async (confirm: () => Promise<boolean>) => await confirm()),
             clearReveal: vi.fn(),
@@ -34,6 +35,7 @@ describe('showApiTokenCreateModal', () => {
 
     it('fails open when the warning host cannot present, so a one-time secret never traps the user', async () => {
         const controller = {
+            getState: () => ({ reveal: null }),
             refreshEncryptionAvailability: vi.fn(async () => {}),
             requestRevealDismiss: vi.fn(async (confirm: () => Promise<boolean>) => await confirm()),
             clearReveal: vi.fn(),

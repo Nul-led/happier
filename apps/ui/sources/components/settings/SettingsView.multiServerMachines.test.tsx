@@ -129,12 +129,6 @@ vi.mock('expo-constants', () => ({
     default: { expoConfig: { version: '0.0.0-test' } },
 }));
 
-vi.mock('@/constants/Typography', () => ({
-    Typography: {
-        default: () => ({}),
-        mono: () => ({}),
-    },
-}));
 
 vi.mock('@/components/ui/lists/ItemList', () => ({
     ItemList: ({ children }: any) => React.createElement(React.Fragment, null, children),
@@ -151,22 +145,6 @@ vi.mock('@/components/ui/lists/Item', () => ({
 
 vi.mock('@/components/settings/machines/hooks/useActiveSelectionMachineGroups', () => ({
     useActiveSelectionMachineGroups: () => activeSelectionMachineGroupsState.value,
-}));
-
-vi.mock('@/components/settings/machines/sections/ActiveSelectionMachinesSection', () => ({
-    ActiveSelectionMachinesSection: ({ visibleMachineGroups }: any) =>
-        React.createElement(
-            React.Fragment,
-            null,
-            visibleMachineGroups.flatMap((group: any) =>
-                group.machines.map((machine: any) =>
-                    React.createElement('Item', {
-                        key: `${group.serverId}-${machine.id}`,
-                        title: machine.metadata?.displayName ?? machine.metadata?.host ?? machine.id,
-                    }),
-                ),
-            ),
-        ),
 }));
 
 vi.mock('@/hooks/session/useConnectTerminal', () => ({
@@ -206,15 +184,6 @@ vi.mock('@/components/ui/avatar/Avatar', () => ({
 
 vi.mock('@/components/sessions/new/components/MachineCliGlyphs', () => ({
     MachineCliGlyphs: 'MachineCliGlyphs',
-}));
-
-vi.mock('@/agents/catalog/catalog', () => ({
-    AGENT_IDS: ['codex', 'claude', 'gemini'],
-    DEFAULT_AGENT_ID: 'agent_default',
-    getAgentCore: () => ({ uiConnectedService: { serviceId: 'anthropic', labelKey: 'agentInput.agent.claude', connectRoute: null } }),
-    getAgentIconSource: () => null,
-    getAgentIconTintColor: () => null,
-    resolveAgentIdFromConnectedServiceId: () => null,
 }));
 
 vi.mock('@/components/settings/supportUsBehavior', () => ({

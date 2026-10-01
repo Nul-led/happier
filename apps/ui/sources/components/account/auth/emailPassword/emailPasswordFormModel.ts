@@ -122,13 +122,6 @@ export function describeEmailPasswordFailure(
         homeLabel?: string;
         offline?: boolean;
         credentialField?: 'password' | 'currentPassword';
-        /**
-         * The caller observed that a mutation request had already been dispatched,
-         * so the Home may have applied it. Only then may an otherwise unexplained
-         * refusal be reported as an unconfirmed outcome instead of a credential
-         * failure; a pre-effect verdict keeps its own typed message.
-         */
-        effectMayHaveBegun?: boolean;
     }> = {},
 ): EmailPasswordProblem {
     if (error instanceof Error && error.name === 'AbortError') {
@@ -142,6 +135,13 @@ export function describeEmailPasswordFailure(
     }
     const code = readErrorCode(error);
     const status = readErrorStatus(error);
+    // The Home could not be reached: never a verdict on the person's credentials.
+    if (code === 'server_unreachable' || (error instanceof HappyError && error.kind === 'network' && status === null)) {
+        return { field: 'form', messageKey: 'settingsAccount.nativePassword.homeUnreachable' };
+    }
+    if (code === 'email_mismatch') {
+        return { field: 'email', messageKey: 'teams.join.mismatchTitle' };
+    }
     if (code === 'client_update_required' || code === 'update_required') {
         return {
             field: 'form',
@@ -165,8 +165,10 @@ export function describeEmailPasswordFailure(
     if (code === 'approval_pending') {
         return { field: 'form', messageKey: 'settingsAccount.nativePassword.approvalPending' };
     }
+    // A generic failure: the Home did not complete the request. `unavailable` is reserved for the
+    // explicit method-availability reasons above.
     if (code === 'operation_failed') {
-        return { field: 'form', messageKey: OUTCOME_UNCONFIRMED_MESSAGE_KEY };
+        return { field: 'form', messageKey: 'settingsAccount.nativePassword.serverUnavailable' };
     }
     if (code === 'account-disabled' || code === 'account_disabled') {
         return context.homeLabel
@@ -211,16 +213,13 @@ export function describeEmailPasswordFailure(
     if (code === 'authentication_failed') {
         return { field: context.credentialField ?? 'password', messageKey: 'settingsAccount.nativePassword.signInFailed' };
     }
-    // Nothing above identified a cause. A login attempt that never reached the
-    // Home is simply offline, but a dispatched mutation may already have been
-    // applied, so it must not be reported as a credential failure.
-    if (context.effectMayHaveBegun === true) {
-        return { field: 'form', messageKey: OUTCOME_UNCONFIRMED_MESSAGE_KEY };
-    }
+    // Only the transport's typed settlement establishes an unknown outcome.
     if (status === null && !(error instanceof HappyError)) {
         return { field: 'form', messageKey: 'settingsAccount.nativePassword.offline' };
     }
-    return { field: 'password', messageKey: 'settingsAccount.nativePassword.signInFailed' };
+    // Only `authentication_failed` (above) is a credential verdict. Anything unrecognised is the
+    // Home's failure to complete the request, said as such rather than blamed on the password.
+    return { field: 'form', messageKey: 'settingsAccount.nativePassword.serverUnavailable' };
 }
 
 const OUTCOME_UNCONFIRMED_MESSAGE_KEY = 'settingsAccount.nativePassword.outcomeUnconfirmed';

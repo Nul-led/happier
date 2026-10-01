@@ -4,7 +4,9 @@ import {
   installAgentCliForRuntime as installAgentCliForRuntimeDefault,
   resolvePlatformFromNodePlatform,
   type AgentCliRuntimeDescriptor,
+  type AgentCliUpdateTarget,
   type InstallAgentCliResult,
+  type AgentInstallProgressCallback,
 } from '@happier-dev/cli-common/agents';
 
 type AgentCliInstallIntent = 'install' | 'update';
@@ -15,6 +17,8 @@ export type AgentCliInstallInvocationParams = Readonly<{
   intent?: AgentCliInstallIntent;
   platform?: string;
   allowVendorRecipeExecution?: boolean;
+  /** With `intent: 'update'`: the executable detect reported, so its own owner updates it. */
+  updateTarget?: AgentCliUpdateTarget;
 }>;
 
 export type AgentCliInstallInvocationResult =
@@ -26,7 +30,16 @@ export type AgentCliInstallInvocationResult =
     }>
   | Readonly<{
       ok: false;
-      errorCode: 'unsupported-platform' | 'install-not-available' | 'install-confirmation-required' | 'install-failed';
+      errorCode:
+        | 'unsupported-platform'
+        | 'install-not-available'
+        | 'update-not-available'
+        | 'install-confirmation-required'
+        | 'download-failed'
+        | 'verification-failed'
+        | 'command-timed-out'
+        | 'termination-failed'
+        | 'install-failed';
       errorMessage: string;
       logPath: string | null;
     }>;
@@ -41,11 +54,14 @@ function resolveAgentCliInstallPlatform(params: Readonly<{
 }
 
 export async function invokeAgentCliInstall(params: Readonly<{
-  agentId: AgentId;
+  agentId: string;
   runtimeSpec?: AgentCliRuntimeDescriptor;
   params?: AgentCliInstallInvocationParams;
   env?: NodeJS.ProcessEnv;
   nodePlatform?: string;
+  signal?: AbortSignal;
+  onProgress?: AgentInstallProgressCallback;
+  installerDeps?: Parameters<typeof installAgentCliForRuntimeDefault>[0]['deps'];
   installAgentCli?: typeof installAgentCliDefault;
   installAgentCliForRuntime?: typeof installAgentCliForRuntimeDefault;
 }>): Promise<AgentCliInstallInvocationResult> {
@@ -70,17 +86,18 @@ export async function invokeAgentCliInstall(params: Readonly<{
     : typeof params.params?.skipIfInstalled === 'boolean'
       ? params.params.skipIfInstalled
       : true;
-  const allowVendorRecipeExecution =
-    typeof params.params?.allowVendorRecipeExecution === 'boolean'
-      ? params.params.allowVendorRecipeExecution
-      : !dryRun;
+  const allowVendorRecipeExecution = params.params?.allowVendorRecipeExecution === true;
   const commonInstallParams = {
     platform,
     dryRun,
     skipIfInstalled,
     ...(params.params?.intent === 'update' ? { intent: 'update' as const } : {}),
+    ...(params.params?.intent === 'update' && params.params.updateTarget ? { updateTarget: params.params.updateTarget } : {}),
     allowVendorRecipeExecution,
     env: params.env ?? process.env,
+    ...(params.signal ? { signal: params.signal } : {}),
+    ...(params.onProgress ? { onProgress: params.onProgress } : {}),
+    ...(params.installerDeps ? { deps: params.installerDeps } : {}),
   } as const;
   const result = params.runtimeSpec
     ? await (params.installAgentCliForRuntime ?? installAgentCliForRuntimeDefault)({
@@ -88,7 +105,7 @@ export async function invokeAgentCliInstall(params: Readonly<{
       ...commonInstallParams,
     })
     : await (params.installAgentCli ?? installAgentCliDefault)({
-      agentId: params.agentId,
+      agentId: params.agentId as AgentId,
       ...commonInstallParams,
     });
 
@@ -100,9 +117,11 @@ export async function invokeAgentCliInstall(params: Readonly<{
         errorCode === 'no-recipe'
           ? 'install-not-available'
           : errorCode === 'update-not-available'
-            ? 'install-not-available'
+            ? 'update-not-available'
           : errorCode === 'vendor-recipe-disallowed'
             ? 'install-confirmation-required'
+            : errorCode === 'download-failed' || errorCode === 'verification-failed' || errorCode === 'command-timed-out' || errorCode === 'termination-failed'
+              ? errorCode
             : 'install-failed',
       errorMessage: result.errorMessage,
       logPath: result.logPath ?? null,

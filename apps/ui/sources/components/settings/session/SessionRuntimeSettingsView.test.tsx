@@ -2,7 +2,7 @@ import * as React from 'react';
 import { describe, expect, it, vi } from 'vitest';
 
 import { renderSettingsView } from '@/dev/testkit/harness/settingsViewHarness';
-import { createUseSettingMutableMockFromReader } from '@/dev/testkit/mocks/storage';
+import { createUseSettingMock } from '@/dev/testkit/mocks/storage';
 import { installSessionSettingsCommonModuleMocks } from './sessionSettingsViewTestHelpers';
 
 installSessionSettingsCommonModuleMocks({
@@ -11,10 +11,7 @@ installSessionSettingsCommonModuleMocks({
         return createStorageModuleMock({
             importOriginal,
             overrides: {
-                useSettingMutable: createUseSettingMutableMockFromReader((name) => {
-                    if (name === 'sessionUseTmux') return [false, vi.fn()];
-                    return [null, vi.fn()];
-                }),
+                useSetting: createUseSettingMock({ values: { sessionUseTmux: false, sessionTerminalHost: 'herdr' } }),
             },
         });
     },
@@ -37,8 +34,8 @@ vi.mock('@/components/ui/lists/Item', () => ({
     Item: (props: Record<string, unknown>) => React.createElement('Item', props),
 }));
 
-vi.mock('@/components/ui/forms/Switch', () => ({
-    Switch: (props: Record<string, unknown>) => React.createElement('Switch', props),
+vi.mock('@/components/ui/lists/SegmentedChoiceItem', () => ({
+    SegmentedChoiceItem: (props: Record<string, unknown>) => React.createElement('SegmentedChoiceItem', props),
 }));
 
 describe('SessionRuntimeSettingsView', () => {
@@ -46,7 +43,9 @@ describe('SessionRuntimeSettingsView', () => {
         const { SessionRuntimeSettingsView } = await import('./SessionRuntimeSettingsView');
         const screen = await renderSettingsView(React.createElement(SessionRuntimeSettingsView));
 
-        expect(screen.findRowByTitle('settingsSessionPages.runtime.tmuxTitle')).toBeTruthy();
+        const row = screen.findRowByTitle('settingsSessionPages.runtime.terminalHostTitle');
+        expect(row).toBeTruthy();
+        expect(row?.props.value).toBe('herdr');
         expect(screen.findRowByTitle('settingsSession.terminalConnect.legacySecretExportTitle')).toBeNull();
     });
 });

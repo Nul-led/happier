@@ -284,7 +284,7 @@ describe('maximum encoded value derivation', () => {
         expect(derivedMaxima).toEqual({
             presentObservation: 12_887,
             getInput: 11_496,
-            detailInput: 468_370,
+            detailInput: 468_637,
             prepareReviewWorkspaceInput: 14_243,
             administrationInput: 7_775,
         });

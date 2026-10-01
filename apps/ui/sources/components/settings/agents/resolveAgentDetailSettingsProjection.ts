@@ -29,13 +29,14 @@ export function resolveAgentDetailPluginSettingsProjection(input: Readonly<{
     pluginProjectionById: Readonly<Record<string, PluginProjectionEntry>> | null | undefined;
     identity: PluginContributionIdentityV1 | null;
 }>): PluginProjectionEntry | null {
-    if (!input.identity) return null;
+    const identity = input.identity;
+    if (!identity) return null;
     for (const entry of Object.values(input.pluginProjectionById ?? {})) {
-        if (entry.pluginId !== input.identity.pluginId) continue;
+        if (entry.pluginId !== identity.pluginId) continue;
         const matchingGroups = entry.editableSettingsGroups.filter((group) => (
             group.target.kind === 'agent'
-            && group.target.agent.pluginId === input.identity.pluginId
-            && group.target.agent.localId === input.identity.localId
+            && group.target.agent.pluginId === identity.pluginId
+            && group.target.agent.localId === identity.localId
         ));
         if (matchingGroups.length > 0) {
             return {
@@ -76,13 +77,10 @@ export function resolveAgentDetailExternalSessionsBinding(input: Readonly<{
         };
     }
 
-    const bound = input.projection.contributionIntrospection?.contributions.some((record) => (
-        record.progression.merged
-        && record.projection.state === 'projected'
-        && record.contribution.kind === 'localId'
-        && record.contribution.family === 'agents'
-        && record.contribution.pluginId === input.identity.pluginId
-        && record.contribution.localId === input.identity.localId
+    // The Agent catalog is the projection's record of which Agents it carries.
+    const bound = Object.values(input.projection.agentsById).some((agent) => (
+        agent.identity?.pluginId === input.identity.pluginId
+        && agent.identity.localId === input.identity.localId
     ));
     if (!bound) return null;
 

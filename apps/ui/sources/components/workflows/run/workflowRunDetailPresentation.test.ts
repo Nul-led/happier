@@ -12,9 +12,13 @@ import {
     summarizeWorkflowInvocationCoverage,
 } from '@/components/workflows/presentation/workflowLifecyclePresentation';
 
+import { t } from '@/text';
+
 import {
     canOfferWorkflowInvocationReattach,
+    describeWorkflowInvocationCause,
     formatWorkflowRunOutcomeLabel,
+    formatWorkflowRunOutcomeSentence,
     formatWorkflowWorkspaceSourceLabel,
     isObservedCompletionTransition,
     projectWorkflowInvocationRecovery,
@@ -29,42 +33,29 @@ describe('managed workflow Run presentation', () => {
         expect(describeWorkflowRunState('paused').variant).toBe('neutral');
         // `queued` and `claimed` are the incumbent Automation parent states the
         // workflow enum extends; they are not an invocation lifecycle.
-        expect(describeWorkflowRunState('queued').variant).toBe('info');
+        expect(describeWorkflowRunState('queued').variant).toBe('neutral');
         expect(describeWorkflowInvocationLifecycle('superseded').variant).toBe('neutral');
-    });
-
-    it('excludes superseded attempts from coverage so a retried step is counted once', () => {
-        const coverage = summarizeWorkflowInvocationCoverage([
-            createWorkflowInvocationIndexFixture({ id: 'a', lifecycle: 'failed' }),
-            createWorkflowInvocationIndexFixture({ id: 'a-retry', lifecycle: 'superseded' }),
-            createWorkflowInvocationIndexFixture({ id: 'b', lifecycle: 'completed' }),
-            createWorkflowInvocationIndexFixture({ id: 'c', lifecycle: 'waiting_for_approval' }),
-        ]);
-
-        expect(coverage).toEqual({ completed: 1, failed: 1, attention: 1 });
     });
 
     it('reads a structurally successful Run with failed children as done with failures', () => {
         const label = formatWorkflowRunOutcomeLabel({
             state: 'succeeded',
-            coverage: { completed: 3, failed: 1, attention: 0 },
+            coverage: { observedLeafCounts: { completed: 3, failed: 1, attention: 0 }, coverage: 'complete', knownFailure: true },
         });
 
         // Never "all passed" because the container structurally completed.
         expect(label).not.toBe(formatWorkflowRunOutcomeLabel({
             state: 'succeeded',
-            coverage: { completed: 4, failed: 0, attention: 0 },
+            coverage: { observedLeafCounts: { completed: 4, failed: 0, attention: 0 }, coverage: 'complete', knownFailure: false },
         }));
     });
 
-    it('treats a false check result as data, not execution failure', () => {
-        // A `{ passed: false }` step still completes, so coverage sees no failure
-        // and the Run does not read as "done with failures".
-        const coverage = summarizeWorkflowInvocationCoverage([
-            createWorkflowInvocationIndexFixture({ id: 'check', lifecycle: 'completed' }),
-        ]);
-
-        expect(coverage.failed).toBe(0);
+    it('does not hide known failures merely because other history pages are missing', () => {
+        expect(formatWorkflowRunOutcomeLabel({
+            state: 'succeeded',
+            coverage: { observedLeafCounts: { completed: 1, failed: 1, attention: 0 }, coverage: 'partial', knownFailure: true },
+            historyComplete: false,
+        })).toBe(t('workflows.runState.completed_with_failures'));
     });
 
     it('classifies terminal states exactly', () => {
@@ -97,13 +88,14 @@ describe('managed workflow Run presentation', () => {
     it('offers reattach only for a canonically surviving selected input', () => {
         const run = createWorkflowRunSummaryFixture({
             state: 'interrupted',
-            availability: { recoverSameConversation: true, recoverFreshAgent: true },
+            availability: {   },
         });
         const execution = {
             kind: 'session' as const,
             sessionId: 'session-1',
             localInputId: 'input-1',
         };
+        const unavailable = { kind: 'unavailable' as const, reason: 'invocation_not_recoverable' as const };
 
         expect(canOfferWorkflowInvocationReattach({
             run,
@@ -115,6 +107,10 @@ describe('managed workflow Run presentation', () => {
                 attempt: '0',
                 logicalInvocationRecordId: 'invocation-1',
                 execution,
+            },
+            recoveryAvailability: { restoreWorkspace: { kind: 'unavailable' as const, reason: 'recovery_not_prepared' as const },
+                reattach: { kind: 'available' }, retry: unavailable,
+                continueSameConversation: unavailable, continueFreshAgent: unavailable,
             },
         })).toBe(true);
 
@@ -131,6 +127,10 @@ describe('managed workflow Run presentation', () => {
                 logicalInvocationRecordId: 'invocation-1',
                 execution,
             },
+            recoveryAvailability: { restoreWorkspace: { kind: 'unavailable' as const, reason: 'recovery_not_prepared' as const },
+                reattach: unavailable, retry: { kind: 'available', causalInvocationIds: ['invocation-1'] },
+                continueSameConversation: unavailable, continueFreshAgent: unavailable,
+            },
         })).toBe(false);
 
         // Fresh-agent continuation starts a different execution. It never
@@ -138,7 +138,7 @@ describe('managed workflow Run presentation', () => {
         expect(canOfferWorkflowInvocationReattach({
             run: createWorkflowRunSummaryFixture({
                 state: 'interrupted',
-                availability: { recoverSameConversation: false, recoverFreshAgent: true },
+                availability: {   },
             }),
             invocation: createWorkflowInvocationIndexFixture({ lifecycle: 'running' }),
             progress: {
@@ -149,6 +149,10 @@ describe('managed workflow Run presentation', () => {
                 logicalInvocationRecordId: 'invocation-1',
                 execution,
             },
+            recoveryAvailability: { restoreWorkspace: { kind: 'unavailable' as const, reason: 'recovery_not_prepared' as const },
+                reattach: unavailable, retry: unavailable,
+                continueSameConversation: unavailable, continueFreshAgent: { kind: 'available' },
+            },
         })).toBe(false);
     });
 
@@ -156,9 +160,9 @@ describe('managed workflow Run presentation', () => {
         const run = createWorkflowRunSummaryFixture({
             state: 'interrupted',
             availability: {
-                recoverSameConversation: true,
-                recoverFreshAgent: true,
-                retry: true,
+
+
+
                 inspectExecution: true,
             },
         });
@@ -179,11 +183,16 @@ describe('managed workflow Run presentation', () => {
                 },
             },
         };
+        const unavailable = { kind: 'unavailable' as const, reason: 'invocation_not_recoverable' as const };
 
         const active = projectWorkflowInvocationRecovery({
             run,
             invocation: createWorkflowInvocationIndexFixture({ lifecycle: 'running' }),
             progress,
+            recoveryAvailability: { restoreWorkspace: { kind: 'unavailable' as const, reason: 'recovery_not_prepared' as const },
+                reattach: { kind: 'available' }, retry: unavailable,
+                continueSameConversation: unavailable, continueFreshAgent: unavailable,
+            },
             machineHomeDirectory: '/Users/alice',
         });
         expect(active).toMatchObject({
@@ -199,12 +208,20 @@ describe('managed workflow Run presentation', () => {
                 workspaceRefId: 'workspace-1',
                 branchName: 'workflow/analyze',
             },
+            unavailableReasons: {
+                retry: 'invocation_not_recoverable',
+                continueSameConversation: 'invocation_not_recoverable',
+            },
         });
 
         const stopped = projectWorkflowInvocationRecovery({
             run,
             invocation: createWorkflowInvocationIndexFixture({ id: 'selected', parentRecordId: 'parent', lifecycle: 'failed' }),
             progress: { ...progress, execution: undefined },
+            recoveryAvailability: { restoreWorkspace: { kind: 'unavailable' as const, reason: 'recovery_not_prepared' as const },
+                reattach: unavailable, retry: { kind: 'available', causalInvocationIds: ['selected'] },
+                continueSameConversation: unavailable, continueFreshAgent: { kind: 'available' },
+            },
             machineHomeDirectory: '/Users/alice',
             invocationHistoryComplete: true,
             invocations: [
@@ -216,8 +233,9 @@ describe('managed workflow Run presentation', () => {
         expect(stopped).toMatchObject({
             canInspectExecution: false,
             canReattach: false,
-            canRetrySameConversation: true,
+            canRetrySameConversation: false,
             canRetryFreshAgent: true,
+            retryCausalInvocationIds: ['selected'],
             remainingNotStartedSiblingCount: 1,
         });
 
@@ -226,15 +244,76 @@ describe('managed workflow Run presentation', () => {
             run,
             invocation: createWorkflowInvocationIndexFixture({ lifecycle: 'completed' }),
             progress,
+            recoveryAvailability: { restoreWorkspace: { kind: 'unavailable' as const, reason: 'recovery_not_prepared' as const },
+                reattach: unavailable, retry: unavailable,
+                continueSameConversation: unavailable, continueFreshAgent: unavailable,
+            },
             machineHomeDirectory: '/Users/alice',
         })).toMatchObject({ canRetrySameConversation: false, canRetryFreshAgent: false });
+    });
+
+    it('offers each retry conversation only when its exact owner decision permits it', () => {
+        const unavailable = { kind: 'unavailable' as const, reason: 'recovery_not_prepared' as const };
+        const params = {
+            run: createWorkflowRunSummaryFixture({ state: 'interrupted', availability: { retry: true } }),
+            invocation: createWorkflowInvocationIndexFixture({ lifecycle: 'failed' }),
+            progress: null,
+            machineHomeDirectory: null,
+        };
+
+        expect(projectWorkflowInvocationRecovery({
+            ...params,
+            recoveryAvailability: { restoreWorkspace: { kind: 'unavailable' as const, reason: 'recovery_not_prepared' as const },
+                reattach: unavailable,
+                retry: { kind: 'available', causalInvocationIds: ['invocation-1'] },
+                continueSameConversation: { kind: 'available' },
+                continueFreshAgent: unavailable,
+            },
+        })).toMatchObject({ canRetrySameConversation: true, canRetryFreshAgent: false });
+        expect(projectWorkflowInvocationRecovery({
+            ...params,
+            recoveryAvailability: { restoreWorkspace: { kind: 'unavailable' as const, reason: 'recovery_not_prepared' as const },
+                reattach: unavailable,
+                retry: unavailable,
+                continueSameConversation: { kind: 'available' },
+                continueFreshAgent: { kind: 'available' },
+            },
+        })).toMatchObject({ canRetrySameConversation: false, canRetryFreshAgent: false });
+    });
+
+    it('offers a prepared continuation only for its exact eligible conversation', () => {
+        const unavailable = { kind: 'unavailable' as const, reason: 'recovery_not_prepared' as const };
+        const params = {
+            run: createWorkflowRunSummaryFixture({ state: 'interrupted' }),
+            invocation: createWorkflowInvocationIndexFixture({ lifecycle: 'failed' }),
+            progress: {
+                kind: 'happier.workflow-progress.v1' as const,
+                invocationPath: { blockId: 'analyze', scope: [] },
+                blockKind: 'step' as const,
+                attempt: '0',
+                logicalInvocationRecordId: 'invocation-1',
+                recovery: { conversation: 'same_conversation' as const, input: { kind: 'original' as const } },
+            },
+            machineHomeDirectory: null,
+            recoveryAvailability: { restoreWorkspace: { kind: 'unavailable' as const, reason: 'recovery_not_prepared' as const },
+                reattach: unavailable, retry: unavailable,
+                continueSameConversation: unavailable, continueFreshAgent: { kind: 'available' as const },
+            },
+        };
+
+        expect(projectWorkflowInvocationRecovery(params).canContinuePrepared).toBe(false);
+        expect(projectWorkflowInvocationRecovery({
+            ...params,
+            progress: { ...params.progress, recovery: { ...params.progress.recovery, conversation: 'fresh_agent' } },
+        }).canContinuePrepared).toBe(true);
+        expect(projectWorkflowInvocationRecovery({ ...params, progress: null }).canContinuePrepared).toBe(false);
     });
 
     it('keeps possibly active work blocked and treats a missing workspace as a distinct recovery fact', () => {
         const run = createWorkflowRunSummaryFixture({
             state: 'interrupted',
             workflowCustodyState: 'pending',
-            availability: { recoverSameConversation: true, recoverFreshAgent: true, retry: true },
+            availability: {    },
         });
         const projection = projectWorkflowInvocationRecovery({
             run,
@@ -270,7 +349,7 @@ describe('managed workflow Run presentation', () => {
         })).toMatchObject({ workspaceUnavailable: true, canRetrySameConversation: false });
     });
 
-    it('offers exact workspace restoration only from canonical public and private evidence', () => {
+    it('offers workspace restoration only from the exact owner decision', () => {
         const invocation = createWorkflowInvocationIndexFixture({ lifecycle: 'failed' });
         const restorableProgress = {
             kind: 'happier.workflow-progress.v1' as const,
@@ -299,17 +378,25 @@ describe('managed workflow Run presentation', () => {
             state: 'interrupted',
             availability: { restoreWorkspace: true },
         });
+        const unavailable = { kind: 'unavailable' as const, reason: 'stop_pending' as const };
+        const recoveryAvailability = {
+            reattach: unavailable, retry: unavailable,
+            continueSameConversation: unavailable, continueFreshAgent: unavailable,
+            restoreWorkspace: { kind: 'available' as const },
+        };
 
         expect(projectWorkflowInvocationRecovery({
-            run, invocation, progress: restorableProgress, machineHomeDirectory: '/Users/alice',
+            run, invocation, progress: restorableProgress, recoveryAvailability,
+            machineHomeDirectory: '/Users/alice',
         }).canRestoreWorkspace).toBe(true);
         expect(projectWorkflowInvocationRecovery({
-            run: { ...run, availability: { ...run.availability, restoreWorkspace: false } },
-            invocation, progress: restorableProgress, machineHomeDirectory: '/Users/alice',
+            run, invocation, progress: restorableProgress,
+            recoveryAvailability: { ...recoveryAvailability, restoreWorkspace: unavailable },
+            machineHomeDirectory: '/Users/alice',
         }).canRestoreWorkspace).toBe(false);
         expect(projectWorkflowInvocationRecovery({
-            run, invocation,
-            progress: { ...restorableProgress, workspace: { descriptor: restorableProgress.workspace.descriptor } },
+            run, invocation, progress: restorableProgress,
+            recoveryAvailability: undefined,
             machineHomeDirectory: '/Users/alice',
         }).canRestoreWorkspace).toBe(false);
     });
@@ -352,9 +439,16 @@ describe('managed workflow Run presentation', () => {
             workflowCustodyState: 'settled',
             availability: { restoreWorkspace: true },
         });
+        const unavailable = { kind: 'unavailable' as const, reason: 'workspace_unavailable' as const };
+        const recoveryAvailability = {
+            reattach: unavailable, retry: unavailable,
+            continueSameConversation: unavailable, continueFreshAgent: unavailable,
+            restoreWorkspace: { kind: 'available' as const },
+        };
 
         const restorable = projectWorkflowInvocationRecovery({
-            run, invocation, progress: restorableProgress, machineHomeDirectory: '/Users/alice',
+            run, invocation, progress: restorableProgress, recoveryAvailability,
+            machineHomeDirectory: '/Users/alice',
         });
         expect(restorable).toMatchObject({ canRestoreWorkspace: true, canStartReviewedNewRun: false });
 
@@ -364,6 +458,7 @@ describe('managed workflow Run presentation', () => {
             run,
             invocation,
             progress: { ...restorableProgress, workspace: { descriptor: restorableProgress.workspace.descriptor } },
+            recoveryAvailability: { ...recoveryAvailability, restoreWorkspace: unavailable },
             machineHomeDirectory: '/Users/alice',
         });
         expect(unrestorable).toMatchObject({ canRestoreWorkspace: false, canStartReviewedNewRun: true });
@@ -377,6 +472,7 @@ describe('managed workflow Run presentation', () => {
                 reason: { code: 'source_workspace_unavailable' },
                 workspace: { descriptor: restorableProgress.workspace.descriptor },
             },
+            recoveryAvailability: { ...recoveryAvailability, restoreWorkspace: unavailable },
             machineHomeDirectory: '/Users/alice',
         })).toMatchObject({ canRestoreWorkspace: false, canStartReviewedNewRun: true });
     });
@@ -445,5 +541,45 @@ describe('managed workflow Run presentation', () => {
         });
         expect(formatWorkflowWorkspaceSourceLabel('Analyze', 'inv-analyze-iteration-7'))
             .toBe('Analyze · inv-analyze-iteration-7');
+    });
+
+    /**
+     * A waiting or skipped row states its cause from the canonical facts only:
+     * the lifecycle and the coordinator's closed reason code. Anything else
+     * states nothing rather than a guess.
+     */
+    it('states a waiting or skipped cause only from its canonical facts', () => {
+        expect(describeWorkflowInvocationCause({
+            lifecycle: 'skipped', reasonCode: 'condition_false', blockLabel: 'Analyze',
+        })).toBe(t('workflows.condition.skippedReason', { block: 'Analyze' }));
+        expect(describeWorkflowInvocationCause({
+            lifecycle: 'waiting_for_capacity', reasonCode: null, blockLabel: 'Analyze',
+        })).toBe(t('workflows.run.capacityOccupied'));
+        // A skip for another reason, or one whose block cannot be named, says nothing invented.
+        expect(describeWorkflowInvocationCause({
+            lifecycle: 'skipped', reasonCode: 'something_else', blockLabel: 'Analyze',
+        })).toBeNull();
+        expect(describeWorkflowInvocationCause({
+            lifecycle: 'skipped', reasonCode: 'condition_false', blockLabel: null,
+        })).toBeNull();
+        expect(describeWorkflowInvocationCause({
+            lifecycle: 'running', reasonCode: null, blockLabel: 'Analyze',
+        })).toBeNull();
+    });
+
+    it('says an active Run lost contact only while its Machine is known unreachable', () => {
+        const coverage = summarizeWorkflowInvocationCoverage([], { kindsByInvocationId: new Map(), historyComplete: false });
+        const running = createWorkflowRunSummaryFixture({ state: 'running' });
+        expect(formatWorkflowRunOutcomeSentence({
+            run: running, coverage, machine: { name: 'Mac Studio', reachable: false },
+        })).toBe(t('workflows.run.machineUnavailable', { machine: 'Mac Studio' }));
+        expect(formatWorkflowRunOutcomeSentence({
+            run: running, coverage, machine: { name: 'Mac Studio', reachable: true },
+        })).toBe(formatWorkflowRunOutcomeSentence({ run: running, coverage }));
+        // A settled Run's outcome is not about the Machine any more.
+        const done = createWorkflowRunSummaryFixture({ state: 'succeeded' });
+        expect(formatWorkflowRunOutcomeSentence({
+            run: done, coverage, machine: { name: 'Mac Studio', reachable: false },
+        })).toBe(formatWorkflowRunOutcomeSentence({ run: done, coverage }));
     });
 });

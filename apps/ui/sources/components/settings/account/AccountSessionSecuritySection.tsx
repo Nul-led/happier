@@ -1,8 +1,9 @@
 import React from 'react';
-import { useRouter } from 'expo-router';
+import { useRouter } from '@/components/appShell/workspace/destinationRoute';
 
 import { useAuth } from '@/auth/context/AuthContext';
-import { Item } from '@/components/ui/lists/Item';
+import { RoundButton } from '@/components/ui/buttons/RoundButton';
+import { SectionButtonRow } from '@/components/ui/lists/SectionButtonRow';
 import { SettingAnchor } from '@/components/settings/shell/SettingRow';
 import { ACCOUNT_SECURITY_SETTINGS } from './accountSecuritySettings';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
@@ -12,10 +13,13 @@ import { createApiTokenSettingsController } from '@/components/settings/apiToken
 import { useApiTokenSettingsControllerState } from '@/components/settings/apiTokens/useApiTokenSettingsControllerState';
 import { completeApiTokenSettingsSignOutEverywhere } from '@/components/settings/apiTokens/apiTokenSettingsSignOutLifecycle';
 import { resolveApiTokenOperationErrorMessageKey } from '@/components/settings/apiTokens/apiTokenSettingsPresentation';
-import { captureActiveServerAccountScopeCurrentness } from '@/sync/domains/scope/activeServerAccountScope';
+import { confirmForCapturedAccount } from '@/components/settings/apiTokens/confirmForCapturedAccount';
 
-/** Ends every signed-in session for this Account. A row, so it can sit in any section. */
-export const AccountSignOutEverywhereItem = React.memo(function AccountSignOutEverywhereItem(props: Readonly<{ showDivider?: boolean }>) {
+/**
+ * Ends every signed-in session for this Account: a quiet bordered button in the page-closing row
+ * (`patterns.md` → Leaving and destroying), never a red row inside a sheet.
+ */
+export const AccountSignOutEverywhereButton = React.memo(function AccountSignOutEverywhereButton() {
     const auth = useAuth();
     const router = useRouter();
     const [controller] = React.useState(createApiTokenSettingsController);
@@ -23,15 +27,14 @@ export const AccountSignOutEverywhereItem = React.memo(function AccountSignOutEv
     React.useInsertionEffect(() => () => controller.retire(), [controller]);
 
     const signOut = async () => {
-        const accountCurrentness = captureActiveServerAccountScopeCurrentness();
-        const confirmed = await Modal.confirm(
+        const target = await confirmForCapturedAccount(controller, () => Modal.confirm(
             t('settingsApiTokens.signOutEverywhere.title'),
             t('settingsApiTokens.signOutEverywhere.body'),
             { cancelText: t('common.cancel'), confirmText: t('settingsApiTokens.signOutEverywhere.confirm'), destructive: true },
-        );
-        if (!confirmed || !accountCurrentness.isCurrent()) return;
+        ));
+        if (!target) return;
         const completed = await completeApiTokenSettingsSignOutEverywhere({
-            signOutEverywhere: controller.signOutEverywhere,
+            signOutEverywhere: () => controller.signOutEverywhere(target),
             logout: auth.logout,
             replace: (path) => router.replace(path),
         });
@@ -41,26 +44,28 @@ export const AccountSignOutEverywhereItem = React.memo(function AccountSignOutEv
     };
 
     return (
-        <SettingAnchor setting={ACCOUNT_SECURITY_SETTINGS.settings.signOutEverywhere} showDivider={props.showDivider}>
-        <Item
+        <RoundButton
             testID="settings-account-sign-out-everywhere"
+            size="small"
+            display="secondary"
             title={t('settingsApiTokens.signOutEverywhere.title')}
-            subtitle={t('settingsApiTokens.signOutEverywhere.subtitle')}
-            destructive
+            accessibilityHint={t('settingsApiTokens.signOutEverywhere.subtitle')}
             disabled={!auth.credentials || state.operation !== null}
             loading={state.operation === 'signOutEverywhere'}
             onPress={signOut}
-            showChevron={false}
-            showDivider={props.showDivider}
         />
-        </SettingAnchor>
     );
 });
 
+/** Closes the security page: signing out everywhere, with its consequence underneath. Render it last. */
 export const AccountSessionSecuritySection = React.memo(function AccountSessionSecuritySection() {
     return (
-        <ItemGroup title={t('settingsAccount.sessionsSectionTitle')}>
-            <AccountSignOutEverywhereItem />
-        </ItemGroup>
+        <SettingAnchor setting={ACCOUNT_SECURITY_SETTINGS.settings.signOutEverywhere}>
+            <ItemGroup surface="none" accessibilityLabel={t('settingsAccount.sessionsSectionTitle')}>
+                <SectionButtonRow footnote={t('settingsApiTokens.signOutEverywhere.subtitle')}>
+                    <AccountSignOutEverywhereButton />
+                </SectionButtonRow>
+            </ItemGroup>
+        </SettingAnchor>
     );
 });

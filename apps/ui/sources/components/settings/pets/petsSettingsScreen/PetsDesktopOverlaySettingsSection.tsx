@@ -1,18 +1,15 @@
 import * as React from 'react';
-import { View } from 'react-native';
-import { useUnistyles } from 'react-native-unistyles';
 
 import { DropdownMenu, type DropdownMenuItem } from '@/components/ui/forms/dropdown/DropdownMenu';
 import { Switch } from '@/components/ui/forms/Switch';
 import { Item } from '@/components/ui/lists/Item';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
+import { SegmentedChoiceItem, type SegmentedChoiceOption } from '@/components/ui/lists/SegmentedChoiceItem';
 import { t } from '@/text';
-import { Icon } from '@/components/ui/icons/Icon';
+import { SettingAnchor, SettingRow } from '@/components/settings/shell/SettingRow';
+import { PETS_SETTINGS } from '@/components/settings/pets/petsSettings';
 
-import {
-    isDesktopPetOverlayVisibilityModeOverride,
-    isPetEnabledOverride,
-} from './helpers';
+import { isDesktopPetOverlayVisibilityModeOverride } from './helpers';
 import type {
     DesktopPetOverlayVisibilityModeOverride,
     PetEnabledOverride,
@@ -20,30 +17,24 @@ import type {
 
 type PetsDesktopOverlaySettingsSectionProps = Readonly<{
     desktopOverlayDefaultEnabled: boolean;
-    desktopOverlayOverrideOpen: boolean;
     desktopOverlayVisibilityModeOpen: boolean;
     desktopPetOverlayEnabledOverride: PetEnabledOverride;
     desktopPetOverlayVisibilityModeOverride: DesktopPetOverlayVisibilityModeOverride;
     onDefaultEnabledChange: (enabled: boolean) => void;
     onDesktopOverlayOverrideChange: (override: PetEnabledOverride) => void;
-    onDesktopOverlayOverrideOpenChange: (open: boolean) => void;
     onDesktopOverlayVisibilityModeOverrideChange: (override: DesktopPetOverlayVisibilityModeOverride) => void;
     onDesktopOverlayVisibilityModeOpenChange: (open: boolean) => void;
     onResetPosition: () => void;
-    overrideItems: DropdownMenuItem[];
+    overrideOptions: ReadonlyArray<SegmentedChoiceOption<PetEnabledOverride>>;
     visibilityModeItems: DropdownMenuItem[];
 }>;
 
 export function PetsDesktopOverlaySettingsSection(props: PetsDesktopOverlaySettingsSectionProps): React.ReactElement {
-    const { theme } = useUnistyles();
-
     return (
-        <ItemGroup title={t('settingsPets.desktopOverlayTitle')}>
-            <Item
+        <ItemGroup title={t('settingsPets.desktopOverlayTitle')} description={t('settingsPets.desktopOverlayDescription')}>
+            <SettingRow
                 testID="settings-pets-desktop-overlay-enabled"
-                title={t('settingsPets.desktopOverlayEnabledTitle')}
-                subtitle={t('settingsPets.desktopOverlayEnabledSubtitle')}
-                icon={<Icon name="desktop" size={24} color={theme.colors.accent.blue} />}
+                setting={PETS_SETTINGS.settings.desktopOverlayEnabled}
                 rightElement={(
                     <Switch
                         value={props.desktopOverlayDefaultEnabled}
@@ -52,28 +43,20 @@ export function PetsDesktopOverlaySettingsSection(props: PetsDesktopOverlaySetti
                 )}
                 showChevron={false}
             />
-            <View testID="settings-pets-desktop-overlay-device-override">
-                <DropdownMenu
-                    open={props.desktopOverlayOverrideOpen}
-                    onOpenChange={props.onDesktopOverlayOverrideOpenChange}
-                    selectedId={props.desktopPetOverlayEnabledOverride}
-                    items={props.overrideItems}
-                    onSelect={(itemId) => {
-                        if (isPetEnabledOverride(itemId)) {
-                            props.onDesktopOverlayOverrideChange(itemId);
-                        }
-                    }}
-                    itemTrigger={{
-                        title: t('settingsPets.desktopOverlayDeviceOverrideTitle'),
-                        subtitle: t('settingsPets.deviceOverrideSubtitle'),
-                        icon: <Icon name="cpu" size={24} color={theme.colors.accent.blue} />,
-                        itemProps: { showDivider: false },
-                    }}
-                    rowKind="item"
+            <SettingAnchor setting={PETS_SETTINGS.settings.desktopOverlayDeviceOverride}>
+                <SegmentedChoiceItem<PetEnabledOverride>
+                    testID="settings-pets-desktop-overlay-device-override"
+                    testIDPrefix="settings-pets-desktop-overlay-device-override"
+                    title={t(PETS_SETTINGS.settings.desktopOverlayDeviceOverride.titleKey)}
+                    subtitle={t('settingsPets.deviceOverrideSubtitle')}
+                    options={props.overrideOptions}
+                    value={props.desktopPetOverlayEnabledOverride}
+                    onChange={props.onDesktopOverlayOverrideChange}
                 />
-            </View>
-            <View testID="settings-pets-desktop-overlay-visibility-mode">
+            </SettingAnchor>
+            <SettingAnchor setting={PETS_SETTINGS.settings.desktopOverlayVisibilityMode}>
                 <DropdownMenu
+                    testID="settings-pets-desktop-overlay-visibility-mode"
                     open={props.desktopOverlayVisibilityModeOpen}
                     onOpenChange={props.onDesktopOverlayVisibilityModeOpenChange}
                     selectedId={props.desktopPetOverlayVisibilityModeOverride}
@@ -84,19 +67,18 @@ export function PetsDesktopOverlaySettingsSection(props: PetsDesktopOverlaySetti
                         }
                     }}
                     itemTrigger={{
-                        title: t('settingsPets.desktopOverlayVisibilityModeTitle'),
+                        title: t(PETS_SETTINGS.settings.desktopOverlayVisibilityMode.titleKey),
                         subtitle: t('settingsPets.desktopOverlayVisibilityModeSubtitle'),
-                        icon: <Icon name="eye" size={24} color={theme.colors.accent.blue} />,
                     }}
                     rowKind="item"
                 />
-            </View>
+            </SettingAnchor>
             <Item
                 testID="settings-pets-desktop-overlay-reset-position"
                 title={t('settingsPets.desktopOverlayResetPositionTitle')}
                 subtitle={t('settingsPets.desktopOverlayResetPositionSubtitle')}
-                icon={<Icon name="crosshair" size={24} color={theme.colors.accent.orange} />}
                 onPress={props.onResetPosition}
+                showChevron={false}
             />
         </ItemGroup>
     );

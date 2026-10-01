@@ -11,7 +11,8 @@ import { createPluginRegistryStateStore } from '@/plugins/store/registry/current
 import { readInstalledPluginCatalogSnapshot } from '@/plugins/projection/catalog/installed';
 import { resolvePluginStorePaths } from '@/plugins/store/paths';
 import { readCurrentCommittedPluginGenerations } from '@/plugins/store/registry/generationStore';
-import type { PluginFinalPolicyCurrentGeneration } from '@/plugins/runtime/policy/facts';
+import type { PluginFinalPolicyCurrentRuntime } from '@/plugins/runtime/policy/facts';
+import { createPluginRuntimeOccurrenceId } from '@/plugins/runtime/runtimeSlots';
 import {
   materializeZipformerVoiceModelPackPluginFixture,
   ZIPFORMER_VOICE_MODEL_PACK_FIXTURE_LOCAL_ID,
@@ -46,19 +47,22 @@ function createDaemonPublicVoiceModelPackRuntime(
         sherpa_zipformer_streaming: { abiVersion: 1 },
       },
     },
-    readPluginFinalPolicyCurrentGenerations: params.readPluginFinalPolicyCurrentGenerations ?? (async () => {
+    readPluginFinalPolicyCurrentRuntimes: params.readPluginFinalPolicyCurrentRuntimes ?? (async () => {
       const committed = await readCurrentCommittedPluginGenerations(resolvePluginStorePaths({
         happyHomeDir: params.happyHomeDir,
       }));
       if (!committed) return null;
-      return new Map([...committed.generations].map(([pluginId, generation]) => [pluginId, {
-        immutableGenerationId: generation.immutableGenerationId,
-        desiredImmutableGenerationId: generation.immutableGenerationId,
-        appliedImmutableGenerationId: generation.immutableGenerationId,
-        distribution: generation.installation?.source.distribution ?? 'bundled',
-        applied: true,
-        selectedAccess: generation.installation?.optionalAccess ?? [],
-      }]));
+      return new Map([...committed.generations].map(([pluginId, generation]) => {
+        const occurrenceId = createPluginRuntimeOccurrenceId(pluginId);
+        return [pluginId, {
+          occurrenceId,
+          sourceCustody: { kind: 'managed' as const, immutableGenerationId: generation.immutableGenerationId, installSource: 'archive' as const },
+          desiredOccurrenceId: occurrenceId,
+          appliedOccurrenceId: occurrenceId,
+          applied: true,
+          selectedAccess: generation.installation?.optionalAccess ?? [],
+        }];
+      }));
     }),
   });
 }
@@ -449,11 +453,12 @@ describe('daemon public Voice model-pack consumed vertical', () => {
     const committed = await readCurrentCommittedPluginGenerations(resolvePluginStorePaths({ happyHomeDir }));
     const generation = committed?.generations.get(plugin.pluginId);
     if (!generation) throw new Error('Expected committed Voice fixture generation');
-    let admitted: ReadonlyMap<string, PluginFinalPolicyCurrentGeneration> = new Map([[plugin.pluginId, {
-      immutableGenerationId: generation.immutableGenerationId,
-      desiredImmutableGenerationId: generation.immutableGenerationId,
-      appliedImmutableGenerationId: generation.immutableGenerationId,
-      distribution: generation.installation?.source.distribution ?? 'bundled',
+    const admittedOccurrenceId = createPluginRuntimeOccurrenceId(plugin.pluginId);
+    let admitted: ReadonlyMap<string, PluginFinalPolicyCurrentRuntime> = new Map([[plugin.pluginId, {
+      occurrenceId: admittedOccurrenceId,
+      sourceCustody: { kind: 'managed', immutableGenerationId: generation.immutableGenerationId, installSource: 'archive' },
+      desiredOccurrenceId: admittedOccurrenceId,
+      appliedOccurrenceId: admittedOccurrenceId,
       applied: true,
       selectedAccess: generation.installation?.optionalAccess ?? [],
     }]]);
@@ -464,13 +469,13 @@ describe('daemon public Voice model-pack consumed vertical', () => {
       machineId: 'machine-stale-source-fixture',
       happyHomeDir,
       paths,
-      readPluginFinalPolicyCurrentGenerations: async () => admitted,
+      readPluginFinalPolicyCurrentRuntimes: async () => admitted,
       createInstallerHost: createFixtureInstallerHostFactory(assets, () => {
         admitted = new Map([[plugin.pluginId, {
-          immutableGenerationId: generation.immutableGenerationId,
-          desiredImmutableGenerationId: generation.immutableGenerationId,
-          appliedImmutableGenerationId: null,
-          distribution: generation.installation?.source.distribution ?? 'bundled',
+          occurrenceId: admittedOccurrenceId,
+          sourceCustody: { kind: 'managed', immutableGenerationId: generation.immutableGenerationId, installSource: 'archive' },
+          desiredOccurrenceId: admittedOccurrenceId,
+          appliedOccurrenceId: null,
           applied: false,
           selectedAccess: generation.installation?.optionalAccess ?? [],
         }]]);

@@ -53,6 +53,10 @@ vi.mock('@/components/appShell/plugins/AppShellPluginUiProjection', () => ({
         serverId: null,
         platform: 'ios',
     }),
+    useProjectedPluginLocalizedTextResolver: () => (
+        _pluginId: string,
+        value: string | Readonly<{ key: string; fallback: string }>,
+    ) => typeof value === 'string' ? value : value.fallback,
 }));
 
 const appSidebarBinding = normalizePluginUiDestinationBindingV1({
@@ -67,6 +71,7 @@ if (!appSidebarBinding) throw new Error('App panel fixture needs a normalized V2
 const appSidebarPlacement = {
     id: 'surfacePlacement:happier.dev.inspector:app-panel',
     pluginId: 'happier.dev.inspector',
+    occurrenceId: 'happier.dev.inspector:app-panel:occurrence-1',
     contributionKind: 'surfacePlacement',
     descriptorId: 'app-panel',
     binding: appSidebarBinding,
@@ -115,7 +120,7 @@ describe('NativeAppPluginPanelsSettingsEntry', () => {
 
             entry?.props.onPress();
 
-            expect(routerPushSpy).toHaveBeenCalledWith('/settings/plugins/panels');
+            expect(routerPushSpy).toHaveBeenCalledWith('/plugins/panels');
         },
     );
 

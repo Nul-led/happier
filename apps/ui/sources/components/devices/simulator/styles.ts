@@ -187,24 +187,9 @@ export const simulatorStreamStyles = StyleSheet.create((theme) => ({
         paddingHorizontal: 10,
         paddingVertical: 6,
     },
-    controlState: {
-        minHeight: 32,
-        justifyContent: 'center',
-        borderWidth: 1,
-        borderColor: theme.colors.border.default,
-        backgroundColor: theme.colors.surface.inset,
-        paddingHorizontal: 10,
-        paddingVertical: 6,
-    },
-    controlStateDisabled: {
-        backgroundColor: theme.colors.surface.base,
-    },
     badgeText: {
         color: theme.colors.text.secondary,
         ...Typography.default('semiBold'),
-    },
-    badgeTextDisabled: {
-        color: theme.colors.text.disabled,
     },
     inputLayer: {
         flex: 1,

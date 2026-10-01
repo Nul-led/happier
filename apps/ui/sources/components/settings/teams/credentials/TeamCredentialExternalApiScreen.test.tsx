@@ -6,19 +6,18 @@ import {
     type ApprovalRequestV2,
 } from '@happier-dev/protocol';
 
+import { collectRenderedTestIds } from '@/dev/testkit/render/collectRenderedTestIds';
+import { createHomeGovernanceHarness, installHomeGovernanceBoundaries } from '@/dev/testkit/harness/homeGovernanceHarness';
+import { decideApprovalAsInbox } from '@/dev/testkit/harness/approvalInbox';
+import { renderScreen } from '@/dev/testkit/render/renderScreen';
+import { standardCleanup } from '@/dev/testkit/cleanup/standardCleanup';
+import { accountDisplayProfileFixture } from '@/dev/testkit/fixtures/homeGovernanceFixtures';
 import {
-    collectRenderedTestIds,
-    createHomeGovernanceHarness,
-    decideApprovalAsInbox,
-    installHomeGovernanceBoundaries,
-    renderScreen,
-    standardCleanup,
-    accountDisplayProfileFixture,
     teamCapabilitiesFixture,
     teamCredentialResourceFixture,
     teamMembershipFixture,
     teamSummaryFixture,
-} from '@/dev/testkit';
+} from '@/dev/testkit/fixtures/teamFixtures';
 
 import { installSettingsViewCommonModuleMocks } from '../../settingsViewTestHelpers';
 
@@ -56,24 +55,12 @@ vi.mock('@react-navigation/native', async () => {
     });
 });
 
-vi.mock('@/sync/api/capabilities/accountStoredContentCompatibility', async (importOriginal) => ({
-    ...await importOriginal<typeof import('@/sync/api/capabilities/accountStoredContentCompatibility')>(),
-    requireCurrentAccountStoredContentServerCompatibility: vi.fn(async () => undefined),
-}));
-
 installSettingsViewCommonModuleMocks({
     router: async () => ({
         useRouter: () => ({ push: vi.fn(), back: vi.fn(), replace: routerReplace }),
         useNavigation: () => ({ setOptions: vi.fn() }),
         useLocalSearchParams: () => ({}),
     }),
-    // The real client store: approval Artifacts are published into it by the
-    // Action front door and read back by the mounted approval continuation, so a
-    // stub here would sever exactly the path the approval journeys prove.
-    storage: async (importOriginal) => {
-        const { createStorageModuleMock } = await import('@/dev/testkit/mocks/storage');
-        return createStorageModuleMock({ importOriginal, overrides: {} });
-    },
     modal: async () => {
         const { createModalModuleMock } = await import('@/dev/testkit/mocks/modal');
         return createModalModuleMock({
@@ -90,11 +77,18 @@ installSettingsViewCommonModuleMocks({
 
 const harness = createHomeGovernanceHarness();
 installHomeGovernanceBoundaries(harness);
+// Approval continuation must observe the real store. An async importOriginal
+// mock deadlocks when that store's runtime imports return to the mocked module.
+vi.doUnmock('@/sync/domains/state/storage');
+const { resetTeamsSnapshotsForTests } = await import('@/sync/store/teams/teamsSnapshots');
+const { resetTeamsDirectoryEngineForTests } = await import('@/sync/engine/teams/teamsDirectoryEngine');
+const { resetTeamActionClientForTests } = await import('@/sync/ops/teams/teamActionClient');
 
 const TEAM_GET_PATH = '/v1/teams/get';
 const CREDENTIAL_GET_PATH = '/v1/teams/credential-resources/get';
 const EXTERNAL_KEYS_LIST_PATH = '/v1/teams/credential-resources/external-keys/list';
 const EXTERNAL_KEY_CREATE_PATH = '/v1/teams/credential-resources/external-keys/create';
+const EXTERNAL_KEY_AUTHORIZE_PATH = '/v1/teams/credential-resources/external-keys/authorize';
 const EXTERNAL_KEY_REVOKE_PATH = '/v1/teams/credential-resources/external-keys/revoke';
 const EXTERNAL_KEY_REVOKE_ALL_PATH = '/v1/teams/credential-resources/external-keys/revoke-all';
 const MEMBERS_LIST_PATH = '/v1/teams/members/list';
@@ -113,6 +107,8 @@ function key(keyId: string, resourceId: string, label: string) {
         createdAt: '2026-09-07T10:00:00.000Z',
         lastUsedAt: null,
         expiresAt: null,
+        authenticationStatus: 'satisfied' as 'satisfied' | 'authentication_required' | 'unavailable',
+        canAuthorize: false,
     };
 }
 
@@ -196,9 +192,6 @@ async function chooseMember(
 }
 
 beforeEach(async () => {
-    const { resetTeamsSnapshotsForTests } = await import('@/sync/store/teams/teamsSnapshots');
-    const { resetTeamsDirectoryEngineForTests } = await import('@/sync/engine/teams/teamsDirectoryEngine');
-    const { resetTeamActionClientForTests } = await import('@/sync/ops/teams/teamActionClient');
     resetTeamsSnapshotsForTests();
     resetTeamsDirectoryEngineForTests();
     resetTeamActionClientForTests();
@@ -220,6 +213,56 @@ beforeEach(async () => {
 afterEach(() => standardCleanup());
 
 describe('TeamCredentialExternalApiScreen', () => {
+    it('lets an entitled assignee authorize their pending key without exposing manager controls or revealing its bearer again', async () => {
+        const pendingKey = { ...key(CREATED_KEY_ID, 'resource-1', 'My CLI'), authenticationStatus: 'authentication_required' as const, canAuthorize: true };
+        const serverId = await addManagedHome([pendingKey]);
+        harness.answer(serverId, TEAM_GET_PATH, { body: teamSummaryFixture({ viewerRole: 'member', capabilities: teamCapabilitiesFixture({}) }) });
+        harness.answer(serverId, CREDENTIAL_GET_PATH, { status: 404, body: { error: 'not_found_or_not_visible' } });
+        harness.answer(serverId, '/v1/teams/credential-resources/entitled/list', { body: { resources: [{
+            id: 'resource-1', teamId: 'team-1', displayName: 'Acme Provider', resourceRevision: 7,
+            readiness: { kind: 'available' }, recoveryAction: null,
+            mayBroker: true, mayReceiveDirect: false, directMaterialState: 'never_delivered',
+            sessionUsePolicy: 'personal_allowed', providerModels: [], connectedServiceSelections: [],
+            sourcePresentation: { kind: 'provider', provider: {
+                identity: { pluginId: 'happier.provider.openrouter', localId: 'openrouter' }, definitionRevision: 1,
+            } },
+        }] } });
+        harness.answer(serverId, EXTERNAL_KEY_AUTHORIZE_PATH, { status: 403, body: { error: 'team_authentication_required' } });
+        const { TeamCredentialExternalApiScreen } = await import('./TeamCredentialExternalApiScreen');
+        const screen = await renderScreen(<TeamCredentialExternalApiScreen serverId={serverId} teamId="team-1" resourceId="resource-1" />);
+
+        await vi.waitFor(() => expect(screen.findByTestId(`team-credential-external-authorize:${CREATED_KEY_ID}`)).not.toBeNull());
+        expect(screen.findByTestId('team-credential-external-create')).toBeNull();
+        expect(screen.findByTestId(`team-credential-external-revoke:${CREATED_KEY_ID}`)).toBeNull();
+        expect(screen.findByTestId(`team-credential-external-replace:${CREATED_KEY_ID}`)).toBeNull();
+        expect(harness.requestsFor(MEMBERS_LIST_PATH)).toHaveLength(0);
+        expect(screen.getTextContent()).not.toContain('teams.unavailable.updateRequired');
+        await screen.pressByTestIdAsync(`team-credential-external-authorize:${CREATED_KEY_ID}`);
+        await vi.waitFor(() => expect(harness.requestsFor(EXTERNAL_KEY_AUTHORIZE_PATH)).toHaveLength(1));
+        expect(harness.requestsFor(EXTERNAL_KEY_AUTHORIZE_PATH)[0]?.input).toEqual({ resourceId: 'resource-1', keyId: CREATED_KEY_ID });
+        await vi.waitFor(() => expect(screen.getTextContent()).toContain('teams.credentials.errors.teamAuthenticationRequired'));
+        expect(screen.findByTestId(`team-credential-external-key:${CREATED_KEY_ID}`)).not.toBeNull();
+        harness.answer(serverId, EXTERNAL_KEY_AUTHORIZE_PATH, { body: { key: { ...pendingKey, authenticationStatus: 'satisfied', canAuthorize: true } } });
+        await screen.pressByTestIdAsync(`team-credential-external-authorize:${CREATED_KEY_ID}`);
+        await vi.waitFor(() => expect(screen.findByTestId(`team-credential-external-authorize:${CREATED_KEY_ID}`)).toBeNull());
+        expect(screen.findByTestId(`team-credential-external-key:${CREATED_KEY_ID}`)).not.toBeNull();
+        expect(screen.findByTestId('team-credential-external-value:token')).toBeNull();
+    });
+
+    it('keeps another member’s pending qualification visible to a manager without offering authorization on their behalf', async () => {
+        const pendingKey = { ...key(CREATED_KEY_ID, 'resource-1', 'Maya CLI'), teamMembershipId: 'membership-maya', authenticationStatus: 'authentication_required' as const };
+        const serverId = await addManagedHome([pendingKey]);
+        harness.answer(serverId, MEMBERS_LIST_PATH, { body: { items: [teamMembershipFixture({
+            id: 'membership-maya', accountId: 'account-maya', account: accountDisplayProfileFixture('Maya'),
+        })], nextCursor: null } });
+        const { TeamCredentialExternalApiScreen } = await import('./TeamCredentialExternalApiScreen');
+        const screen = await renderScreen(<TeamCredentialExternalApiScreen serverId={serverId} teamId="team-1" resourceId="resource-1" />);
+        await vi.waitFor(() => expect(screen.findByTestId(`team-credential-external-key:${CREATED_KEY_ID}`)).not.toBeNull());
+        expect(screen.getTextContent()).toContain('teams.credentials.externalApi.authenticationRequired');
+        expect(screen.findByTestId(`team-credential-external-authorize:${CREATED_KEY_ID}`)).toBeNull();
+        expect(screen.findByTestId(`team-credential-external-revoke:${CREATED_KEY_ID}`)).not.toBeNull();
+    });
+
     it('discloses the Home readability, bearer authority, and incomplete terminal accounting before key creation', async () => {
         const serverId = await addManagedHome();
 

@@ -2,7 +2,7 @@ import * as React from 'react';
 import { View } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
-import type { MachineAdministrationTargetV1, McpServerBindingV1, McpServerCatalogEntryV1 } from '@happier-dev/protocol';
+import type { McpServerBindingV1, McpServerCatalogEntryV1 } from '@happier-dev/protocol';
 import { McpServerBindingV1Schema, McpServerCatalogEntryV1Schema } from '@happier-dev/protocol';
 
 import type { Machine } from '@/sync/domains/state/storageTypes';
@@ -11,46 +11,30 @@ import { Item } from '@/components/ui/lists/Item';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
 import { PathInputBrowseButton } from '@/components/ui/pathBrowser/PathInputBrowseButton';
 import { openMachinePathBrowserModal } from '@/components/ui/pathBrowser/openMachinePathBrowserModal';
-import { TextInput } from '@/components/ui/text/Text';
+import { FieldTextInput } from '@/components/ui/forms/FieldTextInput';
 import { Modal } from '@/modal';
 import { useHappyAction } from '@/hooks/ui/useHappyAction';
 import { machineMcpServersTest } from '@/sync/ops/machineMcpServers';
-import { machineAdministrationTargetsEqual } from '@/sync/domains/machines/administration/targetSelection';
-import {
-    type FreshMachineAdministrationExecutionTargetV1,
-    type MachineAdministrationTargetSelectionV1,
-} from '@/sync/domains/machines/administration/useTargetSelection';
-import { isMachineAdministrationExecutionTargetCurrent } from '@/sync/domains/machines/administration/operationCurrentness';
+import type { MachineAdministrationTargetSelectionV1 } from '@/sync/domains/machines/administration/useTargetSelection';
+import { useMachineAdministrationExecutionTargetBinding } from '@/sync/domains/machines/administration/useExecutionTargetBinding';
+import { SectionActionButton } from '@/components/ui/lists/SectionActionButton';
 import { t } from '@/text';
 import { Icon } from '@/components/ui/icons/Icon';
+import { collectionListStyles } from '@/components/ui/lists/collection/CollectionList';
+import { describeBindingTarget } from './McpBindingTargetFields';
 
-const styles = StyleSheet.create((theme) => ({
+const styles = StyleSheet.create(() => ({
     directoryInputRow: {
         flexDirection: 'row',
         alignItems: 'center',
         gap: 8,
-        minWidth: 260,
-        maxWidth: 420,
+        flexShrink: 1,
     },
     directoryInput: {
         flex: 1,
-        minHeight: 40,
-        borderRadius: 10,
-        paddingHorizontal: 12,
-        paddingVertical: 9,
-        backgroundColor: theme.colors.input.background,
-        color: theme.colors.input.text,
+        minWidth: 0,
     },
 }));
-
-function describeBinding(binding: McpServerBindingV1, machines: readonly Machine[]): string {
-    const target = binding.target;
-    if (target.t === 'allMachines') return t('settings.mcpServersBindingTargetAllMachines');
-    const machine = machines.find((m) => m.id === target.machineId) ?? null;
-    const machineLabel = machine?.metadata?.displayName || machine?.metadata?.host || target.machineId;
-    if (target.t === 'machine') return t('settings.mcpServersBindingTargetMachine', { machine: machineLabel });
-    return t('settings.mcpServersBindingTargetWorkspace', { machine: machineLabel, path: target.workspaceRoot });
-}
 
 export const McpServerTestPanel = React.memo(function McpServerTestPanel(props: Readonly<{
     server: McpServerCatalogEntryV1;
@@ -61,34 +45,11 @@ export const McpServerTestPanel = React.memo(function McpServerTestPanel(props: 
     const { theme } = useUnistyles();
     const administrationTargetSelection = props.targetSelection;
     const selectedTarget = administrationTargetSelection.selectedTarget;
-    const selectionKey = selectedTarget
-        ? `${selectedTarget.serverIdentityId}\0${selectedTarget.machineId}`
-        : '';
-    const selectionKeyRef = React.useRef(selectionKey);
-    selectionKeyRef.current = selectionKey;
-    const resolveExecutionTargetRef = React.useRef(administrationTargetSelection.resolveExecutionTarget);
-    resolveExecutionTargetRef.current = administrationTargetSelection.resolveExecutionTarget;
-    const resolveExactExecutionTarget = React.useCallback((
-        expectedTarget: MachineAdministrationTargetV1 | null,
-    ): FreshMachineAdministrationExecutionTargetV1 | null => {
-        const resolved = resolveExecutionTargetRef.current();
-        return expectedTarget !== null
-            && resolved !== null
-            && machineAdministrationTargetsEqual(expectedTarget, resolved.target)
-            ? resolved
-            : null;
-    }, []);
-    const isExecutionTargetCurrent = React.useCallback((
-        requestedSelection: string,
-        executionTarget: FreshMachineAdministrationExecutionTargetV1,
-    ): boolean => {
-        return isMachineAdministrationExecutionTargetCurrent({
-            expectedTarget: executionTarget,
-            resolveCurrentTarget: resolveExecutionTargetRef.current,
-            expectedSelectionKey: requestedSelection,
-            currentSelectionKey: selectionKeyRef.current,
-        });
-    }, []);
+    const {
+        selectionKey,
+        resolveExactExecutionTarget,
+        isExecutionTargetCurrent,
+    } = useMachineAdministrationExecutionTargetBinding(administrationTargetSelection);
 
     const [bindingId, setBindingId] = React.useState<string | null>(null);
     const [openMenu, setOpenMenu] = React.useState<'binding' | null>(null);
@@ -117,7 +78,7 @@ export const McpServerTestPanel = React.memo(function McpServerTestPanel(props: 
         for (const binding of props.bindings) {
             items.push({
                 id: binding.id,
-                title: describeBinding(binding, props.machines),
+                title: describeBindingTarget(binding.target, props.machines),
                 subtitle: binding.enabled ? t('common.enabled') : t('common.disabled'),
                 icon: <Icon name="push-pin" size={20} color={theme.colors.text.secondary} />,
             });
@@ -186,7 +147,20 @@ export const McpServerTestPanel = React.memo(function McpServerTestPanel(props: 
     const executionTarget = resolveExactExecutionTarget(selectedTarget);
 
     return (
-        <ItemGroup title={t('settings.mcpServersTestTitle')} footer={t('settings.mcpServersTestFooter')}>
+        <ItemGroup
+            title={t('settings.mcpServersTestTitle')}
+            description={t('settings.mcpServersTestFooter')}
+            action={(
+                <SectionActionButton
+                    testID="mcp.server.test.run"
+                    icon="play"
+                    title={t('settings.mcpServersTestRunTitle')}
+                    loading={isTesting}
+                    disabled={executionTarget === null || !canTestServer || !canTestBinding || isTesting}
+                    onPress={runTest}
+                />
+            )}
+        >
             <DropdownMenu
                 open={openMenu === 'binding'}
                 onOpenChange={(open) => setOpenMenu(open ? 'binding' : null)}
@@ -198,31 +172,32 @@ export const McpServerTestPanel = React.memo(function McpServerTestPanel(props: 
                 }}
                 itemTrigger={{
                     title: t('settings.mcpServersTestBindingTitle'),
-                    subtitle: selectedBinding ? describeBinding(selectedBinding, props.machines) : t('settings.mcpServersTestNoBinding'),
-                    icon: <Icon name="push-pin" size={29} color={theme.colors.accent.purple} />,
+                    subtitle: selectedBinding ? describeBindingTarget(selectedBinding.target, props.machines) : t('settings.mcpServersTestNoBinding'),
                 }}
                 rowKind="item"
                 connectToTrigger
-                variant="default"
+                variant="selectable"
+                search={false}
+                showCategoryTitles={false}
+                matchTriggerWidth
             />
 
             <Item
                 testID="mcp.server.test.directory"
                 title={t('settings.mcpServersTestDirectoryTitle')}
                 subtitle={t('settings.mcpServersTestDirectorySubtitle')}
-                icon={<Icon name="folder" size={29} color={theme.colors.accent.blue} />}
                 showChevron={false}
+                accessoryLayout="adaptive"
                 rightElement={(
                     <View style={styles.directoryInputRow}>
-                        <TextInput
+                        <FieldTextInput
                             testID="mcp.server.test.directory.input"
                             style={styles.directoryInput}
                             value={directory}
                             onChangeText={setDirectory}
+                            accessibilityLabel={t('settings.mcpServersTestDirectoryTitle')}
                             placeholder={t('settings.mcpServersTestDirectoryPrompt')}
-                            placeholderTextColor={theme.colors.input.placeholder}
-                            autoCapitalize="none"
-                            autoCorrect={false}
+                            monospace
                         />
                         <PathInputBrowseButton
                             onPress={handleBrowseDirectory}
@@ -232,23 +207,14 @@ export const McpServerTestPanel = React.memo(function McpServerTestPanel(props: 
                 )}
             />
 
-            <Item
-                testID="mcp.server.test.run"
-                title={t('settings.mcpServersTestRunTitle')}
-                subtitle={isTesting ? t('common.loading') : t('settings.mcpServersTestRunSubtitle')}
-                icon={<Icon name="flask" size={29} color={theme.colors.state.success.foreground} />}
-                onPress={runTest}
-                disabled={executionTarget === null || !canTestServer || !canTestBinding || isTesting}
-                showChevron={false}
-            />
-
             {lastResult ? (
                 lastResult.ok ? (
                     <Item
                         testID="mcp.server.test.result.ok"
                         title={t('settings.mcpServersTestResultOkTitle')}
                         subtitle={t('settings.mcpServersTestResultOkSubtitle', { toolCount: lastResult.toolCount, durationMs: lastResult.durationMs })}
-                        icon={<Icon name="check-circle" size={29} color={theme.colors.state.success.foreground} />}
+                        accessibilityLiveRegion="polite"
+                        mode="info"
                         showChevron={false}
                     />
                 ) : (
@@ -256,7 +222,10 @@ export const McpServerTestPanel = React.memo(function McpServerTestPanel(props: 
                         testID="mcp.server.test.result.error"
                         title={t('settings.mcpServersTestResultErrorTitle')}
                         subtitle={`${lastResult.errorCode} · ${lastResult.error}`}
-                        icon={<Icon name="warning-circle" size={29} color={theme.colors.status.error} />}
+                        subtitleLines={0}
+                        subtitleLeading={<View style={collectionListStyles.troubleDot} />}
+                        accessibilityLiveRegion="polite"
+                        mode="info"
                         showChevron={false}
                     />
                 )

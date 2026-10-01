@@ -2,6 +2,7 @@ import { lstat, mkdir, rm, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 
 import {
+  DEFAULT_PLUGIN_SCAFFOLD_UI_MODE,
   PluginIdSchema,
   PluginScaffoldTemplateSchema,
   PluginScaffoldUiModeSchema,
@@ -25,10 +26,13 @@ export type PluginScaffoldDiagnostic = Readonly<{
   message: string;
 }>;
 
-// React Native is the flagship/recommended plugin-UI scaffold mode and also
-// targets web through React Native Web. The vocabulary itself is owned by
-// `PluginScaffoldUiModeSchema` so the CLI flag and the `plugins.scaffold`
-// action input cannot diverge.
+// `declarative` is the default: the host projects the declared nodes, so a
+// fresh plugin renders its first surface on every platform with no bundler and
+// no UI dependency tree. `reactNative` remains the executable mode that also
+// targets web through React Native Web. The vocabulary and the default are
+// owned by `PluginScaffoldUiModeSchema` and `DEFAULT_PLUGIN_SCAFFOLD_UI_MODE`,
+// so the CLI flag, the `plugins.scaffold` action input and the Settings Create
+// form cannot diverge.
 export type { PluginScaffoldUiMode };
 export type { PluginScaffoldTemplate };
 
@@ -53,14 +57,11 @@ const PUBLIC_PLUGIN_SDK_PACKAGE_NAME = '@happier-dev/plugin-sdk';
 const PLUGIN_AUTHORING_SKILL_DIRECTORY = ['.agents', 'skills', 'happier-plugin-authoring'] as const;
 const MAIN_SURFACE_ID = 'main';
 /** `uiSurfaceRendererId(MAIN_SURFACE_ID)`; the generated test pins the equality. */
-const REACT_NATIVE_WEB_CONTRIBUTION_ID = 'main-renderer';
 const MAIN_SURFACE_MODULE_RELATIVE_PATH = 'src/ui/surfaces.ts';
 const REACT_NATIVE_WEB_SOURCE_ENTRY = 'src/ui/renderSurface.tsx';
-const REACT_NATIVE_REPACK_MODULE_PATH = './renderSurface';
-const REACT_NATIVE_REPACK_EXPORT_NAME = 'renderSurface';
-// Hosted web declares only its source entry. `happier-plugin-build-ui` owns the
-// operation-local Vite config and HTML entry for the declared target.
-const HOSTED_WEB_SOURCE_ENTRY = 'src/ui/index.ts';
+const HOSTED_WEB_SOURCE_ROOT = '.happier-plugin/ui/hosted-web/main-renderer';
+const HOSTED_WEB_SOURCE_ENTRY = `${HOSTED_WEB_SOURCE_ROOT}/entry.ts`;
+const HOSTED_WEB_INDEX_ENTRY = `${HOSTED_WEB_SOURCE_ROOT}/index.html`;
 
 function createDiagnostic(
   code: PluginScaffoldDiagnostic['code'],
@@ -114,22 +115,15 @@ function createPackageJson(params: Readonly<{
   };
 
   if (params.ui === 'hostedWeb') {
-    // Hosted web is an isolated plugin-owned web application; `build:ui` drives
-    // the same `happier-plugin-build-ui` bin the react-native arm uses. React is
-    // a declared build dependency because the managed hosted-web bundler records
-    // the installed React version as artifact compatibility provenance, not
-    // because the template imports it.
+    // Hosted web is an isolated plugin-owned static application. The compiler
+    // stages its conventional directory and compiles only its optional entry.ts.
     scripts['build:ui'] = 'happier-plugin-build-ui --project-root .';
     devDependencies.typescript = PUBLIC_TOOLCHAIN_SCAFFOLD_BINDINGS_V1.devDependencies.typescript;
-    devDependencies.vite = PUBLIC_TOOLCHAIN_SCAFFOLD_BINDINGS_V1.devDependencies.vite;
     devDependencies.react = PUBLIC_TOOLCHAIN_SCAFFOLD_BINDINGS_V1.dependencies.react;
   }
 
   if (params.ui === 'reactNative') {
-    // The React Native surface renders on web through the SDK-managed
-    // react-native-web build. `build:ui` reads only `pluginUiBuild.ts`; the
-    // SDK derives operation-local Vite and Re.Pack configs before emitting the
-    // digested `dist/happier-plugin-ui` artifact tree.
+    // One neutral CommonJS artifact runs on web, iOS, and Android.
     scripts['build:ui'] = 'happier-plugin-build-ui --project-root .';
     dependencies['@happier-dev/plugin-ui'] = PUBLIC_TOOLCHAIN_SCAFFOLD_BINDINGS_V1.dependencies['@happier-dev/plugin-ui'];
     dependencies.react = PUBLIC_TOOLCHAIN_SCAFFOLD_BINDINGS_V1.dependencies.react;
@@ -137,13 +131,7 @@ function createPackageJson(params: Readonly<{
     dependencies['react-native'] = PUBLIC_TOOLCHAIN_SCAFFOLD_BINDINGS_V1.dependencies['react-native'];
     dependencies['react-native-web'] = PUBLIC_TOOLCHAIN_SCAFFOLD_BINDINGS_V1.dependencies['react-native-web'];
     devDependencies.typescript = PUBLIC_TOOLCHAIN_SCAFFOLD_BINDINGS_V1.devDependencies.typescript;
-    devDependencies.vite = PUBLIC_TOOLCHAIN_SCAFFOLD_BINDINGS_V1.devDependencies.vite;
-    devDependencies['@vitejs/plugin-react'] = PUBLIC_TOOLCHAIN_SCAFFOLD_BINDINGS_V1.devDependencies['@vitejs/plugin-react'];
     devDependencies['@types/react'] = PUBLIC_TOOLCHAIN_SCAFFOLD_BINDINGS_V1.devDependencies['@types/react'];
-    devDependencies['@callstack/repack'] = PUBLIC_TOOLCHAIN_SCAFFOLD_BINDINGS_V1.devDependencies['@callstack/repack'];
-    devDependencies['@react-native-community/cli'] = PUBLIC_TOOLCHAIN_SCAFFOLD_BINDINGS_V1.devDependencies['@react-native-community/cli'];
-    devDependencies['@rspack/core'] = PUBLIC_TOOLCHAIN_SCAFFOLD_BINDINGS_V1.devDependencies['@rspack/core'];
-    devDependencies['@swc/helpers'] = PUBLIC_TOOLCHAIN_SCAFFOLD_BINDINGS_V1.devDependencies['@swc/helpers'];
   }
 
   return {
@@ -160,6 +148,9 @@ function createPackageJson(params: Readonly<{
     // files) in packed scaffolds through the same deliberate file inventory.
     // Selecting a path that never exists in the source tree makes every pack fail.
     files: ['.agents/skills/happier-plugin-authoring', 'dist'],
+    ...(params.ui === 'reactNative'
+      ? { exports: { [`./happier-plugin-ui/${MAIN_SURFACE_ID}-renderer`]: `./${REACT_NATIVE_WEB_SOURCE_ENTRY}` } }
+      : {}),
     scripts,
     dependencies,
     devDependencies,
@@ -231,15 +222,21 @@ function createPluginAuthoringSkillSource(invokerName: string, ui?: PluginScaffo
       ? [`For React Native UI exports, read \`node_modules/@happier-dev/plugin-ui/API.md\` before choosing a component or hook; it is the shipped Plugin UI API inventory for this package.`]
       : []),
     '',
+    '## Settings and configuration pages',
+    '',
+    'A plugin settings or detail page uses the same anatomy as Happier\'s own settings (`DESIGN.md` → "Configuration surfaces"): a page header, sentence-case sections with their explanation above the rows, one control per row, visual tiles for choices that change what you see, and list + detail for collections of named things. Compose it from the public plugin UI components that render through Happier\'s own page owners — `PageHeader`, `ItemGroup` with a `title`/`description`/`action` (a page section), `Item` rows with one control in `accessory`, `Toggle`, `Select` (`presentation="segmented"` for 2–4 short options, `"field"` for longer sets), `TextField presentation="field"` for a value typed in place (`onCommit` saves on leaving), `SelectionTiles` (`variant="visual"` with real previews) and `EmptyState` (`layout="page"`/`"line"`) — checking exact names in the API inventory; do not rebuild headers, row dividers, dropdown triggers, switches or selection rings locally, and do not draw a back control or duplicate the page title (the host places both). The published guide is `apps/docs/content/docs/plugins/ui/configuration-pages.mdx`.',
+    '',
+    'Load `.agents/skills/happier-ui-craft` for the method: hierarchy, control choice, copy, states and the side-by-side check.',
+    '',
     '## Cross-plugin integrations',
     '',
-    `For the beginner cross-plugin shape, read \`node_modules/${PUBLIC_PLUGIN_SDK_PACKAGE_NAME}/examples/operation-only-channel-provider/\`. It consumes the public \`@happier-dev/channels-protocol/v1\` contract by binding this plugin's Actions to the target-owned \`happier.channels/providers\` point; it does not declare a target, descriptor, or surface. Its \`maintained-public-reference\` classification describes evidence maturity; capability availability remains owned only by the capability matrix. For the advanced public descriptor and embedded-surface shape, use the \`action-contract-producer\` and \`action-contract-consumer\` pair instead; the same public contracts serve external and bundled plugins. The examples resolve from this workspace once dependencies are prepared; a documentation-site path does not. This beginner scaffold does not declare a feature integration.`,
+    `For broader public composition patterns, read \`node_modules/${PUBLIC_PLUGIN_SDK_PACKAGE_NAME}/examples/public-authoring/\` and \`node_modules/${PUBLIC_PLUGIN_SDK_PACKAGE_NAME}/examples/advanced-package-root/\`. Use only contribution and service families marked available in the capability matrix; an example demonstrates public package boundaries but does not create product availability. This beginner scaffold does not declare a feature integration.`,
     '',
     '## Normal author loop',
     '',
     'Work in a normal Happier Agent Session rooted at this source directory. Use the same public lifecycle as a human author:',
     '',
-    `1. Start or continue live development with \`${invokerName} plugins dev\`. It prepares declared dependencies automatically; do not run \`${invokerName} plugins dev install .\` first. It prompts once to trust this source root, so when no present user can answer that prompt use the headless route below instead.`,
+    `1. Start or continue live development with \`${invokerName} plugins dev\`. It prepares declared dependencies automatically; do not run \`${invokerName} plugins dev install .\` first. Explicit registration trusts this exact source root without a separate code-trust prompt. Automatic workspace discovery still requires its remembered project-trust decision. Optional host resources and secrets require their separate authority decisions.`,
     `Exception — dependency refresh: that cold-start preparation materializes an author root exactly once, only when nothing resolvable is installed yet. After you change declared dependencies in \`package.json\`, or your \`node_modules\` is stale or wiped, run \`${invokerName} plugins dev install .\` once to refresh the tree; the watch loop does not reinstall on every start.`,
     '2. The generated prepublication SDK version resolves automatically through the running Happier CLI during managed author commands; do not add a workspace alias, file dependency, author-owned `pnpm-workspace.yaml`, or ad hoc local registry.',
     `When deliberately preparing from an approved registry origin, pass \`--sdk-registry <origin>\` to \`${invokerName} plugins dev\`, \`${invokerName} plugins dev install .\`, or \`${invokerName} plugins pack .\`.`,
@@ -247,66 +244,80 @@ function createPluginAuthoringSkillSource(invokerName: string, ui?: PluginScaffo
     `4. Use \`${invokerName} plugins doctor .\` to diagnose an import or top-level evaluation issue; it evaluates once and does not prove repeated evaluation is pure.`,
     `5. Use the installed \`node_modules/@happier-dev/plugin-sdk/examples/\` as public patterns, then adapt the smallest matching example through documented SDK exports. For a custom persistent Session Agent, start with \`${invokerName} plugins create <name> --template session-agent\`; \`node_modules/@happier-dev/plugin-sdk/examples/session-agent/\` remains the richer deterministic lifecycle reference. Use \`node_modules/@happier-dev/plugin-sdk/examples/advanced-package-root/\` only when the same package also needs External Sessions, a Provider, Connected Accounts, Resources, or background work.`,
     '',
-    'The daemon owns prepared-change custody, activation, and the retained last-known-good generation. If dependency preparation, evaluation, or a UI build fails, fix the source and let the normal development cycle retry; do not start another watcher or loader.',
+    'The daemon owns prepared-change custody and activation. A failed in-process replacement keeps the incumbent plugin occurrence active only while that daemon lives. After a daemon restart, Happier rebuilds the current source; if it cannot build and activate, the development plugin is unavailable until corrected. Fix the source and let the normal development cycle retry; do not start another watcher or loader.',
     '',
-    '## Headless first install',
+    '## Explicit development install',
     '',
-    `\`${invokerName} plugins install . --dev --trust --json\` carries one explicit non-interactive authorization for that exact local development source, so the first install of a source root needs no terminal prompt. It decides source-root trust and package trust for that one path, selects no optional host resources, and cancels the pending change with \`plugin_explicit_trust_target_mismatch\` if the daemon review names any other source. \`--trust\` is valid only together with \`--dev\` on a local path.`,
-    `Later iterations need nothing further: a trusted development source root short-circuits review, so \`${invokerName} plugins reload --json\` applies subsequent edits. \`${invokerName} plugins dev\` has no \`--trust\` equivalent, so use this route when no present user can answer its source-root prompt.`,
+    `\`${invokerName} plugins install . --dev --json\` is the explicit code-trust action for that exact local development source, so the first install needs no redundant code-trust prompt. It selects no optional host resources, and cancels the pending change with \`plugin_explicit_trust_target_mismatch\` if the daemon review names any other source.`,
+    `Later iterations need nothing further: a trusted development source root short-circuits code review, so \`${invokerName} plugins reload --json\` applies subsequent edits. This is an alternative explicit install command; the normal \`plugins dev\` loop already trusts its registered source root.`,
     '',
     '## Reviews and reconnecting',
     '',
-    `\`--trust\` above is the only non-interactive approval. Without it, a \`--json\` or noninteractive request never auto-approves: it returns a daemon-issued pending ID for a present user to decide. Preserve that ID and rejoin the same change with \`${invokerName} plugins change status <pendingChangeId> --json\`; a present user decides it with \`${invokerName} plugins change approve <pendingChangeId> --json\` or \`${invokerName} plugins change reject <pendingChangeId> --json\`, or from Settings -> Plugins on that machine. Do not submit a second change request while a review or apply is pending. Consequential updates, optional host resources, and secrets always stay with a present user.`,
+    `A local-path install carries code trust only. A separate authority decision still returns a daemon-issued pending ID for a present user to decide. Preserve that ID and rejoin the same change with \`${invokerName} plugins change status <pendingChangeId> --json\`; a present user decides it with \`${invokerName} plugins change approve <pendingChangeId> --json\` or \`${invokerName} plugins change reject <pendingChangeId> --json\`, or from Settings -> Plugins on that machine. Do not submit a second change request while a review or apply is pending. Optional host resources and secrets always stay with their canonical authority owner.`,
     'A pending ID can be rejoined only during the same daemon lifetime. If status reports `expired` after a daemon restart, rerun the original development or install request and review its newly prepared facts; do not reuse the old pending ID. `outcome_unknown` is different: inspect installed state before replaying a mutation.',
     '',
   ].join('\n');
 }
 
 /**
- * The surface lives in its own leaf module so `pluginUiBuild.ts` can derive the
- * build targets from the SAME declaration the manifest projects. Its only
- * import is the SDK, which keeps it cheap for the build-config loader to
- * evaluate and keeps the author with one place to edit a surface.
+ * The surface lives in its own leaf module; executable bytes are discovered
+ * through its manifest artifact id and the package's exact export.
  */
 function createPluginUiSurfaceModuleSource(params: Readonly<{
   pluginId: string;
   displayName: string;
   ui: PluginScaffoldUiMode;
 }>): string {
-  const declaration = params.ui === 'hostedWeb'
+  const declaration = params.ui === 'declarative'
+    // A declarative surface IS its declaration: the host projects these nodes,
+    // so there is no entry module, no build target and no bundler to learn
+    // before the first surface renders.
+    ? [
+      'export const mainSurface = defineUiSurfaceDefinition({',
+      `  id: ${JSON.stringify(MAIN_SURFACE_ID)},`,
+      "  placement: 'appPage',",
+      `  title: { key: 'scaffold.main.title', fallback: ${JSON.stringify(params.displayName)} },`,
+      '  renderer: {',
+      "    kind: 'declarative',",
+      '    root: {',
+      "      kind: 'group',",
+      `      title: { key: 'scaffold.main.title', fallback: ${JSON.stringify(params.displayName)} },`,
+      '      children: [{',
+      "        kind: 'text',",
+      `        text: { key: 'scaffold.main.greeting', fallback: ${JSON.stringify(`Hello from ${params.displayName}`)} },`,
+      '      }, {',
+      "        kind: 'action',",
+      "        action: 'save-note',",
+      "        variant: 'primary',",
+      "        input: { note: 'hello' },",
+      "        label: { key: 'scaffold.action.saveNote', fallback: 'Save note' },",
+      '      }],',
+      '    },',
+      '  },',
+      '});',
+    ]
+    : params.ui === 'hostedWeb'
     ? [
       'export const mainSurface = defineUiSurfaceDefinition({',
       `  id: ${JSON.stringify(MAIN_SURFACE_ID)},`,
       "  placement: 'appPage',",
       `  title: { key: 'scaffold.main.title', fallback: ${JSON.stringify(params.displayName)} },`,
       "  renderer: { kind: 'hostedWeb', requiredHostMethods: ['context', 'executeAction'] },",
-      `  build: { entry: ${JSON.stringify(HOSTED_WEB_SOURCE_ENTRY)} },`,
       '});',
     ]
     : (() => {
-      const module = createReactNativeRepackModuleIdentity(params.pluginId);
       return [
         'export const mainSurface = defineUiSurfaceDefinition({',
         `  id: ${JSON.stringify(MAIN_SURFACE_ID)},`,
         "  placement: 'appPage',",
         `  title: { key: 'scaffold.main.title', fallback: ${JSON.stringify(params.displayName)} },`,
         "  renderer: { kind: 'reactNative', requiredHostMethods: ['context', 'executeAction'] },",
-        '  build: {',
-        `    entry: ${JSON.stringify(REACT_NATIVE_WEB_SOURCE_ENTRY)},`,
-        "    platforms: ['web', 'ios', 'android'],",
-        '    module: {',
-        `      containerName: ${JSON.stringify(module.containerName)},`,
-        `      modulePath: ${JSON.stringify(module.modulePath)},`,
-        `      exportName: ${JSON.stringify(module.exportName)},`,
-        '    },',
-        '  },',
         '});',
       ];
     })();
   return [
-    '// One surface declaration. `src/index.ts` projects it into the manifest and',
-    '// `pluginUiBuild.ts` derives its build target from it, so a renderer, entry',
-    '// or platform change is edited exactly once.',
+    '// One surface declaration. `src/index.ts` projects it into the manifest;',
+    '// exact package exports identify executable source entries.',
     "import { defineUiSurfaceDefinition } from '@happier-dev/plugin-sdk';",
     '',
     ...declaration,
@@ -365,6 +376,28 @@ function createPluginSource(params: Readonly<{
   ];
 
   if (params.ui !== undefined) {
+    // The status vocabulary belongs to the executable bootstraps, which own a
+    // connecting/ready/failed lifecycle. A declarative surface has none — the
+    // host renders the declared nodes — so it would ship five keys nothing
+    // reads.
+    const statusMessages = params.ui === 'declarative'
+      ? { en: [], fr: [] }
+      : {
+        en: [
+          "        'scaffold.status.connecting': 'Connecting to Happier…',",
+          "        'scaffold.status.ready': 'Ready',",
+          "        'scaffold.status.saved': 'Saved',",
+          "        'scaffold.status.actionFailed': 'Action failed',",
+          "        'scaffold.status.startFailed': 'Failed to start',",
+        ],
+        fr: [
+          "        'scaffold.status.connecting': 'Connexion à Happier…',",
+          "        'scaffold.status.ready': 'Prêt',",
+          "        'scaffold.status.saved': 'Enregistré',",
+          "        'scaffold.status.actionFailed': 'L’action a échoué',",
+          "        'scaffold.status.startFailed': 'Le démarrage a échoué',",
+        ],
+      };
     lines.push(
       '  ui: {',
       '    surfaces: [mainSurface],',
@@ -374,11 +407,7 @@ function createPluginSource(params: Readonly<{
       `        'scaffold.main.title': ${JSON.stringify(params.displayName)},`,
       `        'scaffold.main.greeting': ${JSON.stringify(`Hello from ${params.displayName}`)},`,
       "        'scaffold.action.saveNote': 'Save note',",
-      "        'scaffold.status.connecting': 'Connecting to Happier…',",
-      "        'scaffold.status.ready': 'Ready',",
-      "        'scaffold.status.saved': 'Saved',",
-      "        'scaffold.status.actionFailed': 'Action failed',",
-      "        'scaffold.status.startFailed': 'Failed to start',",
+      ...statusMessages.en,
       '      },',
       '    }, {',
       "      locale: 'fr',",
@@ -386,11 +415,7 @@ function createPluginSource(params: Readonly<{
       `        'scaffold.main.title': ${JSON.stringify(params.displayName)},`,
       `        'scaffold.main.greeting': ${JSON.stringify(`Bonjour de ${params.displayName}`)},`,
       "        'scaffold.action.saveNote': 'Enregistrer la note',",
-      "        'scaffold.status.connecting': 'Connexion à Happier…',",
-      "        'scaffold.status.ready': 'Prêt',",
-      "        'scaffold.status.saved': 'Enregistré',",
-      "        'scaffold.status.actionFailed': 'L’action a échoué',",
-      "        'scaffold.status.startFailed': 'Le démarrage a échoué',",
+      ...statusMessages.fr,
       '      },',
       '    }],',
       '  },',
@@ -423,7 +448,6 @@ function createPluginTestSource(params: Readonly<{
     params.ui === undefined
       ? "import { createPluginTestkit } from '@happier-dev/plugin-sdk/testing';"
       : "import { createPluginTestkit, createPluginUiTestkit, createSurfaceContextFixture } from '@happier-dev/plugin-sdk/testing';",
-    ...(params.ui === undefined ? [] : ["import { buildUiSurfaceTargets } from '@happier-dev/plugin-sdk/ui/build';"]),
     ...(params.ui === undefined ? [] : ["import { activate, mainSurface, manifest } from '../dist/index.js';"]),
     '',
     ...(params.ui === undefined
@@ -448,25 +472,6 @@ function createUiDefinitionTestSource(params: Readonly<{
   ui: PluginScaffoldUiMode;
 }>): readonly string[] {
   const rendererKind = params.ui;
-  const isReactNative = rendererKind === 'reactNative';
-  const module = isReactNative ? createReactNativeRepackModuleIdentity(params.pluginId) : undefined;
-  const expectedTargets = isReactNative
-    ? [
-      '    kind: \'reactNative\',',
-      "    rendererId: 'main-renderer',",
-      `    entry: ${JSON.stringify(REACT_NATIVE_WEB_SOURCE_ENTRY)},`,
-      "    platforms: ['web', 'ios', 'android'],",
-      '    module: {',
-      `      containerName: ${JSON.stringify(module?.containerName)},`,
-      `      modulePath: ${JSON.stringify(module?.modulePath)},`,
-      `      exportName: ${JSON.stringify(module?.exportName)},`,
-      '    },',
-    ]
-    : [
-      "    kind: 'hostedWeb',",
-      "    rendererId: 'main-renderer',",
-      `    entry: ${JSON.stringify(HOSTED_WEB_SOURCE_ENTRY)},`,
-    ];
 
   return [
     '',
@@ -475,9 +480,6 @@ function createUiDefinitionTestSource(params: Readonly<{
     `  assert.equal(uiSurface.renderer.kind, ${JSON.stringify(rendererKind)});`,
     "  assert.equal(uiSurface.placement, 'appPage');",
     `  assert.deepEqual(uiSurface.title, { key: 'scaffold.main.title', fallback: ${JSON.stringify(params.displayName)} });`,
-    '  assert.deepEqual(buildUiSurfaceTargets(uiSurface), [{',
-    ...expectedTargets,
-    '  }]);',
     '',
     "  const view = manifest.contributes.ui.views.find((candidate) => candidate.id === uiSurface.id);",
     '  assert.deepEqual({',
@@ -521,6 +523,12 @@ function createUiExecutionTestSource(params: Readonly<{
     // through Node's native test runner. RNW semantic mounting is DOM-backed,
     // so it belongs to the existing jsdom RNW scaffold harness rather than a
     // fabricated document in the generated Node test.
+    return [];
+  }
+  if (params.ui === 'declarative') {
+    // There is no author bootstrap to execute: the host renders the declared
+    // nodes. What the generated test can and does prove is that the declaration
+    // reaches the action the surface offers, which is already covered above.
     return [];
   }
 
@@ -625,7 +633,7 @@ function createUiExecutionTestSource(params: Readonly<{
     "    else Reflect.deleteProperty(globalThis, 'document');",
     '  });',
     '',
-    "  const { bootstrapHostedWebSurface } = await import('../node_modules/.cache/happier/plugin-author-test/ui/index.js');",
+    "  const { bootstrapHostedWebSurface } = await import('../dist/happier-plugin-ui/hosted-web/main-renderer/assets/app.js');",
     '  await bootstrapHostedWebSurface(fixture.context);',
     "  const root = hostedDocument.query('#root');",
     "  const title = hostedDocument.query('[data-role=\"title\"]');",
@@ -813,44 +821,22 @@ function createHostedWebSource(params: Readonly<{ displayName: string }>): strin
   ].join('\n');
 }
 
-/**
- * The build config DERIVES its targets from the one surface declaration through
- * the SDK's retained `buildUiSurfaceTargets` projection. The predecessor
- * scaffold restated `rendererId`, `entry`, `kind`, `platforms` and the Module
- * Federation identity here as well, so a beginner maintained two sources of one
- * truth and a drifted pair failed only at artifact-verification time.
- *
- * Raw `ui.views` / `ui.renderers` plus a hand-written `targets` array remain the
- * advanced route for shared renderers, fallback chains and custom artifacts.
- */
-function createUiBuildConfigSource(): string {
+function createHostedWebIndex(): string {
   return [
-    "import { buildUiSurfaceTargets, defineBuildConfig } from '@happier-dev/plugin-sdk/ui/build';",
-    '',
-    `import { mainSurface } from './${MAIN_SURFACE_MODULE_RELATIVE_PATH}';`,
-    '',
-    'export const pluginUiBuildConfig = defineBuildConfig({',
-    '  targets: [...buildUiSurfaceTargets(mainSurface)],',
-    '});',
-    '',
-    'export default pluginUiBuildConfig;',
+    '<!doctype html>',
+    '<html lang="en">',
+    '  <head>',
+    '    <meta charset="utf-8" />',
+    '    <meta name="viewport" content="width=device-width, initial-scale=1" />',
+    '    <title>Happier plugin</title>',
+    '  </head>',
+    '  <body>',
+    '    <main id="root"></main>',
+    '    <script type="module" src="./assets/app.js"></script>',
+    '  </body>',
+    '</html>',
     '',
   ].join('\n');
-}
-
-function createReactNativeRepackModuleIdentity(pluginId: string): Readonly<{
-  containerName: string;
-  modulePath: string;
-  exportName: string;
-}> {
-  return {
-    // Module Federation container names are JavaScript identifiers. Deriving
-    // this one from the generated package name keeps it unique per plugin
-    // without asking authors to synchronize a second identity by hand.
-    containerName: `${sanitizePackageName(pluginId).replaceAll('-', '_')}_${REACT_NATIVE_WEB_CONTRIBUTION_ID.replaceAll('-', '_')}`,
-    modulePath: REACT_NATIVE_REPACK_MODULE_PATH,
-    exportName: REACT_NATIVE_REPACK_EXPORT_NAME,
-  };
 }
 
 function createReactNativeSurfaceSource(params: Readonly<{ displayName: string }>): string {
@@ -871,8 +857,7 @@ function createReactNativeSurfaceSource(params: Readonly<{ displayName: string }
     '  );',
     '}',
     '',
-    '// This is the single bundle-contract export consumed by both the Vite',
-    '// react-native-web artifact and the iOS/Android Re.Pack artifacts.',
+    '// This exact export is compiled once for web, iOS, and Android.',
     'export const renderSurface = defineUiSurface(MainSurface);',
     '',
   ].join('\n');
@@ -890,8 +875,15 @@ export async function scaffoldLocalPlugin(params: Readonly<{
   const rawTargetDir = params.targetDir.trim();
   const pluginId = params.pluginId.trim();
   const displayName = params.displayName.trim();
-  const ui = params.ui;
   const template = params.template;
+  /**
+   * An author who expresses no UI preference gets the declarative surface: it
+   * renders on every platform with no bundler, no UI dependency tree and no
+   * build step, so the first `happier plugins create` produces something
+   * visible rather than an action-only package. `session-agent` is a different
+   * starting shape that deliberately contributes no surface, so it keeps none.
+   */
+  const ui = params.ui ?? (template === 'session-agent' ? undefined : DEFAULT_PLUGIN_SCAFFOLD_UI_MODE);
   const invokerName = params.invokerName?.trim() || 'happier';
 
   if (!rawTargetDir) {
@@ -919,7 +911,10 @@ export async function scaffoldLocalPlugin(params: Readonly<{
   if (ui !== undefined && !PluginScaffoldUiModeSchema.safeParse(ui).success) {
     return {
       ok: false,
-      diagnostics: [createDiagnostic('plugin_scaffold_invalid_input', 'Only --ui hostedWeb or --ui reactNative is supported for plugin scaffolds')],
+      diagnostics: [createDiagnostic(
+        'plugin_scaffold_invalid_input',
+        `--ui requires one of: ${PluginScaffoldUiModeSchema.options.join(', ')}`,
+      )],
     };
   }
   if (template !== undefined && !PluginScaffoldTemplateSchema.safeParse(template).success) {
@@ -928,7 +923,7 @@ export async function scaffoldLocalPlugin(params: Readonly<{
       diagnostics: [createDiagnostic('plugin_scaffold_invalid_input', 'Only --template session-agent is supported for plugin scaffolds')],
     };
   }
-  if (template === 'session-agent' && ui !== undefined) {
+  if (template === 'session-agent' && params.ui !== undefined) {
     return {
       ok: false,
       diagnostics: [createDiagnostic('plugin_scaffold_invalid_input', 'The session-agent template does not include a UI surface; omit --ui')],
@@ -962,9 +957,6 @@ export async function scaffoldLocalPlugin(params: Readonly<{
     : ui === 'reactNative'
       ? join(targetDir, ...REACT_NATIVE_WEB_SOURCE_ENTRY.split('/'))
       : undefined;
-  // A TypeScript build config is an admitted `BUILD_CONFIG_BASENAMES` entry and
-  // is what lets the config import the typed surface declaration directly.
-  const uiBuildConfigPath = join(targetDir, 'pluginUiBuild.ts');
   const uiSurfaceModulePath = join(targetDir, ...MAIN_SURFACE_MODULE_RELATIVE_PATH.split('/'));
   const sessionAgentEntryPath = template === 'session-agent'
     ? join(targetDir, 'src', 'agent', 'sessionAgent.ts')
@@ -974,7 +966,9 @@ export async function scaffoldLocalPlugin(params: Readonly<{
     await mkdir(join(targetDir, 'src'), { recursive: true });
     await mkdir(join(targetDir, 'test'), { recursive: true });
     await mkdir(join(targetDir, ...PLUGIN_AUTHORING_SKILL_DIRECTORY), { recursive: true });
-    if (uiEntryPath) {
+    // Every UI mode owns `src/ui/surfaces.ts`; only the executable modes also
+    // own an entry module beside it.
+    if (ui !== undefined) {
       await mkdir(join(targetDir, 'src', 'ui'), { recursive: true });
     }
     if (sessionAgentEntryPath) {
@@ -1009,7 +1003,18 @@ export async function scaffoldLocalPlugin(params: Readonly<{
     }
     await writeFile(tsconfigPath, createTypeScriptConfig(), 'utf8');
     await writeFile(authoringSkillPath, createPluginAuthoringSkillSource(invokerName, ui), 'utf8');
-    if (uiEntryPath && ui !== undefined) {
+    if (ui !== undefined) {
+      await writeFile(
+        uiSurfaceModulePath,
+        createPluginUiSurfaceModuleSource({ pluginId, displayName, ui }),
+        'utf8',
+      );
+    }
+    if (uiEntryPath) {
+      if (ui === 'hostedWeb') {
+        await mkdir(join(targetDir, ...HOSTED_WEB_SOURCE_ROOT.split('/')), { recursive: true });
+        await writeFile(join(targetDir, ...HOSTED_WEB_INDEX_ENTRY.split('/')), createHostedWebIndex(), 'utf8');
+      }
       await writeFile(
         uiEntryPath,
         ui === 'hostedWeb'
@@ -1017,12 +1022,6 @@ export async function scaffoldLocalPlugin(params: Readonly<{
           : createReactNativeSurfaceSource({ displayName }),
         'utf8',
       );
-      await writeFile(
-        uiSurfaceModulePath,
-        createPluginUiSurfaceModuleSource({ pluginId, displayName, ui }),
-        'utf8',
-      );
-      await writeFile(uiBuildConfigPath, createUiBuildConfigSource(), 'utf8');
     }
   } catch (error) {
     await rm(targetDir, { recursive: true, force: true }).catch(() => undefined);

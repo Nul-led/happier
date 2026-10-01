@@ -5,6 +5,22 @@ import type { TranslationKeyNoParams } from '@/text';
 import { desktopHostKind, isDesktopHost } from '@/utils/platform/desktopHost';
 
 import type { SettingsPageId } from './types';
+import type { LocalSettings } from '@/sync/domains/settings/localSettings';
+import type { Settings, WritableSettingsKey } from '@/sync/domains/settings/settings';
+
+type ScalarSettingKeys<T> = { [K in keyof T]: T[K] extends string | number | boolean | null | undefined ? K : never }[keyof T] & string;
+
+/** Explicitly admitted scalar preference; declarations never infer a writer from a row id. */
+export type SettingStorageBinding = Readonly<{
+    access: 'read_write' | 'read_only' | 'sensitive';
+    /** Choices supplied by the owning control when its write contract is narrower than storage. */
+    allowedValues?: readonly (string | number | boolean | null)[];
+    /** The row's positive boolean answer is stored as an opt-out preference. */
+    invertBoolean?: boolean;
+}> & (
+    | Readonly<{ scope: 'account'; key: ScalarSettingKeys<Pick<Settings, WritableSettingsKey>> }>
+    | Readonly<{ scope: 'local'; key: ScalarSettingKeys<LocalSettings> }>
+);
 
 /**
  * Settings declared by a page so search can find them individually.
@@ -59,6 +75,10 @@ export type SettingDeclaration = Readonly<{
     keywordKeys?: readonly TranslationKeyNoParams[];
     /** The row exists only on these hosts. */
     host?: SettingsHostPredicate;
+    /** Omit on navigation, actions, projections and compound editors without a scalar write contract. */
+    storage?: SettingStorageBinding;
+    /** Secret-bearing rows remain discoverable without exposing or changing their value. */
+    sensitive?: boolean;
 }>;
 
 export type SettingsSectionDeclaration = Readonly<{

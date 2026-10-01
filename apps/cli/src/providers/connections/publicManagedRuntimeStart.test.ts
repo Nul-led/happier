@@ -24,6 +24,7 @@ import type {
 } from '@/plugins/runtime/resolveExecutablePluginRuntimeRegistry';
 
 import { createPublicManagedProviderRuntimeStartOperation } from './publicManagedRuntimeStart';
+import { createManagedPluginSourceCustody } from '@/plugins/runtime/lifecycle/contributions/runtimeIdentity.testkit';
 
 function managedServiceHandle(dispose: () => Promise<void>): ManagedServiceHandle {
   const snapshot = Object.freeze({
@@ -187,8 +188,8 @@ describe('public managed Provider explicit-start production operation', () => {
     const runtime = Object.freeze({ start });
     const acquiredRuntime = Object.freeze({
       runtime,
-      activationGeneration: 'activation-7',
-      immutableGenerationId: 'immutable-7',
+      activationOccurrenceId: 'activation-7',
+      sourceCustody: createManagedPluginSourceCustody('immutable-7'),
       isCurrent: () => true,
     });
     const acquireRuntime = vi.fn(async () => acquiredRuntime);
@@ -201,12 +202,16 @@ describe('public managed Provider explicit-start production operation', () => {
     }));
     const accounts = connectedAccounts();
     const services = managedServices();
-    const createInvocationServices = vi.fn(async () => Object.freeze({
-      connectedAccounts: accounts,
-      managedServices: services,
-      projectEndpointAccess,
-      cleanup: invocationCleanup,
-    }));
+    let operationSignal: AbortSignal | undefined;
+    const createInvocationServices = vi.fn(async (input: Readonly<{ signal: AbortSignal }>) => {
+      operationSignal = input.signal;
+      return Object.freeze({
+        connectedAccounts: accounts,
+        managedServices: services,
+        projectEndpointAccess,
+        cleanup: invocationCleanup,
+      });
+    });
     const runtimeDisposables: Array<Readonly<{ dispose(): void | Promise<void> }>> = [];
     const addRuntimeDisposable = vi.fn((_registeredPluginId, disposable) => {
       runtimeDisposables.push(disposable);
@@ -257,7 +262,8 @@ describe('public managed Provider explicit-start production operation', () => {
       }),
       purposeBindings,
       isAuthorizationCurrent: () => true,
-      revalidateAuthorization: async () => true,
+      revalidateAuthorization: async (signal) => operationSignal === undefined
+        || (signal === operationSignal && !signal.aborted),
     })).resolves.toEqual({ status: 'running' });
 
     expect(start).toHaveBeenCalledOnce();
@@ -324,8 +330,8 @@ describe('public managed Provider explicit-start production operation', () => {
     });
     const acquiredRuntime = Object.freeze({
       runtime: Object.freeze({ start }),
-      activationGeneration: 'activation-7',
-      immutableGenerationId: 'immutable-7',
+      activationOccurrenceId: 'activation-7',
+      sourceCustody: createManagedPluginSourceCustody('immutable-7'),
       isCurrent: () => true,
     });
     const acquireRuntime = vi.fn(async () => acquiredRuntime);
@@ -462,8 +468,8 @@ describe('public managed Provider explicit-start production operation', () => {
     }));
     const acquiredRuntime = Object.freeze({
       runtime: Object.freeze({ start }),
-      activationGeneration: 'activation-7',
-      immutableGenerationId: 'immutable-7',
+      activationOccurrenceId: 'activation-7',
+      sourceCustody: createManagedPluginSourceCustody('immutable-7'),
       isCurrent: () => true,
     });
     const acquireRuntime = vi.fn(async () => acquiredRuntime);
@@ -557,8 +563,8 @@ describe('public managed Provider explicit-start production operation', () => {
       const runtime = Object.freeze({ start });
       const acquiredRuntime = Object.freeze({
         runtime,
-        activationGeneration: generation,
-        immutableGenerationId: `immutable-${generation}`,
+        activationOccurrenceId: generation,
+        sourceCustody: createManagedPluginSourceCustody(`immutable-${generation}`),
         isCurrent: () => true,
       });
       const acquireRuntime = vi.fn(async () => acquiredRuntime);
@@ -711,8 +717,8 @@ describe('public managed Provider explicit-start production operation', () => {
     }));
     const acquiredRuntime = Object.freeze({
       runtime: Object.freeze({ start }),
-      activationGeneration: 'activation-7',
-      immutableGenerationId: 'immutable-7',
+      activationOccurrenceId: 'activation-7',
+      sourceCustody: createManagedPluginSourceCustody('immutable-7'),
       isCurrent: () => true,
     });
     const acquireRuntime = vi.fn(async () => acquiredRuntime);

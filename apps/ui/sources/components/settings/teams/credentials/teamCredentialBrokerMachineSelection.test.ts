@@ -39,6 +39,26 @@ describe('buildTeamCredentialBrokerMachineSelection', () => {
         expect(onSelectMachineId).toHaveBeenCalledWith('same-id');
     });
 
+    it('does not call a still-eligible broker machine gone while this device has not listed it yet', () => {
+        const source = createMachineAdministrationTargetSelectionFixture({
+            serverId: 'profile-a',
+            serverIdentityId: 'identity-a',
+            machines: [],
+        });
+        const build = (eligibleIds: readonly string[]) => buildTeamCredentialBrokerMachineSelection({
+            serverId: 'profile-a',
+            eligibleTargets: eligibleIds.map((machineId) => ({ machineId, displayName: 'Studio', availability: 'available' as const })),
+            selectedMachineId: 'broker',
+            pickerRows: source.pickerRows,
+            onSelectMachineId: vi.fn(),
+            onClear: vi.fn(),
+        });
+        // The Home still lists it as eligible: this device's machine rows have just not arrived.
+        expect(build(['broker']).selection.state).toMatchObject({ kind: 'missing', inventoryKnown: false });
+        // The Home no longer lists it: it has really left the choice.
+        expect(build([]).selection.state).not.toHaveProperty('inventoryKnown');
+    });
+
     it('keeps update-required as a visible disabled-state candidate without trusting the server display label', () => {
         const source = createMachineAdministrationTargetSelectionFixture({
             serverId: 'profile-a',

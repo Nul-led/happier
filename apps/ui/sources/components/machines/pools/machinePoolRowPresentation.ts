@@ -1,9 +1,11 @@
-import type { MachinePoolViewV1 } from '@happier-dev/protocol';
+import type { MachinePoolMemberStateV1, MachinePoolViewV1 } from '@happier-dev/protocol';
+import { getMachineDisplayName, resolveMachineDisplayNames, type MachineAbsence } from '@/utils/sessions/machineDisplayNames';
 
 /** The only Machine facts a Pool row needs: an identity plus whatever readable label exists. */
 export type MachinePoolRowMachine = Readonly<{
     id: string;
     metadata?: Readonly<{ displayName?: string | null; host?: string | null }> | null;
+    availability?: Readonly<{ kind: string }> | null;
 }>;
 
 const IDENTITY_HINT_LENGTH = 8;
@@ -22,16 +24,42 @@ function resolveMachinePoolIdentityHint(
     return poolId;
 }
 
+type MachinePoolMemberRef = Readonly<{ machineId: string; state?: MachinePoolMemberStateV1 }>;
+
 /**
- * The Pool corridor's one readable-Machine label rule. A Home-local member whose decrypted label has
- * not arrived shows a short honest identifier rather than borrowing another Home's Machine name.
+ * What the pool knows about a member this Home's inventory does not hold, from the member state the
+ * server reports: revoked means removed, replaced means replaced, a temporary computer is transient,
+ * and anything else is a machine this list simply does not show. Never "locked": locked means the
+ * inventory holds the machine but cannot read it.
  */
+function absenceForMemberState(state: MachinePoolMemberStateV1 | undefined): MachineAbsence {
+    if (state === 'revoked') return 'removed';
+    if (state === 'replaced') return 'replaced';
+    if (state === 'temporary') return 'temporary';
+    return 'unlisted';
+}
+
+/**
+ * The Pool corridor's member labels, from the machine naming owner. Members are named together so
+ * the short id appears only where two of them (or a member and a listed machine) would read the same.
+ */
+export function resolveMachinePoolMemberLabels(
+    members: ReadonlyArray<MachinePoolMemberRef>,
+    machines: ReadonlyArray<MachinePoolRowMachine>,
+): ReadonlyMap<string, string> {
+    const known = new Set(machines.map((machine) => machine.id));
+    const absent = members
+        .filter((member) => !known.has(member.machineId))
+        .map((member) => ({ id: member.machineId, metadata: null, absence: absenceForMemberState(member.state) }));
+    return resolveMachineDisplayNames([...machines, ...absent]);
+}
+
 export function resolveMachinePoolMemberLabel(
-    machineId: string,
+    member: MachinePoolMemberRef,
     machines: ReadonlyArray<MachinePoolRowMachine>,
 ): string {
-    const machine = machines.find((candidate) => candidate.id === machineId);
-    return machine?.metadata?.displayName || machine?.metadata?.host || machineId.slice(0, IDENTITY_HINT_LENGTH);
+    return resolveMachinePoolMemberLabels([member], machines).get(member.machineId)
+        ?? getMachineDisplayName({ id: member.machineId, metadata: null, absence: absenceForMemberState(member.state) });
 }
 
 /**
@@ -48,7 +76,9 @@ export function resolveMachinePoolEnabledMemberLabels(
     const visibleMembers = options?.limit === undefined
         ? enabledMembers
         : enabledMembers.slice(0, options.limit);
-    return visibleMembers.map((member) => resolveMachinePoolMemberLabel(member.machineId, machines));
+    // Named among the members the row shows, so a short id appears only when those would collide.
+    const labels = resolveMachinePoolMemberLabels(enabledMembers, machines);
+    return visibleMembers.map((member) => labels.get(member.machineId) ?? resolveMachinePoolMemberLabel(member, machines));
 }
 
 export type MachinePoolRowPresentation = Readonly<{

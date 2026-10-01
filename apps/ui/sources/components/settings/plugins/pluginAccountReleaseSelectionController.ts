@@ -230,7 +230,6 @@ export function createPluginAccountReleaseSelectionController(
                                 const resolved = await dependencies.resolveAccountHostedTarget({
                                     accountLifetime,
                                     isCurrent,
-                                    availabilityCursor: targetRelease.availabilityCursor,
                                     facts: targetRelease.facts,
                                 });
                                 if (resolved.kind !== 'available') {
@@ -309,6 +308,7 @@ export function createPluginAccountReleaseSelectionController(
                     target: {
                         release: selected.release.ref,
                         contributionId: link.contributionId,
+                        artifactId: link.artifactId,
                         tier: link.tier,
                         platform: link.platform,
                     },
@@ -339,11 +339,6 @@ export function createPluginAccountReleaseSelectionController(
             for (const slot of selected.release.uiSlots) {
                 await dependencies.removeCachedArtifact({
                     accountScope: lifetime.scope,
-                    pluginId: input.pluginId,
-                    releaseVersion: selected.release.ref.version,
-                    contributionId: slot.contributionId,
-                    tier: slot.tier,
-                    platform: slot.platform,
                     artifactDigest: slot.artifactDigest,
                 }, lifetime.isCurrent);
                 if (!lifetime.isCurrent()) return Object.freeze({ kind: 'unavailable' as const });

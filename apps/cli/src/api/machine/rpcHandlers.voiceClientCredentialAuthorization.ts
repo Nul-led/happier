@@ -3,6 +3,7 @@ import {
   DaemonVoiceClientRawCredentialAuthorizationRequestResponseV1Schema,
   DaemonVoiceClientRawCredentialAuthorizationRequestV1Schema,
   PluginMachineMaterializationRefV1Schema,
+  pluginPermissionSubjectsEqualV1,
   type DaemonVoiceClientRawCredentialAuthorizationRequestV1,
   type DaemonVoiceClientRawCredentialReviewV1,
   type PluginContributionIdentityV1,
@@ -152,7 +153,12 @@ function sameAuthorization(
   left: PluginRawCredentialAuthorizationInspection,
   right: PluginRawCredentialAuthorizationInspection,
 ): boolean {
-  return JSON.stringify(left) === JSON.stringify(right);
+  return left.pluginId === right.pluginId
+    && left.capability === right.capability
+    && isDeepStrictEqual(left.targetScope, right.targetScope)
+    && pluginPermissionSubjectsEqualV1(left.subject, right.subject)
+    && isDeepStrictEqual(left.authoritySource, right.authoritySource)
+    && isDeepStrictEqual(left.disclosures, right.disclosures);
 }
 
 function exactPendingRequest(
@@ -162,7 +168,7 @@ function exactPendingRequest(
   return pendingRequest.pluginId === authorization.pluginId
     && pendingRequest.capability === authorization.capability
     && JSON.stringify(pendingRequest.targetScope) === JSON.stringify(authorization.targetScope)
-    && JSON.stringify(pendingRequest.subject) === JSON.stringify(authorization.subject)
+    && pluginPermissionSubjectsEqualV1(pendingRequest.subject, authorization.subject)
     && pendingRequest.requester.kind === 'plugin'
     && pendingRequest.requester.pluginId === authorization.pluginId;
 }
@@ -229,7 +235,6 @@ export function createMachineVoiceClientCredentialAuthorizationService(
           realm: rawGrant.realm,
           phase: rawGrant.phase,
           machineId: dependencies.machineId,
-          immutableGenerationId: lifecycle.generation,
           isRuntimeAuthorityCurrent: lifecycle.isCurrent,
         },
         ...(dependencies.currentInstallReviewPrincipal
@@ -253,7 +258,6 @@ export function createMachineVoiceClientCredentialAuthorizationService(
       if (
         !principal
         || authorization.subject.kind !== 'credential_access_disclosure'
-        || principal.digest !== authorization.subject.installReviewPrincipalDigest
       ) {
         throw credentialUnavailable();
       }

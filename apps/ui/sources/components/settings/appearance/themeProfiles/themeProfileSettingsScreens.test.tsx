@@ -8,7 +8,6 @@ import { THEME_PROFILE_MAX_PROFILES } from '@/theme/profiles/themeProfileConstan
 import type { ThemeProfilesLocalStateV1, ThemeProfileV1 } from '@/theme/profiles/themeProfileTypes';
 import { exportThemeProfileToJson } from '@/theme/profiles/themeProfileImportExport';
 import { getBuiltInThemeProfileDefinition } from '@/theme/profiles/builtInThemeProfiles';
-import type { ItemAction } from '@/components/ui/lists/itemActions';
 
 const testGlobal = globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean };
 testGlobal.IS_REACT_ACT_ENVIRONMENT = true;
@@ -180,27 +179,28 @@ const maxProfiles = (): ThemeProfileV1[] => (
 const findPresetDropdown = async (screen: Awaited<ReturnType<typeof renderSettingsView>>) => {
     const { DropdownMenu } = await import('@/components/ui/forms/dropdown/DropdownMenu');
     return screen.findAllByType(DropdownMenu as any)
-        .find((node: any) => node.props?.itemTrigger?.title === 'settingsAppearance.themeProfiles.presetSource');
+        .find((node: any) => node.props?.itemTrigger?.title === 'settingsAppearance.themeProfiles.startFrom');
 };
 
-const findBuiltInThemesDropdown = async (screen: Awaited<ReturnType<typeof renderSettingsView>>) => {
+const tileIds = (screen: Awaited<ReturnType<typeof renderSettingsView>>, prefix: string): string[] => (
+    screen.findAllByProps({ accessibilityRole: 'radio' })
+        .map((node: any) => String(node.props.testID ?? ''))
+        .filter((testID: string) => testID.startsWith(`${prefix}:`))
+        .map((testID: string) => testID.slice(prefix.length + 1))
+        .filter((id: string, index: number, all: string[]) => all.indexOf(id) === index)
+);
+
+const findAddThemeMenu = async (screen: Awaited<ReturnType<typeof renderSettingsView>>) => {
     const { DropdownMenu } = await import('@/components/ui/forms/dropdown/DropdownMenu');
     return screen.findAllByType(DropdownMenu as any)
-        .find((node: any) => node.props?.itemTrigger?.title === 'settingsAppearance.themeProfiles.builtInGroup');
+        .find((node: any) => node.props?.testID === 'settings-theme-profile-add-menu');
 };
 
-const findAssetAppearanceDropdown = async (screen: Awaited<ReturnType<typeof renderSettingsView>>) => {
-    const { DropdownMenu } = await import('@/components/ui/forms/dropdown/DropdownMenu');
-    return screen.findAllByType(DropdownMenu as any)
-        .find((node: any) => node.props?.itemTrigger?.title === 'settingsAppearance.themeProfiles.assetAppearance');
-};
-
-const findRowActionsInNode = (node: React.ReactNode): ItemAction[] => {
-    if (!React.isValidElement(node)) return [];
-    const props = node.props as { actions?: ItemAction[]; children?: React.ReactNode };
-    if (Array.isArray(props.actions)) return props.actions;
-    return React.Children.toArray(props.children).flatMap(findRowActionsInNode);
-};
+const findHeaderMenuAction = async (screen: Awaited<ReturnType<typeof renderSettingsView>>, id: string) => (
+    screen.findAllByProps({ testID: 'settings-theme-profile-menu' })
+        .flatMap((node: any) => (node.props.actions ?? []) as Array<{ id: string; disabled?: boolean; onSelect: () => unknown }>)
+        .find((action) => action.id === id)
+);
 
 async function renderProfilesScreen() {
     const mod = await import('./ThemeProfilesSettingsScreen');
@@ -253,19 +253,22 @@ afterEach(() => {
 });
 
 describe('Theme profile settings screen', () => {
-    it('renders built-in themes in a management dropdown and shows custom themes only when they exist', async () => {
-        setThemeProfiles({ activeProfileIds: { light: null, dark: null }, profiles: [baseProfile('theme_ocean')] });
+    it('offers each mode its themes as visual tiles, with your own themes in their mode', async () => {
+        setThemeProfiles({
+            activeProfileIds: { light: null, dark: null },
+            profiles: [baseProfile('noir', { light: {}, dark: { 'background.canvas': '#0B0B0D' } })],
+        });
         const screen = await renderProfilesScreen();
 
         expect(screen.findByTestId('settings-theme-profiles-screen')).not.toBeNull();
-        expect(screen.findByTestId('settings-theme-profile-built-in-dropdown-trigger')).not.toBeNull();
-        expect(screen.findByTestId('settings-theme-profile-built-in-premiumDark')).toBeNull();
-        expect(screen.findByTestId('settings-theme-profile-custom-theme_ocean')).not.toBeNull();
-        expect(screen.findByTestId('settings-theme-selector-trigger')).toBeNull();
-
-        const builtInDropdown = await findBuiltInThemesDropdown(screen);
-        expect(builtInDropdown?.props.items.map((item: { id: string }) => item.id)).toEqual([
+        expect(tileIds(screen, 'settings-theme-light')).toEqual([
             'light',
+            'premiumLight',
+            'paperLight',
+            'catppuccinLatte',
+            'githubLight',
+        ]);
+        expect(tileIds(screen, 'settings-theme-dark')).toEqual([
             'dark',
             'premiumDark',
             'pitchDark',
@@ -281,28 +284,16 @@ describe('Theme profile settings screen', () => {
             'githubDark',
             'darkModern',
             'graphiteDark',
-            'premiumLight',
-            'paperLight',
-            'catppuccinLatte',
-            'githubLight',
+            'noir',
         ]);
+        expect(screen.findByTestId('settings-theme-light:light')?.props.accessibilityState?.selected).toBe(true);
+        expect(screen.findByTestId('settings-theme-profile-custom-noir')).not.toBeNull();
     });
 
-    it('does not render a custom themes section when there are no custom profiles', async () => {
+    it('activates a built-in theme for its mode from the tiles without storing it as a custom profile', async () => {
         const screen = await renderProfilesScreen();
 
-        expect(screen.findByTestId('settings-theme-profile-custom-empty')).toBeNull();
-        expect(screen.findByTestId('settings-theme-profile-create')).not.toBeNull();
-    });
-
-    it('activates a built-in theme from the built-in dropdown without storing it as a custom profile', async () => {
-        const screen = await renderProfilesScreen();
-
-        const builtInDropdown = await findBuiltInThemesDropdown(screen);
-
-        await act(async () => {
-            builtInDropdown!.props.onSelect('premiumDark');
-        });
+        await screen.pressByTestIdAsync('settings-theme-dark:premiumDark');
 
         expect(getThemeProfiles().profiles).toEqual([]);
         expect(getThemeProfiles().activeProfileIds).toEqual({ light: null, dark: 'premiumDark' });
@@ -310,41 +301,20 @@ describe('Theme profile settings screen', () => {
         expect(shared.updateTheme).toHaveBeenCalled();
     });
 
-    it('duplicates a built-in theme from row actions and opens its editor', async () => {
+    it('returns a mode to its default theme from the default tile', async () => {
+        setThemeProfiles({ activeProfileIds: { light: null, dark: 'premiumDark' }, profiles: [] });
         const screen = await renderProfilesScreen();
-        const builtInDropdown = await findBuiltInThemesDropdown(screen);
-        const premiumDarkItem = builtInDropdown!.props.items.find((item: { id: string }) => item.id === 'premiumDark');
-        const duplicateAction = findRowActionsInNode(premiumDarkItem.rightElement).find((action) => action.id === 'duplicate-premiumDark');
-        expect(duplicateAction?.onPress).toBeTypeOf('function');
 
-        await act(async () => {
-            duplicateAction?.onPress?.();
-        });
+        expect(screen.findByTestId('settings-theme-dark:premiumDark')?.props.accessibilityState?.selected).toBe(true);
+        await screen.pressByTestIdAsync('settings-theme-dark:dark');
 
-        const [clone] = getThemeProfiles().profiles;
-        expect(clone?.id).not.toBe('premiumDark');
-        expect(clone?.overrides.dark['background.canvas']).toBeDefined();
-        expect(shared.routerPush).toHaveBeenCalledWith({
-            pathname: '/settings/appearance/themes/[profileId]',
-            params: { profileId: clone?.id },
-        });
+        expect(getThemeProfiles().activeProfileIds).toEqual({ light: null, dark: null });
     });
 
-    it('disables profile creation and duplicate actions after the profile limit is reached', async () => {
-        setThemeProfiles({ activeProfileIds: { light: null, dark: null }, profiles: maxProfiles() });
-        const screen = await renderProfilesScreen();
-        const builtInDropdown = await findBuiltInThemesDropdown(screen);
-        const premiumDarkItem = builtInDropdown!.props.items.find((item: { id: string }) => item.id === 'premiumDark');
-
-        expect(screen.findByTestId('settings-theme-profile-create')?.props.disabled).toBe(true);
-        expect(screen.findByTestId('settings-theme-duplicate-premiumDark')).toBeNull();
-        expect(findRowActionsInNode(premiumDarkItem.rightElement)).toEqual([]);
-    });
-
-    it('opens a new unsaved theme editor from the actions group', async () => {
+    it('offers a new theme when you have none of your own', async () => {
         const screen = await renderProfilesScreen();
 
-        await screen.pressByTestIdAsync('settings-theme-profile-create');
+        await screen.pressByTestIdAsync('settings-theme-profile-custom-empty');
 
         expect(getThemeProfiles().profiles).toEqual([]);
         expect(shared.routerPush).toHaveBeenCalledWith({
@@ -353,24 +323,46 @@ describe('Theme profile settings screen', () => {
         });
     });
 
-    it('keeps custom theme management controls in row actions', async () => {
+    it('adds a theme from the section menu: a new one or an import', async () => {
         setThemeProfiles({ activeProfileIds: { light: null, dark: null }, profiles: [baseProfile('ocean')] });
         const screen = await renderProfilesScreen();
-        await screen.pressByTestIdAsync('settings-theme-edit-ocean');
+        const addMenu = await findAddThemeMenu(screen);
+
+        await act(async () => {
+            addMenu!.props.onSelect('create');
+        });
+        expect(shared.routerPush).toHaveBeenLastCalledWith({
+            pathname: '/settings/appearance/themes/[profileId]',
+            params: { profileId: 'new' },
+        });
+
+        await act(async () => {
+            addMenu!.props.onSelect('import');
+        });
+        expect(shared.routerPush).toHaveBeenLastCalledWith('/settings/appearance/themes/import');
+    });
+
+    it('stops offering new themes once the theme limit is reached', async () => {
+        setThemeProfiles({ activeProfileIds: { light: null, dark: null }, profiles: maxProfiles() });
+        const screen = await renderProfilesScreen();
+        const addMenu = await findAddThemeMenu(screen);
+
+        expect(addMenu!.props.items.find((item: { id: string }) => item.id === 'create')?.disabled).toBe(true);
+        await act(async () => {
+            addMenu!.props.onSelect('create');
+        });
+        expect(shared.routerPush).not.toHaveBeenCalled();
+    });
+
+    it('opens one of your themes in its editor', async () => {
+        setThemeProfiles({ activeProfileIds: { light: null, dark: null }, profiles: [baseProfile('ocean')] });
+        const screen = await renderProfilesScreen();
+        await screen.pressByTestIdAsync('settings-theme-profile-custom-ocean');
 
         expect(shared.routerPush).toHaveBeenCalledWith({
             pathname: '/settings/appearance/themes/[profileId]',
             params: { profileId: 'ocean' },
         });
-    });
-
-    it('deletes a custom theme from row actions after confirmation', async () => {
-        setThemeProfiles({ activeProfileIds: { light: 'ocean', dark: 'ocean' }, profiles: [baseProfile('ocean')] });
-        const screen = await renderProfilesScreen();
-        await screen.pressByTestIdAsync('settings-theme-delete-ocean');
-
-        expect(shared.modalConfirm).toHaveBeenCalled();
-        expect(getThemeProfiles()).toEqual({ activeProfileIds: { light: null, dark: null }, profiles: [] });
     });
 });
 
@@ -387,15 +379,6 @@ describe('Theme profile editor', () => {
         expect(screen.findRowByTitle('settingsAppearance.themeProfiles.groups.composer')).not.toBeNull();
         expect(screen.findByTestId('settings-theme-editor-mode:dark')).toBeNull();
         expect(screen.findRowByTitle('settingsAppearance.themeProfiles.editorMode')).toBeNull();
-    });
-
-    it('renders profile name as an inline transparent text field', async () => {
-        const screen = await renderEditorScreen('new');
-        const inputStyle = flattenTestStyle(screen.findByTestId('settings-theme-profile-name')?.props.style);
-
-        expect(inputStyle.backgroundColor).toBe('transparent');
-        expect(inputStyle.textAlign).toBe('left');
-        expect(inputStyle.borderWidth).toBe(0);
     });
 
     it('applies draft colors to the live interface preview before save', async () => {
@@ -430,11 +413,7 @@ describe('Theme profile editor', () => {
 
     it('saves the selected asset appearance and assigns that theme slot without changing appearance mode', async () => {
         const screen = await renderEditorScreen('new');
-        const assetAppearanceDropdown = await findAssetAppearanceDropdown(screen);
-
-        await act(async () => {
-            assetAppearanceDropdown?.props.onSelect('dark');
-        });
+        await screen.pressByTestIdAsync('settings-theme-profile-asset-appearance:dark');
         await screen.pressByTestIdAsync('settings-theme-profile-save');
 
         const saved = getThemeProfiles().profiles[0] as (ThemeProfileV1 & { assetAppearance?: string }) | undefined;
@@ -450,7 +429,7 @@ describe('Theme profile editor', () => {
             screen.changeTextByTestId('settings-theme-profile-name', '   ');
         });
 
-        expect(screen.findByTestId('settings-theme-profile-name-error')).not.toBeNull();
+        expect(screen.findByTestId('settings-theme-profile-name.error')).not.toBeNull();
         expect(screen.findByTestId('settings-theme-profile-save')?.props.disabled).toBe(true);
     });
 
@@ -462,12 +441,56 @@ describe('Theme profile editor', () => {
         expect(screen.findByTestId('settings-theme-profile-save')?.props.disabled).toBe(true);
     });
 
-    it('does not show persisted-profile actions for a new unsaved theme draft', async () => {
+    it('does not offer persisted-theme operations for a new unsaved theme draft', async () => {
         const screen = await renderEditorScreen('new');
 
-        expect(screen.findByTestId('settings-theme-profile-reset-light')).not.toBeNull();
-        expect(screen.findByTestId('settings-theme-profile-deactivate')).toBeNull();
-        expect(screen.findByTestId('settings-theme-profile-delete')).toBeNull();
+        expect(await findHeaderMenuAction(screen, 'reset')).toBeDefined();
+        expect(await findHeaderMenuAction(screen, 'deactivate')).toBeUndefined();
+        expect(await findHeaderMenuAction(screen, 'delete')).toBeUndefined();
+        expect(await findHeaderMenuAction(screen, 'export')).toBeUndefined();
+    });
+
+    it('deletes a saved theme that is not in use from the header menu after confirmation', async () => {
+        setThemeProfiles({ activeProfileIds: { light: null, dark: null }, profiles: [baseProfile('ocean')] });
+        const screen = await renderEditorScreen('ocean');
+        const deleteAction = await findHeaderMenuAction(screen, 'delete');
+
+        await act(async () => {
+            await deleteAction!.onSelect();
+        });
+
+        expect(shared.modalConfirm).toHaveBeenCalled();
+        expect(getThemeProfiles()).toEqual({ activeProfileIds: { light: null, dark: null }, profiles: [] });
+        expect(shared.routerBack).toHaveBeenCalled();
+    });
+
+    it('deletes the theme in use and returns its mode to the default theme', async () => {
+        setThemeProfiles({ activeProfileIds: { light: 'ocean', dark: 'ocean' }, profiles: [baseProfile('ocean')] });
+        const screen = await renderEditorScreen('ocean');
+        const deleteAction = await findHeaderMenuAction(screen, 'delete');
+
+        await act(async () => {
+            await deleteAction!.onSelect();
+        });
+
+        expect(getThemeProfiles()).toEqual({ activeProfileIds: { light: null, dark: null }, profiles: [] });
+    });
+
+    it('names the slot a theme is assigned to before deleting it, then applies the slot default through the theme owner', async () => {
+        setThemeProfiles({ activeProfileIds: { light: null, dark: 'ocean' }, profiles: [baseProfile('ocean')] });
+        shared.setStatusBarStyle.mockClear();
+        const screen = await renderEditorScreen('ocean');
+        const deleteAction = await findHeaderMenuAction(screen, 'delete');
+
+        await act(async () => {
+            await deleteAction!.onSelect();
+        });
+
+        const [, body] = shared.modalConfirm.mock.calls.at(-1) ?? [];
+        expect(body).toBe('settingsAppearance.themeProfiles.deleteAssignedThemeBody');
+        expect(getThemeProfiles()).toEqual({ activeProfileIds: { light: null, dark: null }, profiles: [] });
+        // The canonical selection owner applies the fallback to the running app, status bar included.
+        await vi.waitFor(() => expect(shared.setStatusBarStyle).toHaveBeenCalled());
     });
 
     it('replaces a clean draft from a selected preset without confirmation', async () => {
@@ -541,21 +564,24 @@ describe('Theme profile editor', () => {
 
         expect(screen.findByTestId('settings-theme-contrast-warning-light-text.primary')).not.toBeNull();
         expect(screen.findByTestId('settings-theme-profile-save')).not.toBeNull();
-        expect(screen.findByTestId('settings-theme-profile-deactivate')).not.toBeNull();
+        expect(await findHeaderMenuAction(screen, 'deactivate')).toBeDefined();
     });
 
     it('only shows deactivate for the profile that is currently active', async () => {
         setThemeProfiles({ activeProfileIds: { light: 'other', dark: null }, profiles: [baseProfile('ocean'), baseProfile('other')] });
         const screen = await renderEditorScreen('ocean');
 
-        expect(screen.findByTestId('settings-theme-profile-deactivate')).toBeNull();
+        expect(await findHeaderMenuAction(screen, 'deactivate')).toBeUndefined();
     });
 
     it('deactivates the current profile and leaves the editor to avoid reapplying live preview', async () => {
         setThemeProfiles({ activeProfileIds: { light: 'ocean', dark: null }, profiles: [baseProfile('ocean')] });
         const screen = await renderEditorScreen('ocean');
 
-        await screen.pressByTestIdAsync('settings-theme-profile-deactivate');
+        const deactivate = await findHeaderMenuAction(screen, 'deactivate');
+        await act(async () => {
+            await deactivate!.onSelect();
+        });
 
         expect(getThemeProfiles().activeProfileIds).toEqual({ light: null, dark: null });
         expect(shared.routerBack).toHaveBeenCalled();
@@ -602,20 +628,22 @@ describe('Theme profile editor', () => {
         const screen = await renderEditorScreen('premiumDark');
 
         expect(screen.findByTestId('settings-theme-profile-save')).toBeNull();
-        expect(screen.findByTestId('settings-theme-profile-delete')).toBeNull();
-        expect(screen.findByTestId('settings-theme-profile-clone-premiumDark')).not.toBeNull();
+        expect(await findHeaderMenuAction(screen, 'delete')).toBeUndefined();
+        expect(await findHeaderMenuAction(screen, 'duplicate')).toBeDefined();
         expect(screen.findByTestId('settings-theme-color-input-dark-background.canvas')?.props.editable).toBe(false);
         expect(screen.findByTestId('settings-theme-color-reset-dark-background.canvas')).toBeNull();
-        expect(screen.findByTestId('settings-theme-profile-export-premiumDark')).not.toBeNull();
+        expect(await findHeaderMenuAction(screen, 'export')).toBeDefined();
     });
 
     it('uses built-in preset translation metadata in the editor instead of the raw profile name', async () => {
         const screen = await renderEditorScreen('premiumDark');
 
-        expect(screen.findRowByTitle('settingsAppearance.themeProfiles.readOnlyPreset')?.props.detail).toBe('settingsAppearance.themeProfiles.presets.premiumDark');
-        expect(screen.findAllByTestId('settings-theme-profile-clone-premiumDark').find((node) => node.props.subtitle)?.props.subtitle).toBe('settingsAppearance.themeProfiles.presets.premiumDark');
+        expect(screen.findAllByProps({ testID: 'settings-theme-profile-header' }).find((node: any) => node.props.title)?.props.title).toBe('settingsAppearance.themeProfiles.presets.premiumDark');
 
-        await screen.pressByTestIdAsync('settings-theme-profile-clone-premiumDark');
+        const duplicate = await findHeaderMenuAction(screen, 'duplicate');
+        await act(async () => {
+            await duplicate!.onSelect();
+        });
 
         expect(getThemeProfiles().profiles[0]?.name).toBe('settingsAppearance.themeProfiles.presets.premiumDark copy');
     });
@@ -710,7 +738,7 @@ describe('Theme profile import and export screens', () => {
         });
         await screen.pressByTestIdAsync('settings-theme-profile-import-submit');
 
-        expect(screen.findByTestId('settings-theme-profile-import-error')).not.toBeNull();
+        expect(screen.findByTestId('settings-theme-profile-import-json.error')).not.toBeNull();
         expect(getThemeProfiles().profiles).toHaveLength(0);
     });
 
@@ -744,7 +772,7 @@ describe('Theme profile import and export screens', () => {
         setThemeProfiles({ activeProfileIds: { light: null, dark: 'premiumDark' }, profiles: [baseProfile('ocean', { light: { 'background.canvas': '#123456' }, dark: {} })] });
         const screen = await renderExportScreen();
 
-        expect(screen.findByTestId('settings-theme-profile-export-json')?.props.value).toBe('');
-        expect(screen.findByTestId('settings-theme-profile-export-copy')?.props.disabled).toBe(true);
+        expect(screen.findByTestId('settings-theme-profile-export-json')).toBeNull();
+        expect(screen.findByTestId('settings-theme-profile-export-copy')).toBeNull();
     });
 });

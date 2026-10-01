@@ -184,7 +184,7 @@ describe('authAndSetupMachineIfNeeded (machine id binding)', () => {
         machineId: expect.any(String),
       });
 
-      expect(descriptorRuntimeMocks.acquire).toHaveBeenCalledWith(descriptor, 'iroh');
+      expect(descriptorRuntimeMocks.acquire).toHaveBeenCalledWith(descriptor, 'iroh', undefined);
       expect(events).toEqual(['api', 'register', 'close']);
       expect(close).toHaveBeenCalledOnce();
     } finally {
@@ -260,7 +260,7 @@ describe('authAndSetupMachineIfNeeded (machine id binding)', () => {
     }
   });
 
-  it('uses an existing token-only credential without starting keyed authentication', async () => {
+  it('prepares an existing token-only credential for daemon startup without synchronous registration', async () => {
     const homeDir = mkdtempSync(join(tmpdir(), 'happier-cli-auth-token-only-'));
     process.env.HAPPIER_HOME_DIR = homeDir;
     process.env.HAPPIER_ACTIVE_SERVER_ID = 'cloud';
@@ -299,15 +299,35 @@ describe('authAndSetupMachineIfNeeded (machine id binding)', () => {
       );
 
       vi.resetModules();
-      const { authAndSetupMachineIfNeeded } = await import('./auth');
-      const result = await authAndSetupMachineIfNeeded();
+      const { authAndPrepareDaemonMachineIfNeeded, authAndSetupMachineIfNeeded } = await import('./auth');
+      machineRegistrationMocks.ensureMachineRegistered.mockRejectedValueOnce(
+        Object.assign(new Error('connect ECONNREFUSED 127.0.0.1:443'), { code: 'ECONNREFUSED' }),
+      );
+      try {
+        const result = await authAndPrepareDaemonMachineIfNeeded();
 
-      expect(result.credentials).toEqual({
-        token: makeJwtWithSub('acct-plain'),
-        encryption: null,
-        credentialProvenance: 'stored_session',
+        expect(result.credentials).toEqual({
+          token: makeJwtWithSub('acct-plain'),
+          encryption: null,
+          credentialProvenance: 'stored_session',
+        });
+        expect(result.machineId).toBe('machine-token-only');
+        expect(machineRegistrationMocks.ensureMachineRegistered).not.toHaveBeenCalled();
+      } finally {
+        machineRegistrationMocks.ensureMachineRegistered.mockReset();
+        machineRegistrationMocks.ensureMachineRegistered.mockImplementation(async ({ machineId }: { machineId: string }) => ({
+          machine: { id: machineId },
+          machineId,
+          didRotateMachineId: false,
+        }));
+      }
+      await expect(authAndSetupMachineIfNeeded()).resolves.toMatchObject({
+        machineId: 'machine-token-only',
       });
-      expect(result.machineId).toBe('machine-token-only');
+      expect(machineRegistrationMocks.ensureMachineRegistered).toHaveBeenCalledWith(expect.objectContaining({
+        machineId: 'machine-token-only',
+        caller: 'auth.login',
+      }));
     } finally {
       rmSync(homeDir, { recursive: true, force: true });
     }

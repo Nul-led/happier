@@ -523,7 +523,7 @@ export const TeamCredentialBrokerPlacementSection = React.memo(function TeamCred
             />
             <ItemGroup
                 title={t('machinePools.myTitle')}
-                footer={poolChoicesVisible ? t('machinePools.connectionSemantics') : undefined}
+                description={poolChoicesVisible ? t('machinePools.connectionSemantics') : undefined}
                 accessibilityRole="radiogroup"
                 accessibilityLabel={t('machinePools.myTitle')}
             >

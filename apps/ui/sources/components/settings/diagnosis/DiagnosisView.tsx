@@ -1,6 +1,6 @@
 import * as React from 'react';
-import { Platform, View } from 'react-native';
-import { useRouter } from 'expo-router';
+import { View } from 'react-native';
+import { useRouter } from '@/components/appShell/workspace/destinationRoute';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 import {
     parseDoctorSnapshotSafe,
@@ -12,7 +12,8 @@ import { Item } from '@/components/ui/lists/Item';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
 import { ItemList } from '@/components/ui/lists/ItemList';
 import { layout } from '@/components/ui/layout/layout';
-import { Text, TextInput } from '@/components/ui/text/Text';
+import { Text } from '@/components/ui/text/Text';
+import { FieldTextInput } from '@/components/ui/forms/FieldTextInput';
 import { useHappyAction } from '@/hooks/ui/useHappyAction';
 import { Modal } from '@/modal';
 import { getActiveServerSnapshot } from '@/sync/domains/server/serverRuntime';
@@ -29,6 +30,10 @@ import { setClipboardStringSafe } from '@/utils/ui/clipboard';
 import { useMachineDoctorSnapshot } from '@/components/machines/doctorSnapshot/useMachineDoctorSnapshot';
 import { buildDiagnosisReport, type DiagnosisFinding, type DiagnosisReport, type ServerDiagnosticsStatus } from './engine/diagnosisEngine';
 import { Icon } from '@/components/ui/icons/Icon';
+import { SettingsPageHeader } from '@/components/settings/shell/SettingsPageHeader';
+import { SettingAnchor, SettingRow } from '@/components/settings/shell/SettingRow';
+import { RoundButton } from '@/components/ui/buttons/RoundButton';
+import { DIAGNOSIS_SETTINGS } from '@/components/settings/diagnosis/diagnosisSettings';
 
 type MachineRunStatus =
     | { status: 'idle' }
@@ -332,7 +337,36 @@ export const DiagnosisView = React.memo(function DiagnosisView() {
     }, [failedMachineNames.length, report, running]);
 
     return (
-        <ItemList style={{ paddingTop: 0 }} testID="diagnosis-screen">
+        <ItemList style={{ paddingTop: 0 }} testID="diagnosis-screen" presentation="page">
+            <SettingsPageHeader
+                description={t('diagnosis.pageDescription')}
+                actions={(
+                    <View style={styles.headerActions}>
+                        <CopiedPill visible={copyFeedback.isCopied('report')} testID="diagnosis-copy-feedback" />
+                        <SettingAnchor setting={DIAGNOSIS_SETTINGS.settings.copyReport}>
+                            <RoundButton
+                                testID="diagnosis-copy-button"
+                                size="small"
+                                display="inverted"
+                                title={t(DIAGNOSIS_SETTINGS.settings.copyReport.titleKey)}
+                                accessibilityHint={t('diagnosis.actions.copyReportSubtitle')}
+                                leading={<Icon name="copy" size={14} color={theme.colors.text.secondary} />}
+                                disabled={!report}
+                                loading={copying}
+                                onPress={copyReportJson}
+                            />
+                        </SettingAnchor>
+                        <RoundButton
+                            testID="diagnosis-run-button"
+                            size="small"
+                            title={t('diagnosis.actions.run')}
+                            accessibilityHint={t('diagnosis.actions.runSubtitle')}
+                            loading={running}
+                            onPress={runDiagnosis}
+                        />
+                    </View>
+                )}
+            />
             <View style={{ maxWidth: layout.maxWidth, alignSelf: 'center', width: '100%' }}>
                 {accessibilityStatus ? (
                     <Text
@@ -345,140 +379,22 @@ export const DiagnosisView = React.memo(function DiagnosisView() {
                     </Text>
                 ) : null}
                 <ItemGroup title={t('diagnosis.sections.overview')}>
-                    <Item
-                        title={t('diagnosis.overview.activeServer')}
+                    <SettingRow
+                        setting={DIAGNOSIS_SETTINGS.settings.activeServer}
+                        icon={<Icon name="hard-drives" />}
                         subtitle={<Text style={{ color: theme.colors.text.secondary }}>{activeServerUrl || t('status.unknown')}</Text>}
                         detail={activeServerSnapshot.serverId}
-                        icon={<Icon name="hard-drives" size={24} color={theme.colors.accent.blue} />}
                         onPress={() => router.push('/server')}
                     />
                     <Item
                         title={t('diagnosis.overview.account')}
                         detail={profile?.id ?? t('status.unknown')}
-                        icon={<Icon name="person" size={24} color={theme.colors.accent.purple} />}
                         copy={profile?.id ?? false}
                     />
                     <Item
                         title={t('diagnosis.overview.onlineMachines')}
                         detail={`${onlineMachinesActiveServer.length}`}
                         subtitle={t('diagnosis.overview.cachedAttribution', { count: cachedAttributionCount })}
-                        icon={<Icon name="laptop" size={24} color={theme.colors.accent.indigo} />}
-                    />
-                </ItemGroup>
-
-                <ItemGroup title={t('diagnosis.sections.actions')}>
-                    <Item
-                        testID="diagnosis-run-button"
-                        title={t('diagnosis.actions.run')}
-                        subtitle={t('diagnosis.actions.runSubtitle')}
-                        icon={<Icon name="first-aid-kit" size={24} color={theme.colors.accent.orange} />}
-                        onPress={runDiagnosis}
-                        loading={running}
-                        showChevron={false}
-                    />
-                    <Item
-                        testID="diagnosis-copy-button"
-                        title={t('diagnosis.actions.copyReport')}
-                        subtitle={t('diagnosis.actions.copyReportSubtitle')}
-                        icon={<Icon name="copy" size={24} color={theme.colors.accent.indigo} />}
-                        onPress={copyReportJson}
-                        rightElement={<CopiedPill visible={copyFeedback.isCopied('report')} testID="diagnosis-copy-feedback" />}
-                        disabled={!report}
-                        loading={copying}
-                        showChevron={false}
-                    />
-                </ItemGroup>
-
-                <ItemGroup title={t('diagnosis.sections.pasteDoctorJson')} footer={t('diagnosis.pasteDoctorJson.footer')}>
-                    <View style={styles.pasteContainer}>
-                        <TextInput
-                            testID="diagnosis-paste-input"
-                            style={styles.pasteInput}
-                            placeholder={t('diagnosis.pasteDoctorJson.placeholder')}
-                            accessibilityLabel={t('diagnosis.sections.pasteDoctorJson')}
-                            placeholderTextColor={theme.colors.input.placeholder}
-                            value={pastedJson}
-                            onChangeText={(value) => {
-                                setPastedJson(value);
-                                setPastedParseError(null);
-                            }}
-                            multiline
-                            autoCapitalize="none"
-                            autoCorrect={false}
-                            textContentType="none"
-                            editable={!running}
-                        />
-                        <Item
-                            title={t('diagnosis.pasteDoctorJson.parse')}
-                            icon={<Icon name="check" size={20} color={theme.colors.state.success.foreground} />}
-                            onPress={parsePasted}
-                            loading={parsing}
-                            density="compact"
-                            showChevron={false}
-                        />
-                        {pastedParseError ? (
-                            <Text
-                                style={styles.errorText}
-                                accessibilityLiveRegion="polite"
-                                {...({ role: 'status', 'aria-live': 'polite' } as Record<string, unknown>)}
-                            >
-                                {t('diagnosis.pasteDoctorJson.error', { error: pastedParseError })}
-                            </Text>
-                        ) : pastedSnapshot ? (
-                            <Text
-                                style={styles.okText}
-                                accessibilityLiveRegion="polite"
-                                {...({ role: 'status', 'aria-live': 'polite' } as Record<string, unknown>)}
-                            >
-                                {t('diagnosis.pasteDoctorJson.ok')}
-                            </Text>
-                        ) : (
-                            <Text style={styles.helperText}>{t('diagnosis.pasteDoctorJson.helper')}</Text>
-                        )}
-                    </View>
-                </ItemGroup>
-
-                <ItemGroup title={t('diagnosis.sections.machineRuns')}>
-                    {onlineMachinesActiveServer.length === 0 ? (
-                        <Item
-                            title={t('diagnosis.machineRuns.none')}
-                            icon={<Icon name="laptop" size={24} color={theme.colors.text.secondary} />}
-                            disabled
-                        />
-                    ) : onlineMachinesActiveServer.map((m) => {
-                        const status = machineRunById[m.id] ?? { status: 'idle' as const };
-                        const detail = status.status === 'loading'
-                            ? t('diagnosis.machineRuns.loading')
-                            : status.status === 'ready'
-                                ? t('diagnosis.machineRuns.ready')
-                                : status.status === 'error'
-                                    ? t('diagnosis.machineRuns.error')
-                                    : t('diagnosis.machineRuns.idle');
-                        const subtitle = status.status === 'error' ? status.detail : undefined;
-                        const iconColor = status.status === 'ready'
-                            ? theme.colors.state.success.foreground
-                            : status.status === 'error'
-                                ? theme.colors.state.danger.foreground
-                                : theme.colors.text.secondary;
-
-                        return (
-                            <Item
-                                key={m.id}
-                                title={getMachineDisplayName(m) ?? m.id}
-                                subtitle={subtitle}
-                                detail={detail}
-                                icon={<Icon name="laptop" size={24} color={iconColor} />}
-                            />
-                        );
-                    })}
-                </ItemGroup>
-
-                <ItemGroup title={t('diagnosis.sections.serverProbe')}>
-                    <Item
-                        title={t('diagnosis.serverProbe.title')}
-                        detail={serverDiagnostics.state}
-                        subtitle={resolveServerDiagnosticsSubtitle(serverDiagnostics)}
-                        icon={<Icon name="cloud" size={24} color={theme.colors.accent.blue} />}
                     />
                 </ItemGroup>
 
@@ -487,14 +403,13 @@ export const DiagnosisView = React.memo(function DiagnosisView() {
                         <Item
                             title={t('diagnosis.findings.notRun')}
                             subtitle={t('diagnosis.findings.notRunSubtitle')}
-                            icon={<Icon name="info" size={24} color={theme.colors.text.secondary} />}
-                            disabled
+                            subtitleLines={0}
+                            mode="info"
                         />
                     ) : report.findings.length === 0 && failedMachineNames.length === 0 ? (
                         <Item
                             title={t('diagnosis.findings.none')}
                             subtitle={t('diagnosis.findings.noneSubtitle')}
-                            icon={<Icon name="check-circle" size={24} color={theme.colors.state.success.foreground} />}
                             disabled
                         />
                     ) : report.findings.length === 0 ? (
@@ -530,12 +445,108 @@ export const DiagnosisView = React.memo(function DiagnosisView() {
                         />
                     ))}
                 </ItemGroup>
+
+                <ItemGroup title={t('diagnosis.sections.machineRuns')}>
+                    {onlineMachinesActiveServer.length === 0 ? (
+                        <Item
+                            title={t('diagnosis.machineRuns.none')}
+                            mode="info"
+                        />
+                    ) : onlineMachinesActiveServer.map((m) => {
+                        const status = machineRunById[m.id] ?? { status: 'idle' as const };
+                        const detail = status.status === 'loading'
+                            ? t('diagnosis.machineRuns.loading')
+                            : status.status === 'ready'
+                                ? t('diagnosis.machineRuns.ready')
+                                : status.status === 'error'
+                                    ? t('diagnosis.machineRuns.error')
+                                    : t('diagnosis.machineRuns.idle');
+                        const subtitle = status.status === 'error' ? status.detail : undefined;
+
+                        return (
+                            <Item
+                                key={m.id}
+                                title={getMachineDisplayName(m) ?? m.id}
+                                subtitle={subtitle}
+                                detail={detail}
+                                icon={<Icon name="laptop" size={24} color={theme.colors.text.secondary} />}
+                            />
+                        );
+                    })}
+                </ItemGroup>
+
+                <ItemGroup title={t('diagnosis.sections.serverProbe')}>
+                    <Item
+                        title={t('diagnosis.serverProbe.title')}
+                        detail={serverDiagnostics.state}
+                        subtitle={resolveServerDiagnosticsSubtitle(serverDiagnostics)}
+                    />
+                </ItemGroup>
+
+                <ItemGroup title={t('diagnosis.sections.pasteDoctorJson')} description={t('diagnosis.pasteDoctorJson.footer')}>
+                    <View style={styles.pasteContainer}>
+                        <FieldTextInput
+                            testID="diagnosis-paste-input"
+                            style={styles.pasteInput}
+                            placeholder={t('diagnosis.pasteDoctorJson.placeholder')}
+                            accessibilityLabel={t('diagnosis.sections.pasteDoctorJson')}
+                            value={pastedJson}
+                            onChangeText={(value) => {
+                                setPastedJson(value);
+                                setPastedParseError(null);
+                            }}
+                            multiline
+                            minLines={7}
+                            monospace
+                            editable={!running}
+                        />
+                        <View style={styles.pasteActions}>
+                            <RoundButton
+                                testID="diagnosis-parse-button"
+                                size="small"
+                                display="secondary"
+                                title={t('diagnosis.pasteDoctorJson.parse')}
+                                loading={parsing}
+                                disabled={pastedJson.trim().length === 0}
+                                onPress={parsePasted}
+                            />
+                        </View>
+                        {pastedParseError ? (
+                            <Text
+                                style={styles.errorText}
+                                accessibilityLiveRegion="polite"
+                                {...({ role: 'status', 'aria-live': 'polite' } as Record<string, unknown>)}
+                            >
+                                {t('diagnosis.pasteDoctorJson.error', { error: pastedParseError })}
+                            </Text>
+                        ) : pastedSnapshot ? (
+                            <Text
+                                style={styles.okText}
+                                accessibilityLiveRegion="polite"
+                                {...({ role: 'status', 'aria-live': 'polite' } as Record<string, unknown>)}
+                            >
+                                {t('diagnosis.pasteDoctorJson.ok')}
+                            </Text>
+                        ) : (
+                            <Text style={styles.helperText}>{t('diagnosis.pasteDoctorJson.helper')}</Text>
+                        )}
+                    </View>
+                </ItemGroup>
             </View>
         </ItemList>
     );
 });
 
 const diagnosisStyles = StyleSheet.create((theme) => ({
+    headerActions: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 8,
+    },
+    pasteActions: {
+        flexDirection: 'row',
+        justifyContent: 'flex-end',
+    },
     accessibilityStatus: {
         position: 'absolute',
         width: 1,
@@ -549,14 +560,7 @@ const diagnosisStyles = StyleSheet.create((theme) => ({
         paddingBottom: 8,
     },
     pasteInput: {
-        minHeight: Platform.select({ ios: 140, default: 160 }),
-        borderRadius: 12,
-        paddingHorizontal: 12,
-        paddingVertical: 10,
-        backgroundColor: theme.colors.input.background,
-        color: theme.colors.text.primary,
-        borderWidth: 1,
-        borderColor: theme.colors.border.default,
+        width: '100%',
         marginBottom: 8,
     },
     helperText: {

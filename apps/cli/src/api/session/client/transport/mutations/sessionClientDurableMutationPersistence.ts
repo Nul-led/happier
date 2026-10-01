@@ -7,6 +7,8 @@ import { writeJsonAtomic } from '@/utils/fs/writeJsonAtomic';
 import { getSessionStateFieldDescriptor } from '@happier-dev/agents';
 import { hasSessionStateFieldMetadataBinding } from '@happier-dev/agents/session/state/metadataWriters';
 import {
+    SessionRoleIdV1Schema,
+    SessionRoleConfigurationV1Schema,
     SessionMessageRoleSchema,
     SessionRunnerRuntimeStateV1Schema,
     SessionStateAcpConfigOptionValueSchema,
@@ -633,6 +635,14 @@ function parseRegisteredSessionStateFieldValue(
         const parsed = SessionStateModelValueSchema.safeParse(value);
         return parsed.success ? { ok: true, value: parsed.data } : { ok: false };
     }
+    if (fieldId === 'intent.role') {
+        const parsed = SessionRoleIdV1Schema.safeParse(value);
+        return parsed.success ? { ok: true, value: parsed.data } : { ok: false };
+    }
+    if (fieldId === 'intent.sessionRoles') {
+        const parsed = SessionRoleConfigurationV1Schema.safeParse(value);
+        return parsed.success ? { ok: true, value: parsed.data } : { ok: false };
+    }
     if (fieldId === 'intent.permissionMode') {
         const parsed = SessionStatePermissionModeValueSchema.safeParse(value);
         return parsed.success ? { ok: true, value: parsed.data } : { ok: false };
@@ -1122,9 +1132,9 @@ export function parseDaemonSessionClientDurableMutation(
         && mutation.mutationId === exactTurnEnd.data.mutationId
         && mutation.dependsOn === undefined
         && mutation.paused === undefined;
-    const admittedUsageLimitRecovery = mutation.kind === 'registered_session_state_field'
+    const admittedDaemonField = mutation.kind === 'registered_session_state_field'
         && mutation.payload.sessionId === expectedSessionId
-        && mutation.payload.fieldId === 'runtime.usageLimitRecovery'
+        && (mutation.payload.fieldId === 'runtime.usageLimitRecovery' || mutation.payload.fieldId === 'runtime.workState')
         && mutation.payload.source === 'daemon'
         && mutation.payload.deliveryClass === 'durable_required'
         && mutation.mutationId === mutation.payload.mutationId
@@ -1135,7 +1145,7 @@ export function parseDaemonSessionClientDurableMutation(
         && mutation.mutationId === mutation.payload.mutationId
         && mutation.dependsOn === undefined
         && mutation.paused === undefined;
-    if (admittedExactTurnEnd || admittedUsageLimitRecovery || admittedTranscriptMessage) return parsed;
+    if (admittedExactTurnEnd || admittedDaemonField || admittedTranscriptMessage) return parsed;
 
     const record = isRecord(value) ? value : null;
     return {

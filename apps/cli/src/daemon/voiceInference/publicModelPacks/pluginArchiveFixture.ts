@@ -66,7 +66,7 @@ export async function installVoiceModelPackPluginArchiveFixture(params: Readonly
       locator: archivePath,
       expectedIntegrity: sourceIntegrity,
     });
-    if (begun.kind !== 'reviewRequired') {
+    if (begun.kind !== 'reviewRequired' || begun.reviewKind !== 'installation') {
       throw new Error(`Voice model-pack archive fixture did not require review: ${JSON.stringify(begun)}`);
     }
     if (begun.review.pluginId !== manifest.id || begun.review.version !== manifest.version) {

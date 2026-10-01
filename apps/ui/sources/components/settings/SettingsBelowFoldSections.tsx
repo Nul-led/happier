@@ -1,5 +1,6 @@
 import * as React from 'react';
 
+import { MachinePresenceCounts } from '@/components/machines/MachinePresenceCounts';
 import { SettingsAboutSection } from '@/components/settings/SettingsAboutSection';
 import { SettingsAiAndAgentsSection } from '@/components/settings/SettingsAiAndAgentsSection';
 import { SettingsDeveloperSection } from '@/components/settings/SettingsDeveloperSection';
@@ -10,6 +11,7 @@ import { SettingsSessionsBehaviorSection } from '@/components/settings/SettingsS
 import { useResolvedSettingsPageCatalog } from '@/components/settings/catalog/runtime/useResolvedSettingsPageCatalog';
 import type { ResolvedSettingsPageNode } from '@/components/settings/catalog/types';
 import type { SettingsBelowFoldSectionsProps } from '@/components/settings/settingsBelowFoldSectionTypes';
+import { useMachinePresenceCounts } from '@/sync/domains/state/storage';
 
 function rootGroups(tree: readonly ResolvedSettingsPageNode[]): readonly ResolvedSettingsPageNode[] {
     return tree.find((node) => node.id === 'settings')?.children ?? [];
@@ -22,12 +24,23 @@ function minimumStageForRootGroup(index: number): number {
     return 3;
 }
 
+/** The Machines row says how many machines are online and offline (lab `hmachines-Mp`). */
+function resolveProfileAndAccountSubtitle(page: ResolvedSettingsPageNode, defaultSubtitle: React.ReactNode | undefined): React.ReactNode | undefined {
+    return page.id === 'machines' ? <SettingsMachinesRowPresence /> : defaultSubtitle;
+}
+
+/** Its own leaf, so a presence change re-renders the row's subtitle and nothing else. */
+const SettingsMachinesRowPresence = React.memo(function SettingsMachinesRowPresence() {
+    const counts = useMachinePresenceCounts();
+    return <MachinePresenceCounts testID="settings-machines-row-presence" counts={counts} />;
+});
+
 function SettingsCatalogRootGroup(props: SettingsBelowFoldSectionsProps & Readonly<{
     groupId: string;
 }>): React.ReactElement {
     switch (props.groupId) {
         case 'groupAiAndAgents':
-            return <SettingsAiAndAgentsSection onNavigate={props.onNavigate} router={props.router} theme={props.theme} />;
+            return <SettingsAiAndAgentsSection onNavigate={props.onNavigate} router={props.router} />;
         case 'groupSessionsBehavior':
             return (
                 <SettingsSessionsBehaviorSection
@@ -35,19 +48,25 @@ function SettingsCatalogRootGroup(props: SettingsBelowFoldSectionsProps & Readon
                     onNavigate={props.onNavigate}
                     router={props.router}
                     showAutomations={props.showAutomations}
-                    terminalUseTmux={props.terminalUseTmux}
-                    theme={props.theme}
+                />
+            );
+        case 'groupProfileAndAccount':
+            return (
+                <SettingsCatalogOverviewGroup
+                    groupId={props.groupId}
+                    router={props.router}
+                    onNavigate={props.onNavigate}
+                    resolveSubtitle={resolveProfileAndAccountSubtitle}
                 />
             );
         case 'groupFilesAndSourceControl':
-            return <SettingsFilesAndSourceControlSection onNavigate={props.onNavigate} router={props.router} theme={props.theme} />;
+            return <SettingsFilesAndSourceControlSection onNavigate={props.onNavigate} router={props.router} />;
         case 'groupSystem':
             return (
                 <SettingsSystemSection
                     handleReportIssue={props.handleReportIssue}
                     onNavigate={props.onNavigate}
                     router={props.router}
-                    theme={props.theme}
                 />
             );
         default:
@@ -55,69 +74,34 @@ function SettingsCatalogRootGroup(props: SettingsBelowFoldSectionsProps & Readon
                 <SettingsCatalogOverviewGroup
                     groupId={props.groupId}
                     router={props.router}
-                    theme={props.theme}
                     onNavigate={props.onNavigate}
                 />
             );
     }
 }
 
-export const SettingsBelowFoldSections = React.memo(function SettingsBelowFoldSections({
-    appVersion,
-    automationsNeedLocalEnablement,
-    devModeEnabled,
-    handleGitHub,
-    handleReportIssue,
-    handleVersionClick,
-    onNavigate,
-    router,
-    showAutomations,
-    showChangelog,
-    showRateUs,
-    stage,
-    terminalUseTmux,
-    theme,
-}: SettingsBelowFoldSectionsProps) {
+export const SettingsBelowFoldSections = React.memo(function SettingsBelowFoldSections(props: SettingsBelowFoldSectionsProps) {
     const catalog = useResolvedSettingsPageCatalog();
     const groups = React.useMemo(() => rootGroups(catalog.tree), [catalog.tree]);
     return (
         <>
-            {groups.map((group, index) => (
-                stage >= minimumStageForRootGroup(index) ? (
-                    <SettingsCatalogRootGroup
-                        key={group.id}
-                        appVersion={appVersion}
-                        automationsNeedLocalEnablement={automationsNeedLocalEnablement}
-                        devModeEnabled={devModeEnabled}
-                        handleGitHub={handleGitHub}
-                        handleReportIssue={handleReportIssue}
-                        handleVersionClick={handleVersionClick}
-                        onNavigate={onNavigate}
-                        router={router}
-                        showAutomations={showAutomations}
-                        showChangelog={showChangelog}
-                        showRateUs={showRateUs}
-                        stage={stage}
-                        terminalUseTmux={terminalUseTmux}
-                        theme={theme}
-                        groupId={group.id}
-                    />
+            {props.showCatalogGroups ? groups.map((group, index) => (
+                props.stage >= minimumStageForRootGroup(index) ? (
+                    <SettingsCatalogRootGroup key={group.id} {...props} groupId={group.id} />
                 ) : null
-            ))}
-            {stage >= 3 ? (
-                <>
-                    <SettingsDeveloperSection devModeEnabled={devModeEnabled} router={router} theme={theme} />
-                </>
+            )) : null}
+            {props.stage >= 3 ? (
+                <SettingsDeveloperSection devModeEnabled={props.devModeEnabled} router={props.router} />
             ) : null}
-            {stage >= 4 ? (
+            {props.stage >= 4 ? (
                 <SettingsAboutSection
-                    appVersion={appVersion}
-                    handleGitHub={handleGitHub}
-                    handleVersionClick={handleVersionClick}
-                    router={router}
-                    showChangelog={showChangelog}
-                    showRateUs={showRateUs}
-                    theme={theme}
+                    appVersion={props.appVersion}
+                    handleGitHub={props.handleGitHub}
+                    handleVersionClick={props.handleVersionClick}
+                    router={props.router}
+                    showChangelog={props.showChangelog}
+                    showRateUs={props.showRateUs}
+                    supportUs={props.supportUs}
                 />
             ) : null}
         </>

@@ -7,9 +7,11 @@ import { installSettingsViewCommonModuleMocks } from '../settingsViewTestHelpers
 
 const autostartState = vi.hoisted(() => ({
     supported: true,
-    enabled: false,
+    mode: 'at-login' as 'at-login' | 'on-demand' | null,
+    installed: true as boolean | null,
     loading: false,
     error: null as string | null,
+    setMode: async (_mode: 'at-login' | 'on-demand') => {},
 }));
 const localSettingsState = vi.hoisted(() => ({
     value: {} as Record<string, unknown>,
@@ -35,14 +37,15 @@ vi.mock('@/utils/platform/desktopHost', () => ({
     isDesktopHost: () => true,
 }));
 
-vi.mock('./useDesktopAutostart', () => ({
-    useDesktopAutostart: () => autostartState,
+vi.mock('./useDesktopLoginStart', () => ({
+    useDesktopLoginStart: () => autostartState,
 }));
 
 describe('DesktopAppSettingsScreen (missing vector icons)', () => {
     beforeEach(() => {
         autostartState.supported = true;
-        autostartState.enabled = false;
+        autostartState.mode = 'at-login';
+        autostartState.installed = true;
         autostartState.loading = false;
         autostartState.error = null;
         localSettingsState.value = {

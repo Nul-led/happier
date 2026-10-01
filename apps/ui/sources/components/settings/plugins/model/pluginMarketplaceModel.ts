@@ -16,6 +16,8 @@ import {
     type PluginUpdatePolicyV1,
 } from '@happier-dev/protocol/marketplace';
 
+import type { PluginMarketplaceCatalogEntry } from '../readPluginMarketplaceCatalog';
+
 export const MARKETPLACE_CAPABILITY_ID = 'tool.plugins' as CapabilityId;
 
 /**
@@ -184,7 +186,18 @@ export function resolvePluginReadOnlySnapshotNotice(params: Readonly<{
     hasMarketplaceSourceRegistry: boolean;
     hasProjectionInputs: boolean;
     capabilityReadFailed?: boolean;
+    /**
+     * The selected machine reads online, but its live connection cannot be resolved yet (the
+     * Account's data is still loading). That is "checking", never "disconnected": only a resolved
+     * machine that is away reads offline.
+     */
+    targetResolving?: boolean;
 }>): PluginReadOnlySnapshotNoticeState | null {
+    if (params.targetResolving && !params.daemonTransportOnline) {
+        return params.hasCapabilitySnapshot || params.installedPluginCount > 0 || params.developmentPluginCount > 0
+            ? { reason: 'refreshing' }
+            : null;
+    }
     if (params.capabilityReadFailed) {
         return { reason: params.daemonTransportOnline ? 'installationUnavailable' : 'disconnected' };
     }
@@ -754,6 +767,92 @@ export function formatCatalogEntryVersion(version: string | null): string | unde
     return version ?? undefined;
 }
 
+/** One listing's review state, as a reader names it. */
+export function catalogReviewStatusLabel(entry: PluginMarketplaceCatalogEntry): string {
+    if (entry.warning === 'withdrawn') return t('settingsPlugins.discover.reviewStatus.withdrawn');
+    if (entry.sourceKind === 'curated' && entry.reviewStatus === 'approved') return t('settingsPlugins.discover.reviewStatus.curated');
+    return t('settingsPlugins.discover.reviewStatus.unreviewed');
+}
+
+/** A Browse shelf: the results of one provenance, which carries real trust meaning. */
+export type DiscoverShelf = Readonly<{
+    id: PluginMarketplaceCatalogEntry['sourceKind'];
+    entries: readonly PluginMarketplaceCatalogEntry[];
+}>;
+
+/**
+ * Reviewed listings lead, the user's own sources follow, and unreviewed community packages come
+ * last; inside a shelf the query's own order is kept, and a provenance with no results has no shelf.
+ */
+const DISCOVER_SHELF_ORDER = ['curated', 'user', 'community-npm'] as const satisfies readonly DiscoverShelf['id'][];
+
+export function groupDiscoverEntriesByShelf(entries: readonly PluginMarketplaceCatalogEntry[]): readonly DiscoverShelf[] {
+    return DISCOVER_SHELF_ORDER
+        .map((id) => ({ id, entries: entries.filter((entry) => entry.sourceKind === id) }))
+        .filter((shelf) => shelf.entries.length > 0);
+}
+
+/** A compact shelf shows one row of cards; "See all" focuses the shelf and shows every card. */
+export const BROWSE_SHELF_PREVIEW_COUNT = 3;
+
+export type BrowseShelfView = DiscoverShelf & Readonly<{ hiddenCount: number }>;
+
+/**
+ * What Browse shows for the loaded results: the categories they carry (the chips, first-seen
+ * order; none when the catalog has none), and the shelves narrowed to the chosen category — each
+ * compact unless it is the focused one, which shows all of its cards alone.
+ */
+export function projectBrowseShelves(
+    entries: readonly PluginMarketplaceCatalogEntry[],
+    params: Readonly<{ category: string | null; focusedShelfId: DiscoverShelf['id'] | null }>,
+): Readonly<{
+    categories: readonly string[];
+    shelves: readonly BrowseShelfView[];
+    /** The chosen category if the results still carry it, else `null` (All). */
+    category: string | null;
+    /** The focused shelf if it still has results in `category`, else `null` (every shelf, compact). */
+    focusedShelfId: DiscoverShelf['id'] | null;
+}> {
+    const categories: string[] = [];
+    for (const entry of entries) {
+        for (const category of entry.categories) {
+            if (!categories.includes(category)) categories.push(category);
+        }
+    }
+    // A chip or a focus the current results cannot honour would render no cards at all, so both
+    // fall back to the whole result set rather than an empty grid.
+    const category = params.category !== null && categories.includes(params.category) ? params.category : null;
+    const matching = category === null ? entries : entries.filter((entry) => entry.categories.includes(category));
+    const grouped = groupDiscoverEntriesByShelf(matching);
+    const focusedShelfId = params.focusedShelfId !== null && grouped.some((shelf) => shelf.id === params.focusedShelfId)
+        ? params.focusedShelfId
+        : null;
+    const shelves = grouped
+        .filter((shelf) => focusedShelfId === null || shelf.id === focusedShelfId)
+        .map((shelf): BrowseShelfView => {
+            if (focusedShelfId !== null) return { ...shelf, hiddenCount: 0 };
+            return {
+                id: shelf.id,
+                entries: shelf.entries.slice(0, BROWSE_SHELF_PREVIEW_COUNT),
+                hiddenCount: Math.max(0, shelf.entries.length - BROWSE_SHELF_PREVIEW_COUNT),
+            };
+        });
+    return { categories, shelves, category, focusedShelfId };
+}
+
+/**
+ * The one Discover query's filters: All sends no source filter (the daemon aggregates every
+ * enabled source), a source narrows it, and a listing page resolves one exact source-qualified
+ * listing through the same query.
+ */
+export function buildDiscoverQueryFilters(params: Readonly<{ sourceId: string | null; pluginId?: string | null }>) {
+    return {
+        ...(params.sourceId === null ? {} : { sourceIds: [params.sourceId] }),
+        ...(params.pluginId ? { pluginIds: [params.pluginId] } : {}),
+        includeUnavailable: true as const,
+    };
+}
+
 /**
  * One row's state vocabulary, shared by the Installed and Development lists.
  *
@@ -845,6 +944,66 @@ export function projectInstalledPluginPresentation(
         status: createPluginRowStatus(statusId),
         sourceLabel: resolveInstalledSourceLabel(entry),
         attentionLabel,
+    });
+}
+
+/**
+ * The version a reader is shown for an installed plugin, or none: a plugin that ships with Happier
+ * has no version of its own to speak of, and "0.0.0" is a raw placeholder, never a version.
+ */
+export function installedPluginVersionLabel(entry: InstalledPluginEntry): string | null {
+    if (entry.source.kind === 'bundled') return null;
+    const version = entry.version.trim();
+    return version.length > 0 && version !== '0.0.0' ? version : null;
+}
+
+/** The plugins the user added (the Installed collection) and the ones that ship with Happier. */
+/**
+ * Whether a plugin ships inside Happier (bundled first-party): the installed record's source when the
+ * machine listed it, else the contribution projection's provenance.
+ */
+export function isPluginIncludedWithHappier(params: Readonly<{
+    installed?: Readonly<{ source: Readonly<{ kind: string }> }> | null;
+    projection?: Readonly<{ provenance: Readonly<{ sourceKind: string | null }> | null }> | null;
+}>): boolean {
+    if (params.installed) return params.installed.source.kind === 'bundled';
+    return params.projection?.provenance?.sourceKind === 'bundled';
+}
+
+export function partitionInstalledPlugins(entries: readonly InstalledPluginEntry[]): Readonly<{
+    added: readonly InstalledPluginEntry[];
+    included: readonly InstalledPluginEntry[];
+}> {
+    const added: InstalledPluginEntry[] = [];
+    const included: InstalledPluginEntry[] = [];
+    for (const entry of entries) (isPluginIncludedWithHappier({ installed: entry }) ? included : added).push(entry);
+    return { added, included };
+}
+
+export type InstalledPluginStatusFilter = 'all' | 'enabled' | 'disabled' | 'attention';
+
+/**
+ * The Installed view's search and status filter over the machine's installed plugins. Status
+ * follows the one the row shows (`projectInstalledPluginPresentation`): "attention" is every row
+ * that needs a decision. An empty query with no status filter returns the list itself.
+ */
+export function filterInstalledPlugins(
+    entries: readonly InstalledPluginEntry[],
+    params: Readonly<{ query: string; status: InstalledPluginStatusFilter }>,
+): readonly InstalledPluginEntry[] {
+    const query = params.query.trim().toLocaleLowerCase();
+    if (!query && params.status === 'all') return entries;
+    return entries.filter((entry) => {
+        if (params.status !== 'all') {
+            const statusId = resolveInstalledRowStatusId(entry);
+            const matchesStatus = params.status === 'attention'
+                ? statusId !== 'enabled' && statusId !== 'disabled'
+                : statusId === params.status;
+            if (!matchesStatus) return false;
+        }
+        if (!query) return true;
+        return [entry.title, entry.description ?? '', entry.pluginId]
+            .some((text) => text.toLocaleLowerCase().includes(query));
     });
 }
 

@@ -20,7 +20,10 @@ import {
 const INBOX_MARK_READ_KEYS = [
     'inbox.markAllRead',
     'inbox.readySessions',
-    'inbox.errors',
+    'inbox.failed',
+    'inbox.needsYou',
+    'inbox.friendRequests',
+    'inbox.pageDescription',
     'inbox.openInbox',
     'sessionInfo.markSessionRead',
 ] as const;

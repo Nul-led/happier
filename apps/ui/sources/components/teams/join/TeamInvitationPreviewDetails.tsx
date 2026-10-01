@@ -4,9 +4,11 @@ import { StyleSheet } from 'react-native-unistyles';
 import type { TeamInvitationPreviewV1 } from '@happier-dev/protocol/teams';
 
 import { SurfaceStateCard } from '@/components/ui/surfaces/SurfaceStateCard';
+import { RoundButton } from '@/components/ui/buttons/RoundButton';
 import { Text } from '@/components/ui/text/Text';
 import { teamRoleLabel } from '@/components/settings/teams/teamLabels';
-import { t } from '@/text';
+import { getPreferredLanguage, t } from '@/text';
+import { formatWithCachedDateTimeFormatter } from '@/utils/datetime/cachedIntlFormatters';
 
 import { presentTeamsDisabledOnHome } from '@/components/teams/entry/teamAuthenticationFailure';
 
@@ -64,17 +66,6 @@ export const TeamInvitationPreviewDetails = React.memo(function TeamInvitationPr
             <View testID="team-join-preview-loading" style={styles.block}>
                 <Text style={styles.pending}>{t('teams.join.previewLoading')}</Text>
             </View>
-        );
-    }
-
-    if (state.kind === 'update_required') {
-        return (
-            <SurfaceStateCard
-                testID="team-join-preview-update-required"
-                kind="warning"
-                title={t('teams.join.updateRequiredTitle')}
-                accessibilitySemantics="status"
-            />
         );
     }
 
@@ -181,9 +172,36 @@ export const TeamInvitationPreviewDetails = React.memo(function TeamInvitationPr
             <PreviewLine
                 testID="team-join-preview-expiry"
                 text={t('teams.invitations.expires', {
-                    when: new Date(preview.expiresAt).toLocaleDateString(),
+                    when: formatWithCachedDateTimeFormatter(new Date(preview.expiresAt), getPreferredLanguage()),
                 })}
             />
+            {state.refreshing ? (
+                <Text
+                    testID="team-join-preview-refreshing"
+                    accessibilityLiveRegion="polite"
+                    aria-live="polite"
+                    role="status"
+                    style={styles.pending}
+                >
+                    {t('teams.join.previewLoading')}
+                </Text>
+            ) : null}
+            {state.refreshFailure ? (
+                <View testID="team-join-preview-failed" style={styles.refreshFailure}>
+                    <Text accessibilityLiveRegion="polite" aria-live="polite" role="status" style={styles.pending}>
+                        {t('teams.join.offlineBody')}
+                    </Text>
+                    {state.refreshFailure.retryable && props.onRetry ? (
+                        <RoundButton
+                            testID="team-join-preview-failed-action"
+                            size="small"
+                            display="secondary"
+                            title={t('teams.join.retry')}
+                            onPress={props.onRetry}
+                        />
+                    ) : null}
+                </View>
+            ) : null}
         </View>
     );
 });
@@ -201,5 +219,9 @@ const styles = StyleSheet.create((theme) => ({
         fontSize: 14,
         lineHeight: 20,
         color: theme.colors.text.secondary,
+    },
+    refreshFailure: {
+        gap: 6,
+        alignItems: 'flex-start',
     },
 }));

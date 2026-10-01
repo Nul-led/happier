@@ -7,7 +7,7 @@ import {
 import type { AuthCredentials } from '@/auth/storage/tokenStorage';
 import { createServerFetchAtEndpoint, type ServerFetch } from '@/sync/http/client';
 import type { HomeCarrier } from '@/sync/runtime/homeCarrier';
-import { acquireEligibleHomeCarrier } from '@/sync/runtime/homeCarrierPolicy';
+import { acquireEligibleHomeCarrier, readHomeApplicationCarrierEligibility } from '@/sync/runtime/homeCarrierPolicy';
 import type { IrohHomeTunnelVerification } from '@/sync/runtime/nativeIrohTunnels/types';
 
 export type HomeEnrollmentTransportFailureReason =
@@ -100,6 +100,11 @@ export async function resolveHomeEnrollmentTransport(
         ? approvedApplicationOrigin(options.runtimeOrigin)
         : null;
     const irohEndpoint = descriptor.endpoints.find((endpoint) => endpoint.kind === 'iroh') ?? null;
+    if (resolvedRuntimeOrigin
+        && readHomeApplicationCarrierEligibility() === 'standard_only'
+        && (options.runtimeCarrier ?? (irohEndpoint ? 'iroh' : 'https')) === 'iroh') {
+        return { ok: false, homeServerIdentityId: descriptor.homeServerIdentityId, reason: 'iroh_transport_unavailable' };
+    }
 
     let endpointUrl: string | null = null;
     let runtimeOrigin: string | null = null;
@@ -118,7 +123,6 @@ export async function resolveHomeEnrollmentTransport(
     } else if (canonicalEndpointUrl) {
         const acquired = await acquireEligibleHomeCarrier({
             mode: 'initial_selection',
-            applicationCarrierEligibility: 'automatic',
             descriptor,
             verification: options.verification ?? { kind: 'enrollment' },
         });

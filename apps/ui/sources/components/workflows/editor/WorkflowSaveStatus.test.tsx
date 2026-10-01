@@ -1,5 +1,6 @@
 import * as React from 'react';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { act } from 'react-test-renderer';
+import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import { renderScreen, standardCleanup } from '@/dev/testkit';
 
@@ -7,6 +8,11 @@ vi.mock('@/text', async () => {
     const { createTextModuleMock } = await import('@/dev/testkit/mocks/text');
     return createTextModuleMock({ translate: (key, params) => params ? `${key}:${JSON.stringify(params)}` : key });
 });
+
+// Module transform is paid once, outside any single case's time budget.
+beforeAll(async () => {
+    await import('./WorkflowSaveStatus');
+}, 300_000);
 
 afterEach(async () => {
     await standardCleanup();
@@ -28,32 +34,89 @@ const draft = {
 };
 
 describe('WorkflowSaveStatus', () => {
-    it('shows the exact successful Artifact revision as a quiet in-place receipt', async () => {
+    it('is its own receipt: one element reads Unsaved changes with Save, then Saving…, then Saved just now', async () => {
+        const { WorkflowSaveStatus } = await import('./WorkflowSaveStatus');
+        const onSave = vi.fn();
+        const now = Date.UTC(2026, 8, 30, 12, 0, 0);
+        type State = React.ComponentProps<typeof WorkflowSaveStatus>['state'];
+        let setState: (state: State) => void = () => {};
+        function Harness() {
+            const [state, set] = React.useState<State>({ kind: 'unsaved' });
+            setState = set;
+            return React.createElement(WorkflowSaveStatus, {
+                state,
+                localDraft: draft,
+                onSave,
+                onSaveAsCopy: vi.fn(),
+                nowMs: now,
+                testIDPrefix: 'workflow-editor',
+            });
+        }
+        const screen = await renderScreen(React.createElement(Harness));
+        const update = async (state: State) => { await act(async () => { setState(state); }); };
+
+        const status = () => screen.findByTestId('workflow-editor-save-status');
+        expect(status()).not.toBeNull();
+        expect(screen.getTextContent()).toContain('workflows.page.saveStatus.unsaved');
+        await screen.pressByTestIdAsync('workflow-editor-save');
+        expect(onSave).toHaveBeenCalledTimes(1);
+
+        await update({ kind: 'saving' });
+        expect(status()).not.toBeNull();
+        expect(screen.getTextContent()).toContain('workflows.page.saveStatus.saving');
+        // While saving, Save is not repeatable.
+        expect(screen.findByTestId('workflow-editor-save')).toBeNull();
+
+        await update({ kind: 'saved', savedAtMs: now - 10_000 });
+        expect(screen.getTextContent()).toContain('workflows.page.saveStatus.savedJustNow');
+        // No raw revision ("h1 · b2") is ever the receipt.
+        expect(screen.getTextContent()).not.toMatch(/h\d+ · b\d+/);
+
+        await update({ kind: 'saved', savedAtMs: now - 3 * 60_000 });
+        expect(screen.getTextContent()).toContain('workflows.page.saveStatus.savedAge');
+    });
+
+    it('reads Not saved yet for a pristine draft, with no Save and no validation text', async () => {
         const { WorkflowSaveStatus } = await import('./WorkflowSaveStatus');
         const screen = await renderScreen(React.createElement(WorkflowSaveStatus, {
-            revision: { headerVersion: 4, bodyVersion: 7 },
-            conflict: null,
+            state: { kind: 'notSaved' },
             localDraft: draft,
+            onSave: vi.fn(),
             onSaveAsCopy: vi.fn(),
             testIDPrefix: 'workflow-editor',
         }));
-
-        expect(screen.findByTestId('workflow-editor-saved-revision')).not.toBeNull();
-        expect(screen.getTextContent()).toContain('h4 · b7');
+        expect(screen.getTextContent()).toBe('workflows.page.saveStatus.notSaved');
+        expect(screen.findByTestId('workflow-editor-save')).toBeNull();
     });
 
-    it('retains the local document and offers comparison plus save-as-copy recovery', async () => {
+    it('keeps edits after a failed save and offers Try again through the same Save', async () => {
+        const { WorkflowSaveStatus } = await import('./WorkflowSaveStatus');
+        const onSave = vi.fn();
+        const screen = await renderScreen(React.createElement(WorkflowSaveStatus, {
+            state: { kind: 'failed', reason: 'The server did not answer.' },
+            localDraft: draft,
+            onSave,
+            onSaveAsCopy: vi.fn(),
+            testIDPrefix: 'workflow-editor',
+        }));
+        expect(screen.getTextContent()).toContain('workflows.page.saveStatus.failed');
+        await screen.pressByTestIdAsync('workflow-editor-save-retry');
+        expect(onSave).toHaveBeenCalledTimes(1);
+    });
+
+    it('retains the local document in a conflict and offers comparison plus save-as-copy recovery', async () => {
         const { WorkflowSaveStatus } = await import('./WorkflowSaveStatus');
         const saveAsCopy = vi.fn();
         const currentDraft = { ...draft, draftId: 'current-draft', blocks: [{ ...draft.blocks[0], document: { ...draft.blocks[0].document, text: 'Review remote changes' } }] };
         const screen = await renderScreen(React.createElement(WorkflowSaveStatus, {
-            revision: { headerVersion: 2, bodyVersion: 2 },
-            conflict: { currentDraft, currentRevision: { headerVersion: 3, bodyVersion: 3 } },
+            state: { kind: 'conflict', conflict: { currentDraft, currentRevision: { headerVersion: 3, bodyVersion: 3 } } },
             localDraft: draft,
+            onSave: vi.fn(),
             onSaveAsCopy: saveAsCopy,
             testIDPrefix: 'workflow-editor',
         }));
 
+        expect(screen.getTextContent()).toContain('workflows.save.conflictTitle');
         expect(screen.getTextContent()).toContain('workflows.save.conflictBody');
         await screen.pressByTestIdAsync('workflow-editor-compare');
         expect(screen.getTextContent()).toContain('Review local changes');
@@ -65,9 +128,9 @@ describe('WorkflowSaveStatus', () => {
     it('omits Compare when the current Artifact cannot be read while keeping save-as-copy available', async () => {
         const { WorkflowSaveStatus } = await import('./WorkflowSaveStatus');
         const screen = await renderScreen(React.createElement(WorkflowSaveStatus, {
-            revision: { headerVersion: 2, bodyVersion: 2 },
-            conflict: { currentDraft: null, currentRevision: null },
+            state: { kind: 'conflict', conflict: { currentDraft: null, currentRevision: null } },
             localDraft: draft,
+            onSave: vi.fn(),
             onSaveAsCopy: vi.fn(),
             testIDPrefix: 'workflow-editor',
         }));

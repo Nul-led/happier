@@ -1,3 +1,4 @@
+import { useAiLaunchProfiles } from '@/sync/store/useAiLaunchProfiles';
 import * as React from 'react';
 import type { AiLaunchProfile } from '@happier-dev/protocol';
 
@@ -8,12 +9,9 @@ import { Modal } from '@/modal';
 import { MACHINE_ADMINISTRATION_SELECTION_KEYS_V1 } from '@/sync/domains/machines/administration/selectionPreferences';
 import { machineAdministrationTargetsEqual } from '@/sync/domains/machines/administration/targetSelection';
 import { useMachineAdministrationTargetSelection } from '@/sync/domains/machines/administration/useTargetSelection';
-import {
-    readUiAiLaunchProfiles,
-    readUiAiLaunchProfilesForLegacyUi,
-} from '@/sync/domains/profiles/aiLaunchProfileCollection';
 import type { AIBackendProfile } from '@/sync/domains/profiles/profileCompatibility';
 import { toggleFavoriteProfileId } from '@/sync/domains/profiles/profileGrouping';
+import { projectAiLaunchProfileForLegacyUi } from '@/sync/domains/profiles/aiLaunchProfileCollection';
 import { getRequiredSecretEnvVarNames } from '@/sync/domains/profiles/profileSecrets';
 import {
     getBuiltInProfile,
@@ -40,8 +38,8 @@ export type ProfileMigrationStatus = ReturnType<typeof resolveProfileMigrationSt
 export function useProfilesCollection() {
     const [useProfiles, setUseProfiles] = useSettingMutable('useProfiles');
     const rawProfiles = useSetting('profiles');
-    const launchProfiles = React.useMemo(() => readUiAiLaunchProfiles(rawProfiles), [rawProfiles]);
-    const profiles = React.useMemo(() => readUiAiLaunchProfilesForLegacyUi(rawProfiles), [rawProfiles]);
+    const launchProfiles = useAiLaunchProfiles(rawProfiles);
+    const profiles = React.useMemo(() => launchProfiles.map(projectAiLaunchProfileForLegacyUi), [launchProfiles]);
     const [favoriteProfileIds, setFavoriteProfileIds] = useSettingMutable('favoriteProfiles');
     const [profileEnabledByIdRaw, setProfileEnabledById] = useSettingMutable('profileEnabledById');
     const profileEnabledById = React.useMemo(

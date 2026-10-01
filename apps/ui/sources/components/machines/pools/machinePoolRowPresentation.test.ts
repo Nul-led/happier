@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { t } from '@/text';
 import type { MachinePoolViewV1 } from '@happier-dev/protocol';
 
 import {
@@ -36,7 +37,7 @@ const MACHINES = [
 ];
 
 const preview = (view: MachinePoolViewV1) => view.pool.members
-    .map((member) => resolveMachinePoolMemberLabel(member.machineId, MACHINES))
+    .map((member) => resolveMachinePoolMemberLabel(member, MACHINES))
     .join(', ');
 
 describe('machine pool row presentation', () => {
@@ -103,9 +104,45 @@ describe('machine pool row presentation', () => {
         expect(rows.map((row) => row.accessibilityName)).toEqual(['Development', 'Release']);
     });
 
-    it('uses an honest short identifier for a member whose decrypted label is missing', () => {
-        expect(resolveMachinePoolMemberLabel('machine-unknown-long-id', MACHINES)).toBe('machine-');
-        expect(resolveMachinePoolMemberLabel('machine-b', MACHINES)).toBe('linux-box');
+    it('names a member no longer in this Home by the state the pool reports, never as locked', () => {
+        const member = (machineId: string, state: MachinePoolViewV1['pool']['members'][number]['state']) => ({ machineId, state });
+        expect(resolveMachinePoolMemberLabel(member('machine-gone-1', 'revoked'), MACHINES)).toBe(t('machine.removedMachine'));
+        expect(resolveMachinePoolMemberLabel(member('machine-gone-2', 'replaced'), MACHINES)).toBe(t('machine.replacedMachine'));
+        expect(resolveMachinePoolMemberLabel(member('machine-gone-3', 'temporary'), MACHINES)).toBe(t('newSession.temporaryComputer.title'));
+        expect(resolveMachinePoolMemberLabel(member('machine-gone-4', 'connected'), MACHINES)).toBe(t('machine.unlistedMachine'));
+        expect(resolveMachinePoolMemberLabel(member('machine-gone-4', 'connected'), MACHINES)).not.toBe(t('machine.lockedMachine'));
+        expect(resolveMachinePoolMemberLabel({ machineId: 'machine-b' }, MACHINES)).toBe('linux-box');
+    });
+
+    it('tells two removed members of one pool apart by a short id only', () => {
+        const view = {
+            ...pool(POOL_A, 'Development', []),
+            pool: {
+                ...pool(POOL_A, 'Development', []).pool,
+                members: [
+                    { machineId: 'gone-aaaa-1', priorityTier: 0, enabled: true, state: 'revoked' as const },
+                    { machineId: 'gone-bbbb-2', priorityTier: 0, enabled: true, state: 'revoked' as const },
+                ],
+            },
+        };
+        expect(resolveMachinePoolEnabledMemberLabels(view, MACHINES)).toEqual([
+            `${t('machine.removedMachine')} · gone-a`,
+            `${t('machine.removedMachine')} · gone-b`,
+        ]);
+    });
+
+    it('names a locked member through the machine naming owner, adding a short id only between locked members', () => {
+        const machines = [
+            { id: 'machine-locked-aaaa', metadata: null },
+            { id: 'machine-locked-bbbb', metadata: null },
+        ] as unknown as typeof MACHINES;
+        expect(resolveMachinePoolMemberLabel({ machineId: 'machine-locked-aaaa' }, machines)).toBe(`${t('machine.lockedMachine')} · machine-locked-a`);
+        expect(resolveMachinePoolMemberLabel({ machineId: 'machine-locked-aaaa' }, [machines[0]!])).toBe(t('machine.lockedMachine'));
+    });
+
+    it('names a known machine without a name as unnamed, never by a short id', () => {
+        const unnamed = [{ id: 'machine-unnamed-long-id', metadata: {} }] as unknown as typeof MACHINES;
+        expect(resolveMachinePoolMemberLabel({ machineId: 'machine-unnamed-long-id' }, unnamed)).toBe(t('machine.unnamedMachine'));
     });
 
     it('projects only enabled member labels before applying a presentation limit', () => {

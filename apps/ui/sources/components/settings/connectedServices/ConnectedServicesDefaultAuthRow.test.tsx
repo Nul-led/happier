@@ -506,6 +506,7 @@ describe('ConnectedServicesDefaultAuthRow', () => {
 
     it('keeps an earlier-0.3 Team resource default the Home no longer offers selected and unavailable, without native fallback', async () => {
         const { ConnectedServicesDefaultAuthRow } = await import('./ConnectedServicesDefaultAuthRow');
+        const onRecoverTeamCredentialResource = vi.fn();
         // Exactly what an earlier 0.3 build's row persisted (service-keyed, Home-qualified).
         const persisted: ConnectedServicesDefaultAuthByAgentIdV1 = {
             v: 1,
@@ -539,6 +540,7 @@ describe('ConnectedServicesDefaultAuthRow', () => {
                 teamCredentialResources={[TEAM_RESOURCE]}
                 teamNameById={{ 'team-a': 'Acme' }}
                 currentTeamCredentialResourceKeys={new Set<string>()}
+                onRecoverTeamCredentialResource={onRecoverTeamCredentialResource}
                 settings={{
                     connectedServicesProfileLabelByKey: {},
                     connectedServicesDefaultProfileByServiceId: {},
@@ -553,7 +555,10 @@ describe('ConnectedServicesDefaultAuthRow', () => {
         const list = findSelectionListProps(modalTree);
         const teamOptionId = 'connected-service:team-resource:resource-a:brokered:brokered';
         expect(list.selectedOptionId).toBe(teamOptionId);
-        expect(findSelectionOption(modalTree, teamOptionId).disabled).toBe(true);
+        const staleOption = findSelectionOption(modalTree, teamOptionId);
+        expect(staleOption.disabled).toBe(false);
+        await act(async () => staleOption.onSelect());
+        expect(onRecoverTeamCredentialResource).toHaveBeenCalledWith(TEAM_RESOURCE);
         expect(list.selectedOptionId).not.toBe(`connected-service:${ENCODED_CODEX_SERVICE_KEY}:native`);
     });
 

@@ -1,6 +1,5 @@
 import { SessionOwnerMetadataEnvelopeV1Schema } from '@happier-dev/protocol';
 
-import { serverFetch } from '@/sync/http/client';
 import {
     fetchSessionListPageCompat,
 } from '@/sync/engine/sessions/sessionHttpCompat';
@@ -9,6 +8,10 @@ import type {
 } from './buildAccountEncryptionMigrationStorageDirectives';
 import { readSessionMetadataLayoutVersion } from '@/sync/engine/sessions/parsePlainSessionPayload';
 import { normalizeSessionAccessProjection } from '@/sync/engine/sessions/normalizeSessionAccessProjection';
+import {
+    assertAccountEncryptionMigrationScopeCurrent,
+    type AccountEncryptionMigrationScope,
+} from '@/sync/domains/settings/scope/accountSettingsScope';
 
 type SessionInventoryRequest = (
     path: string,
@@ -23,12 +26,13 @@ const SESSION_INVENTORY_PATHS = [
 export async function fetchAccountEncryptionMigrationSessionInventory(
     params: Readonly<{
         token: string;
-        request?: SessionInventoryRequest;
+        /** Must be the request captured for the mounted Home/Account scope. */
+        request: SessionInventoryRequest;
+        scope: AccountEncryptionMigrationScope;
     }>,
 ): Promise<readonly AccountEncryptionMigrationSessionRow[]> {
-    const request = params.request
-        ?? ((path: string, init: RequestInit) =>
-            serverFetch(path, init, { includeAuth: false }));
+    const request = params.request;
+    assertAccountEncryptionMigrationScopeCurrent(params.scope);
     const rows: AccountEncryptionMigrationSessionRow[] = [];
     const seenSessionIds = new Set<string>();
 
@@ -44,6 +48,7 @@ export async function fetchAccountEncryptionMigrationSessionInventory(
                 limit: 200,
                 allowLegacyV1Fallback: false,
             });
+            assertAccountEncryptionMigrationScopeCurrent(params.scope);
             for (const row of page.sessions) {
                 if (seenSessionIds.has(row.id)) {
                     throw new Error(
@@ -101,5 +106,6 @@ export async function fetchAccountEncryptionMigrationSessionInventory(
             cursor = page.nextCursor;
         }
     }
+    assertAccountEncryptionMigrationScopeCurrent(params.scope);
     return rows;
 }

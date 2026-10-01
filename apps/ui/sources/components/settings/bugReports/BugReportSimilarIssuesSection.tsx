@@ -1,15 +1,15 @@
 import React from 'react';
-import { Pressable, View } from 'react-native';
-import { useUnistyles } from 'react-native-unistyles';
 
-import { Text } from '@/components/ui/text/Text';
+import { Item } from '@/components/ui/lists/Item';
+import { ItemGroup } from '@/components/ui/lists/ItemGroup';
 import { t } from '@/text';
 
 import type { BugReportSimilarIssue } from './bugReportServiceClient';
-import { bugReportComposerStyles } from './bugReportComposerStyles';
-import { ActivitySpinner } from '@/components/ui/feedback/ActivitySpinner';
-import { Icon } from '@/components/ui/icons/Icon';
 
+/**
+ * Possible duplicates of the report being written. Choosing one posts the report as a comment on it
+ * instead of opening a new issue; the chosen issue is the only row until it is cleared.
+ */
 export function BugReportSimilarIssuesSection(props: Readonly<{
   loading: boolean;
   issues: BugReportSimilarIssue[];
@@ -17,61 +17,50 @@ export function BugReportSimilarIssuesSection(props: Readonly<{
   onSelectedIssueNumberChange: (value: number | null) => void;
   disabled: boolean;
 }>): React.JSX.Element | null {
-  const styles = bugReportComposerStyles;
-  const { theme } = useUnistyles();
-
   if (!props.loading && props.issues.length === 0 && !props.selectedIssueNumber) {
     return null;
   }
 
   return (
-    <View style={styles.section}>
-      <View style={styles.sectionHeader}>
-        <Text style={styles.sectionTitle}>{t('bugReports.composer.similarIssues.title')}</Text>
-        <Text style={styles.helperText}>{t('bugReports.composer.similarIssues.subtitle')}</Text>
-      </View>
-
-      {props.loading && (
-        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
-          <ActivitySpinner size="small" color={theme.colors.text.secondary} />
-          <Text style={styles.helperText}>{t('bugReports.composer.similarIssues.searching')}</Text>
-        </View>
-      )}
-
-      {props.selectedIssueNumber && (
-        <Pressable
-          style={[styles.similarIssueRow, styles.similarIssueRowSelected]}
-          onPress={() => props.onSelectedIssueNumberChange(null)}
+    <ItemGroup
+      title={t('bugReports.composer.similarIssues.title')}
+      description={t('bugReports.composer.similarIssues.subtitle')}
+    >
+      {props.selectedIssueNumber ? (
+        <Item
+          testID="bug-report-similar-issue-selected"
+          title={t('bugReports.composer.similarIssues.selectedTitle', { number: props.selectedIssueNumber })}
+          subtitle={t('bugReports.composer.similarIssues.selectedSubtitle')}
+          subtitleLines={0}
+          selected
+          showChevron={false}
           disabled={props.disabled}
-        >
-          <View style={{ flex: 1, gap: 4 }}>
-            <Text style={styles.similarIssueTitle}>{t('bugReports.composer.similarIssues.selectedTitle', { number: props.selectedIssueNumber })}</Text>
-            <Text style={styles.helperText}>{t('bugReports.composer.similarIssues.selectedSubtitle')}</Text>
-          </View>
-          <Icon name="x-circle" size={16} color={theme.colors.text.secondary} />
-        </Pressable>
-      )}
-
-      {!props.selectedIssueNumber && props.issues.length > 0 && (
-        <View style={styles.similarIssuesList}>
-            {props.issues.map((issue) => (
-              <Pressable
-                key={`${issue.owner}/${issue.repo}#${issue.number}`}
-                style={styles.similarIssueRow}
-                onPress={() => props.onSelectedIssueNumberChange(issue.number)}
-                disabled={props.disabled}
-                accessibilityRole="button"
-                accessibilityLabel={t('bugReports.composer.similarIssues.useIssueA11y', { number: issue.number })}
-              >
-                <View style={{ flex: 1, gap: 4 }}>
-                  <Text style={styles.similarIssueTitle}>{`#${issue.number} ${issue.title}`}</Text>
-                  <Text style={styles.helperText}>{issue.state === 'open' ? t('bugReports.composer.similarIssues.issueState.open') : t('bugReports.composer.similarIssues.issueState.closed')}</Text>
-                </View>
-                <Icon name="arrow-circle-right" size={16} color={theme.colors.text.secondary} />
-              </Pressable>
-            ))}
-        </View>
-      )}
-    </View>
+          onPress={() => props.onSelectedIssueNumberChange(null)}
+        />
+      ) : null}
+      {/* A new search keeps the earlier results on screen and says it is still looking. */}
+      {!props.selectedIssueNumber && props.loading ? (
+        <Item
+          testID="bug-report-similar-issues-searching"
+          title={t('bugReports.composer.similarIssues.searching')}
+          loading
+          mode="info"
+        />
+      ) : null}
+      {!props.selectedIssueNumber ? props.issues.map((issue) => (
+        <Item
+          key={`${issue.owner}/${issue.repo}#${issue.number}`}
+          testID={`bug-report-similar-issue-${issue.number}`}
+          title={`#${issue.number} ${issue.title}`}
+          titleLines={2}
+          subtitle={issue.state === 'open'
+            ? t('bugReports.composer.similarIssues.issueState.open')
+            : t('bugReports.composer.similarIssues.issueState.closed')}
+          accessibilityLabel={t('bugReports.composer.similarIssues.useIssueA11y', { number: issue.number })}
+          disabled={props.disabled}
+          onPress={() => props.onSelectedIssueNumberChange(issue.number)}
+        />
+      )) : null}
+    </ItemGroup>
   );
 }

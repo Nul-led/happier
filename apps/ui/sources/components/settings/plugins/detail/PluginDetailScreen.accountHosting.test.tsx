@@ -33,6 +33,7 @@ const pluginSettingsState = vi.hoisted(() => ({ pluginTruthSettled: true }));
 vi.mock('expo-router', () => ({
     Redirect: 'Redirect',
     useNavigation: () => ({ setOptions: vi.fn() }),
+    usePathname: () => '/settings/plugins/acme.tools',
 }));
 
 vi.mock('react-native-unistyles', async () => {
@@ -50,8 +51,6 @@ vi.mock('@/components/ui/lists/ItemList', () => ({
 vi.mock('@/components/ui/panels/PaneLoadingFallback', () => ({
     PaneLoadingFallback: 'PaneLoadingFallback',
 }));
-vi.mock('@/components/ui/icons/Icon', () => ({ Icon: 'Icon' }));
-vi.mock('@/components/ui/text/Text', () => ({ Text: 'Text', TextInput: 'TextInput' }));
 vi.mock('@/modal', () => ({ Modal: { prompt: vi.fn(), confirm: vi.fn(), alert: vi.fn() } }));
 vi.mock('@/text', async () => {
     const { createTextModuleMock } = await import('@/dev/testkit/mocks/text');
@@ -90,6 +89,7 @@ vi.mock('./PluginDetailInvocationLogsSection', () => ({
 vi.mock('./PluginDetailSummaryGrid', () => ({ PluginDetailSummaryGrid: 'PluginDetailSummaryGrid' }));
 vi.mock('../machines/PluginMachineMatrixSection', () => ({ PluginMachineMatrixSection: 'PluginMachineMatrixSection' }));
 vi.mock('../PluginAccountDataEraseRecoverySection', () => ({ PluginAccountDataEraseRecoverySection: 'PluginAccountDataEraseRecoverySection' }));
+vi.mock('./PluginDetailLeaveActions', () => ({ PluginDetailLeaveActions: 'PluginDetailLeaveActions' }));
 vi.mock('../PluginAccountReleaseSelectionSection', () => ({ PluginAccountReleaseSelectionSection: 'PluginAccountReleaseSelectionSection' }));
 vi.mock('../PluginReadOnlySnapshotNotice', () => ({ PluginReadOnlySnapshotNotice: 'PluginReadOnlySnapshotNotice' }));
 vi.mock('../model/usePluginSettingsScreenState', () => ({

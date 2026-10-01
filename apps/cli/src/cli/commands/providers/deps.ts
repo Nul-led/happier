@@ -116,6 +116,7 @@ export async function resolveProviderCliDependencies(): Promise<ProviderCliDepen
         registry: resolveProviderContributionRegistryView(
           registryLease.registry.contributes,
           registryLease.registry.generation,
+          registryLease.registry.readPluginOccurrenceId,
         ),
         activeSnapshot,
       };

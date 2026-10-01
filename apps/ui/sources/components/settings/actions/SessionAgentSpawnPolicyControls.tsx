@@ -3,18 +3,20 @@ import { View } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 import {
-    DEFAULT_SESSION_AGENT_SPAWN_POLICY_V1,
     SESSION_PERMISSION_MODES,
     SessionAgentSpawnPolicyV1Schema,
     type SessionAgentSpawnPolicyV1,
+    type SessionAgentStartAllowListsV1,
 } from '@happier-dev/protocol';
 
 import { DropdownMenu, type DropdownMenuItem } from '@/components/ui/forms/dropdown/DropdownMenu';
 import { Switch } from '@/components/ui/forms/Switch';
-import { Item } from '@/components/ui/lists/Item';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
+import { SettingAnchor, SettingRow } from '@/components/settings/shell/SettingRow';
+import { ACTIONS_CREATE_SESSION_SETTINGS } from '@/components/settings/actions/actionsSettings';
 import { t, type TranslationKey } from '@/text';
 import { Icon, type IconName } from '@/components/ui/icons/Icon';
+import { SessionAgentStartAllowListsControls } from './SessionAgentStartAllowListsControls';
 
 const stylesheet = StyleSheet.create(() => ({
     optionIcon: {
@@ -33,7 +35,6 @@ type PolicyToggleDefinition = Readonly<{
     key: BooleanPolicyKey;
     titleKey: TranslationKey;
     subtitleKey: TranslationKey;
-    icon: IconName;
 }>;
 
 const POLICY_TOGGLE_DEFINITIONS: readonly PolicyToggleDefinition[] = [
@@ -41,67 +42,62 @@ const POLICY_TOGGLE_DEFINITIONS: readonly PolicyToggleDefinition[] = [
         key: 'allowCustomDirectory',
         titleKey: 'settingsActions.spawnPolicy.toggles.allowCustomDirectory.title',
         subtitleKey: 'settingsActions.spawnPolicy.toggles.allowCustomDirectory.subtitle',
-        icon: 'folder-open',
     },
     {
         key: 'allowCrossMachine',
         titleKey: 'settingsActions.spawnPolicy.toggles.allowCrossMachine.title',
         subtitleKey: 'settingsActions.spawnPolicy.toggles.allowCrossMachine.subtitle',
-        icon: 'desktop',
     },
     {
         key: 'allowBackendTargetOverride',
         titleKey: 'settingsActions.spawnPolicy.toggles.allowBackendTargetOverride.title',
         subtitleKey: 'settingsActions.spawnPolicy.toggles.allowBackendTargetOverride.subtitle',
-        icon: 'cpu',
     },
     {
         key: 'allowModelOverride',
         titleKey: 'settingsActions.spawnPolicy.toggles.allowModelOverride.title',
         subtitleKey: 'settingsActions.spawnPolicy.toggles.allowModelOverride.subtitle',
-        icon: 'sparkle',
     },
     {
         key: 'allowPermissionModeOverride',
         titleKey: 'settingsActions.spawnPolicy.toggles.allowPermissionModeOverride.title',
         subtitleKey: 'settingsActions.spawnPolicy.toggles.allowPermissionModeOverride.subtitle',
-        icon: 'shield-check',
     },
     {
         key: 'allowAgentModeOverride',
         titleKey: 'settingsActions.spawnPolicy.toggles.allowAgentModeOverride.title',
         subtitleKey: 'settingsActions.spawnPolicy.toggles.allowAgentModeOverride.subtitle',
-        icon: 'sliders-horizontal',
     },
     {
         key: 'allowConfigOptionOverrides',
         titleKey: 'settingsActions.spawnPolicy.toggles.allowConfigOptionOverrides.title',
         subtitleKey: 'settingsActions.spawnPolicy.toggles.allowConfigOptionOverrides.subtitle',
-        icon: 'sliders-horizontal',
     },
     {
         key: 'allowProfileOverride',
         titleKey: 'settingsActions.spawnPolicy.toggles.allowProfileOverride.title',
         subtitleKey: 'settingsActions.spawnPolicy.toggles.allowProfileOverride.subtitle',
-        icon: 'user-circle',
+    },
+    {
+        // Enforced at agent-start admission (`admitAgentStartV1`, refusal `policy_denied_field`).
+        key: 'allowEnvironmentVariables',
+        titleKey: 'settingsActions.spawnPolicy.toggles.allowEnvironmentVariables.title',
+        subtitleKey: 'settingsActions.spawnPolicy.toggles.allowEnvironmentVariables.subtitle',
     },
     {
         key: 'allowConnectedServicesOverride',
         titleKey: 'settingsActions.spawnPolicy.toggles.allowConnectedServicesOverride.title',
         subtitleKey: 'settingsActions.spawnPolicy.toggles.allowConnectedServicesOverride.subtitle',
-        icon: 'link',
     },
     {
         key: 'allowMcpSelectionOverride',
         titleKey: 'settingsActions.spawnPolicy.toggles.allowMcpSelectionOverride.title',
         subtitleKey: 'settingsActions.spawnPolicy.toggles.allowMcpSelectionOverride.subtitle',
-        icon: 'cube',
     },
     {
         key: 'allowTranscriptStorageOverride',
         titleKey: 'settingsActions.spawnPolicy.toggles.allowTranscriptStorageOverride.title',
         subtitleKey: 'settingsActions.spawnPolicy.toggles.allowTranscriptStorageOverride.subtitle',
-        icon: 'archive',
     },
 ] as const;
 
@@ -148,8 +144,7 @@ const PERMISSION_CEILING_OPTIONS = [
 }[];
 
 export function normalizeSessionAgentSpawnPolicy(raw: unknown): SessionAgentSpawnPolicyV1 {
-    const parsed = SessionAgentSpawnPolicyV1Schema.safeParse(raw);
-    return parsed.success ? parsed.data : DEFAULT_SESSION_AGENT_SPAWN_POLICY_V1;
+    return SessionAgentSpawnPolicyV1Schema.parse(raw);
 }
 
 function buildPermissionCeilingItems(iconColor: string): readonly DropdownMenuItem[] {
@@ -187,8 +182,10 @@ function parsePermissionCeilingSelection(itemId: string): SessionAgentSpawnPolic
 
 export type SessionAgentSpawnPolicyControlsProps = Readonly<{
     rawPolicy: unknown;
+    rawAllowLists: unknown;
     disabled?: boolean;
     onChange: (policy: SessionAgentSpawnPolicyV1) => void;
+    onAllowListsChange: (allowLists: SessionAgentStartAllowListsV1) => void;
 }>;
 
 export const SessionAgentSpawnPolicyControls = React.memo(function SessionAgentSpawnPolicyControls(
@@ -213,15 +210,13 @@ export const SessionAgentSpawnPolicyControls = React.memo(function SessionAgentS
     return (
         <ItemGroup
             title={t('settingsActions.spawnPolicy.title')}
-            footer={t('settingsActions.spawnPolicy.footer')}
+            description={t('settingsActions.spawnPolicy.footer')}
         >
             {POLICY_TOGGLE_DEFINITIONS.map((definition) => (
-                <Item
+                <SettingRow
                     key={definition.key}
                     testID={`settings-actions:session-spawn-policy:${definition.key}:row`}
-                    title={t(definition.titleKey)}
-                    subtitle={t(definition.subtitleKey)}
-                    icon={<Icon name={definition.icon} size={29} color={theme.colors.text.secondary} />}
+                    setting={ACTIONS_CREATE_SESSION_SETTINGS.settings[definition.key]}
                     mode="interactive"
                     disabled={disabled}
                     showChevron={false}
@@ -235,32 +230,31 @@ export const SessionAgentSpawnPolicyControls = React.memo(function SessionAgentS
                     )}
                 />
             ))}
-            <DropdownMenu
-                open={permissionCeilingOpen}
-                onOpenChange={(next) => {
-                    if (!disabled) setPermissionCeilingOpen(next);
-                }}
-                variant="selectable"
-                search={false}
-                selectedId={policy.permissionCeiling ?? 'inherit'}
-                showCategoryTitles={false}
-                matchTriggerWidth
-                connectToTrigger
-                rowKind="item"
-                items={permissionCeilingItems}
-                onSelect={(itemId) => updatePolicy({
-                    permissionCeiling: parsePermissionCeilingSelection(itemId),
-                })}
-                itemTrigger={{
-                    title: t('settingsActions.spawnPolicy.permissionCeiling.title'),
-                    icon: <Icon name="shield" size={29} color={theme.colors.text.secondary} />,
-                    subtitle: t('settingsActions.spawnPolicy.permissionCeiling.subtitle'),
-                    itemProps: {
-                        testID: 'settings-actions:session-spawn-policy:permissionCeiling',
-                        disabled,
-                    },
-                }}
-            />
+            <SettingAnchor setting={ACTIONS_CREATE_SESSION_SETTINGS.settings.permissionCeiling}>
+                <DropdownMenu
+                    open={permissionCeilingOpen}
+                    onOpenChange={(next) => {
+                        if (!disabled) setPermissionCeilingOpen(next);
+                    }}
+                    variant="selectable"
+                    search={false}
+                    selectedId={policy.permissionCeiling ?? 'inherit'}
+                    showCategoryTitles={false}
+                    items={permissionCeilingItems}
+                    onSelect={(itemId) => updatePolicy({
+                        permissionCeiling: parsePermissionCeilingSelection(itemId),
+                    })}
+                    itemTrigger={{
+                        title: t(ACTIONS_CREATE_SESSION_SETTINGS.settings.permissionCeiling.titleKey),
+                        subtitle: t('settingsActions.spawnPolicy.permissionCeiling.subtitle'),
+                        itemProps: {
+                            testID: 'settings-actions:session-spawn-policy:permissionCeiling',
+                            disabled,
+                        },
+                    }}
+                />
+            </SettingAnchor>
+            <SessionAgentStartAllowListsControls rawAllowLists={props.rawAllowLists} disabled={disabled} onChange={props.onAllowListsChange} />
         </ItemGroup>
     );
 });

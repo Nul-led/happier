@@ -1,7 +1,7 @@
 import * as React from 'react';
-import { Platform, View } from 'react-native';
-import { Stack, useLocalSearchParams } from 'expo-router';
-import { StyleSheet, useUnistyles } from 'react-native-unistyles';
+import { View } from 'react-native';
+import { Stack, useLocalSearchParams } from '@/components/appShell/workspace/destinationRoute';
+import { StyleSheet } from 'react-native-unistyles';
 
 import {
     formatQualifiedPluginActionId,
@@ -11,12 +11,12 @@ import {
 } from '@happier-dev/protocol';
 
 import { SearchHeader } from '@/components/ui/forms/SearchHeader';
-import { Switch } from '@/components/ui/forms/Switch';
 import { Item } from '@/components/ui/lists/Item';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
-import { ItemInfoNotice } from '@/components/ui/lists/ItemInfoNotice';
+import { AttentionBanner } from '@/components/ui/lists/AttentionBanner';
 import { ItemList } from '@/components/ui/lists/ItemList';
-import { Text } from '@/components/ui/text/Text';
+import { PageHeader } from '@/components/ui/layout/PageHeader';
+import { PageHeaderStateSwitch } from '@/components/ui/layout/PageHeaderEntityParts';
 import { useFeatureEnabled } from '@/hooks/server/useFeatureEnabled';
 import { MachineAdministrationTargetSelector } from '@/components/settings/machines/MachineAdministrationTargetSelector';
 import { useDaemonMergedProjectionInputs } from '@/agents/backendCatalog/useDaemonMergedProjectionInputs';
@@ -49,23 +49,15 @@ import { normalizeActionsSettings } from './normalizeActionsSettings';
 import { listActionSettingsTargetDefinitions } from './actionSettingsTargetDefinitions';
 import { useActionSettingsNarrowLayout } from './useActionSettingsNarrowLayout';
 import { SessionAgentSpawnPolicyControls } from './SessionAgentSpawnPolicyControls';
-import { Icon, type IconName } from '@/components/ui/icons/Icon';
 
 const categoryOrder: readonly ActionSettingsTargetCategory[] = ['app', 'voice', 'integrations'];
 
-const stylesheet = StyleSheet.create((theme) => ({
-    screen: {
-        flex: 1,
-        backgroundColor: theme.colors.background.canvas,
-    },
-    emptyState: {
-        paddingHorizontal: Platform.select({ ios: 16, default: 14 }),
-        paddingVertical: Platform.select({ ios: 16, default: 18 }),
-    },
-    emptyText: {
-        color: theme.colors.text.secondary,
-        fontSize: Platform.select({ ios: 15, default: 14 }),
-        lineHeight: 20,
+const stylesheet = StyleSheet.create(() => ({
+    headerActions: {
+        flexDirection: 'row',
+        flexWrap: 'wrap',
+        alignItems: 'center',
+        gap: 12,
     },
 }));
 
@@ -145,12 +137,12 @@ type ActionSettingsDetailContentProps = Readonly<{
 }>;
 
 export const ActionSettingsDetailContent = React.memo(function ActionSettingsDetailContent(props: ActionSettingsDetailContentProps) {
-    const { theme } = useUnistyles();
     const styles = stylesheet;
     const compactLayout = useActionSettingsNarrowLayout();
     const [searchQuery, setSearchQuery] = React.useState('');
     const [rawSettings, setRawSettings] = useSettingMutable('actionsSettingsV1');
     const [rawSpawnPolicy, setRawSpawnPolicy] = useSettingMutable('sessionAgentSpawnPolicyV1');
+    const [rawAllowLists, setRawAllowLists] = useSettingMutable('sessionAgentStartAllowListsV1');
     const settings = React.useMemo(() => normalizeActionsSettings(rawSettings), [rawSettings]);
     const voiceSettings = useSetting('voice') as Readonly<{ privacy?: { shareDeviceInventory?: boolean } }> | null;
     const executionRunsEnabled = useFeatureEnabled('execution.runs');
@@ -210,8 +202,6 @@ export const ActionSettingsDetailContent = React.memo(function ActionSettingsDet
         entry?.targets.filter((target) => targetMatchesSearch(target, searchQuery)) ?? []
     ), [entry?.targets, searchQuery]);
     const targetSections = React.useMemo(() => groupTargetsByCategory(filteredTargets), [filteredTargets]);
-    const contributedMachineSelectionTitle = t('settingsActions.contributed.machineSelectionTitle');
-    const contributedMachineSelectionBody = t('settingsActions.contributed.machineSelectionBody');
     const toolExposureTargets = React.useMemo(() => (
         filteredTargets
             .map((target) => {
@@ -269,157 +259,153 @@ export const ActionSettingsDetailContent = React.memo(function ActionSettingsDet
         }));
     }, [commitSettings, entry, settings]);
 
+    // The machine chip scopes contributed actions only; it stays in the header in every state
+    // because it is how a contributed action that is not declared here becomes reachable.
+    const machineChip = (
+        <MachineAdministrationTargetSelector
+            selection={administrationTargetSelection}
+            testIDPrefix="settings.actions.administration.target"
+            presentation="chip"
+        />
+    );
+
     if (!entry) {
         return (
-            <ItemList>
-                <ItemGroup>
-                    <Item
-                        title={t('settingsActions.invalidActionTitle')}
-                        subtitle={t('settingsActions.invalidActionSubtitle')}
-                        icon={<Icon name="warning" size={29} color={theme.colors.text.secondary} />}
-                        mode="info"
-                        showChevron={false}
-                    />
-                </ItemGroup>
+            <ItemList presentation="page">
+                <PageHeader
+                    title={t('settingsActions.invalidActionTitle')}
+                    description={t('settingsActions.invalidActionSubtitle')}
+                    actions={machineChip}
+                />
             </ItemList>
         );
     }
 
     return (
-        <View style={styles.screen}>
+        <ItemList presentation="page">
+            <PageHeader
+                testID={`settings-actions:action:${entry.actionId}:header`}
+                title={entry.title}
+                description={entry.description ?? t('settingsActions.noDescription')}
+                actions={(
+                    <View style={styles.headerActions}>
+                        {machineChip}
+                        <View testID={`settings-actions:action:${entry.actionId}:summary`}>
+                            <PageHeaderStateSwitch
+                                testID={`settings-actions:action:${entry.actionId}:enabled`}
+                                label={t('common.enabled')}
+                                accessibilityLabel={entry.title}
+                                value={entry.enabled}
+                                onValueChange={handleActionEnabledChange}
+                            />
+                        </View>
+                    </View>
+                )}
+            />
+
+            {entry.kind === 'retained' ? (
+                <AttentionBanner
+                    testID="settings-actions:contributed:retained"
+                    tone="neutral"
+                    title={t('settingsActions.contributed.removedTargetsTitle')}
+                    description={t('settingsActions.contributed.removedTargetsBody')}
+                />
+            ) : null}
+
             <SearchHeader
                 value={searchQuery}
                 onChangeText={setSearchQuery}
                 placeholder={t('settingsActions.detailSearchPlaceholder')}
             />
 
-            <ItemList>
-                <MachineAdministrationTargetSelector
-                    selection={administrationTargetSelection}
-                    testIDPrefix="settings.actions.administration.target"
-                    groupTitle={contributedMachineSelectionTitle}
-                    unselectedTitle={contributedMachineSelectionBody}
-                />
+            {targetSections.length === 0 ? (
                 <ItemGroup>
                     <Item
-                        testID={`settings-actions:action:${entry.actionId}:summary`}
-                        title={entry.title}
-                        subtitle={entry.description ?? t('settingsActions.noDescription')}
-                        detail={entry.enabled ? t('common.enabled') : t('common.disabled')}
-                        icon={(
-                            <Icon
-                                name={entry.enabled ? 'lightning' : 'minus-circle'}
-                                size={29}
-                                color={entry.enabled ? theme.colors.state.success.foreground : theme.colors.state.danger.foreground}
-                            />
-                        )}
+                        testID={`settings-actions:action:${entry.actionId}:no-targets`}
+                        title={t('settingsActions.noTargetsMatch')}
                         mode="info"
                         showChevron={false}
-                        rightElement={(
-                            <Switch
-                                testID={`settings-actions:action:${entry.actionId}:enabled`}
-                                accessibilityLabel={entry.title}
-                                value={entry.enabled}
-                                onValueChange={handleActionEnabledChange}
-                            />
-                        )}
                     />
                 </ItemGroup>
+            ) : null}
 
-                <ItemInfoNotice
-                    testID="settings-actions:approval-mode-help"
-                    title={t('settingsActions.approvalHelpTitle')}
-                    body={t('settingsActions.approvalHelpBody')}
+            {targetSections.map((section, index) => (
+                <ItemGroup
+                    key={section.category}
+                    title={t(getCategoryTitleKey(section.category))}
+                    // How "Ask first" and "Allowed" differ, said once above the first surfaces.
+                    description={index === 0 ? t('settingsActions.approvalHelpBody') : undefined}
+                >
+                    {section.targets.map((target) => {
+                        const targetTestIDPrefix = `settings-actions:action:${entry.actionId}:target:${target.id}`;
+                        const available = target.state !== 'unavailable';
+                        const controlState = resolveActionSettingsTargetControlState({
+                            settings,
+                            actionId: entry.actionId,
+                            targetId: target.id,
+                            target: target.definition,
+                            available,
+                        });
+                        const shouldStackModeControl = compactLayout && controlState.kind === 'approval';
+                        const targetModeControl = (
+                            <ActionSettingsTargetModeControl
+                                testIDPrefix={targetTestIDPrefix}
+                                accessibilityLabel={t(target.titleKey)}
+                                controlState={controlState}
+                                disabled={!entry.enabled || !available}
+                                layout={shouldStackModeControl ? 'stacked' : 'inline'}
+                                onChange={(value) => handleTargetControlChange(target, value)}
+                            />
+                        );
+
+                        return (
+                            <Item
+                                key={target.id}
+                                testID={targetTestIDPrefix}
+                                title={t(target.titleKey)}
+                                subtitle={getTargetSubtitle(target)}
+                                mode={available ? 'interactive' : 'info'}
+                                disabled={!entry.enabled || !available}
+                                showChevron={false}
+                                subtitleAccessory={shouldStackModeControl ? targetModeControl : null}
+                                rightElement={shouldStackModeControl ? null : targetModeControl}
+                            />
+                        );
+                    })}
+                </ItemGroup>
+            ))}
+
+            {toolExposureTargets.length > 0 ? (
+                <ItemGroup
+                    title={t('settingsActions.toolExposure.title')}
+                    description={t('settingsActions.toolExposure.footer')}
+                >
+                    {toolExposureTargets.map(({ target, available, exposureState }) => {
+                        const exposureTestIDPrefix = `settings-actions:action:${entry.actionId}:target:${target.id}:tool-exposure`;
+                        return (
+                            <ActionSettingsToolExposureControl
+                                key={target.id}
+                                testIDPrefix={exposureTestIDPrefix}
+                                surfaceTitle={t(target.titleKey)}
+                                state={exposureState}
+                                disabled={!entry.enabled || !available}
+                                onChange={(value) => handleToolExposureChange(target, value)}
+                            />
+                        );
+                    })}
+                </ItemGroup>
+            ) : null}
+
+            {entry.kind === 'host' && entry.actionId === 'session.spawn_new' ? (
+                <SessionAgentSpawnPolicyControls
+                    rawPolicy={rawSpawnPolicy}
+                    rawAllowLists={rawAllowLists}
+                    disabled={!entry.enabled}
+                    onChange={setRawSpawnPolicy}
+                    onAllowListsChange={setRawAllowLists}
                 />
-
-                {entry.kind === 'retained' ? (
-                    <ItemInfoNotice
-                        testID="settings-actions:contributed:retained"
-                        title={t('settingsActions.contributed.removedTargetsTitle')}
-                        body={t('settingsActions.contributed.removedTargetsBody')}
-                    />
-                ) : null}
-
-                {targetSections.length === 0 ? (
-                    <ItemGroup>
-                        <View style={styles.emptyState}>
-                            <Text style={styles.emptyText}>{t('settingsActions.noTargetsMatch')}</Text>
-                        </View>
-                    </ItemGroup>
-                ) : null}
-
-                {targetSections.map((section) => (
-                    <ItemGroup key={section.category} title={t(getCategoryTitleKey(section.category))}>
-                        {section.targets.map((target) => {
-                            const targetTestIDPrefix = `settings-actions:action:${entry.actionId}:target:${target.id}`;
-                            const available = target.state !== 'unavailable';
-                            const controlState = resolveActionSettingsTargetControlState({
-                                settings,
-                                actionId: entry.actionId,
-                                targetId: target.id,
-                                target: target.definition,
-                                available,
-                            });
-                            const shouldStackModeControl = compactLayout && controlState.kind === 'approval';
-                            const targetModeControl = (
-                                <ActionSettingsTargetModeControl
-                                    testIDPrefix={targetTestIDPrefix}
-                                    accessibilityLabel={t(target.titleKey)}
-                                    controlState={controlState}
-                                    disabled={!entry.enabled || !available}
-                                    layout={shouldStackModeControl ? 'stacked' : 'inline'}
-                                    onChange={(value) => handleTargetControlChange(target, value)}
-                                />
-                            );
-
-                            return (
-                                <Item
-                                    key={target.id}
-                                    testID={targetTestIDPrefix}
-                                    title={t(target.titleKey)}
-                                    subtitle={getTargetSubtitle(target)}
-                                    icon={<Icon name={target.icon as IconName} size={29} color={theme.colors.text.secondary} />}
-                                    mode={available ? 'interactive' : 'info'}
-                                    disabled={!entry.enabled || !available}
-                                    showChevron={false}
-                                    subtitleAccessory={shouldStackModeControl ? targetModeControl : null}
-                                    rightElement={shouldStackModeControl ? null : targetModeControl}
-                                />
-                            );
-                        })}
-                    </ItemGroup>
-                ))}
-
-                {toolExposureTargets.length > 0 ? (
-                    <ItemGroup
-                        title={t('settingsActions.toolExposure.title')}
-                        footer={t('settingsActions.toolExposure.footer')}
-                    >
-                        {toolExposureTargets.map(({ target, available, exposureState }) => {
-                            const exposureTestIDPrefix = `settings-actions:action:${entry.actionId}:target:${target.id}:tool-exposure`;
-                            return (
-                                <ActionSettingsToolExposureControl
-                                    key={target.id}
-                                    testIDPrefix={exposureTestIDPrefix}
-                                    surfaceTitle={t(target.titleKey)}
-                                    state={exposureState}
-                                    disabled={!entry.enabled || !available}
-                                    onChange={(value) => handleToolExposureChange(target, value)}
-                                />
-                            );
-                        })}
-                    </ItemGroup>
-                ) : null}
-
-                {entry.kind === 'host' && entry.actionId === 'session.spawn_new' ? (
-                    <SessionAgentSpawnPolicyControls
-                        rawPolicy={rawSpawnPolicy}
-                        disabled={!entry.enabled}
-                        onChange={setRawSpawnPolicy}
-                    />
-                ) : null}
-            </ItemList>
-        </View>
+            ) : null}
+        </ItemList>
     );
 });
 
@@ -444,15 +430,11 @@ export const ActionSettingsDetailView = React.memo(function ActionSettingsDetail
         return (
             <>
                 <Stack.Screen options={invalidActionScreenOptions} />
-                <ItemList>
-                    <ItemGroup>
-                        <Item
-                            title={invalidActionTitle}
-                            subtitle={t('settingsActions.invalidActionSubtitle')}
-                            mode="info"
-                            showChevron={false}
-                        />
-                    </ItemGroup>
+                <ItemList presentation="page">
+                    <PageHeader
+                        title={invalidActionTitle}
+                        description={t('settingsActions.invalidActionSubtitle')}
+                    />
                 </ItemList>
             </>
         );

@@ -1050,6 +1050,67 @@ describe('handleMachineCommand', () => {
     expect(promptMessage).not.toContain('(stable, pinned)');
   });
 
+  it('keeps remote background services when the replacement prompt is answered with Enter', async () => {
+    const respond = vi.fn(async () => undefined);
+    let promptMessage = '';
+    await handleMachineCommand(
+      ['setup', '--ssh', 'dev@example.test'],
+      {
+        createRunner: () => ({
+          start: vi.fn(async () => ({ taskId: 'task-service-keep' })),
+          poll: vi.fn()
+            .mockResolvedValueOnce({
+              events: [],
+              nextCursor: 0,
+              result: null,
+              pendingPrompt: {
+                kind: 'daemon.replaceRemoteBackgroundServices',
+                data: {
+                  targetServerUrl: 'https://relay.example.test',
+                  targetReleaseChannel: 'preview',
+                  services: [
+                    { label: 'happier-daemon.stable', releaseChannel: 'stable', targetMode: 'pinned', running: true },
+                  ],
+                },
+              },
+            })
+            .mockResolvedValueOnce({
+              events: [],
+              nextCursor: 1,
+              result: {
+                protocolVersion: SYSTEM_TASK_PROTOCOL_VERSION,
+                taskId: 'task-service-keep',
+                ok: true,
+                data: { machineId: 'machine-1' },
+              },
+              pendingPrompt: null,
+            }),
+          respond,
+        }),
+        readRelaySelection: () => ({
+          relayUrl: 'https://relay.example.test',
+          webappUrl: 'https://app.example.test',
+        }),
+        promptInput: async (value) => {
+          promptMessage = value;
+          return '';
+        },
+        promptSecret: async () => {
+          throw new Error('promptSecret should not be used');
+        },
+        isInteractiveTerminal: () => true,
+        sleep: async () => undefined,
+      },
+    );
+
+    expect(respond).toHaveBeenCalledWith({
+      taskId: 'task-service-keep',
+      answer: { replaceExistingServices: false },
+    });
+    expect(promptMessage).toContain('happier-daemon.stable');
+    expect(promptMessage).toContain('[y/N]');
+  });
+
   it('rejects unknown setup flags instead of ignoring them', async () => {
     await handleMachineCommand(
       ['setup', '--ssh', 'dev@example.test', '--bogus', '--json'],

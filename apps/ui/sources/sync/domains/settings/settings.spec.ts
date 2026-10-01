@@ -1,3 +1,4 @@
+import { authoringMemoryDefaults, projectAuthoringMemory } from '@/sync/store/domains/authoringMemory';
 import { describe, it, expect } from 'vitest';
 import {
     DEFAULT_ACTIONS_SETTINGS_V1,
@@ -28,7 +29,6 @@ import {
     mergeCurrentFavoriteModelSelectionsIntoRaw,
     mergeCurrentRememberedEngineSelectionsIntoRaw,
     readRetainedFavoriteModelSelectionsV1,
-    readRetainedRememberedEngineSelectionsByScopeV1,
 } from './sessionAuthoringSelectionPersistence';
 
 describe('settings', () => {
@@ -732,16 +732,16 @@ describe('settings', () => {
             expect((parsed as any).serverSelectionActiveTargetId).toBeNull();
         });
 
-        it('defaults environment badge visibility to enabled', () => {
-            const parsed = settingsParse({} as any);
-            expect((parsed as any).showEnvironmentBadge).toBe(true);
-        });
-
-        it('parses environment badge visibility when explicitly disabled', () => {
+        it('reads a 0.2 Account settings payload without rewriting the retired badge preference', () => {
             const parsed = settingsParse({
                 showEnvironmentBadge: false,
+                showFlavorIcons: false,
             } as any);
-            expect((parsed as any).showEnvironmentBadge).toBe(false);
+            expect(parsed).not.toHaveProperty('showEnvironmentBadge');
+            expect(parsed.showFlavorIcons).toBe(false);
+            const afterWrite = applySettings(parsed, { showFlavorIcons: true });
+            expect(afterWrite).not.toHaveProperty('showEnvironmentBadge');
+            expect(afterWrite.showFlavorIcons).toBe(true);
         });
 
         it('parses server-selection settings values when provided', () => {
@@ -1168,12 +1168,13 @@ describe('settings', () => {
                 lastEngineSelectionsByScopeV1: retainedRememberedSelections,
                 favoriteModelSelectionsV1: retainedFavoriteSelections,
             });
-            const rawRememberedSelections = readRetainedRememberedEngineSelectionsByScopeV1(parsed);
             const rawFavoriteSelections = readRetainedFavoriteModelSelectionsV1(parsed);
+            const memory = projectAuthoringMemory({ ...authoringMemoryDefaults, lastEngineSelectionsByScopeV1: retainedRememberedSelections });
 
-            expect(rawRememberedSelections).toEqual(retainedRememberedSelections);
             expect(rawFavoriteSelections).toEqual(retainedFavoriteSelections);
-            expect(parsed).toHaveProperty('currentRememberedEngineSelectionsByScopeV1', {
+            expect(parsed).not.toHaveProperty('lastEngineSelectionsByScopeV1');
+            expect(parsed).not.toHaveProperty('currentRememberedEngineSelectionsByScopeV1');
+            expect(memory).toHaveProperty('currentRememberedEngineSelectionsByScopeV1', {
                 [`server-1:${codexTargetKey}`]: {
                     v: 1,
                     modelSelection: {
@@ -1205,13 +1206,11 @@ describe('settings', () => {
             expect(Object.keys(parsed)).not.toContain('currentRememberedEngineSelectionsByScopeV1');
             expect(Object.keys(parsed)).not.toContain('currentFavoriteModelSelectionsV1');
             expect(JSON.parse(JSON.stringify(parsed))).toMatchObject({
-                lastEngineSelectionsByScopeV1: retainedRememberedSelections,
                 favoriteModelSelectionsV1: retainedFavoriteSelections,
             });
 
             const afterUnrelatedMutation = applySettings(parsed, { useProfiles: true });
-            expect(readRetainedRememberedEngineSelectionsByScopeV1(afterUnrelatedMutation))
-                .toEqual(retainedRememberedSelections);
+            expect(afterUnrelatedMutation).not.toHaveProperty('lastEngineSelectionsByScopeV1');
             expect(readRetainedFavoriteModelSelectionsV1(afterUnrelatedMutation))
                 .toEqual(retainedFavoriteSelections);
 
@@ -1241,9 +1240,9 @@ describe('settings', () => {
             ]);
 
             const nextRemembered = {
-                ...parsed.currentRememberedEngineSelectionsByScopeV1,
+                ...memory.currentRememberedEngineSelectionsByScopeV1,
                 [`server-1:${codexTargetKey}`]: {
-                    ...parsed.currentRememberedEngineSelectionsByScopeV1[`server-1:${codexTargetKey}`]!,
+                    ...memory.currentRememberedEngineSelectionsByScopeV1[`server-1:${codexTargetKey}`]!,
                     updatedAt: 456,
                 },
                 'future-writer-scope': {
@@ -1253,8 +1252,8 @@ describe('settings', () => {
                 },
             };
             expect(mergeCurrentRememberedEngineSelectionsIntoRaw({
-                rawSelections: readRetainedRememberedEngineSelectionsByScopeV1(parsed),
-                currentSelections: parsed.currentRememberedEngineSelectionsByScopeV1,
+                rawSelections: memory.lastEngineSelectionsByScopeV1,
+                currentSelections: memory.currentRememberedEngineSelectionsByScopeV1,
                 nextSelections: nextRemembered,
             })).toEqual({
                 [`server-1:${codexTargetKey}`]: nextRemembered[`server-1:${codexTargetKey}`],

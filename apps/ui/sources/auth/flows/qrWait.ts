@@ -21,7 +21,7 @@ export type AuthQrWaitTerminalReason =
     | 'rejected'
     | 'wrong_target'
     | 'malformed_response'
-    | 'legacy_provisioning_unavailable';
+    | 'update_required';
 
 export type AuthQrWaitResult =
     | Readonly<{ ok: true; credentials: AuthCredentials; homeServerIdentityId: string | null }>
@@ -129,7 +129,7 @@ export async function authQRWait(
         || !Number.isSafeInteger(context.expiresAtMs)
         || context.expiresAtMs <= context.issuedAtMs
     ) {
-        return { ok: false, reason: 'legacy_provisioning_unavailable' };
+        return { ok: false, reason: 'update_required' };
     }
 
     const requestAtEndpoint = target.createRequest({

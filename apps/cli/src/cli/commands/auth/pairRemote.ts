@@ -10,6 +10,7 @@ import {
 } from '@happier-dev/cli-common/systemTasks';
 
 import { approveTerminalAuthRequest } from '@/auth/terminalAuthApproval';
+import { readTerminalAuthHomeIdentity } from '@/auth/terminalAuthEnrollmentClient';
 import { writeJsonStdout } from '@/cli/output/jsonEnvelope';
 import { fetchServerFeaturesSnapshot } from '@/features/serverFeaturesClient';
 import { resolveCliHomeTarget, resolveCurrentCliHomeTarget } from '@/server/homeTarget';
@@ -94,9 +95,7 @@ async function readHomeIdentity(target: ResolvedHomeTarget, deps: PairRemoteDeps
     serverUrl: target.applicationUrl,
     signal: deps.signal,
   });
-  return snapshot.status === 'ready'
-    ? snapshot.features.capabilities.serverIdentity.serverIdentityId?.trim() ?? null
-    : null;
+  return readTerminalAuthHomeIdentity(snapshot);
 }
 
 export async function handleAuthPairRemote(

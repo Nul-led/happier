@@ -15,7 +15,7 @@ export function ProviderCompatibilitySection(props: Readonly<{
 }>): React.ReactElement | null {
     if (props.summaries.length === 0) return null;
     return (
-        <ItemGroup title={t('settingsProviders.compatibility.title')} footer={t('settingsProviders.compatibility.footer')}>
+        <ItemGroup title={t('settingsProviders.compatibility.title')} description={t('settingsProviders.compatibility.footer')}>
             {props.summaries.map((summary) => (
                 <Item
                     key={summary.agentTargetKey}
@@ -56,7 +56,7 @@ export function ProviderEndpointOverridesSection(props: Readonly<{
 }>): React.ReactElement | null {
     if (props.endpoints.length === 0) return null;
     return (
-        <ItemGroup title={t('settingsProviders.detail.advancedTitle')} footer={t('settingsProviders.detail.endpointPrompt')}>
+        <ItemGroup title={t('settingsProviders.detail.advancedTitle')} description={t('settingsProvidersCollection.overridesDescription')}>
             {props.endpoints.flatMap((endpoint) => {
                 const accountBaseUrl = endpoint.accountOverrideBaseUrl
                     ?? endpoint.defaultBaseUrl

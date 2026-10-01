@@ -48,7 +48,7 @@ describe('direct Provider launch lifecycle', () => {
       selection: {
         v: 1,
         updatedAt: 1,
-        ref: { agentTargetKey: 'backend:codex', providerConnectionId: connectionId, modelId: 'model-a' },
+        ref: { agentTargetKey: 'agent:happier.agent.codex/codex', providerConnectionId: connectionId, modelId: 'model-a' },
       },
       backendTarget: { kind: 'backend', sourceKind: 'built_in', backendId: 'codex' },
       machineId: 'machine-a',
@@ -128,7 +128,7 @@ describe('direct Provider launch lifecycle', () => {
       selection: {
         v: 1,
         updatedAt: 1,
-        ref: { agentTargetKey: 'backend:codex', providerConnectionId: connectionId, modelId: 'model-a' },
+        ref: { agentTargetKey: 'agent:happier.agent.codex/codex', providerConnectionId: connectionId, modelId: 'model-a' },
       },
       backendTarget: { kind: 'backend', sourceKind: 'built_in', backendId: 'codex' },
       machineId: 'machine-a',
@@ -152,7 +152,7 @@ describe('direct Provider launch lifecycle', () => {
     expect(result).toMatchObject({
       ok: true,
       kind: 'provider',
-      agentTargetKey: 'backend:codex',
+      agentTargetKey: 'agent:happier.agent.codex/codex',
       environment: { PROVIDER_KEY: 'secret-value' },
       unsetEnvKeys: [],
       bindingMetadata,
@@ -160,8 +160,8 @@ describe('direct Provider launch lifecycle', () => {
     });
     expect(result).not.toHaveProperty('environment.HAPPIER_SESSION_ATTACH_FILE');
     expect(events).toEqual([
-      'authorize:backend:codex',
-      'prerequisite:backend:codex',
+      'authorize:agent:happier.agent.codex/codex',
+      'prerequisite:agent:happier.agent.codex/codex',
       'materialize',
       'commit-check',
     ]);
@@ -211,7 +211,7 @@ describe('direct Provider launch lifecycle', () => {
       selection: {
         v: 1,
         updatedAt: 1,
-        ref: { agentTargetKey: 'backend:codex', providerConnectionId: connectionId, modelId: 'model-a' },
+        ref: { agentTargetKey: 'agent:happier.agent.codex/codex', providerConnectionId: connectionId, modelId: 'model-a' },
       },
       backendTarget: { kind: 'backend', sourceKind: 'built_in', backendId: 'codex' },
       machineId: 'machine-a',
@@ -249,7 +249,7 @@ describe('direct Provider launch lifecycle', () => {
       selection: {
         v: 1,
         updatedAt: 1,
-        ref: { agentTargetKey: 'backend:codex', providerConnectionId: connectionId, modelId: 'model-a' },
+        ref: { agentTargetKey: 'agent:happier.agent.codex/codex', providerConnectionId: connectionId, modelId: 'model-a' },
       },
       backendTarget: { kind: 'backend', sourceKind: 'built_in', backendId: 'codex' },
       machineId: 'machine-a',
@@ -316,7 +316,7 @@ describe('direct Provider launch lifecycle', () => {
       selection: {
         v: 1,
         updatedAt: 1,
-        ref: { agentTargetKey: 'backend:codex', providerConnectionId: connectionId, modelId: 'model-a' },
+        ref: { agentTargetKey: 'agent:happier.agent.codex/codex', providerConnectionId: connectionId, modelId: 'model-a' },
       },
       backendTarget: { kind: 'backend', sourceKind: 'built_in', backendId: 'codex' },
       machineId: 'machine-a',
@@ -359,7 +359,7 @@ describe('direct Provider launch lifecycle', () => {
       selection: {
         v: 1,
         updatedAt: 1,
-        ref: { agentTargetKey: 'backend:codex', providerConnectionId: null, modelId: 'native-model' },
+        ref: { agentTargetKey: 'agent:happier.agent.codex/codex', providerConnectionId: null, modelId: 'native-model' },
       },
       backendTarget: { kind: 'backend', sourceKind: 'built_in', backendId: 'codex' },
       machineId: 'machine-a',

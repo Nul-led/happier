@@ -2,15 +2,22 @@ import * as React from 'react';
 import {
     TEAMS_ACCOUNT_CHANGE_ENTITY_ID_V1,
     type ManagedIdentityProviderOwnerV1,
+    type ManagedIdentityProviderV1,
 } from '@happier-dev/protocol';
 
 import type { ServerAccountScope } from '@/sync/domains/scope/serverAccountScope';
+import type { ActionApprovalRegistration } from '@/components/approvals/actionApprovalContinuation';
 import {
     isHomeAdministrationAccountChange,
     subscribeHomeAccountChange,
 } from '@/sync/runtime/orchestration/homeAccountChange';
 
-import { createManagedIdentityProviderClient } from './managedIdentityProviderClient';
+import {
+    createManagedIdentityProviderClient,
+    executeManagedIdentityProviderRead,
+    type ManagedIdentityProviderActionOutput,
+    type ManagedIdentityProviderSettledResult,
+} from './managedIdentityProviderClient';
 import {
     beginManagedIdentityProviderRefresh,
     INITIAL_MANAGED_IDENTITY_PROVIDER_STATE,
@@ -28,6 +35,7 @@ export function useManagedIdentityProviderClient(scope: ServerAccountScope) {
 export function useManagedIdentityProviders(
     scope: ServerAccountScope,
     owner: ManagedIdentityProviderOwnerV1 = { kind: 'home' },
+    onApprovalPending?: (registration: ActionApprovalRegistration) => void,
 ): Readonly<{
     state: ManagedIdentityProviderState;
     refresh: () => void;
@@ -38,6 +46,8 @@ export function useManagedIdentityProviders(
     const ownerTeamId = owner.kind === 'team' ? owner.teamId : null;
     const queryKey = `${scope.serverId}\u0000${scope.accountId}\u0000${ownerTeamId ?? 'home'}`;
     const previousQueryKeyRef = React.useRef(queryKey);
+    const onApprovalPendingRef = React.useRef(onApprovalPending);
+    onApprovalPendingRef.current = onApprovalPending;
     const refresh = React.useCallback(() => setGeneration((value) => value + 1), []);
 
     React.useEffect(() => {
@@ -50,10 +60,20 @@ export function useManagedIdentityProviders(
         const exactOwner: ManagedIdentityProviderOwnerV1 = ownerTeamId === null
             ? { kind: 'home' }
             : { kind: 'team', teamId: ownerTeamId };
-        void client.execute('identity.providers.list', { owner: exactOwner }, { signal: controller.signal }).then((result) => {
+        const settle = (result: ManagedIdentityProviderSettledResult<Readonly<{
+            items: readonly ManagedIdentityProviderV1[];
+            unreadableCount: number;
+        }>>) => {
             if (controller.signal.aborted) return;
             setState((current) => settleManagedIdentityProviderRefresh(current, result));
-        });
+        };
+        void executeManagedIdentityProviderRead<ManagedIdentityProviderActionOutput<'identity.providers.list'>>(
+            (options) => client.execute('identity.providers.list', { owner: exactOwner }, options),
+            {
+                signal: controller.signal,
+                onApprovalPending: (registration) => onApprovalPendingRef.current?.(registration),
+            },
+        ).then(settle);
         return () => controller.abort();
     }, [client, generation, ownerTeamId, queryKey]);
 

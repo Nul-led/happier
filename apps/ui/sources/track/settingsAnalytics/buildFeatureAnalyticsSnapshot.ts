@@ -8,11 +8,11 @@ import {
     UI_FEATURE_REGISTRY,
 } from '@/sync/domains/features/registry/uiFeatureRegistry';
 import { resolveUiFeatureToggleEnabled } from '@/sync/domains/features/registry/uiFeatureToggles';
-import type { Settings } from '@/sync/domains/settings/settings';
+import type { FeatureLocalPolicySettings } from '@/sync/domains/features/featureLocalPolicy';
 
 import type { SettingsAnalyticsSnapshot } from './types';
 
-export function buildFeaturePreferenceAnalyticsSnapshot(settings: Settings): SettingsAnalyticsSnapshot {
+export function buildFeaturePreferenceAnalyticsSnapshot(settings: FeatureLocalPolicySettings): SettingsAnalyticsSnapshot {
     const properties: SettingsAnalyticsSnapshot['properties'] = {};
 
     for (const featureIdRaw of Object.keys(UI_FEATURE_REGISTRY)) {
@@ -25,7 +25,7 @@ export function buildFeaturePreferenceAnalyticsSnapshot(settings: Settings): Set
 }
 
 export function buildFeatureAnalyticsSnapshot(params: {
-    settings: Settings;
+    settings: FeatureLocalPolicySettings;
     mainSelectionSnapshot: ServerFeaturesMainSelectionSnapshot;
 }): SettingsAnalyticsSnapshot {
     const properties: SettingsAnalyticsSnapshot['properties'] = {

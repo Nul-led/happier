@@ -100,6 +100,13 @@ describe('Account Directory OAuth exchange custody', () => {
         };
     }
 
+    it('does not offer a retry for an invalid request TypeError', async () => {
+        const input = await storedInput();
+        boundary.request.mockRejectedValueOnce(new TypeError('Invalid URL'));
+        const result = await accountDirectoryAuthClient.exchangeOAuth(input);
+        expect(result).toMatchObject({ kind: 'failed', retryable: false });
+    });
+
     it('commits only restricted credentials and returns to the recorded surface without Directory or Home work', async () => {
         const input = await storedInput();
         const result = await accountDirectoryAuthClient.exchangeOAuth(input);
@@ -296,7 +303,7 @@ describe('Account Directory OAuth exchange custody', () => {
         if (exchanged.kind !== 'authenticated') throw new Error('Exchange failed');
         const { consumeAccountServiceOAuthReturn } = await import('@/sync/ops/accountDirectory/consumeAccountServiceOAuthReturn');
         const options = { invokingSurface: '/setup/wizard', signal: new AbortController().signal };
-        boundary.request.mockImplementationOnce(async () => { throw new TypeError('Offline'); });
+        boundary.request.mockImplementationOnce(async () => { throw new TypeError('Network request failed'); });
         expect(await consumeAccountServiceOAuthReturn(exchanged.destination.params, options)).toEqual({ kind: 'retryable' });
         expect(await consumeAccountServiceOAuthReturn(exchanged.destination.params, options)).toMatchObject({ kind: 'consumed', result: { kind: 'approval_required' } });
         expect(fixture.state.calls.filter(({ path }) => path.includes('/finalize'))).toHaveLength(1);

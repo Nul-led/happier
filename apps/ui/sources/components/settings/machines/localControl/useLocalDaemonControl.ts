@@ -5,14 +5,54 @@ import { getDefaultSystemTaskRunner, useSystemTaskSnapshot, waitForSystemTaskRes
 import { useSystemTaskAuthRequestApproval } from '@/components/systemTasks/useSystemTaskAuthRequestApproval';
 import type { SystemTaskRunState, SystemTaskRunner } from '@/components/systemTasks/types';
 import { isSystemTaskBridgeUnavailableError, readSystemTaskStartErrorMessage } from '@/components/systemTasks/systemTaskStartError';
+import { buildLocalMachineSetupSystemTaskSpec } from '@/components/systemTasks/buildLocalMachineSetupSystemTaskSpec';
+import { resolveSystemTaskFailureMessage } from '@/components/systemTasks/resolveSystemTaskFailureMessage';
+import { useThisComputerSetupTask } from '@/components/systemTasks/useThisComputerSetupTask';
 import { useActiveServerSnapshot } from '@/hooks/server/useActiveServerSnapshot';
 import { t } from '@/text';
 
-import { buildLocalDaemonServiceSystemTaskSpec } from '@/components/systemTasks/specs/localControl/buildLocalDaemonServiceSystemTaskSpec';
+import {
+    buildLocalDaemonServiceSystemTaskSpec,
+    type LocalDaemonServiceScope,
+} from '@/components/systemTasks/specs/localControl/buildLocalDaemonServiceSystemTaskSpec';
+import {
+    publishLocalDaemonStatus,
+    readLocalDaemonSharedState,
+    startLocalCliUpdate,
+    subscribeLocalDaemonSharedState,
+    type LocalDaemonSharedState,
+} from './localDaemonSharedState';
 import { buildRelayDriftRepairSystemTaskSpec } from '@/sync/domains/server/relayDrift/relayDriftSystemTask';
+import { useAppAccountIdentity } from './useThisComputerConnection';
+import { readThisComputerServiceRows, type ThisComputerServiceRow } from '@/sync/domains/server/relayDrift/thisComputerConnection';
 import { resolveWebappUrlFromServerUrl } from '@/sync/domains/server/url/resolveWebappUrlFromServerUrl';
 
-type LocalDaemonStatusData = Readonly<{
+export type LocalCliUpdateStatus = Readonly<{
+    currentVersion: string;
+    latestVersion: string | null;
+    updateAvailable: boolean;
+    /** The resolved CLI is the one this app installed and may update in place. */
+    managed: boolean;
+    /** Where a CLI the app did not install came from (its resolved path), when reported. */
+    origin: string | null;
+}>;
+
+/**
+ * R12: who manages this computer's `happier` command line, and the CLI that is not the managed one
+ * (the kept CLI, or an old copy still on the search path). Absent from daemons that predate R12.
+ */
+export type LocalCliChoiceFacts = Readonly<{
+    mode: 'managed' | 'own' | null;
+    otherCli: Readonly<{
+        command: string;
+        origin: 'npm' | 'brew' | 'unknown';
+        /** Shown and copyable, never run. */
+        removalCommand: string | null;
+        updateCommand: string | null;
+    }> | null;
+}>;
+
+export type LocalDaemonStatusData = Readonly<{
     serviceInstalled: boolean;
     daemonRunning: boolean;
     needsAuth: boolean;
@@ -20,10 +60,82 @@ type LocalDaemonStatusData = Readonly<{
     daemonServerUrl?: string | null;
     daemonComparableKey?: string | null;
     daemonAccountId?: string | null;
+    /** Readable label of the account the relay validated for this daemon (K4), when reported. */
+    daemonAccountLabel?: string | null;
     daemonMachineRegistered?: boolean | null;
+    /** The CLI's cached update check (K4); `null` when the CLI does not report one. */
+    cliUpdate?: LocalCliUpdateStatus | null;
+    /** R12's one-CLI answer; `null` when the daemon does not report it. */
+    cliChoice?: LocalCliChoiceFacts | null;
+    /** R16 — every background service on this computer, one per Home; `null` when not reported. */
+    serviceRows?: readonly ThisComputerServiceRow[] | null;
+    /** `false` when some service could not be read (it is still listed, as needing attention). */
+    serviceRowsComplete?: boolean | null;
+    /**
+     * The one login-start setting (A13-02, N-16): the common mode of every desktop-managed service
+     * on this computer, whatever Home the read is scoped to. `null` = unknown or mixed, never a mode.
+     */
+    serviceAutostart?: DesktopServiceAutostartMode | null;
+    /**
+     * How many desktop-managed services are running, from the full inventory (a default and a pin
+     * can share one relay row); `null` when any managed service is unreadable.
+     */
+    runningManagedServiceCount?: number | null;
 }>;
 
-function readLocalDaemonStatusData(result: SystemTaskResult | null): LocalDaemonStatusData | null {
+/** Whether this computer's background services start at login (`at-login`) or only on demand. */
+export type DesktopServiceAutostartMode = 'at-login' | 'on-demand';
+
+/**
+ * A11-08 — the exact command that updates the command line the person kept ("Keep my own"), when
+ * this computer knows where it came from; `null` otherwise (Happier's own CLI updates in place).
+ */
+export function readKeptCliUpdateCommand(status: LocalDaemonStatusData | null): string | null {
+    return status?.cliChoice?.mode === 'own' ? status.cliChoice.otherCli?.updateCommand ?? null : null;
+}
+
+function readAutostartMode(value: unknown): DesktopServiceAutostartMode | null {
+    return value === 'at-login' || value === 'on-demand' ? value : null;
+}
+
+function readNonEmptyString(value: unknown): string | null {
+    return typeof value === 'string' && value.trim().length > 0 ? value.trim() : null;
+}
+
+function readCliUpdateStatus(value: unknown): LocalCliUpdateStatus | null {
+    if (!value || typeof value !== 'object') return null;
+    const record = value as Record<string, unknown>;
+    const currentVersion = readNonEmptyString(record.currentVersion);
+    if (!currentVersion) return null;
+    return {
+        currentVersion,
+        latestVersion: readNonEmptyString(record.latestVersion),
+        updateAvailable: record.updateAvailable === true,
+        managed: record.managed === true,
+        origin: readNonEmptyString(record.origin),
+    };
+}
+
+function readCliChoiceFacts(value: unknown): LocalCliChoiceFacts | null {
+    if (!value || typeof value !== 'object') return null;
+    const record = value as Record<string, unknown>;
+    const mode = record.mode === 'managed' || record.mode === 'own' ? record.mode : null;
+    const other = record.otherCli && typeof record.otherCli === 'object' ? record.otherCli as Record<string, unknown> : null;
+    const command = readNonEmptyString(other?.command);
+    return {
+        mode,
+        otherCli: other && command
+            ? {
+                command,
+                origin: other.origin === 'npm' || other.origin === 'brew' ? other.origin : 'unknown',
+                removalCommand: readNonEmptyString(other.removalCommand),
+                updateCommand: readNonEmptyString(other.updateCommand),
+            }
+            : null,
+    };
+}
+
+export function readLocalDaemonStatusData(result: SystemTaskResult | null): LocalDaemonStatusData | null {
     if (!result?.ok) {
         return null;
     }
@@ -41,8 +153,30 @@ function readLocalDaemonStatusData(result: SystemTaskResult | null): LocalDaemon
         daemonServerUrl: typeof data.daemonServerUrl === 'string' && data.daemonServerUrl.trim().length > 0 ? data.daemonServerUrl.trim() : null,
         daemonComparableKey: typeof data.daemonComparableKey === 'string' && data.daemonComparableKey.trim().length > 0 ? data.daemonComparableKey.trim() : null,
         daemonAccountId: typeof data.daemonAccountId === 'string' && data.daemonAccountId.trim().length > 0 ? data.daemonAccountId.trim() : null,
+        daemonAccountLabel: readNonEmptyString(data.daemonAccountLabel),
         daemonMachineRegistered: typeof data.daemonMachineRegistered === 'boolean' ? data.daemonMachineRegistered : null,
+        cliUpdate: readCliUpdateStatus(data.cliUpdate),
+        cliChoice: readCliChoiceFacts(data.cliChoice),
+        serviceRows: readThisComputerServiceRows(data.serviceRows),
+        serviceRowsComplete: typeof data.serviceRowsComplete === 'boolean' ? data.serviceRowsComplete : null,
+        serviceAutostart: readAutostartMode(data.serviceAutostart),
+        runningManagedServiceCount: typeof data.runningManagedServiceCount === 'number'
+            && Number.isInteger(data.runningManagedServiceCount) && data.runningManagedServiceCount >= 0
+            ? data.runningManagedServiceCount
+            : null,
     };
+}
+
+/**
+ * Reads this computer's status once and shares it with every surface describing this computer —
+ * for a change made outside the app's own controls (the tray's native Start / Restart / Stop). A
+ * read that fails leaves the last shared status in place.
+ */
+export async function refreshLocalDaemonStatus(runner: SystemTaskRunner): Promise<void> {
+    if (runner.mode === 'unavailable') return;
+    const taskId = await runner.start(buildLocalDaemonServiceSystemTaskSpec('daemon.service.status.v1'));
+    const status = readLocalDaemonStatusData(await waitForSystemTaskResult(runner, taskId));
+    if (status) publishLocalDaemonStatus(runner, status);
 }
 
 function readErrorMessage(result: SystemTaskResult | null): string | null {
@@ -58,12 +192,19 @@ export function useLocalDaemonControl(options: Readonly<{
 }> = {}) {
     const runner = options.runner ?? getDefaultSystemTaskRunner();
     const activeServerSnapshot = useActiveServerSnapshot();
+    // A11-06: repair and setup of the app's Home pair this computer for the app's own account.
+    const { accountId: appAccountId } = useAppAccountIdentity();
     const [bridgeUnavailable, setBridgeUnavailable] = React.useState(false);
     const isUnavailable = runner.mode === 'unavailable' || bridgeUnavailable;
     const [statusTaskId, setStatusTaskId] = React.useState<string | null>(null);
     const [startTaskId, setStartTaskId] = React.useState<string | null>(null);
     const [repairTaskId, setRepairTaskId] = React.useState<string | null>(null);
-    const [lastStatus, setLastStatus] = React.useState<LocalDaemonStatusData | null>(null);
+    // One status and one CLI-update run for every surface describing this computer (S-10).
+    const subscribeShared = React.useCallback((listener: () => void) => subscribeLocalDaemonSharedState(runner, listener), [runner]);
+    const readShared = React.useCallback(() => readLocalDaemonSharedState<LocalDaemonStatusData>(runner), [runner]);
+    const shared: LocalDaemonSharedState<LocalDaemonStatusData> = React.useSyncExternalStore(subscribeShared, readShared, readShared);
+    const lastStatus = shared.status;
+    const setLastStatus = React.useCallback((status: LocalDaemonStatusData) => publishLocalDaemonStatus(runner, status), [runner]);
     const [lastErrorMessage, setLastErrorMessage] = React.useState<string | null>(null);
     const autoRefreshRequestedRef = React.useRef(false);
     const handledStartResultTaskIdRef = React.useRef<string | null>(null);
@@ -72,6 +213,7 @@ export function useLocalDaemonControl(options: Readonly<{
     const statusSnapshot = useSystemTaskSnapshot(runner, statusTaskId);
     const startSnapshot = useSystemTaskSnapshot(runner, startTaskId);
     const repairSnapshot = useSystemTaskSnapshot(runner, repairTaskId);
+    const cliUpdateSnapshot = useSystemTaskSnapshot(runner, shared.cliUpdate.taskId);
 
     const refreshStatus = React.useCallback(async () => {
         if (isUnavailable) {
@@ -94,25 +236,25 @@ export function useLocalDaemonControl(options: Readonly<{
         }
     }, [isUnavailable, runner]);
 
-    /** Awaited authoritative status read: canonical parser, updates this hook's status state. */
-    const readStatus = React.useCallback(async (): Promise<LocalDaemonStatusData | null> => {
+    /**
+     * Awaited authoritative status read: canonical parser, updates this hook's status state. The
+     * default scope is the spec builder's one rule (the app's active server); the Personal Home
+     * bootstrap names its own Home. Resolves `null` only when no read could run; a status task that
+     * ran and FAILED rejects with its coded error, so a caller never mistakes it for "no daemon".
+     */
+    const readStatus = React.useCallback(async (
+        scope: LocalDaemonServiceScope = {},
+    ): Promise<LocalDaemonStatusData | null> => {
         if (isUnavailable) {
             return null;
         }
+        let result: SystemTaskResult;
         try {
-            const taskId = await runner.start(buildLocalDaemonServiceSystemTaskSpec('daemon.service.status.v1'));
+            const taskId = await runner.start(buildLocalDaemonServiceSystemTaskSpec('daemon.service.status.v1', scope));
             setBridgeUnavailable(false);
             setLastErrorMessage(null);
             setStatusTaskId(taskId);
-            const result = await waitForSystemTaskResult(runner, taskId);
-            const nextStatus = readLocalDaemonStatusData(result);
-            if (nextStatus) {
-                setLastStatus(nextStatus);
-                setLastErrorMessage(null);
-            } else {
-                setLastErrorMessage(readErrorMessage(result));
-            }
-            return nextStatus;
+            result = await waitForSystemTaskResult(runner, taskId);
         } catch (error) {
             const message = readSystemTaskStartErrorMessage(error);
             const unavailable = isSystemTaskBridgeUnavailableError(error);
@@ -122,7 +264,18 @@ export function useLocalDaemonControl(options: Readonly<{
                 : (message ?? t('settings.systemTaskStartFailed')));
             return null;
         }
-    }, [isUnavailable, runner]);
+        const nextStatus = readLocalDaemonStatusData(result);
+        if (nextStatus) {
+            setLastStatus(nextStatus);
+            setLastErrorMessage(null);
+            return nextStatus;
+        }
+        const message = readErrorMessage(result) ?? t('settings.systemTaskStartFailed');
+        setLastErrorMessage(message);
+        throw Object.assign(new Error(message), {
+            code: !result.ok && typeof result.error?.code === 'string' ? result.error.code : 'daemon_status_failed',
+        });
+    }, [isUnavailable, runner, setLastStatus]);
 
     const runAction = React.useCallback(async (kind: 'daemon.service.start.v1') => {
         if (isUnavailable) {
@@ -150,6 +303,15 @@ export function useLocalDaemonControl(options: Readonly<{
         await runAction('daemon.service.start.v1');
     }, [runAction]);
 
+    /**
+     * R17: one update of the managed CLI through the CLI's own acquisition owner (`cli.update.v1`),
+     * shared by every surface that offers it; the result is re-read and published to all of them.
+     */
+    const updateCli = React.useCallback(async () => {
+        if (isUnavailable) return;
+        await startLocalCliUpdate(runner, readLocalDaemonStatusData);
+    }, [isUnavailable, runner]);
+
     const repairBackgroundService = React.useCallback(async () => {
         if (isUnavailable || !activeServerSnapshot.serverUrl) {
             return null;
@@ -159,6 +321,7 @@ export function useLocalDaemonControl(options: Readonly<{
                 activeRelayUrl: activeServerSnapshot.serverUrl,
                 activeWebappUrl: resolveWebappUrlFromServerUrl(activeServerSnapshot.serverUrl),
                 activeLocalRelayUrl: activeServerSnapshot.activeLocalRelayUrl ?? null,
+                activeAccountId: appAccountId,
             }));
             setBridgeUnavailable(false);
             setLastErrorMessage(null);
@@ -174,7 +337,56 @@ export function useLocalDaemonControl(options: Readonly<{
                 : (message ?? t('settings.systemTaskStartFailed')));
             return null;
         }
-    }, [activeServerSnapshot.activeLocalRelayUrl, activeServerSnapshot.serverUrl, isUnavailable, runner]);
+    }, [activeServerSnapshot.activeLocalRelayUrl, activeServerSnapshot.serverUrl, appAccountId, isUnavailable, runner]);
+
+    /**
+     * R12 "Change who manages the command line": the ordinary setup run, asked to put the one-CLI
+     * question again. The setup task owner answers its prompts (the question, service consent,
+     * pairing); the answer converges the background service onto the chosen CLI.
+     */
+    const commandLineTask = useThisComputerSetupTask({
+        runner,
+        ...(activeServerSnapshot.serverUrl
+            ? {
+                authRequestApproval: {
+                    expectedRelayUrl: activeServerSnapshot.serverUrl,
+                    ...(activeServerSnapshot.serverId ? { serverId: activeServerSnapshot.serverId } : {}),
+                },
+            }
+            : {}),
+    });
+    const commandLineSnapshot = commandLineTask.activeTaskSnapshot;
+    const startCommandLineTask = commandLineTask.start;
+    const handledCommandLineResultTaskIdRef = React.useRef<string | null>(null);
+    const changeCommandLine = React.useCallback(async () => {
+        if (isUnavailable || !activeServerSnapshot.serverUrl) {
+            return null;
+        }
+        try {
+            const taskId = await startCommandLineTask(buildLocalMachineSetupSystemTaskSpec({
+                activeRelayUrl: activeServerSnapshot.serverUrl,
+                activeWebappUrl: resolveWebappUrlFromServerUrl(activeServerSnapshot.serverUrl),
+                activeLocalRelayUrl: activeServerSnapshot.activeLocalRelayUrl ?? null,
+                activeAccountId: appAccountId,
+                installService: true,
+                startService: true,
+                verifyService: true,
+                reconsiderCli: true,
+            }));
+            setBridgeUnavailable(false);
+            setLastErrorMessage(null);
+            handledCommandLineResultTaskIdRef.current = null;
+            return taskId;
+        } catch (error) {
+            const message = readSystemTaskStartErrorMessage(error);
+            const unavailable = isSystemTaskBridgeUnavailableError(error);
+            setBridgeUnavailable(unavailable);
+            setLastErrorMessage(unavailable
+                ? t('settings.systemTaskBridgeUnavailable')
+                : (message ?? t('settings.systemTaskStartFailed')));
+            return null;
+        }
+    }, [activeServerSnapshot.activeLocalRelayUrl, activeServerSnapshot.serverUrl, appAccountId, isUnavailable, startCommandLineTask]);
 
     // Repair pairs this computer when its credentials are missing or stale, so its blocking
     // token-only prompt is answered by the one approval owner, scoped to the active Home.
@@ -214,7 +426,7 @@ export function useLocalDaemonControl(options: Readonly<{
         if (errorMessage) {
             setLastErrorMessage(errorMessage);
         }
-    }, [statusSnapshot]);
+    }, [setLastStatus, statusSnapshot]);
 
     React.useEffect(() => {
         if (!startSnapshot?.result || handledStartResultTaskIdRef.current === startSnapshot.taskId) {
@@ -227,6 +439,7 @@ export function useLocalDaemonControl(options: Readonly<{
             return;
         }
 
+        // The service start answers with a status; the re-read below confirms it.
         const inlineStatus = readLocalDaemonStatusData(startSnapshot.result);
         if (inlineStatus) {
             setLastStatus(inlineStatus);
@@ -234,7 +447,7 @@ export function useLocalDaemonControl(options: Readonly<{
         }
 
         void refreshStatus().catch(() => {});
-    }, [refreshStatus, startSnapshot]);
+    }, [refreshStatus, setLastStatus, startSnapshot]);
 
     React.useEffect(() => {
         if (!repairSnapshot?.result || handledRepairResultTaskIdRef.current === repairSnapshot.taskId) {
@@ -250,24 +463,51 @@ export function useLocalDaemonControl(options: Readonly<{
         void refreshStatus().catch(() => {});
     }, [repairSnapshot, refreshStatus]);
 
+    React.useEffect(() => {
+        if (!commandLineSnapshot?.result || handledCommandLineResultTaskIdRef.current === commandLineSnapshot.taskId) {
+            return;
+        }
+        handledCommandLineResultTaskIdRef.current = commandLineSnapshot.taskId;
+        if (!commandLineSnapshot.result.ok) {
+            setLastErrorMessage(resolveSystemTaskFailureMessage(commandLineSnapshot.result.error) ?? t('settings.systemTaskStartFailed'));
+            return;
+        }
+        void refreshStatus().catch(() => {});
+    }, [commandLineSnapshot, refreshStatus]);
+
+    const cliUpdateRunning = shared.cliUpdate.starting
+        || shared.cliUpdate.rereading
+        || (cliUpdateSnapshot != null && cliUpdateSnapshot.result == null);
     const activeTaskSnapshot = React.useMemo<SystemTaskRunState | null>(() => {
-        const snapshot = repairSnapshot?.result ? null : repairSnapshot ?? (startSnapshot?.result ? null : startSnapshot);
+        const snapshot = repairSnapshot?.result ? null : repairSnapshot
+            ?? (commandLineSnapshot?.result ? null : commandLineSnapshot)
+            ?? (startSnapshot?.result ? null : startSnapshot)
+            ?? (cliUpdateSnapshot?.result ? null : cliUpdateSnapshot);
         return snapshot ?? null;
-    }, [repairSnapshot, startSnapshot]);
+    }, [cliUpdateSnapshot, commandLineSnapshot, repairSnapshot, startSnapshot]);
 
     const activeTaskTitle = React.useMemo(() => {
         if (repairSnapshot && repairSnapshot.result == null) {
             return t('machine.repairBackgroundServiceProgressTitle');
         }
+        if (commandLineSnapshot && commandLineSnapshot.result == null) {
+            return t('machine.thisComputer.cliChoice.change');
+        }
         if (startSnapshot && startSnapshot.result == null) {
             return t('machine.daemon');
         }
+        if (cliUpdateSnapshot && cliUpdateSnapshot.result == null) {
+            return t('machine.thisComputer.cli.progressTitle');
+        }
         return null;
-    }, [repairSnapshot, startSnapshot]);
+    }, [cliUpdateSnapshot, commandLineSnapshot, repairSnapshot, startSnapshot]);
 
-    const isBusy = activeTaskSnapshot != null && activeTaskSnapshot.result == null;
+    const isBusy = (activeTaskSnapshot != null && activeTaskSnapshot.result == null) || cliUpdateRunning;
     const canStart = !isUnavailable && !isBusy && lastStatus?.serviceInstalled === true && lastStatus.daemonRunning !== true && lastStatus.needsAuth !== true;
     const canRepair = !isUnavailable && !isBusy && Boolean(activeServerSnapshot.serverUrl);
+    const canUpdateCli = !isUnavailable && !isBusy
+        && lastStatus?.cliUpdate?.managed === true
+        && lastStatus.cliUpdate.updateAvailable === true;
     const showInstallBackgroundService = runner.mode === 'tauri' && lastStatus?.serviceInstalled === false;
     const canInstall = runner.mode === 'tauri'
         && !isUnavailable
@@ -278,30 +518,44 @@ export function useLocalDaemonControl(options: Readonly<{
     return {
         activeRelayUrl: activeServerSnapshot.serverUrl,
         activeTaskSnapshot,
+        statusTaskSnapshot: statusSnapshot,
         activeTaskTitle,
         canInstall,
         canRepair,
         canStart,
+        canUpdateCli,
+        /** The shared CLI update is in flight (started here or on another surface). */
+        cliUpdateRunning,
+        /** Why the last shared CLI update did not finish, as one sentence (K5 codes). */
+        cliUpdateErrorMessage: shared.cliUpdate.errorMessage,
         lastErrorMessage,
         showInstallBackgroundService,
         readStatus,
         refreshStatus,
+        /** R12: shown only when another command line exists beside the managed one. */
+        canChangeCommandLine: canRepair && lastStatus?.cliChoice?.otherCli != null,
+        changeCommandLine,
         installBackgroundService: repairBackgroundService,
         repairBackgroundService,
         startDaemonService,
+        updateCli,
         status: lastStatus,
         isBusy,
         isUnavailable,
         cancel: React.useCallback(() => {
             const activeTaskId = repairSnapshot && repairSnapshot.result == null
                 ? repairTaskId
-                : startSnapshot && startSnapshot.result == null
-                    ? startTaskId
-                    : null;
+                : commandLineSnapshot && commandLineSnapshot.result == null
+                    ? commandLineSnapshot.taskId
+                    : startSnapshot && startSnapshot.result == null
+                        ? startTaskId
+                        : cliUpdateSnapshot && cliUpdateSnapshot.result == null
+                            ? cliUpdateSnapshot.taskId
+                            : null;
             if (!activeTaskId) {
                 return;
             }
             void runner.cancel(activeTaskId);
-        }, [repairSnapshot, repairTaskId, runner, startSnapshot, startTaskId]),
+        }, [cliUpdateSnapshot, commandLineSnapshot, repairSnapshot, repairTaskId, runner, startSnapshot, startTaskId]),
     };
 }

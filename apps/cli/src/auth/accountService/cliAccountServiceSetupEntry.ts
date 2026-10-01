@@ -41,6 +41,7 @@ import { promptInput, promptSecretInput } from '@/terminal/prompts/promptInput';
 import { promptMultipleChoice } from '@/terminal/prompts/promptMultipleChoice';
 import { fetchServerFeaturesSnapshot } from '@/features/serverFeaturesClient';
 import { readAccountEncryptionModeOnce } from '@/api/client/accountEncryptionMode';
+import { buildTerminalAuthorityCeilingHttpHeaders } from '@/settings/accountSettings/resolveEffectiveTerminalPresentUserPolicy';
 import { acquireTerminalAuthEnrollmentRuntime } from '@/auth/terminalAuthEnrollmentRuntime';
 import { verifyTerminalAuthEnrollmentRuntime } from '@/auth/terminalAuthEnrollmentClient';
 import {
@@ -103,7 +104,16 @@ export type CliAccountServiceSetupEntryInput = Readonly<{
   deviceSelection?: Readonly<{ endpoint: string; expectedServerIdentityId?: string }>;
   builtInNoTargetDefault?: Readonly<{ endpoint: string; expectedServerIdentityId?: string }>;
   continueMachineAndService?: CliAccountServiceHomeEntryPorts['continueMachineAndService'];
+  /**
+   * `sign_in` stops once the sign-in service credential is committed: no Home
+   * directory read, no Home entered, and the active Home is left unchanged.
+   */
+  stopAfter?: 'sign_in';
 }>;
+
+export type CliAccountServiceSetupEntryOutcome =
+  | CliAccountServiceHomeEntryOutcome
+  | Readonly<{ kind: 'signed_in'; endpoint: string }>;
 
 function endpointUrl(endpoint: string, path: string): string {
   return `${endpoint.replace(/\/+$/u, '')}${path}`;
@@ -145,7 +155,7 @@ async function validateStoredAccountServiceCredential(input: Readonly<{
   if (input.signal?.aborted) return { kind: 'cancelled' };
   try {
     const response = await fetch(endpointUrl(input.requestOrigin, '/v1/account-directory/me'), {
-      headers: { Authorization: `Bearer ${input.credential.token}` },
+      headers: { Authorization: `Bearer ${input.credential.token}`, ...buildTerminalAuthorityCeilingHttpHeaders({ token: input.credential.token, serverHttpBaseUrl: input.requestOrigin }) },
       signal: input.signal,
     });
     if (response.ok) return { kind: 'valid' };
@@ -202,6 +212,8 @@ type CliAccountServiceDiscoveryResult =
   | Readonly<{
       kind: 'ready';
       service: CliAccountServiceSelection;
+      /** The service endpoint also publishes a Home, i.e. the dual-role deployment. */
+      serviceIsAlsoHome: boolean;
       keyMethods: readonly Readonly<{ action: 'login' | 'provision'; mode: 'keyed'; catalogOrder: readonly [number, number] }>[];
       oauthMethods: readonly Readonly<{
         providerId: string;
@@ -259,6 +271,7 @@ async function discoverService(
   return {
     kind: 'ready',
     service: { endpoint, serverIdentityId, canonicalServerUrl, advertisedMethods: methods.advertisedMethods },
+    serviceIsAlsoHome: Boolean(snapshot.features.homeConnectionDescriptor),
     oauthMethods: methods.oauthMethods,
     keyMethods: methods.keyMethods,
   };
@@ -350,7 +363,7 @@ async function chooseMethod(
 
 export async function runCliAccountServiceSetupEntry(
   input: CliAccountServiceSetupEntryInput,
-): Promise<CliAccountServiceHomeEntryOutcome> {
+): Promise<CliAccountServiceSetupEntryOutcome> {
   if (input.signal?.aborted) return { kind: 'cancelled' };
   const session = createCliAccountServiceSessionOwner({ happyHomeDir: resolveHappyHomeDirFromEnvironment(process.env) });
   const persistedSelection = input.endpoint === undefined
@@ -558,9 +571,34 @@ export async function runCliAccountServiceSetupEntry(
         } as const
       : null;
   if (!authenticationInput) return { kind: 'cancelled' };
+  if (input.stopAfter === 'sign_in' && 'existingAuthentication' in authenticationInput) {
+    return { kind: 'signed_in', endpoint: service.endpoint };
+  }
   const profileIds = new Map<string, string>();
+  const homeLabels = new Map<string, string>();
   const progress = createStepPrinter({ appearance: 'planet' });
-  progress.start('Signing in and finding linked Homes');
+  // The animated step printer owns its own terminal rows and redraws over
+  // anything written under it. Every message and prompt this entry emits goes
+  // through `announce`/`withoutProgress`, which yield the terminal first and
+  // resume the current step afterwards.
+  let currentStage = input.stopAfter === 'sign_in' ? 'Signing in' : 'Signing in and finding linked Homes';
+  const showStage = (label: string): void => {
+    currentStage = label;
+    progress.start(label);
+  };
+  const announce = (line: string): void => {
+    progress.info(line);
+    progress.start(currentStage);
+  };
+  const withoutProgress = async <T>(run: () => Promise<T>): Promise<T> => {
+    progress.pause();
+    try {
+      return await run();
+    } finally {
+      progress.start(currentStage);
+    }
+  };
+  showStage(currentStage);
   const openSelectedHome: CliAccountServiceHomeEntryPorts['openSelectedHome'] = async ({ profileId }) => {
     try { await useServerProfile(profileId); return { kind: 'opened' }; } catch { return { kind: 'home_unavailable' }; }
   };
@@ -571,51 +609,71 @@ export async function runCliAccountServiceSetupEntry(
   const continueMachineAndService: CliAccountServiceHomeEntryPorts['continueMachineAndService'] = input.continueMachineAndService
     ?? (async () => ({ kind: 'failed' as const }));
 
+  const authenticateExactMethod: CliAccountServiceHomeEntryPorts['authenticateExactMethod'] = async ({ method, key, signal, timeoutMs }) => {
+    const auth = await session.authenticate({
+      service,
+      timeoutMs: timeoutMs ?? 300_000,
+      credentialCustody: usesTargetDerivedService ? 'transient' : 'selected_service',
+      ...(signal ? { signal } : {}),
+      acquireCredential: async (authSignal) => {
+        const result = await authenticateCliAccountService(
+          { service, method, ...(key ? { key } : {}), signal: authSignal, timeoutMs },
+          {
+            request: async (path, init) => await fetch(endpointUrl(requestOrigin, path), init),
+            write: announce,
+          },
+        );
+        if (result.kind !== 'authenticated') throw Object.assign(new Error(result.kind), { outcome: result.kind });
+        if (result.recoveryKey) {
+          announce(`Account recovery key: ${formatRecoveryKey(result.recoveryKey)}`);
+          announce('Store this recovery key somewhere safe. It is required to recover this Account.');
+        }
+        return result.credential;
+      },
+    });
+    if (auth.kind !== 'authenticated') {
+      if (auth.kind === 'timed_out') return { kind: 'timed_out' };
+      if (auth.kind === 'cancelled') return { kind: 'cancelled' };
+      const outcome = typeof auth.error === 'object' && auth.error !== null && 'outcome' in auth.error
+        ? (auth.error as { outcome?: unknown }).outcome
+        : null;
+      if (outcome === 'key_required') return { kind: 'key_required' };
+      if (outcome === 'update_required') return { kind: 'update_required' };
+      if (outcome === 'account_service_unavailable') return { kind: 'account_service_unavailable' };
+      if (outcome === 'identity_mismatch') return { kind: 'identity_mismatch' };
+      if (outcome === 'destination_mismatch') return { kind: 'destination_mismatch' };
+      return { kind: 'failed' };
+    }
+    return { kind: 'authenticated', target: service, credential: auth.credential };
+  };
+
+  if (input.stopAfter === 'sign_in' && 'method' in authenticationInput) {
+    try {
+      const signedIn = await authenticateExactMethod({
+        service: { endpoint: service.endpoint, expectedServerIdentityId: service.serverIdentityId },
+        method: authenticationInput.method,
+        ...(authenticationInput.key ? { key: authenticationInput.key } : {}),
+        ...(input.signal ? { signal: input.signal } : {}),
+        ...(input.timeoutMs ? { timeoutMs: input.timeoutMs } : {}),
+      });
+      return signedIn.kind === 'authenticated' ? { kind: 'signed_in', endpoint: service.endpoint } : signedIn;
+    } finally {
+      progress.pause();
+    }
+  }
+
   return await runCliAccountServiceHomeEntry({
     service: { endpoint: service.endpoint, expectedServerIdentityId: service.serverIdentityId },
     ...authenticationInput,
     ...(input.signal ? { signal: input.signal } : {}),
     ...(input.timeoutMs ? { timeoutMs: input.timeoutMs } : {}),
   }, {
-    authenticateExactMethod: async ({ method, key, signal, timeoutMs }) => {
-      const auth = await session.authenticate({
-        service,
-        timeoutMs: timeoutMs ?? 300_000,
-        credentialCustody: usesTargetDerivedService ? 'transient' : 'selected_service',
-        ...(signal ? { signal } : {}),
-        acquireCredential: async (authSignal) => {
-          const result = await authenticateCliAccountService(
-            { service, method, ...(key ? { key } : {}), signal: authSignal, timeoutMs },
-            { request: async (path, init) => await fetch(endpointUrl(requestOrigin, path), init) },
-          );
-          if (result.kind !== 'authenticated') throw Object.assign(new Error(result.kind), { outcome: result.kind });
-          if (result.recoveryKey) {
-            console.log(`Account recovery key: ${formatRecoveryKey(result.recoveryKey)}`);
-            console.log('Store this recovery key somewhere safe. It is required to recover this Account.');
-          }
-          return result.credential;
-        },
-      });
-      if (auth.kind !== 'authenticated') {
-        if (auth.kind === 'timed_out') return { kind: 'timed_out' };
-        if (auth.kind === 'cancelled') return { kind: 'cancelled' };
-        const outcome = typeof auth.error === 'object' && auth.error !== null && 'outcome' in auth.error
-          ? (auth.error as { outcome?: unknown }).outcome
-          : null;
-        if (outcome === 'key_required') return { kind: 'key_required' };
-        if (outcome === 'update_required') return { kind: 'update_required' };
-        if (outcome === 'account_service_unavailable') return { kind: 'account_service_unavailable' };
-        if (outcome === 'identity_mismatch') return { kind: 'identity_mismatch' };
-        if (outcome === 'destination_mismatch') return { kind: 'destination_mismatch' };
-        return { kind: 'failed' };
-      }
-      return { kind: 'authenticated', target: service, credential: auth.credential };
-    },
+    authenticateExactMethod,
     runDirectoryJourney: async ({ credential, signal }) => {
       try {
         const directory = AccountDirectoryHomesResponseV1Schema.parse(await jsonRequest(
           endpointUrl(requestOrigin, ACCOUNT_DIRECTORY_HOMES_HTTP_PATH_V1),
-          { headers: { Authorization: `Bearer ${credential.token}` }, signal },
+          { headers: { Authorization: `Bearer ${credential.token}`, ...buildTerminalAuthorityCeilingHttpHeaders({ token: credential.token, serverHttpBaseUrl: requestOrigin }) }, signal },
         ));
         const completeCommittedHomeCredential = async (inputValue: Readonly<{
           runtimeOrigin: string;
@@ -629,7 +687,7 @@ export async function runCliAccountServiceSetupEntry(
             mode = await readAccountEncryptionModeOnce({
               request: async () => {
                 const response = await fetch(endpointUrl(inputValue.runtimeOrigin, '/v1/account/encryption'), {
-                  headers: { Authorization: `Bearer ${inputValue.credential.token}` },
+                  headers: { Authorization: `Bearer ${inputValue.credential.token}`, ...buildTerminalAuthorityCeilingHttpHeaders({ token: inputValue.credential.token, serverHttpBaseUrl: inputValue.runtimeOrigin }) },
                   signal: inputValue.signal,
                 });
                 return { status: response.status, data: await response.json().catch(() => null) };
@@ -728,7 +786,7 @@ export async function runCliAccountServiceSetupEntry(
             },
             requestAssertion: async ({ homeServerIdentityId, clientBoxPublicKeyBase64 }) => HomeLoginAssertionResponseV1Schema.parse(await jsonRequest(
               endpointUrl(requestOrigin, buildAccountDirectoryHomeLoginAssertionHttpPathV1(homeServerIdentityId)),
-              { method: 'POST', headers: { Authorization: `Bearer ${credential.token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ v: 1, homeServerIdentityId, clientBoxPublicKeyBase64 }), signal: operationSignal },
+              { method: 'POST', headers: { Authorization: `Bearer ${credential.token}`, ...buildTerminalAuthorityCeilingHttpHeaders({ token: credential.token, serverHttpBaseUrl: requestOrigin }), 'Content-Type': 'application/json' }, body: JSON.stringify({ v: 1, homeServerIdentityId, clientBoxPublicKeyBase64 }), signal: operationSignal },
             )),
             openHomeTransport: async (home) => {
               const acquired = await acquireTerminalAuthEnrollmentRuntime(
@@ -912,13 +970,25 @@ export async function runCliAccountServiceSetupEntry(
           if (enrollment.kind === 'cancelled') return { kind: 'cancelled' };
           if (enrollment.kind === 'verification_failed') {
             const reason: string = enrollment.reason;
-            if (reason === 'authenticated_observation_required') {
+            if ('stage' in enrollment && enrollment.stage === 'post_redemption') {
+              const retry = enrollment.retry;
               return {
                 kind: 'failure',
                 stage: 'enter',
                 homeServerIdentityId,
                 homeCredentialCommitted: false,
                 recovery: 'retry_stage',
+                ...(retry ? {
+                  retry: async () => await mapEnrollment(
+                    homeServerIdentityId,
+                    await retry({
+                      nowMs: Date.now(),
+                      shouldCancel: () => signal?.aborted === true,
+                    }),
+                    selection,
+                    directoryAdoptionFailures,
+                  ),
+                } : {}),
               };
             }
             return {
@@ -945,6 +1015,7 @@ export async function runCliAccountServiceSetupEntry(
             descriptor: home.connectionDescriptor, suggestedName: home.label, observation: 'advisory',
           });
           profileIds.set(home.homeServerIdentityId, adopted.profile.id);
+          homeLabels.set(home.homeServerIdentityId, home.label);
         };
         const mapJourney = async (
           journey: AccountServiceDirectoryJourneyResult<Uint8Array, CliHomeEnrollmentCommit>,
@@ -970,7 +1041,16 @@ export async function runCliAccountServiceSetupEntry(
               adoptionFailures,
             );
           }
-          if (journey.kind === 'no_linked_homes') return { kind: 'account_connected_no_homes' };
+          if (journey.kind === 'no_linked_homes') {
+            return {
+              kind: 'account_connected_no_homes',
+              // A dual-role service is a Home as well, so the no-Homes state can
+              // offer that Home instead of dead-ending the journey.
+              ...(discovery.serviceIsAlsoHome
+                ? { availableHome: { canonicalServerUrl: service.canonicalServerUrl } }
+                : {}),
+            };
+          }
           if (journey.kind === 'explicit_target_not_linked') {
             return { kind: 'explicit_target_not_linked', homeServerIdentityId: journey.homeServerIdentityId };
           }
@@ -983,11 +1063,17 @@ export async function runCliAccountServiceSetupEntry(
                 ...(adoptionFailures.length > 0 ? { directoryAdoptionFailures: adoptionFailures } : {}),
               };
             }
-            const selectedIdentity = await promptMultipleChoice(
-              ['Choose a Home', ...journey.homes.map((candidate, index) => `  ${index + 1}) ${candidate.label}`), '  x) Cancel'].join('\n'),
+            const selectedIdentity = await withoutProgress(async () => await promptMultipleChoice(
+              [
+                'Choose a Home',
+                ...journey.homes.map((candidate, index) => (
+                  `  ${index + 1}) ${candidate.label}${candidate.preferred ? ' · preferred' : ''}\n       ${candidate.canonicalServerUrl}`
+                )),
+                '  x) Cancel',
+              ].join('\n'),
               [...journey.homes.map((candidate, index) => ({ id: candidate.homeServerIdentityId, keys: [String(index + 1)], short: String(index + 1) })), { id: 'cancel', keys: ['x', 'cancel'], short: 'x' }],
               { defaultId: 'cancel', maxAttempts: 3, promptInputFn },
-            );
+            ));
             if (selectedIdentity === 'cancel') return { kind: 'cancelled' };
             // The chosen Home re-enters the shared journey as an explicit target, so its outcome is
             // mapped by exactly the branches below — including committed-material recovery.
@@ -1002,32 +1088,13 @@ export async function runCliAccountServiceSetupEntry(
           }
           if (journey.kind === 'cancelled') return { kind: 'cancelled' };
           if (journey.kind === 'invalid_directory') return { kind: 'identity_mismatch' };
-          if (journey.enrollment.kind === 'cancelled') return { kind: 'cancelled' };
-          if (journey.enrollment.kind === 'verification_failed') {
-            const reason: string = journey.enrollment.reason;
-            if (reason === 'authenticated_observation_required') {
-              return {
-                kind: 'failure',
-                stage: 'enter',
-                ...(journey.homeServerIdentityId
-                  ? { homeServerIdentityId: journey.homeServerIdentityId }
-                  : {}),
-                homeCredentialCommitted: false,
-                recovery: 'retry_stage',
-              };
-            }
-            return { kind: reason.includes('identity') ? 'identity_mismatch' : reason.includes('destination') ? 'destination_mismatch' : 'failed' };
-          }
-          if (journey.enrollment.kind === 'unavailable' && journey.homeServerIdentityId) {
-            const materialFailure = mapCommittedMaterialFailure(
-              journey.homeServerIdentityId,
-              journey.enrollment.error,
-              'explicit',
-              adoptionFailures,
-            );
-            if (materialFailure) return materialFailure;
-          }
-          return { kind: 'home_unavailable' };
+          if (!journey.homeServerIdentityId) return { kind: 'home_unavailable' };
+          return await mapEnrollment(
+            journey.homeServerIdentityId,
+            journey.enrollment,
+            journey.selection,
+            adoptionFailures,
+          );
         };
         return await mapJourney(await runAccountServiceDirectoryJourney({
           directory,
@@ -1046,6 +1113,10 @@ export async function runCliAccountServiceSetupEntry(
       }
     },
     openSelectedHome,
+    reportApprovalWait: ({ homeServerIdentityId, expiresAtMs }) => {
+      const home = homeLabels.get(homeServerIdentityId) ?? homeServerIdentityId;
+      showStage(`Approve ${home} on your other signed-in device — this request expires at ${new Date(expiresAtMs).toLocaleTimeString()}`);
+    },
     continueMachineAndService,
   }).finally(() => {
     progress.pause();

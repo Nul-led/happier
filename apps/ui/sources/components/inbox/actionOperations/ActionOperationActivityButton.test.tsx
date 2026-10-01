@@ -1,11 +1,26 @@
 import * as React from 'react';
 import { View } from 'react-native';
 import { act } from 'react-test-renderer';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { ActionOperationSnapshotV1 } from '@happier-dev/protocol';
 
 import { renderScreen } from '@/dev/testkit';
 import type { ActionOperationProjection } from '@/sync/domains/actionOperations/actionOperationSelectors';
+
+const activityHookState = vi.hoisted(() => ({
+    operations: [] as ActionOperationProjection[],
+    summary: { activeCount: 0, hasAttention: false },
+    useAllActionOperations: vi.fn(),
+}));
+
+vi.mock('@/sync/domains/actionOperations/useActionOperations', () => ({
+    useActionOperationActivitySummary: () => activityHookState.summary,
+    useActionOperationsHaveAttention: () => activityHookState.summary.hasAttention,
+    useAllActionOperations: () => {
+        activityHookState.useAllActionOperations();
+        return activityHookState.operations;
+    },
+}));
 
 vi.mock('react-native', async () => {
     const { createReactNativeWebMock } = await import('@/dev/testkit/mocks/reactNative');
@@ -61,6 +76,12 @@ function operation(overrides: Partial<ActionOperationSnapshotV1> = {}): ActionOp
 }
 
 describe('ActionOperationActivityButtonView', () => {
+    afterEach(() => {
+        activityHookState.operations = [];
+        activityHookState.summary = { activeCount: 0, hasAttention: false };
+        activityHookState.useAllActionOperations.mockClear();
+    });
+
     it('stays absent when there is no active or unseen operation', async () => {
         const { ActionOperationActivityButtonView } = await import('./ActionOperationActivityButton');
         const screen = await renderScreen(
@@ -205,5 +226,20 @@ describe('ActionOperationActivityButtonView', () => {
         expect(screen.findByTestId('action-operation-activity-count')).not.toBeNull();
         expect(screen.getTextContent()).toContain('1');
         expect(screen.findByTestId('action-operation-activity-attention-dot')).toBeNull();
+    });
+
+    it('subscribes to ledger details only while the activity popover is open', async () => {
+        activityHookState.operations = [operation()];
+        activityHookState.summary = { activeCount: 1, hasAttention: true };
+        const { ActionOperationActivityButton } = await import('./ActionOperationActivityButton');
+        const screen = await renderScreen(<ActionOperationActivityButton />);
+
+        expect(screen.findByTestId('action-operation-activity-count')).not.toBeNull();
+        expect(activityHookState.useAllActionOperations).not.toHaveBeenCalled();
+
+        await screen.pressByTestIdAsync('action-operation-activity-button');
+
+        expect(activityHookState.useAllActionOperations).toHaveBeenCalledOnce();
+        expect(screen.findByTestId('inbox.action-operation.operation-1')).not.toBeNull();
     });
 });

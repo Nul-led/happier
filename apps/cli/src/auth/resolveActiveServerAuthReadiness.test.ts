@@ -1,4 +1,7 @@
-import { describe, expect, it } from 'vitest';
+import axios from 'axios';
+import { describe, expect, it, vi } from 'vitest';
+
+vi.mock('axios');
 
 import { SUPPORTED_SCHEMA_VERSION, type Settings } from '@/persistence';
 
@@ -13,6 +16,29 @@ function createSettings(overrides: Partial<Settings> = {}): Settings {
 }
 
 describe('resolveActiveServerAuthReadiness', () => {
+  it('checks Account currentness when booting from a retained 0.2 secret', async () => {
+    vi.mocked(axios.get).mockResolvedValueOnce({
+      status: 200,
+      data: {
+        mode: 'e2ee', version: 1, signingKeyFingerprint: 'signing',
+        contentKeyFingerprint: 'content', updatedAt: 1,
+        recipientEnvelopeReadiness: { status: 'available' },
+      },
+    });
+    const readiness = await resolveActiveServerAuthReadiness({
+      readCredentialsFn: async () => ({
+        token: 'header.eyJzdWIiOiJhY2NvdW50LTEifQ.signature',
+        encryption: { type: 'legacy', secret: new Uint8Array(32).fill(7) },
+        credentialProvenance: 'stored_session',
+      }),
+      readSettingsFn: async () => createSettings(),
+      validateTokenFn: async () => ({ state: 'valid', httpStatus: 200 }),
+    });
+    expect(readiness.authenticated).toBe(true);
+    expect(vi.mocked(axios.get).mock.calls.some(([url]) =>
+      String(url).endsWith('/v1/account/encryption/currentness'))).toBe(true);
+  });
+
   it('does not report a locally allocated machine id as server-registered', async () => {
     const readiness = await resolveActiveServerAuthReadiness({
       readCredentialsFn: async () => ({
@@ -24,12 +50,13 @@ describe('resolveActiveServerAuthReadiness', () => {
         machineId: 'machine-local-only',
         machineIdConfirmedByServer: false,
       }),
-      validateTokenFn: async () => ({ state: 'valid', httpStatus: 200 }),
+      validateTokenFn: async () => ({ state: 'valid', httpStatus: 200, accountLabel: 'alice' }),
     });
 
     expect(readiness).toMatchObject({
       credentialState: 'valid',
       authenticated: true,
+      accountLabel: 'alice',
       machineId: 'machine-local-only',
       machineRegistrationState: 'local-only',
       machineRegistered: false,

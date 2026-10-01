@@ -14,6 +14,8 @@ const en = {
         runtime: {
             pageDescription: 'How sessions run on your machines.',
             terminalSection: 'Terminal',
+            terminalHostTitle: 'Terminal host for new sessions',
+            terminalHostNone: 'None',
             tmuxTitle: 'Start sessions in tmux',
             tmuxOn: 'New sessions open in their own tmux window, so you can attach to them from a terminal.',
             tmuxOff: 'New sessions run in a regular shell.',
@@ -144,6 +146,8 @@ export const settingsSessionPagesTranslations: Record<
             runtime: {
                 pageDescription: 'Com s’executen les sessions a les teves màquines.',
                 terminalSection: 'Terminal',
+                terminalHostTitle: 'Amfitrió de terminal per a sessions noves',
+                terminalHostNone: 'Cap',
                 tmuxTitle: 'Inicia les sessions a tmux',
                 tmuxOn: 'Les sessions noves s’obren en una finestra de tmux pròpia, perquè t’hi puguis connectar des d’un terminal.',
                 tmuxOff: 'Les sessions noves s’executen en un shell normal.',
@@ -266,6 +270,8 @@ export const settingsSessionPagesTranslations: Record<
             runtime: {
                 pageDescription: 'Wie Sitzungen auf deinen Rechnern laufen.',
                 terminalSection: 'Terminal',
+                terminalHostTitle: 'Terminal-Host für neue Sitzungen',
+                terminalHostNone: 'Keiner',
                 tmuxTitle: 'Sitzungen in tmux starten',
                 tmuxOn: 'Neue Sitzungen öffnen sich in einem eigenen tmux-Fenster, damit du dich aus einem Terminal verbinden kannst.',
                 tmuxOff: 'Neue Sitzungen laufen in einer normalen Shell.',
@@ -388,6 +394,8 @@ export const settingsSessionPagesTranslations: Record<
             runtime: {
                 pageDescription: 'Cómo se ejecutan las sesiones en tus máquinas.',
                 terminalSection: 'Terminal',
+                terminalHostTitle: 'Terminal para nuevas sesiones',
+                terminalHostNone: 'Ninguno',
                 tmuxTitle: 'Iniciar sesiones en tmux',
                 tmuxOn: 'Las sesiones nuevas se abren en su propia ventana de tmux, para que puedas conectarte a ellas desde una terminal.',
                 tmuxOff: 'Las sesiones nuevas se ejecutan en una shell normal.',
@@ -510,6 +518,8 @@ export const settingsSessionPagesTranslations: Record<
             runtime: {
                 pageDescription: 'Comment les sessions s’exécutent sur vos machines.',
                 terminalSection: 'Terminal',
+                terminalHostTitle: 'Hôte de terminal pour les nouvelles sessions',
+                terminalHostNone: 'Aucun',
                 tmuxTitle: 'Lancer les sessions dans tmux',
                 tmuxOn: 'Les nouvelles sessions s’ouvrent dans leur propre fenêtre tmux, pour que vous puissiez vous y attacher depuis un terminal.',
                 tmuxOff: 'Les nouvelles sessions s’exécutent dans un shell classique.',
@@ -632,6 +642,8 @@ export const settingsSessionPagesTranslations: Record<
             runtime: {
                 pageDescription: 'Come vengono eseguite le sessioni sulle tue macchine.',
                 terminalSection: 'Terminale',
+                terminalHostTitle: 'Host terminale per le nuove sessioni',
+                terminalHostNone: 'Nessuno',
                 tmuxTitle: 'Avvia le sessioni in tmux',
                 tmuxOn: 'Le nuove sessioni si aprono in una finestra tmux dedicata, così puoi collegarti da un terminale.',
                 tmuxOff: 'Le nuove sessioni girano in una shell normale.',
@@ -754,6 +766,8 @@ export const settingsSessionPagesTranslations: Record<
             runtime: {
                 pageDescription: 'マシン上でセッションをどう実行するか。',
                 terminalSection: 'ターミナル',
+                terminalHostTitle: '新しいセッションのターミナルホスト',
+                terminalHostNone: 'なし',
                 tmuxTitle: 'セッションを tmux で開始',
                 tmuxOn: '新しいセッションは専用の tmux ウィンドウで開くので、ターミナルから接続できます。',
                 tmuxOff: '新しいセッションは通常のシェルで実行されます。',
@@ -876,6 +890,8 @@ export const settingsSessionPagesTranslations: Record<
             runtime: {
                 pageDescription: 'Jak sesje działają na Twoich maszynach.',
                 terminalSection: 'Terminal',
+                terminalHostTitle: 'Host terminala dla nowych sesji',
+                terminalHostNone: 'Brak',
                 tmuxTitle: 'Uruchamiaj sesje w tmux',
                 tmuxOn: 'Nowe sesje otwierają się we własnym oknie tmux, więc możesz się do nich podłączyć z terminala.',
                 tmuxOff: 'Nowe sesje działają w zwykłej powłoce.',
@@ -998,6 +1014,8 @@ export const settingsSessionPagesTranslations: Record<
             runtime: {
                 pageDescription: 'Como as sessões são executadas nas suas máquinas.',
                 terminalSection: 'Terminal',
+                terminalHostTitle: 'Host de terminal para novas sessões',
+                terminalHostNone: 'Nenhum',
                 tmuxTitle: 'Iniciar sessões no tmux',
                 tmuxOn: 'Novas sessões abrem em uma janela própria do tmux, para você se conectar a elas de um terminal.',
                 tmuxOff: 'Novas sessões rodam em um shell comum.',
@@ -1120,6 +1138,8 @@ export const settingsSessionPagesTranslations: Record<
             runtime: {
                 pageDescription: 'Как сессии работают на ваших машинах.',
                 terminalSection: 'Терминал',
+                terminalHostTitle: 'Терминальный хост для новых сеансов',
+                terminalHostNone: 'Нет',
                 tmuxTitle: 'Запускать сессии в tmux',
                 tmuxOn: 'Новые сессии открываются в отдельном окне tmux, чтобы к ним можно было подключиться из терминала.',
                 tmuxOff: 'Новые сессии работают в обычной оболочке.',
@@ -1242,6 +1262,8 @@ export const settingsSessionPagesTranslations: Record<
             runtime: {
                 pageDescription: '会话在你的机器上如何运行。',
                 terminalSection: '终端',
+                terminalHostTitle: '新会话的终端宿主',
+                terminalHostNone: '无',
                 tmuxTitle: '在 tmux 中启动会话',
                 tmuxOn: '新会话在独立的 tmux 窗口中打开，方便你从终端连接。',
                 tmuxOff: '新会话在普通 shell 中运行。',
@@ -1364,6 +1386,8 @@ export const settingsSessionPagesTranslations: Record<
             runtime: {
                 pageDescription: '工作階段在你的機器上如何執行。',
                 terminalSection: '終端機',
+                terminalHostTitle: '新工作階段的終端機主機',
+                terminalHostNone: '無',
                 tmuxTitle: '在 tmux 中啟動工作階段',
                 tmuxOn: '新工作階段會在專屬的 tmux 視窗中開啟，方便你從終端機連線。',
                 tmuxOff: '新工作階段在一般 shell 中執行。',

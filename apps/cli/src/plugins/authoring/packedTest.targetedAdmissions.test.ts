@@ -28,19 +28,19 @@ function participant(
 }
 
 describe('projectPackedAdmittedContributors', () => {
-  it('rejects a target snapshot that attributes a prerequisite plugin at a stale immutable generation', () => {
+  it('accepts the daemon-owned live occurrence for an applied prerequisite plugin', () => {
     const contributor = participant('acme.contributor', 'contributor-generation-current');
     const admissions: readonly PackedPluginTestTargetedAdmission[] = [{
       target: {
         pluginId: 'acme.target',
         pointId: 'providers',
-        immutableGenerationId: 'target-generation-current',
+        occurrenceId: 'target-occurrence-current',
       },
       protocol: { id: 'packed-targeted-provider', version: 1 },
       contributor: {
         pluginId: contributor.plugin.id,
         contributionId: 'provider-a',
-        immutableGenerationId: 'contributor-generation-stale',
+        occurrenceId: 'contributor-occurrence-current',
       },
     }];
 
@@ -48,28 +48,28 @@ describe('projectPackedAdmittedContributors', () => {
       prerequisites: [contributor],
       admissions,
     })).toEqual({
-      ok: false,
-      code: 'plugin_packed_targeted_admission_generation_mismatch',
-      message: "Disposable daemon admitted 'acme.contributor' at immutable generation 'contributor-generation-stale', not its current applied prerequisite generation",
+      ok: true,
+      contributors: [{
+        ...contributor,
+        targetedAdmissions: admissions,
+      }],
     });
   });
 
   it('keeps an installed but unadmitted prerequisite out of contributors while retaining the current admitted one', () => {
     const contributor = participant('acme.contributor', 'contributor-generation-current');
     const unrelated = participant('acme.unrelated', 'unrelated-generation-current');
-    const contributorAppliedGeneration = contributor.admission.appliedGeneration;
-    if (contributorAppliedGeneration === null) throw new Error('Expected a current contributor generation');
     const admission: PackedPluginTestTargetedAdmission = {
       target: {
         pluginId: 'acme.target',
         pointId: 'providers',
-        immutableGenerationId: 'target-generation-current',
+        occurrenceId: 'target-occurrence-current',
       },
       protocol: { id: 'packed-targeted-provider', version: 1 },
       contributor: {
         pluginId: contributor.plugin.id,
         contributionId: 'provider-a',
-        immutableGenerationId: contributorAppliedGeneration,
+        occurrenceId: 'contributor-occurrence-current',
       },
     };
 
@@ -91,13 +91,13 @@ describe('projectPackedAdmittedContributors', () => {
       target: {
         pluginId: 'acme.target',
         pointId: 'providers',
-        immutableGenerationId: 'target-generation-current',
+        occurrenceId: 'target-occurrence-current',
       },
       protocol: { id: 'packed-targeted-provider', version: 1 },
       contributor: {
         pluginId: inert.plugin.id,
         contributionId: 'provider-a',
-        immutableGenerationId: inert.admission.desiredGeneration,
+        occurrenceId: 'inert-occurrence',
       },
     };
 
@@ -106,8 +106,8 @@ describe('projectPackedAdmittedContributors', () => {
       admissions: [admission],
     })).toEqual({
       ok: false,
-      code: 'plugin_packed_targeted_admission_generation_mismatch',
-      message: "Disposable daemon admitted 'acme.inert' at immutable generation 'inert-generation-committed', not its current applied prerequisite generation",
+      code: 'plugin_packed_targeted_admission_prerequisite_not_applied',
+      message: "Disposable daemon admitted 'acme.inert' without a current applied prerequisite",
     });
   });
 });

@@ -7,7 +7,7 @@ import type { EmailPasswordLoginTarget } from '@/auth/password/loginEmailPasswor
 const boundary = vi.hoisted(() => ({
     show: vi.fn((_config: unknown): string => 'modal-id'),
     close: vi.fn(),
-    login: vi.fn(async () => {}),
+    login: vi.fn<() => Promise<void | 'completed' | 'retired'>>(async () => {}),
     reachExactHome: vi.fn(async () => true),
 }));
 
@@ -77,6 +77,14 @@ it('closes only once the exact Home its Connect login committed on has been reac
     expect(boundary.login).toHaveBeenCalledOnce();
     expect(boundary.reachExactHome).toHaveBeenCalledOnce();
     expect(boundary.close).toHaveBeenCalledOnce();
+});
+
+it('keeps the authentication host open when credential recovery retires without adopting credentials', async () => {
+    boundary.login.mockResolvedValueOnce('retired');
+    await mountConnectModal();
+    await screen!.pressByTestIdAsync('email-password-panel');
+    expect(boundary.close).not.toHaveBeenCalled();
+    expect(boundary.reachExactHome).not.toHaveBeenCalled();
 });
 
 it('keeps a completed Connect login retryable instead of closing over a blocked activation', async () => {

@@ -1,4 +1,6 @@
 import { t } from '@/text';
+import { homeDomainFailureCode, homeDomainFailureFromActionFailure } from '@/sync/api/home/homeDomainActions';
+import type { HomeDomainFailure } from '@/sync/api/home/homeServerActionTransport';
 
 /**
  * How an identity or directory administration request failed, in the terms a
@@ -260,6 +262,30 @@ export function resolveIdentityAdministrationFailureRetryable(
     return failure.code !== null
         ? failure.retryable
         : failure.retryable || isIdentityAdministrationFailureRetryable(code);
+}
+
+/**
+ * The failure of a read whose deferred approval settled without a value. Both
+ * administration clients map it here, so an approval-deferred outcome carries
+ * the same code and retryability on Teams identity and on managed providers.
+ */
+export function resolveApprovalSettledReadFailure(
+    code: string,
+    actionFailure?: Readonly<{ errorCode?: string | undefined; details?: unknown }>,
+): Readonly<{ code: string; retryable: boolean; domainFailure?: HomeDomainFailure }> {
+    const domainFailure = actionFailure ? homeDomainFailureFromActionFailure(actionFailure) : undefined;
+    if (!domainFailure) {
+        return {
+            code,
+            retryable: code === 'approval_rejected' || code === 'approval_canceled' || isIdentityAdministrationFailureRetryable(code),
+        };
+    }
+    const resolvedCode = homeDomainFailureCode(domainFailure);
+    return {
+        code: resolvedCode,
+        retryable: resolveIdentityAdministrationFailureRetryable(domainFailure, resolvedCode),
+        domainFailure,
+    };
 }
 
 export function identityAdministrationFailureMessage(code: string): string {

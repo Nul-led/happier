@@ -81,7 +81,7 @@ export function useBrowserPluginActions(input: Readonly<{
         () => createPluginUiProjectedActionResolver(uiProjection?.actionsById),
         [uiProjection?.actionsById],
     );
-    // A client-executed action whose executable is not registered for THIS projection generation
+    // A client-executed action whose exact occurrence is not registered
     // cannot run; offering it would be a control with no outcome. Server-executed actions and
     // unresolvable ids pass through untouched.
     const hasCurrentClientActionRegistration = React.useCallback((
@@ -89,14 +89,11 @@ export function useBrowserPluginActions(input: Readonly<{
     ): boolean => {
         const action = resolveContributedAction(browserAction.actionIdentity);
         if (!action || action.execution.target !== 'client') return true;
-        const projectionGeneration = uiProjection?.generation;
-        return typeof projectionGeneration === 'number'
-            && resolvePluginUiClientActionRegistration({
+        return resolvePluginUiClientActionRegistration({
                 action,
-                projectionGeneration,
                 platform: resolvePluginUiClientExecutablePlatform(),
             }) !== null;
-    }, [uiProjection?.generation, resolveContributedAction]);
+    }, [resolveContributedAction]);
 
     const toolbarActions = React.useMemo(
         () => selectPluginBrowserToolbarActions({

@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
-import { dirname } from 'node:path';
+import { dirname, join } from 'node:path';
 
 import { reloadConfiguration, configuration } from '@/configuration';
 import { createEnvKeyScope } from '@/testkit/env/envScope';
@@ -35,6 +35,49 @@ async function writeStoredToken(token: string): Promise<string> {
 }
 
 describe('readStoredCredentials API Token selection', () => {
+  it('invalidates the pre-provenance account shape but retains the legacy terminal session shape', async () => {
+    await withTempDir('happier-cli-legacy-relogin-', async (homeDir) => {
+      envScope.patch({ HAPPIER_HOME_DIR: homeDir, HAPPIER_TOKEN: undefined, HAPPIER_ACTIVE_SERVER_ID: undefined });
+      reloadConfiguration();
+      const { readStoredCredentials } = await import('./persistence');
+      // Exact immutable server-v0.2.11 golden bearer, raw session claim (not extras.session).
+      const releasedTerminal = 'eyJhbGciOiJFZERTQSJ9.eyJzdWIiOiJyZWxlYXNlZC10ZXJtaW5hbC1hdXRoLW5vLWVwb2NoIiwic2Vzc2lvbiI6InRlcm1pbmFsLWF1dGgtcmVxdWVzdC1yZWxlYXNlZC0wLjIuMTEiLCJpYXQiOjE3ODkxOTU1MDEsIm5iZiI6MTc4OTE5NTUwMSwiaXNzIjoiaGFuZHkiLCJqdGkiOiJlM2QyZTFiOC04NGI0LTQxOWEtODVjMS1kZGYwMTIwMmE1ZWEifQ.jL7qNonZslnbKL-fpL3fLvpbp5H8HER8TLoN3sGkrCqPoGqaN1MPArOsP_Fi2EqUDObB4PgkE3FUo_BWrWpCBw';
+      const releasedBytes = await writeStoredToken(releasedTerminal);
+      await expect(readStoredCredentials()).resolves.toMatchObject({ token: releasedTerminal });
+      await expect(readFile(configuration.privateKeyFile, 'utf8')).resolves.toBe(releasedBytes);
+      // Released JWT extras: no session is account; a nonblank session is terminal.
+      const bearer = (extras: object) => `hdr.${Buffer.from(JSON.stringify({ sub: 'account-a', extras })).toString('base64url')}.sig`;
+      await writeStoredToken(bearer({ session: 'terminal-session' }));
+      await expect(readStoredCredentials()).resolves.toMatchObject({ token: bearer({ session: 'terminal-session' }) });
+      await writeStoredToken(bearer({}));
+      await expect(readStoredCredentials()).rejects.toMatchObject({ code: 'cli_relogin_required' });
+      expect(JSON.parse(await readFile(configuration.privateKeyFile, 'utf8'))).toEqual({});
+    });
+  });
+  it('invalidates an account bearer while preserving encryption material and other profile state', async () => {
+    await withTempDir('happier-cli-relogin-', async (homeDir) => {
+      envScope.patch({ HAPPIER_HOME_DIR: homeDir, HAPPIER_TOKEN: undefined, HAPPIER_ACTIVE_SERVER_ID: undefined });
+      reloadConfiguration();
+      const payload = Buffer.from(JSON.stringify({ sub: 'account-a', provenance: {
+        v: 1, kind: 'account', authority: 'present_user',
+      } })).toString('base64url');
+      await mkdir(dirname(configuration.privateKeyFile), { recursive: true });
+      const material = { secret: Buffer.alloc(32, 7).toString('base64') };
+      await writeFile(configuration.privateKeyFile, JSON.stringify({ ...material, token: `hdr.${payload}.sig` }));
+      const otherProfilePath = join(configuration.serversDir, 'other-profile', 'access.key');
+      await mkdir(dirname(otherProfilePath), { recursive: true });
+      const otherProfileCredential = JSON.stringify({ token: `hdr.${payload}.sig` });
+      await writeFile(otherProfilePath, otherProfileCredential);
+      const { readStoredCredentials, readStoredCredentialsForServerId } = await import('./persistence');
+      // Doctor's inactive-profile inspection is read-only, not an invocation using that bearer.
+      await expect(readStoredCredentialsForServerId('other-profile')).resolves.toMatchObject({ token: `hdr.${payload}.sig` });
+      await expect(readFile(otherProfilePath, 'utf8')).resolves.toBe(otherProfileCredential);
+      await expect(readStoredCredentials()).rejects.toMatchObject({ code: 'cli_relogin_required' });
+      expect(JSON.parse(await readFile(configuration.privateKeyFile, 'utf8'))).toEqual(material);
+      await expect(readStoredCredentials()).resolves.toBeNull();
+    });
+  });
+
   it('uses HAPPIER_TOKEN for this invocation without rewriting the stored credential', async () => {
     await withTempDir('happier-cli-api-token-', async (homeDir) => {
       envScope.patch({

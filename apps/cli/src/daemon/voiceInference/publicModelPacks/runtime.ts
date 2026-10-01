@@ -29,7 +29,7 @@ import {
 import packageJson from '../../../../package.json';
 import { readInstalledPluginCatalogSnapshot } from '@/plugins/projection/catalog/installed';
 import { pluginReloadController } from '@/plugins/runtime/reload/singleton';
-import type { PluginFinalPolicyCurrentGeneration } from '@/plugins/runtime/policy/facts';
+import type { PluginFinalPolicyCurrentRuntime } from '@/plugins/runtime/policy/facts';
 import {
   clearModelPackPromotionIntent,
   createNodeModelPackInstallerHost,
@@ -166,7 +166,7 @@ export function createDaemonPublicVoiceModelPackRuntime(params: Readonly<{
   /** Test boundary for proving cache invalidation independently of filesystem stat changes. */
   fingerprintInstalledPack?: (packId: string, filePaths: readonly string[]) => Promise<string>;
   /** Applied daemon-runtime policy boundary. Tests may inject exact admission facts. */
-  readPluginFinalPolicyCurrentGenerations?: () => Promise<ReadonlyMap<string, PluginFinalPolicyCurrentGeneration> | null>;
+  readPluginFinalPolicyCurrentRuntimes?: () => Promise<ReadonlyMap<string, PluginFinalPolicyCurrentRuntime> | null>;
 }>): DaemonPublicVoiceModelPackRuntime {
   const state = createDaemonPublicVoiceModelPackStateStore({
     stateFilePath: params.stateFilePath ?? scopeStateFilePath(params.paths, params.accountId, params.machineId),
@@ -349,20 +349,23 @@ export function createDaemonPublicVoiceModelPackRuntime(params: Readonly<{
     admittedRegistryRevision = pluginCatalog.revision;
     let descriptors: readonly DaemonVoiceModelPackCatalogEntryV1[] = [];
     if (host) {
-      const injectedPolicy = params.readPluginFinalPolicyCurrentGenerations
-        ? await params.readPluginFinalPolicyCurrentGenerations()
+      const injectedPolicy = params.readPluginFinalPolicyCurrentRuntimes
+        ? await params.readPluginFinalPolicyCurrentRuntimes()
         : undefined;
       const lease = injectedPolicy === undefined
         ? pluginReloadController.tryAcquireRuntimeRegistry()
         : null;
-      const currentPluginGenerations = injectedPolicy
-        ?? lease?.registry.pluginFinalPolicyCurrentGenerationsById
+      const currentPluginRuntimes = injectedPolicy
+        ?? lease?.registry.pluginFinalPolicyCurrentRuntimesById
         ?? null;
-      if (currentPluginGenerations) {
+      if (currentPluginRuntimes) {
         try {
           descriptors = await projectInstalledDaemonPluginVoiceModelPackCatalogV1({
             installedPlugins: pluginCatalog.entries,
-            currentPluginGenerations,
+            currentPluginRuntimes,
+            ...(lease?.registry.readPluginSourceCustody
+              ? { resolvePluginSourceCustody: lease.registry.readPluginSourceCustody }
+              : {}),
             host,
             acceptedLicenses: durable.licenseAcceptances,
             licenseScope: {

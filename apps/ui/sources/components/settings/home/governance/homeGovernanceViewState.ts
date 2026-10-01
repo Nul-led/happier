@@ -32,12 +32,21 @@ export type HomeGovernanceViewState =
         refreshing: boolean;
         /** The shown projection is known to be behind the Home. */
         stale: boolean;
+        /**
+         * The last read failed or the Home is unreachable: the only condition worth the
+         * administrator's attention (a warning with Try again). A refresh over a good answer is not.
+         */
+        readFailed: boolean;
+        /** Catching up after a good answer (a wake or a refetch): a quiet note, never a warning. */
+        updating: boolean;
         /** When the shown projection was observed, for an honest freshness note. */
         lastObservedAt: number | null;
         /**
-         * Whether a mutation may be offered. Reading a slightly old Home is
-         * useful; writing from one is not, because the administrator would be
-         * deciding against state the Home has already moved past.
+         * Whether a mutation may be offered: closed only when a write would be unsafe to attempt —
+         * the last read failed or the Home is unreachable. Catching up after a good answer keeps
+         * writes open, because every write is still decided by the Home itself (revision
+         * compare-and-set, capability and target guards), so one made against a projection the Home
+         * has moved past is refused with a typed conflict rather than applied.
          */
         mutationsAvailable: boolean;
         /** Retained so a stale surface can still explain why it went quiet. */
@@ -80,16 +89,18 @@ export function resolveHomeGovernanceViewState(
         return LOADING;
     }
 
+    const refreshing = snapshot.status === 'refreshing' || snapshot.status === 'loading';
+    const readFailed = snapshot.error !== null || snapshot.reachability === 'unreachable';
     return Object.freeze({
         kind: 'ready' as const,
         scope: snapshot.scope,
         projection: snapshot.data,
-        refreshing: snapshot.status === 'refreshing' || snapshot.status === 'loading',
+        refreshing,
         stale: snapshot.stale,
+        readFailed,
+        updating: !readFailed && (refreshing || snapshot.stale),
         lastObservedAt: snapshot.lastObservedAt,
-        // A wake marks the projection stale before the Home re-answers, so this
-        // deliberately closes writes on the same signal that keeps reads open.
-        mutationsAvailable: !snapshot.stale && snapshot.reachability === 'reachable',
+        mutationsAvailable: !readFailed && snapshot.reachability === 'reachable',
         error: snapshot.error,
     });
 }

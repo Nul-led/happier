@@ -10,6 +10,12 @@ export function buildCliCapabilityData(opts: {
 
     const out: DetectCliEntry = {
         available: entry.available,
+        ...(entry.installed !== undefined ? { installed: entry.installed } : {}),
+        ...(entry.update ? { update: entry.update } : {}),
+        ...(entry.platform ? { platform: entry.platform } : {}),
+        ...(entry.install ? { install: entry.install } : {}),
+        ...(entry.dependencies ? { dependencies: entry.dependencies } : {}),
+        ...(entry.signIn ? { signIn: entry.signIn } : {}),
         ...(entry.resolvedPath ? { resolvedPath: entry.resolvedPath } : {}),
         ...(entry.resolvedCommand ? { resolvedCommand: entry.resolvedCommand } : {}),
         ...(entry.resolutionSource ? { resolutionSource: entry.resolutionSource } : {}),

@@ -1,6 +1,8 @@
+import { API_TOKEN_FULL_GRANT_V1 } from '@happier-dev/protocol';
 import { describe, expect, it } from 'vitest';
 
 import {
+    buildApiTokenAccessSummaryParts,
     buildApiTokenRowPresentation,
     resolveApiTokenListPresentation,
     resolveApiTokenOperationErrorMessageKey,
@@ -32,7 +34,7 @@ describe('API-token Settings presentation', () => {
         })).toBe('emptyWithRetry');
     });
 
-    it('renders required token metadata and derives only active or expired status', () => {
+    it('renders required token metadata and derives active, expiring (7 days or less) and expired status', () => {
         const expiring = buildApiTokenRowPresentation({
             token: {
                 tokenId: '11111111-1111-4111-8111-111111111111',
@@ -43,13 +45,18 @@ describe('API-token Settings presentation', () => {
                 expiresAt: '2026-08-27T12:00:00.000Z',
                 hasEncryptionAccess: false,
                 hasUnattendedTeamAccess: true,
+                grant: API_TOKEN_FULL_GRANT_V1,
+                parentTokenId: null,
+                activeChildCount: 0,
+                embedConfig: null,
             },
             nowMs: NOW,
         });
         expect(expiring).toMatchObject({
             displayPrefix: 'hap_v1_11111111…',
-            status: 'active',
-            statusVariant: 'success',
+            status: 'expiring',
+            statusVariant: 'warning',
+            embedBacked: false,
             encryptionAccess: 'bearerOnly',
             unattendedTeamAccess: 'authorized',
         });
@@ -63,6 +70,65 @@ describe('API-token Settings presentation', () => {
             nowMs: NOW,
         });
         expect(expired).toMatchObject({ status: 'expired', statusVariant: 'neutral' });
+        expect(buildApiTokenRowPresentation({
+            token: { ...expiring.token, expiresAt: '2026-08-30T12:00:01.000Z' },
+            nowMs: NOW,
+        })).toMatchObject({ status: 'active' });
+    });
+
+    it('says how soon an expiring token expires, and when that wording next changes', () => {
+        const token = buildApiTokenRowPresentation({
+            token: {
+                tokenId: '11111111-1111-4111-8111-111111111111', label: 'Status widget', displayPrefix: 'hap_v1_11111111',
+                createdAt: '2026-08-01T12:00:00.000Z', lastUsedAt: null, expiresAt: '2026-08-27T15:00:00.000Z',
+                hasEncryptionAccess: false, hasUnattendedTeamAccess: false, grant: API_TOKEN_FULL_GRANT_V1,
+                parentTokenId: null, activeChildCount: 0, embedConfig: null,
+            },
+            nowMs: NOW,
+        }).token;
+        const expiresAtMs = Date.parse('2026-08-27T15:00:00.000Z');
+        // 5 days 3 hours left: "5d" until 5 days remain, then "4d".
+        expect(buildApiTokenRowPresentation({ token, nowMs: NOW }).expiresIn)
+            .toEqual({ unit: 'days', count: 5, changesAtMs: expiresAtMs - 5 * 24 * 3_600_000 + 1 });
+        expect(buildApiTokenRowPresentation({ token, nowMs: expiresAtMs - 90 * 60_000 }).expiresIn)
+            .toEqual({ unit: 'hours', count: 1, changesAtMs: expiresAtMs - 3_600_000 + 1 });
+        expect(buildApiTokenRowPresentation({ token, nowMs: expiresAtMs - 30_000 }).expiresIn)
+            .toEqual({ unit: 'minutes', count: 1, changesAtMs: expiresAtMs });
+        // Outside the last seven days there is nothing to say.
+        expect(buildApiTokenRowPresentation({ token, nowMs: expiresAtMs - 8 * 24 * 3_600_000 }).expiresIn).toBeNull();
+    });
+
+    it('summarizes access in the fixed order scope, targets, approve, models, websites, content, expiry', () => {
+        const names = {
+            familyName: (family: string) => ({ messaging: 'Messaging', session_transcripts: 'Session transcripts' })[family] ?? null,
+            actionName: (actionId: string) => (actionId === 'session.user_action.answer' ? 'Answer questions' : null),
+            modelName: () => 'Claude Sonnet 4.5',
+        };
+        const token = {
+            expiresAt: '2026-09-21T12:00:00.000Z',
+            hasEncryptionAccess: true,
+            grant: {
+                ...API_TOKEN_FULL_GRANT_V1,
+                actions: { families: ['messaging' as const, 'session_transcripts' as const], ids: ['session.user_action.answer'] },
+                targets: { sessions: ['session-1'], machines: [] },
+                approve: true,
+                origins: ['http://localhost:5173', 'https://app.acme.com'],
+                models: [{ agentTargetKey: 'agent:claude/claude', providerConnectionId: null, modelId: 'claude-sonnet-4-5' }],
+            },
+        };
+        const parts = buildApiTokenAccessSummaryParts({ token, nowMs: NOW, names });
+        expect(parts.map((part) => part.kind)).toEqual(['actions', 'targets', 'approve', 'models', 'websites', 'content', 'expiry']);
+        expect(parts[0]).toEqual({ kind: 'actions', names: ['Messaging', 'Session transcripts'], more: 1 });
+        expect(parts[1]).toEqual({ kind: 'targets', sessions: 1, machines: 0 });
+        expect(parts[3]).toEqual({ kind: 'models', name: 'Claude Sonnet 4.5', count: 1 });
+        expect(parts[4]).toEqual({ kind: 'websites', host: null, count: 2 });
+
+        // Quiet defaults say nothing: a full grant is one scope fact and its expiry.
+        expect(buildApiTokenAccessSummaryParts({
+            token: { expiresAt: null, hasEncryptionAccess: false, grant: API_TOKEN_FULL_GRANT_V1 },
+            nowMs: NOW,
+            names,
+        })).toEqual([{ kind: 'full' }, { kind: 'expiry', state: 'never', at: null }]);
     });
 
     it('maps typed auth and transport failures to designed states', () => {

@@ -1,17 +1,26 @@
+import { folderlessSessionTranslations } from './folderlessSessionTranslations';
 import { sessionCollaborationTranslations } from './sessionCollaborationTranslations';
 import { sessionMessageAccountActorTranslations } from './sessionMessageAccountActorTranslations';
 import { sessionAccessTranslations } from './sessionAccessTranslations';
 import { nativePasswordTranslations } from './nativePasswordTranslations';
 import { sessionFollowTranslations } from './sessionFollowTranslations';
 import { sessionHomeFreshnessTranslations } from './sessionHomeFreshnessTranslations';
+import { sessionEmbeddedTranslations } from './sessionEmbeddedTranslations';
 import { sessionReminderTranslations } from './sessionReminderTranslations';
 import { settingsProvidersTranslations } from './settingsProvidersTranslations';
 import { providerSessionTranslations } from './providerSessionTranslations';
 import { externalSessionOperationTranslations } from './externalSessionOperationTranslations';
 import { externalSessionSettingsTranslations } from './externalSessionSettingsTranslations';
 import { machinePoolTranslations } from './machinePoolTranslations';
+import { settingsConnectionsTranslations } from './settingsConnectionsTranslations';
+import { settingsMachinesTranslations } from './settingsMachinesTranslations';
+import { connectedServicesSettingsTranslations } from './connectedServicesSettingsTranslations';
+import { connectedServicesPoolTranslations } from './connectedServicesPoolTranslations';
+import { connectedServicesCollectionTranslations } from './connectedServicesCollectionTranslations';
 import { cliPathExposureTranslations } from './cliPathExposureTranslations';
+import { agentInstallJobTranslations } from './agentInstallJobTranslations';
 import { thisComputerConnectionTranslations } from './thisComputerConnectionTranslations';
+import { menuBarModeTranslations } from './menuBarModeTranslations';
 import { personalHomeDecisionTranslations } from './personalHomeDecisionTranslations';
 import { cliTrustPromptTranslations } from './cliTrustPromptTranslations';
 import { pluginUpdateReviewTranslations } from './pluginUpdateReviewTranslations';
@@ -23,6 +32,15 @@ import { pluginMarketplaceDiscoverTranslations } from './pluginMarketplaceDiscov
 import { pluginSettingsPresentationTranslations } from './pluginSettingsPresentationTranslations';
 import { sessionRemotePermissionGrantTranslations } from './sessionRemotePermissionGrantTranslations';
 import { sessionAgentActivityTranslations } from './sessionAgentActivityTranslations';
+import { sessionWorkTranslations } from './sessionWorkTranslations';
+import { agentStartTranslations } from './agentStartTranslations';
+import { goalControlTranslations } from './goalControlTranslations';
+import { inboxWorkTranslations } from './inboxWorkTranslations';
+import { sessionGitPaneTranslations } from './sessionGitPaneTranslations';
+import { sessionGitDisplayTranslations } from './sessionGitDisplayTranslations';
+import { sessionGitBranchesTranslations } from './sessionGitBranchesTranslations';
+import { sessionGitPullRequestTranslations } from './sessionGitPullRequestTranslations';
+import { sessionConversationSurfaceTranslations } from './sessionConversationSurfaceTranslations';
 import { changedFileEvidenceTranslations } from './changedFileEvidenceTranslations';
 import { voiceReadinessTranslations } from './voiceReadinessTranslations';
 import { voiceDiagnosticsTranslations } from './voiceDiagnosticsTranslations';
@@ -33,6 +51,19 @@ import { voiceLocalCredentialTranslations } from './voiceLocalCredentialTranslat
 import { pluginWebhookAdministrationTranslations } from './pluginWebhookAdministrationTranslations';
 import { pluginAccountDataEraseTranslations } from './pluginAccountDataEraseTranslations';
 import { apiTokenSettingsTranslations } from './apiTokenSettingsTranslations';
+import { embedSettingsTranslations } from './embedSettingsTranslations';
+import { embedTranslations } from './embedTranslations';
+import { actionFamilyTranslations } from './actionFamilyTranslations';
+import { providerCollectionTranslations } from './providerCollectionTranslations';
+import { settingsSearchKeywordsTranslations } from './settingsSearchKeywordsTranslations';
+import { automationPageTranslations } from './automationPageTranslations';
+import { settingsSessionPagesTranslations } from './settingsSessionPagesTranslations';
+import { workspaceTabTranslations } from './workspaceTabTranslations';
+import { workspaceBarTranslations } from './workspaceBarTranslations';
+import { settingsProfilesRemoteHostsPageTranslations } from './settingsProfilesRemoteHostsPageTranslations';
+import { profilesPageTranslations } from './profilesPageTranslations';
+import { machineDetailPageTranslations } from './machineDetailPageTranslations';
+import { sessionPageTranslations } from './sessionPageTranslations';
 import { pluginAccountReleaseSelectionTranslations } from './pluginAccountReleaseSelectionTranslations';
 import { pluginMachineMatrixTranslations } from './pluginMachineMatrixTranslations';
 import { pluginInvocationLogTranslations } from './pluginInvocationLogTranslations';
@@ -40,10 +71,47 @@ import { eventAutomationComposerTranslations } from './eventAutomationComposerTr
 import { automationTriggerSetTranslations } from './automationTriggerSetTranslations';
 import { actionOperationInboxTranslations } from './actionOperationInboxTranslations';
 import { actionConfirmationTranslations } from './actionConfirmationTranslations';
+import { detailPageTranslations } from './detailPageTranslations';
+import { rolesTranslations } from './rolesTranslations';
+import { boardsTranslations } from './boardsTranslations';
+import { workStatusTranslations } from './workStatusTranslations';
+import { shareSheetTranslations } from './shareSheetTranslations';
+import { surfaceStateTranslations } from './surfaceStateTranslations';
+import { sessionCompanionTranslations } from './sessionCompanionTranslations';
+import { runPageTranslations } from './runPageTranslations';
+import { detailsChromeTranslations } from './detailsChromeTranslations';
+import { browserPresenceTranslations } from './browserPresenceTranslations';
+import { computerUseTranslations } from './computerUseTranslations';
+import { browserToolTranslations } from './browserToolTranslations';
+import { detailsFileTranslations } from './detailsFileTranslations';
+import { filesPaneTranslations } from './filesPaneTranslations';
+import { detailsHistoryTranslations } from './detailsHistoryTranslations';
+import { detailsReviewTranslations } from './detailsReviewTranslations';
 import { sessionDraftTranslations } from './sessionDraftTranslations';
+import { sessionDirectoryRecoveryTranslations } from './sessionDirectoryRecoveryTranslations';
 import { accountServiceOAuthTranslations } from './accountServiceOAuthTranslations';
 import { personalHomeSettingsTranslations } from './personalHomeSettingsTranslations';
 import { homeDeviceApprovalTranslations } from './homeDeviceApprovalTranslations';
+import { settingsOverviewTranslations } from './settingsOverviewTranslations';
+import { homeSetupTranslations } from './homeSetupTranslations';
+import { connectedServicesSetupTranslations } from './connectedServicesSetupTranslations';
+import { homeWidgetTranslations } from './homeWidgetTranslations';
+import { widgetAddTranslations } from './widgetAddTranslations';
+import { widgetFrameTranslations } from './widgetFrameTranslations';
+import { widgetGlanceTranslations } from './widgetGlanceTranslations';
+import { homeIndexTranslations } from './homeIndexTranslations';
+import { addFlowsTranslations } from './addFlowsTranslations';
+import { machineAddTranslations } from './machineAddTranslations';
+import { machineAgentsTranslations } from './machineAgentsTranslations';
+import { homeComposerTranslations } from './homeComposerTranslations';
+import { sidebarFooterTranslations } from './sidebarFooterTranslations';
+import { accountPopoverTranslations } from './accountPopoverTranslations';
+import { homesHubTranslations } from './homesHubTranslations';
+import { homesJourneysTranslations } from './homesJourneysTranslations';
+import { homeAddTranslations } from './homeAddTranslations';
+import { accountDisplayTranslations } from './accountDisplayTranslations';
+import { homeFeatureTranslations } from './homeFeatureTranslations';
+import { homeSettingsTranslations } from './homeSettingsTranslations';
 import { homeGovernanceTranslations } from './homeGovernanceTranslations';
 import { workflowTranslations } from './workflowTranslations';
 import { teamsTranslations } from './teamsTranslations';
@@ -51,6 +119,8 @@ import { identityAdministrationTranslations } from './identityAdministrationTran
 import { en } from './en';
 import { workspaceSyncTranslations } from './workspaceSyncDiagnosticTranslations';
 import { personalHomeBootstrapBlockedTranslations } from './personalHomeBootstrapBlockedTranslations';
+import { secretsSettingsTranslations } from './secretsSettingsTranslations';
+import { mcpSettingsTranslations } from './mcpSettingsTranslations';
 
 const mcpServersUxTranslationExtension = {
   mcpServersConfiguredEmptySubtitle: 'Crea un servidor, importa JSON de l’amfitrió o instal·la un preajust recomanat.',
@@ -189,7 +259,51 @@ const newSessionMcpTranslationExtension = {
 } as const;
 
 const settingsAppearanceTranslationExtension = {
+  switchToDarkTheme: 'Canvia al tema fosc',
+  switchToLightTheme: 'Canvia al tema clar',
+  themeToggle: {
+    title: 'Commutador clar i fosc',
+    description: 'Mostra un cercle mig ple a la part superior de la finestra. Fes-hi clic per canviar; mantén-lo premut o fes clic dret per a més opcions.',
+    hideFromToolbar: 'Amaga de la barra d\'eines',
+    menuLabel: 'Opcions del tema',
+    matchSystem: 'Segueix el sistema',
+  },
   themeProfiles: {
+    pageDescription: 'Els colors del mode clar i del mode fosc. Tria\'n un per a cadascun, o crea el teu.',
+    lightModeSection: 'Mode clar',
+    lightModeSectionDescription: 'El tema que fa servir l\'app quan és clara.',
+    darkModeSection: 'Mode fosc',
+    darkModeSectionDescription: 'El tema que fa servir l\'app quan és fosca.',
+    yourThemes: 'Els teus temes',
+    yourThemesDescription: 'Temes que has creat o importat. Obre\'n un per canviar-ne els colors.',
+    addTheme: 'Afegeix un tema',
+    newTheme: 'Tema nou',
+    newThemeDescription: 'Comença des de qualsevol tema i canvia\'n els colors.',
+    importThemeDescription: 'Enganxa JSON o tria un fitxer.',
+    themeLimitDescription: ({ count }: { count: number }) => `Pots desar fins a ${count} temes. Elimina'n un per afegir-ne un altre.`,
+    noProfilesDescription: 'Crea\'n un a partir de qualsevol tema de dalt, o importa\'n un.',
+    inUse: 'En ús',
+    builtInTheme: 'Integrat',
+    customTheme: 'El teu tema',
+    builtInThemeDescription: 'Un tema integrat. Duplica\'l per canviar-ne els colors.',
+    editorDescription: 'Els canvis es veuen a tota l\'app mentre edites i es conserven quan deses.',
+    missingProfileDescription: 'Aquest tema s\'ha eliminat o no es va desar mai.',
+    saveAndUse: 'Desa i fes servir',
+    detailsDescription: 'El nom, d\'on surten els colors i si és un tema clar o fosc.',
+    themeName: 'Nom',
+    startFrom: 'Comença des de',
+    startFromDescription: 'Si tries un altre tema, se substitueixen els colors de sota.',
+    themeAppearance: 'Clar o fosc',
+    themeAppearanceDescription: 'Quin mode fa servir aquest tema i si les icones i imatges s\'adapten a un fons clar o fosc.',
+    previewSection: 'Previsualització',
+    colorsDescription: 'Tots els colors que fa servir l\'app. Un color canviat es pot restablir per separat.',
+    colorsReadOnlyDescription: 'Tots els colors que fa servir aquest tema.',
+    importPageDescription: 'Afegeix un tema des de JSON: un tema de Happier o un tema de VS Code.',
+    importAction: 'Importa',
+    importedWithWarnings: 'Importat amb avisos',
+    exportPageDescription: 'Copia o baixa aquest tema en JSON per compartir-lo o tenir-ne una còpia.',
+    exportMissingDescription: 'Obre un tema i tria Exporta per obtenir-ne el JSON.',
+    deleteTheme: 'Elimina el tema',
     title: 'Temes',
     editorTitle: 'Perfil del tema',
     activeGroup: 'Tema actiu',
@@ -273,6 +387,7 @@ const settingsAppearanceTranslationExtension = {
     deactivateProfileSubtitle: 'Desactiva el perfil personalitzat i mantén-lo desat',
     deleteProfile: 'Suprimeix el perfil',
     deleteProfileSubtitle: 'Suprimeix aquest perfil de tema personalitzat local',
+    deleteAssignedThemeBody: ({ slots }: { slots: string }) => `És el tema de ${slots}. En suprimir-lo, aquest mode torna al tema per defecte.`,
     saveAndActivate: 'Desa i activa',
     missingProfile: 'No s\'ha trobat el perfil del tema',
     importFooter: ({ formats }: { formats: string }) => `Formats compatibles: ${formats}. Els tokens desconeguts es mostren com a avisos.`,
@@ -430,6 +545,7 @@ const memoryEmbeddingsTranslationExtension = {
       modelPromptBody: 'Introdueix l’id del model d’embeddings que es demanarà a l’endpoint remot.',
       apiKeyTitle: 'Clau API',
       apiKeyPromptBody: 'Introdueix la clau API usada per a l’endpoint remot d’embeddings.',
+      removeApiKey: 'Elimina la clau d\'API',
       dimensionsTitle: 'Dimensions',
       dimensionsPromptBody: 'Sobreescriptura opcional de la dimensió de sortida per a endpoints que la suportin.',
     },
@@ -658,9 +774,42 @@ function plural({ count, singular, plural }: { count: number; singular: string; 
  */
 export const ca = {
     homeDeviceApproval: homeDeviceApprovalTranslations.ca,
+    settingsOverview: settingsOverviewTranslations.ca,
+    homeSetup: homeSetupTranslations.ca,
+    connectedServicesSetup: connectedServicesSetupTranslations.ca,
+    homeWidgets: homeWidgetTranslations.ca,
+    widgetFrame: widgetFrameTranslations.ca,
+    widgetAdd: widgetAddTranslations.ca,
+    widgetGlances: widgetGlanceTranslations.ca,
+    homeIndex: homeIndexTranslations.ca,
+    addFlows: addFlowsTranslations.ca,
+    machineAdd: machineAddTranslations.ca,
+    machineAgents: machineAgentsTranslations.ca,
+    homeComposer: homeComposerTranslations.ca,
+    sidebarFooter: sidebarFooterTranslations.ca,
+    accountPopover: accountPopoverTranslations.ca,
+    homesHub: homesHubTranslations.ca,
+    homesJourneys: homesJourneysTranslations.ca,
+    homeAdd: homeAddTranslations.ca,
+    accountDisplay: accountDisplayTranslations.ca,
     actionConfirmations: actionConfirmationTranslations.ca,
+    detailPages: detailPageTranslations.ca,
+    roles: rolesTranslations.ca,
+    boards: boardsTranslations.ca,
+    workStatus: workStatusTranslations.ca,
+    shareSheet: shareSheetTranslations.ca,
+    surfaceState: surfaceStateTranslations.ca,
+    sessionCompanion: sessionCompanionTranslations.ca,
+    runPage: runPageTranslations.ca,
+    detailsSurface: {
+        chrome: detailsChromeTranslations.ca,
+        file: detailsFileTranslations.ca,
+        history: detailsHistoryTranslations.ca,
+        review: detailsReviewTranslations.ca,
+    },
     workspaceSync: workspaceSyncTranslations.ca,
     sessionDrafts: sessionDraftTranslations.ca,
+    sessionDirectoryRecovery: sessionDirectoryRecoveryTranslations.ca,
     transferRecovery: {
         title: 'Finalitza la pujada preparada',
         message: 'La pujada ha arribat a la màquina, però cal completar el desament final. Torna a provar només la finalització o descarta la pujada preparada.',
@@ -673,6 +822,14 @@ export const ca = {
     pluginPermissions: pluginPermissionTranslations.ca,
     sessionBoard: sessionBoardTranslations.ca,
     sessionAgentActivity: sessionAgentActivityTranslations.ca,
+    sessionWork: sessionWorkTranslations.ca,
+    agentStart: agentStartTranslations.ca,
+    goalControl: goalControlTranslations.ca,
+    sessionGitPane: sessionGitPaneTranslations.ca,
+    sessionGitDisplay: sessionGitDisplayTranslations.ca,
+    sessionGitBranches: sessionGitBranchesTranslations.ca,
+    sessionGitPullRequest: sessionGitPullRequestTranslations.ca,
+    sessionConversation: sessionConversationSurfaceTranslations.ca,
     ...changedFileEvidenceTranslations.ca,
     sessionRemotePermissionGrants: sessionRemotePermissionGrantTranslations.ca,
     pluginSurfaces: {
@@ -704,20 +861,34 @@ export const ca = {
     },
     settingsKeyboard: {
         title: 'Dreceres de teclat',
-        entrySubtitle: 'Descobriu i controleu les dreceres d\'aplicacions',
-        generalGroupTitle: 'Controls del teclat',
-        generalGroupFooter: 'Les preferències de dreceres se sincronitzen amb el teu compte.',
-        enableShortcutsTitle: 'Activa les dreceres unificades',
-        enableShortcutsSubtitle: 'Utilitzeu el registre d\'ordres de teclat nou per a les dreceres d\'aplicacions.',
+        entrySubtitle: 'Canvia les tecles que executen les ordres de l\'app, o desactiva-les.',
+        generalGroupTitle: 'Dreceres',
+        generalGroupFooter: 'Les teves dreceres et segueixen a tots els dispositius del teu compte.',
+        enableShortcutsTitle: 'Dreceres unificades',
+        enableShortcutsSubtitle: 'Les tecles d\'enviament del compositor segueixen les ordres de sota.',
         singleKeyTitle: 'Dreceres d\'una sola tecla',
-        singleKeySubtitle: 'Permetre dreceres com ara ? quan l\'entrada de text no està enfocada.',
+        singleKeySubtitle: 'Tecles com ? funcionen quan no estàs escrivint.',
         conflictsTitle: ({ count }: { count: number }) => `${count} shortcut conflict${count === 1 ? '' : 's'} detected`,
         conflictsSubtitle: ({ count }: { count: number }) => `${count} command${count === 1 ? '' : 's'} need review before all shortcuts can be active.`,
-        conflictsGroupTitle: 'Diagnòstics',
+        conflictsGroupTitle: 'Conflictes',
+        conflictBrowserReserved: 'El navegador es reserva aquestes tecles. Tria\'n unes altres.',
+        conflictDuplicate: 'Aquestes ordres comparteixen les mateixes tecles. Canvia\'n una.',
         commandsGroupTitle: 'Ordres',
         commandsGroupFooter: 'Els valors predeterminats es mostren des del registre de dreceres. Estableix una drecera personalitzada, desactiva una ordre o restableix-la per recuperar l\'enllaç predeterminat.',
         noDefaultShortcut: 'Cap drecera predeterminada',
-        setCommandButton: 'Estableix',
+        commandOff: 'Desactivada',
+        noShortcut: 'Sense drecera',
+        customShortcut: 'Tecles personalitzades',
+        commandEnabledTitle: 'Activada',
+        keysTitle: 'Tecles',
+        resetToDefaultTitle: 'Restableix el valor per defecte',
+        groupApp: 'Aplicació',
+        groupSessions: 'Sessions',
+        groupComposer: 'Compositor',
+        groupTranscript: 'Transcripció',
+        groupSplitView: 'Vista dividida',
+        groupBrowser: 'Navegador',
+        setCommandButton: 'Canvia',
         setCommandAccessibility: ({ command }: { command: string }) => `Set ${command} shortcut`,
         setShortcutPromptTitle: ({ command }: { command: string }) => `Set shortcut for ${command}`,
         setShortcutPromptMessage: 'Introduïu una drecera com Alt+K, Alt+Fletxa avall, Mod+Enter o ?.',
@@ -876,8 +1047,10 @@ export const ca = {
 
 
     inbox: {
+        work: inboxWorkTranslations.ca,
         ...actionOperationInboxTranslations,
         openSession: ({ session }: { session: string }) => `Obre la sessió: ${session}`,
+        stoppedResumeToAnswer: 'Aturada — reprèn-la per respondre',
         readySessionAccessibilityLabel: ({ session }: { session: string }) => `A punt per revisar: ${session}`,
         // Inbox screen
         emptyTitle: 'Tot al dia',
@@ -885,7 +1058,10 @@ export const ca = {
         approvals: 'Aprovacions',
         permissions: 'Permisos',
         readySessions: 'A punt per revisar',
-        errors: 'Errors',
+        pageDescription: 'El que et necessita a les teves sessions, aprovacions i persones.',
+        needsYou: 'Et necessita',
+        failed: 'Han fallat',
+        friendRequests: 'Sol·licituds d\'amistat',
         markAllRead: 'Marca-ho tot com a llegit',
         openInbox: 'Obre la safata d’entrada',
         updates: 'Activitat',
@@ -924,6 +1100,96 @@ export const ca = {
     },
 
     promptLibrary: {
+        surface: {
+            installAction: 'Instal·la',
+            projectDirectoryPlaceholder: 'Camí del projecte a la màquina',
+            pageDescription: 'Instruccions, habilitats i plantilles de barra que escrius un cop i reutilitzes a les sessions.',
+            librarySectionDescription: 'El que has escrit, a punt per reutilitzar.',
+            promptsLinkDescription: 'Text que insereixes a les sessions o afegeixes a les instruccions d’un agent.',
+            skillsLinkDescription: 'Instruccions SKILL.md amb els seus fitxers de suport.',
+            skillsKeywords: 'habilitat, habilitats, SKILL.md, paquet',
+            templatesLinkDescription: 'Ordres de barra que insereixen una instrucció.',
+            useSection: 'Ús de la biblioteca',
+            useSectionDescription: 'On tenen efecte els elements de la biblioteca.',
+            stacksLinkDescription: 'Instruccions i habilitats afegides a cada sessió de codi o de veu.',
+            foldersLinkDescription: 'Grups amb nom per a instruccions i habilitats.',
+            importSection: 'Portar d’altres llocs',
+            importSectionDescription: 'Instruccions i habilitats que ja són a les teves màquines o en registres.',
+            externalAssetsLinkDescription: 'Instruccions i habilitats que les teves eines guarden en una màquina.',
+            registriesLinkDescription: 'Explora registres d’habilitats i importa’n.',
+            itemCount: ({ count }: { count: number }) => `${count}`,
+            docsDescription: 'Text que insereixes a les sessions o afegeixes a les instruccions d’un agent.',
+            skillsDescription: 'Instruccions SKILL.md que segueixen els agents, amb els seus fitxers de suport.',
+            templatesDescription: 'Ordres de barra que insereixen una de les teves instruccions.',
+            addPrompt: 'Nova instrucció',
+            addSkill: 'Nova habilitat',
+            addTemplate: 'Nova plantilla',
+            searchPrompts: 'Cerca instruccions',
+            searchSkills: 'Cerca habilitats',
+            searchTemplates: 'Cerca plantilles',
+            noFolder: 'Sense carpeta',
+            nameTitle: 'Nom',
+            optionalPlaceholder: 'Opcional',
+            folderDescription: 'Un nom nou crea la carpeta.',
+            tagsDescription: 'Separa les etiquetes amb comes.',
+            promptSection: 'Instrucció',
+            promptSectionDescription: 'Com apareix i s’arxiva a la biblioteca.',
+            contentSection: 'Contingut',
+            docContentDescription: 'Markdown que s’insereix on s’usa la instrucció.',
+            docEditorDescription: 'Text que pots inserir en una sessió o afegir a les instruccions d’un agent.',
+            skillSection: 'Habilitat',
+            skillSectionDescription: 'Com apareix i s’arxiva a la biblioteca.',
+            skillContentDescription: 'Les instruccions que llegeixen els agents. La capçalera dona nom a l’habilitat i diu quan fer-la servir.',
+            skillEditorDescription: 'Instruccions que segueix un agent, exportades com a SKILL.md amb els seus fitxers.',
+            supportingFilesDescription: 'Fitxers exportats al costat de SKILL.md, com plantilles i llistes de control.',
+            addFile: 'Afegeix un fitxer',
+            externalLinksDescription: 'On s’exporta aquest element a les teves màquines. Les exportacions queden enllaçades a la biblioteca.',
+            manageExternalAssetsDescription: 'Exporta’l a una eina d’una màquina o actualitza una exportació.',
+            templateSection: 'Plantilla',
+            templateSectionDescription: 'El que escrius al compositor per fer-la servir.',
+            templateEditorDescription: 'Una ordre de barra que insereix una de les teves instruccions.',
+            tokenDescription: 'S’escriu al compositor, començant per /.',
+            templateTargetDescription: 'La instrucció que insereix l’ordre.',
+            behaviorSectionDescription: 'Què passa quan tries l’ordre.',
+            behaviorTitle: 'En triar-la',
+            behaviorInsertDescription: 'Afegeix la instrucció al compositor perquè l’editis.',
+            behaviorInsertOnSendDescription: 'S’expandeix en la instrucció quan envies el missatge.',
+            behaviorInsertAndSendDescription: 'Envia la instrucció de seguida.',
+            fileSection: 'Fitxer',
+            filePathDescription: 'Relatiu a l’habilitat, com templates/review.md.',
+            supportingFileDescription: ({ skill }: { skill: string }) => `Un fitxer de ${skill}, exportat al costat del seu SKILL.md.`,
+            foldersPageDescription: 'Agrupa instruccions i habilitats perquè sigui més fàcil trobar-les.',
+            foldersSectionDescription: 'Eliminar una carpeta conserva els elements; només surten de la carpeta.',
+            stacksPageDescription: 'Instruccions i habilitats afegides automàticament a les instruccions d’un agent.',
+            stacksSection: 'On s’apliquen',
+            stacksSectionDescription: 'Cada llista s’afegeix en ordre quan comença una sessió.',
+            profileStacksDescription: 'Instruccions extra per a sessions iniciades amb un perfil.',
+            profileStacksPageDescription: 'Instruccions i habilitats afegides a les sessions iniciades amb cada perfil.',
+            profileStackEditorDescription: 'S’afegeixen a les sessions iniciades amb aquest perfil.',
+            profilesSection: 'Perfils',
+            stackEntriesDescription: 'S’afegeixen en aquest ordre. Desactiva’n un per conservar-lo sense fer-lo servir.',
+            stackPickerDescription: 'Tria una instrucció o habilitat per afegir.',
+            registriesPageDescription: 'Troba habilitats en registres i importa-les a la biblioteca.',
+            projectSection: 'Projecte',
+            registriesProjectDescription: 'On van les instal·lacions de projecte a la màquina.',
+            registriesSourcesDescription: 'Registres integrats i fonts Git que afegeixes. Tria’n una per veure’n les habilitats.',
+            registriesItemsDescription: 'Habilitats de la font seleccionada.',
+            registryItemDescription: 'Una habilitat d’un registre. Importa-la a la biblioteca o instal·la-la en una màquina.',
+            registryItemSection: 'Habilitat',
+            importToLibrary: 'Importa a la biblioteca',
+            registryInstallDescription: 'També l’escriu on una eina de la màquina llegeix les habilitats.',
+            installProjectScopeDescription: 'Dins d’un directori de projecte de la màquina.',
+            installUserScopeDescription: 'A les carpetes d’usuari de la màquina, per a tots els projectes.',
+            installMethodLink: 'Enllaç',
+            installMethodCopy: 'Còpia',
+            installMethodLinkDescription: 'Recomanat: enllaça a una còpia que Happier manté al dia.',
+            installTargetDescription: 'El nom de fitxer o carpeta que fa servir l’eina.',
+            externalAssetsPageDescription: 'Instruccions i habilitats que les teves eines guarden en una màquina. Importa-les per reutilitzar-les i sincronitzar-les.',
+            whereToLookSection: 'On buscar',
+            whereToLookDescription: 'Un projecte de la màquina o les teves carpetes d’usuari.',
+            exportDescription: ({ title }: { title: string }) => `Escriu ${title} on una eina d’una màquina el llegeix.`,
+            exportOptionsDescription: 'Tria l’eina i on ha de trobar el fitxer.',
+        },
         sections: 'Seccions',
         library: 'Biblioteca',
         librarySubtitle: 'Gestiona prompts i habilitats',
@@ -1152,7 +1418,7 @@ export const ca = {
                 target: 'OBJECTIU D’EXECUCIÓ',
                 targetNewSession: 'Sessió nova',
                 targetExistingSession: 'Sessió existent',
-                targetExecutionRun: 'Execució puntual',
+                targetExecutionRun: 'Execució en segon pla',
                 chooseExistingSession: 'Tria una sessió',
                 searchEvents: 'Cerca esdeveniments',
                 executionNoTools: 'Sense eines',
@@ -1397,7 +1663,7 @@ export const ca = {
                 outputCeiling: 'Límit de sortida',
                 existingSession: ({ sessionId }: { sessionId: string }) => `Sessió existent: ${sessionId}`,
                 newSession: ({ machineId, directory }: { machineId: string; directory: string }) => `Sessió nova a ${machineId}: ${directory}`,
-                executionRun: ({ permissionMode }: { permissionMode: string }) => `Execució · ${permissionMode}`,
+                executionRun: ({ permissionMode }: { permissionMode: string }) => `Execució en segon pla · ${permissionMode}`,
                 prompt: 'Indicació congelada',
                 result: 'Resultat final',
                 resultAbsent: 'No s\'ha registrat cap resultat final.',
@@ -1537,7 +1803,9 @@ export const ca = {
           delete: 'Elimina',
         deleted: 'Suprimit',
         optional: 'Opcional',
+        draft: 'Esborrany',
         noMatches: 'Sense coincidències',
+        choose: 'Tria…',
         all: 'Tots',
         machine: 'màquina',
         clearSearch: 'Neteja la cerca',
@@ -1704,6 +1972,11 @@ export const ca = {
     },
 
     connect: {
+        addPhonePage: {
+            description: 'Fes servir Happier al telèfon amb els Homes que ja tens.',
+            qrTitle: 'Codi QR',
+            signInFirst: 'Inicia la sessió primer',
+        },
         restoreAccount: 'Restaura el compte',
         enterSecretKey: 'Introdueix la teva clau de recuperació',
         invalidSecretKey: 'Clau de recuperació no vàlida. Comprova-ho i torna-ho a provar.',
@@ -1786,6 +2059,7 @@ export const ca = {
 
     bugReports: {
         composer: {
+            pageDescription: 'Explica\'ns què ha fallat. Inclou diagnòstics perquè ho trobem més de pressa.',
             alerts: {
                 previewUnavailableTitle: 'Previsualització no disponible',
                 previewUnavailableBody: 'No s\'ha pogut construir la previsualització de diagnòstics.',
@@ -1887,6 +2161,7 @@ export const ca = {
                 },
             },
             environment: {
+                description: 'Emplenat des d\'aquest dispositiu. Corregeix el que no sigui correcte.',
                 title: 'Entorn (editable)',
                 appVersionLabel: 'Versió de l’app',
                 platformLabel: 'Plataforma',
@@ -1916,15 +2191,21 @@ export const ca = {
     },
 
     memorySearchSettings: {
+        indexing: {
+            description: 'Quines sessions entren a l\'índex i quina part de cadascuna.',
+            title: 'Què s\'indexa',
+        },
+        pagePurpose: 'Troba converses passades pel que s\'hi va dir. L\'índex es desa a la màquina que triïs.',
         disabled: {
             footer: 'Activa la cerca de memòria a Funcions per configurar la indexació local.',
             title: 'La cerca de memòria està desactivada',
-            subtitle: 'Obre Configuració → Funcions per habilitar memory.search',
             openFeatureSettings: 'Obre la configuració de funcions',
-            alertTitle: 'Cerca de memòria desactivada',
-            alertBody: 'Habilita memory.search a Configuració → Funcions.',
         },
           enabled: {
+              updateRequired: 'Cal actualitzar Happier en aquesta màquina per poder canviar-ne la configuració de memòria.',
+              unreachable: 'No es pot contactar amb aquesta màquina. La seva configuració de memòria apareixerà quan torni a estar en línia.',
+              chooseMachine: 'Tria una màquina a dalt per veure i canviar el seu índex.',
+              sectionTitle: 'Índex local',
               title: 'Activat',
               subtitle: 'Crea i mantén un índex local en aquesta màquina',
               footer: 'Quan està activat, Happier crea un índex local al dispositiu a partir de transcripcions desxifrades per facilitar record i cerca ràpids.',
@@ -1932,12 +2213,9 @@ export const ca = {
           budgets: {
               groupTitle: 'Pressupost de disc',
               groupFooter: 'Limita l’espai de disc que pot usar l’índex de memòria local (evicció per millor esforç).',
-                mbLabel: ({ mb }: { mb: number }) => `${mb} MB`,
               lightTitle: 'Pressupost d’índex lleuger',
-              lightPromptTitle: 'Pressupost d’índex lleuger',
               lightPromptBody: 'MB màxims per a l’índex lleuger (fragments de resum) en aquesta màquina.',
               deepTitle: 'Pressupost d’índex profund',
-              deepPromptTitle: 'Pressupost d’índex profund',
               deepPromptBody: 'MB màxims per a l’índex profund (chunks) en aquesta màquina.',
           },
           privacy: {
@@ -1953,7 +2231,7 @@ export const ca = {
       emptyResults: 'Encara no hi ha resultats de memòria',
           },
         status: {
-            title: "Estat de l'índex local",
+            title: "Estat",
             diskUsageTitle: 'Ús del disc',
             disabled: 'La cerca de memòria local està desactivada en aquesta màquina',
             empty: 'La cerca de memòria local està activada, però encara no s’ha indexat contingut cercable',
@@ -1975,23 +2253,19 @@ export const ca = {
             noMachine: 'Sense màquina',
         },
           indexMode: {
-              title: 'Mode d’índex',
-              footer: 'El mode lleuger desa petits fragments de resum. El mode profund pot trobar més, però usa més disc.',
               triggerTitle: 'Modalitat',
               options: {
-                  lightTitle: 'Lleuger (recomanat)',
-                  lightSubtitle: 'Només fragments de resum',
+                  lightTitle: 'Lleuger',
+                  lightSubtitle: 'Només fragments de resum. Recomanat.',
                   deepTitle: 'Profund',
-                deepSubtitle: 'Indexa fragments de missatges localment',
+                deepSubtitle: 'També indexa fragments de missatges. Troba més, però usa més disc.',
             },
         },
         backfill: {
-            title: 'Reomplir',
-            footer: 'Controla quanta història s’indexa en activar la memòria local.',
-            triggerTitle: 'Política',
+            triggerTitle: 'Historial',
             options: {
-                newOnlyTitle: 'Només nou (recomanat)',
-                newOnlySubtitle: 'Indexa només el contingut creat després d’activar',
+                newOnlyTitle: 'Només nou',
+                newOnlySubtitle: 'Indexa només el contingut creat després d’activar. Recomanat.',
                 last30DaysTitle: 'Últims 30 dies',
                 last30DaysSubtitle: 'Reomple sessions recents',
                 allHistoryTitle: 'Tot l’historial',
@@ -1999,35 +2273,28 @@ export const ca = {
             },
         },
         archived: {
-            groupTitle: 'Sessions arxivades',
-            groupFooter: 'Quan està activat, les sessions arxivades s\'indexen per a la cerca local. Quan està desactivat, s\'exclouen i el seu contingut indexat s\'elimina de la cerca.',
             includeTitle: 'Cerca a les sessions arxivades',
-            includeSubtitle: 'Indexa les sessions arxivades en aquesta màquina',
+            includeSubtitle: 'Indexa també les sessions arxivades. Si ho desactives, es treuen de la cerca.',
             unsupportedSubtitle: 'Cal actualitzar Happier en aquesta màquina',
-            unsupportedFooter: 'Aquesta màquina no indica compatibilitat amb la indexació d\'arxivades, així que el paràmetre no s\'hi pot aplicar. La resta de la cerca continua disponible.',
         },
         indexContents: {
-            groupTitle: 'Contingut de l’índex',
+            groupTitle: 'Activitat d\'indexació',
             title: 'Contingut cercable',
             subtitle: ({ sessions, lightShards, deepChunks }: { sessions: number; lightShards: number; deepChunks: number }) =>
                 `${sessions} sessions · ${lightShards} light shards · ${deepChunks} deep chunks`,
         },
         queue: {
-            groupTitle: 'Reompliment i cua',
             title: 'Cua d’indexació',
             subtitle: ({ selected, queued, indexing, indexed, empty, failed, waiting }: { selected: number; queued: number; indexing: number; indexed: number; empty: number; failed: number; waiting: number }) =>
                 `${selected} selected · ${queued} queued · ${indexing} indexing · ${indexed} indexed · ${empty} empty · ${failed} failed · ${waiting} waiting`,
             workerPhase: ({ phase }: { phase: string }) => `Current phase: ${phase}`,
         },
         lastRun: {
-            groupTitle: 'Darrera indexació',
             title: 'Darrera execució',
             subtitle: ({ considered, processed, semanticRows, failures }: { considered: number; processed: number; semanticRows: number; failures: number }) =>
                 `${considered} considered · ${processed} processed · ${semanticRows} semantic rows · ${failures} failures`,
         },
         coverage: {
-            title: 'Cobertura del contingut',
-            footer: 'Controla quin contingut semàntic de les transcripcions s’indexa dins de les sessions seleccionades.',
             triggerTitle: 'Cobertura',
             options: {
                 fullTitle: 'Tot l’historial seleccionat',
@@ -2055,23 +2322,21 @@ export const ca = {
             toolOutputsSubtitle: 'Mantén-ho desactivat llevat que vulguis que els índexs locals incloguin text brut de sortida d’eines',
         },
         hints: {
-            title: 'Generació de pistes de memòria',
-            footer: 'Controla com es generen els fragments de resum per a la cerca de memòria lleugera.',
+            title: 'Resums',
+            footer: 'Com l\'índex lleuger resumeix cada sessió.',
             backend: {
-                title: 'Backend del resumidor',
-                promptTitle: 'Backend del resumidor',
-                promptBody: 'Introdueix un ID de backend d’execution-run (p. ex., claude, codex).',
+                title: 'Agent de resum',
+                promptBody: 'L\'ID de l\'agent que escriu els resums, com claude o codex.',
             },
             model: {
                 title: 'Model del resumidor',
-                promptTitle: 'Model del resumidor',
                 promptBody: 'Introdueix un ID de model per passar al backend.',
             },
             permissions: {
                 triggerTitle: 'Permisos del resumidor',
                 options: {
-                    noToolsTitle: 'Sense eines (recomanat)',
-                    noToolsSubtitle: 'Només resumir text',
+                    noToolsTitle: 'Sense eines',
+                    noToolsSubtitle: 'Només resumir text. Recomanat.',
                     readOnlyTitle: 'Només lectura',
                     readOnlySubtitle: 'Permet eines no mutants quan estiguin suportades',
                 },
@@ -2089,13 +2354,11 @@ export const ca = {
         ruleEditor: {
             header: {
                 newRule: 'Regla nova',
-                editRule: 'Editar regla',
             },
             enabled: {
                 title: 'Activat',
             },
             enabledState: {
-                enabled: 'Activat',
                 disabled: 'Desactivat',
             },
             common: {
@@ -2149,43 +2412,32 @@ export const ca = {
             },
         },
         settings: {
+            instructionsTitle: 'Delegació',
+            pagePurpose: 'Com els teus agents passen feina a altres agents, i les regles que segueixen quan ho fan.',
             groupTitle: 'Agents secundaris',
             disabled: {
+                title: 'Els subagents estan desactivats',
                 footer: 'Execution runs està desactivat. Activa Execution Runs a Configuració → Funcions per usar la guia de delegació.',
                 enableExecutionRuns: {
-                    title: 'Activa Execution Runs',
-                    subtitle: 'Obre la configuració de Funcions',
+                    title: 'Activa-ho a Funcions',
                 },
             },
             footer: 'Les regles s’afegeixen al prompt del sistema perquè l’agent principal sàpiga quan i com prefereixes llançar execucions de subagents.',
-            overview: {
-                groupTitle: 'Visió general',
-                footer: 'Utilitza aquesta pàgina per configurar la guia dels agents secundaris i anar a la configuració relacionada del proveïdor, del backend i de la sessió.',
-                explainerTitle: 'Què controla aquesta pàgina',
-                explainerSubtitle: 'Guia de delegació per als agents secundaris, amb enllaços a la configuració d’agents secundaris específica del proveïdor.',
-                happierStatusTitle: 'Agents secundaris',
-                happierStatusEnabledSubtitle: 'Activats. Pots iniciar agents secundaris des de sessions compatibles.',
-                happierStatusDisabledSubtitle: 'Desactivats. Obre la configuració de Funcions per activar els agents secundaris.',
-            },
             related: {
+                agentsSubtitle: 'Inici de sessió, configuració i agents ACP personalitzats.',
+                agentsTitle: 'Agents',
                 groupTitle: 'Configuració relacionada',
-                footer: 'L’inici i el control dels agents secundaris també depenen del comportament de la sessió, dels proveïdors i dels backends configurats.',
+                footer: 'Els subagents també segueixen el comportament de les teves sessions i la configuració de cada agent.',
                 sessionTitle: 'Comportament de la sessió',
                 sessionSubtitle: 'Enviament de missatges, steering mentre està ocupat i comportament de reproducció/represa.',
-                providersTitle: 'Proveïdors',
-                providersSubtitle: 'Autenticació, entorn d’execució i configuració d’agent específiques del proveïdor.',
-                backendsTitle: 'Catàleg ACP',
-                backendsSubtitle: 'Backends configurats i destinacions d’inici personalitzades.',
             },
             enableInjection: {
                 title: 'Instruccions de les execucions de Happier',
                 subtitle: 'Desactivar-les elimina l’encaminament natiu prioritari i la mecànica d’execucions de Happier dels prompts del sistema dels agents de codi.',
             },
-            notifyParentOnCompletion: { title: 'Notifica el pare quan acaben les execucions', subtitle: 'Envia un esdeveniment de finalització estructurat a l’agent pare.' },
+            notifyParentOnCompletion: { title: 'Les converses laterals informen', subtitle: 'Quan acaba una execució en segon pla de llarga durada, avisa la sessió que la va iniciar. Les revisions, els plans i les tasques delegades sempre informen.' },
             characterBudget: {
                 title: 'Límit de regles personalitzades',
-                subtitle: ({ value }: { value: string }) => `${value} caràcters`,
-                promptTitle: 'Límit de regles personalitzades',
                 promptBody: 'Màxim de caràcters per a regles d’execució personalitzades al prompt del sistema.',
             },
             rules: {
@@ -2195,7 +2447,6 @@ export const ca = {
                 emptyTitle: 'Encara no hi ha regles',
                 emptySubtitle: 'Afegeix una regla per guiar la delegació.',
                 addRuleTitle: 'Afegeix regla',
-                addRuleSubtitle: 'Crea una nova regla de guia',
                 untitled: 'Regla sense títol',
                 descriptionFallback: 'Descriu quan delegar.',
                 tapToEdit: 'Toca per editar',
@@ -2222,6 +2473,7 @@ export const ca = {
     },
 
     settings: {
+        machineSetupStepRestartService: 'Reiniciant el servei en segon pla',
         title: 'Configuració',
         overview: 'Resum',
 
@@ -2351,7 +2603,7 @@ export const ca = {
         appearance: 'Aparença',
         appearanceSubtitle: 'Personalitza l\'aspecte de l\'aplicació',
           voiceAssistant: 'Assistent de veu',
-          voiceAssistantSubtitle: 'Configura les preferències d\'interacció per veu',
+          voiceAssistantSubtitle: 'Parla amb els teus agents i dicta al compositor.',
           memorySearch: 'Cerca de memòria local',
           memorySearchSubtitle: 'Cerca en converses anteriors (al dispositiu)',
           notifications: 'Notificacions',
@@ -2364,16 +2616,15 @@ export const ca = {
           automationsSubtitle: 'Gestiona sessions programades i execucions recurrents',
           executionRunsSubtitle: 'Execucions en diverses màquines',
           connectedServices: 'Serveis connectats',
-          connectedServicesSubtitle: 'Subscripcions Claude/Codex i perfils OAuth',
+          connectedServicesSubtitle: 'Els comptes amb què inicien sessió els teus agents, i quant li queda a cadascun.',
           featuresTitle: 'Funcions',
-          featuresSubtitle: 'Activa o desactiva les funcions de l\'aplicació',
+          featuresSubtitle: 'Activa o desactiva parts de Happier i prova el que encara s\'està construint.',
           pets: 'Mascotes',
-          petsSubtitle: 'Tria Blink i les mascotes companyes del dispositiu',
+          petsSubtitle: 'Un petit company que mostra com van les teves sessions.',
         developer: 'Desenvolupador',
         developerTools: 'Eines de desenvolupador',
         about: 'Quant a',
         actionsSettingsAboutSubtitle: 'Activa o desactiva accions globalment, per superfície (UI/veu/MCP) i per ubicació (on apareixen a la interfície). Les accions desactivades queden bloquejades de manera segura en temps d’execució.',
-        aboutFooter: 'Happier Coder és un client mòbil de Codex i Claude Code. Fa servir xifratge d\'extrem a extrem per defecte, amb restauració del compte als teus altres dispositius. No està afiliat amb Anthropic.',
         whatsNew: 'Novetats',
         whatsNewSubtitle: 'Mira les últimes actualitzacions i millores',
         reportIssue: 'Informa d\'un problema',
@@ -2391,7 +2642,7 @@ export const ca = {
         claudeAuthSuccess: 'Connexió amb Claude realitzada amb èxit',
         exchangingTokens: 'Intercanviant tokens...',
         usage: 'Ús',
-        usageSubtitle: "Veure l'ús de l'API i costos",
+        usageSubtitle: 'Tokens i costos de les teves sessions, agents i models.',
         profiles: 'Perfils',
         profilesSubtitle: 'Gestiona els perfils d\'entorn i variables',
         secrets: 'Claus i secrets',
@@ -2564,6 +2815,7 @@ export const ca = {
     },
 
     systemStatus: {
+        pageDescription: 'Com estan connectats ara mateix aquesta app, les teves Homes i les teves màquines.',
         sections: {
             application: 'Aplicació',
             updates: 'Actualitzacions',
@@ -2652,14 +2904,15 @@ export const ca = {
         actions: {
             runDiagnosis: 'Executa el diagnòstic',
             runDiagnosisSubtitle: 'Detecta desajustos de Home/compte/dimoni',
-            refreshMachineAttribution: 'Actualitza l\'atribució del dimoni',
+            refreshMachineAttribution: 'Comprova els dimonis',
             refreshMachineAttributionSubtitle: 'Obté Home/compte del dimoni per a algunes màquines en línia',
-            copyJson: 'Copia el JSON d\'estat del sistema',
+            copyJson: 'Copia com a JSON',
             copyJsonSubtitle: 'Comparteix una instantània redactada per a suport',
         },
     },
 
     diagnosis: {
+        pageDescription: 'Comprova si aquesta app, la teva Home i les teves màquines tenen problemes de configuració, amb passos per solucionar-los.',
         title: 'Diagnòstic',
         sections: {
             overview: 'Resum',
@@ -2786,7 +3039,7 @@ export const ca = {
         fallbackName: 'Servei connectat',
         serviceNames: {
             claudeSubscription: 'Subscripció de Claude',
-            openaiCodex: "Codex d'OpenAI",
+            openaiCodex: 'ChatGPT',
             openai: 'Clau API d\'OpenAI',
             anthropic: 'Clau API d\'Anthropic',
             gemini: 'Gemini de Google',
@@ -2979,7 +3232,6 @@ export const ca = {
             lastUpdated: ({ time }: { time: string }) => `Última actualització: ${time}`,
             lastUpdatedStale: ({ time }: { time: string }) => `Última actualització: ${time} • obsolet`,
             noData: 'Encara no hi ha dades de quota',
-            planLabel: ({ plan }: { plan: string }) => `Pla: ${plan}`,
             remaining: ({ percent }: { percent: string }) => `${percent} restant`,
             remainingWithReset: ({ percent, reset }: { percent: string; reset: string }) => `${percent} restant · es reinicia d'aquí a ${reset}`,
             usageCount: ({ used, limit }: { used: number; limit: number }) => `${used}/${limit} utilitzat`,
@@ -2989,7 +3241,6 @@ export const ca = {
             recoveryCreditApplying: 'Aplicant…',
             recoveryCreditMachineUnavailable: 'Cap màquina disponible pot aplicar aquest restabliment ara mateix.',
             recoveryCreditNothingToReset: 'Actualment, cap finestra d\'ús esgotada necessita un restabliment.',
-            recoveryCreditBadge: ({ count }: { count: number }) => count === 1 ? '1 restabliment' : `${count} restabliments`,
             duration: {
                 now: 'ara',
                 outdated: 'Desactualitzat',
@@ -3005,49 +3256,15 @@ export const ca = {
             configurationInvalid: 'La configuració del compte no és vàlida. Revisa cada camp i fes servir un origen HTTPS exacte i sense credencials on calgui.',
             configurationRefreshApplied: 'S’ha desat la configuració nova i s’ha actualitzat el compte connectat.',
             configurationReconnectApplied: 'S’ha desat la configuració nova i s’ha tornat a connectar el compte connectat.',
-            refreshA11y: "Actualitza l'ús i els límits",
             usedDetail: ({ used, limit }: { used: string; limit: string }) => `${used}/${limit} utilitzat`,
-            usageCaption: 'Ús',
-            resetsCaption: 'Restabliments',
-            poolsLabel: 'Grups',
-            poolsCount: ({ count }: { count: number }) => count === 1 ? '1 grup' : `${count} grups`,
-            planEmailSubtitle: ({ plan, email }: { plan: string; email: string }) => `${plan} · ${email}`,
             activeMemberA11y: 'Compte actiu',
             setActiveA11y: 'Fes-lo compte actiu',
-            memberEnabledLabel: 'Compte activat',
             resets: {
                 now: 'ara',
                 inDays: ({ days }: { days: number }) => days === 1 ? 'd’aquí a 1 dia' : `d’aquí a ${days} dies`,
-                available: 'Restabliment d’ús disponible',
-                rowLabel: ({ date, countdown }: { date: string; countdown: string }) =>
-                    countdown ? `Caduca ${date} · ${countdown}` : `Caduca ${date}`,
-                confirmTitle: 'Aplicar restabliment d’ús?',
-                confirmMessage: 'Això consumirà un restabliment disponible per a aquest compte connectat.',
-                confirmCta: 'Aplica el restabliment',
-                use: 'Usa',
             },
         },
         pools: {
-            title: 'Grups',
-            autoBadge: 'Automàtic',
-            manualBadge: 'Mode manual',
-            memberWarningsA11y: ({ count }: { count: number }) =>
-                count === 1 ? '1 membre necessita atenció' : `${count} membres necessiten atenció`,
-            create: {
-                title: 'Crea un pool',
-                subtitle: 'Agrupa comptes connectats per a la substitució automàtica.',
-            },
-            empty: {
-                title: 'Encara no hi ha pools',
-                subtitle: 'Crea un pool per encaminar sessions entre diversos comptes connectats.',
-            },
-            loadError: {
-                title: 'No s\'han pogut carregar els pools',
-                subtitle: 'No s\'han pogut carregar els pools de comptes. Comprova la connexió i torna-ho a provar.',
-                staleTitle: 'Es mostren els últims pools coneguts',
-                staleSubtitle: 'No s\'ha pogut actualitzar la darrera llista de pools. Torna-ho a provar per actualitzar-la.',
-                retry: 'Torna-ho a provar',
-            },
             detail: {
                 summaryTitle: 'Resum',
                 summary: ({ count, strategy }: { count: number; strategy: string }) =>
@@ -3057,8 +3274,6 @@ export const ca = {
                 moveDown: 'Mou avall',
                 noMembersTitle: 'Encara no hi ha membres',
                 noMembersSubtitle: 'Afegeix un compte connectat a aquest pool.',
-                serverActiveStatusTitle: 'Desat al servidor',
-                serverActiveStatusSubtitle: 'Aquest és el compte actiu durador. Les màquines fora de línia l’aplicaran quan es tornin a connectar; aquesta pantalla no afirma que totes les màquines hagin convergit.',
                 manualApplyDivergenceTitle: 'Canviat al servidor, però no a les sessions actives',
                 manualApplyDivergenceSubtitle: ({ detail }: { detail: string }) => `El compte actiu ha canviat al servidor, però no s'ha pogut aplicar a les sessions actives (${detail}). Torna-ho a provar o reverteix per mantenir-ho tot al compte anterior.`,
                 manualApplyRetry: 'Torna a aplicar a les sessions actives',
@@ -3073,9 +3288,6 @@ export const ca = {
                 advancedSubtitle: 'Ajusta els activadors de substitució i el comportament de recuperació.',
             },
             behavior: {
-                autoRestorePrimaryTitle: 'Restaura el principal després del restabliment',
-                autoRestorePrimarySubtitle: 'Torna al compte principal quan se’n restableixi el límit d’ús.',
-                switchOnGroupSubtitle: 'Permet que aquesta condició activi un canvi automàtic de pool.',
                 switchOn: {
                     usageLimit: 'Límit d’ús',
                     authExpired: 'Autenticació caducada',
@@ -3161,7 +3373,6 @@ export const ca = {
             },
         },
         detail: {
-            segments: { accounts: 'Comptes', pools: 'Piscines' },
             unknownService: 'Servei connectat desconegut.',
             actionsGroupTitle: 'Accions',
             actions: {
@@ -3169,8 +3380,6 @@ export const ca = {
                 unsetDefault: 'Treu per defecte',
                 editLabel: 'Edita l\'etiqueta',
                 reconnect: 'Torna a connectar',
-                replaceToken: 'Substitueix el token',
-                openAccount: 'Obre el compte',
             },
             setDefaultProfileTitle: 'Defineix el perfil per defecte',
             setDefaultProfileSubtitleDefault: ({ profileId }: { profileId: string }) => `Per defecte: ${profileId}`,
@@ -3233,12 +3442,8 @@ export const ca = {
                 title: 'Grups',
                 empty: 'Encara no hi ha grups.',
                 activeMember: ({ profileId }: { profileId: string }) => `Actiu ${profileId}`,
-                enabledMembers: ({ enabled, total }: { enabled: number; total: number }) => `${enabled}/${total} activats`,
                 autoFallbackEnabled: 'Alternativa automàtica activada',
                 autoFallbackDisabled: 'Alternativa automàtica desactivada',
-                strategyPriority: 'Ordre de prioritat',
-                strategyLeastLimited: 'Primer el menys limitat',
-                strategyManual: 'Canvi manual',
                 priority: ({ priority }: { priority: string }) => `Prioritat ${priority}`,
                 statusReady: 'A punt',
                 statusExhausted: 'Esgotat',
@@ -3247,7 +3452,6 @@ export const ca = {
                 memberActive: 'Membre actiu',
                 memberEnabled: 'Activat',
                 memberDisabled: 'Desactivat',
-                memberAutoDisabledModelNotEntitled: 'Desactivat automàticament: model seleccionat no disponible',
                 memberPriority: ({ priority }: { priority: number }) => `Prioritat ${priority}`,
                 memberExhaustedUntil: ({ time }: { time: string }) => `Esgotat fins a ${time}`,
                 memberQuotaExhaustedUntil: ({ time }: { time: string }) => `Ús limitat fins a ${time}`,
@@ -3300,7 +3504,6 @@ export const ca = {
                 removeMember: 'Elimina el membre',
                 removeMemberConfirmTitle: 'Elimina el membre',
                 removeMemberConfirmBody: ({ profileId }: { profileId: string }) => `Eliminar "${profileId}" d’aquest grup?`,
-                runtimeFallbackUnsupported: 'La commutació automàtica no està disponible per a aquest servei connectat.',
                 removeMembersConfirmBody: ({ count, members }: { count: number; members: string }) => `Vols eliminar ${count === 1 ? "aquest membre" : `aquests ${count} membres`} d’aquest Pool?\n\n${members}`,
                 manageMembersTitle: 'Gestiona els membres',
                 manageMembersSubtitle: ({ count, total }: { count: number; total: number }) => `${count} de ${total} comptes`,
@@ -3316,13 +3519,6 @@ export const ca = {
                 membersTitle: 'Membres',
                 membersSubtitle: ({ enabled, total }: { enabled: number; total: number }) => `${enabled}/${total} activats`,
                 optionsTitle: 'Opcions',
-                autoSwitchTitle: 'Fallback automàtic',
-                autoQuotaResetTitle: "Utilitza els restabliments de quota automàticament",
-                autoDisablePlanInvalidTitle: "Desactiva els comptes que no poden utilitzar el model seleccionat",
-                autoDisablePlanInvalidSubtitle: "Desactiva automàticament un compte del grup quan el seu pla no pot utilitzar el model seleccionat. El pots tornar a activar manualment. Desactivat per defecte.",
-                autoQuotaResetSubtitle: "Gasta un restabliment disponible només quan cap compte del grup està preparat i es pot restablir la quota esgotada. Desactivat per defecte.",
-                autoSwitchEnabledSubtitle: 'Canvia a un altre membre quan el compte actiu necessita recuperació.',
-                autoSwitchDisabledSubtitle: 'Continua usant el membre actiu fins que el canviïs manualment.',
                 quotaLimitsTitle: 'Límits d’ús',
                 quotaLimitsAllTitle: 'Tots els límits informats',
                 quotaLimitsAllSubtitle: 'Fes servir totes les assignacions que informa aquest proveïdor per decidir els canvis.',
@@ -3337,33 +3533,10 @@ export const ca = {
                 quotaLimitReportingSubtitle: ({ reporting, total }: { reporting: number; total: number }) => `${reporting} de ${total} comptes activats n’informen`,
                 quotaLimitsSearchPlaceholder: 'Cerca límits d’ús',
                 strategyTitle: 'Estratègia de selecció',
-                strategyPriorityTitle: 'Ordre de prioritat',
-                strategyPrioritySubtitle: 'Prova primer els números de prioritat més baixos.',
-                strategyLeastLimitedTitle: 'Menys limitat primer',
-                strategyLeastLimitedSubtitle: 'Prefereix el membre amb més quota usable.',
-                strategyManualTitle: 'Canvi manual',
-                strategyManualSubtitle: 'Usa només el membre actiu fins que es canviï manualment.',
-                softSwitchThresholdTitle: 'Llindar de canvi suau',
-                softSwitchThresholdSubtitle: ({ percent }: { percent: string }) => `Canvia per sota del ${percent}% restant quan aquest grup tingui un altre membre amb quota utilitzable més recent.`,
-                softSwitchThresholdPromptTitle: 'Llindar de canvi suau',
-                softSwitchThresholdPromptBody: 'Introdueix el percentatge restant en què Happier hauria de preferir un membre més segur d’aquest grup amb diversos comptes. Fes servir 0 per desactivar el canvi preventiu.',
-                invalidSoftSwitchThresholdTitle: 'Llindar no vàlid',
-                invalidSoftSwitchThresholdBody: 'Introdueix un número de 0 a 100.',
-                staleProbeTitle: 'Comprova quota antiga després de',
-                staleProbeSubtitle: ({ minutes }: { minutes: string }) => `Torna a comprovar quan les dades de quota tinguin més de ${minutes} min.`,
-                staleProbePromptTitle: 'Comprova quota antiga després de',
-                staleProbePromptBody: 'Introdueix quants minuts es poden reutilitzar les dades de quota abans que Happier torni a comprovar.',
-                invalidStaleProbeTitle: 'Interval de comprovació no vàlid',
-                invalidStaleProbeBody: 'Introdueix almenys 1 minut.',
-                switchBudgetTitle: 'Límits de canvi automàtic',
-                switchBudgetSubtitle: ({ perTurn, perHour }: { perTurn: string; perHour: string }) => `Fins a ${perTurn} canvis automàtics per torn i ${perHour} per hora de sessió.`,
-                recoveryModeTitle: 'Mode de recuperació',
                 recoveryModeOffSubtitle: 'No recuperis aquest grup automàticament.',
                 recoveryModeWaitUntilResetSubtitle: 'Espera que el límit es restableixi i després reprèn.',
                 recoveryModeSwitchThenResumeSubtitle: 'Canvia a un altre membre i després reprèn.',
                 recoveryModeSwitchOrWaitSubtitle: 'Canvia a un altre membre quan sigui possible; si no, espera el restabliment.',
-                recoveryPromptTitle: 'Missatges de recuperació',
-                recoveryPromptSubtitle: 'Fes servir els missatges estàndard de recuperació i represa per a aquest grup.',
                 missingTitle: 'No s’ha trobat el grup',
                 missingBody: ({ service, groupId }: { service: string; groupId: string }) =>
                     `No existeix cap grup anomenat "${groupId}" per a ${service}.`,
@@ -3424,7 +3597,9 @@ export const ca = {
     },
 
     settingsAttachments: {
+        pageDescription: 'On es desen els fitxers que adjuntes i com els tracta el control de versions.',
         disabled: {
+            bannerTitle: 'Les pujades de fitxers estan desactivades',
             title: 'Adjunts',
             footer: 'Aquesta funció està desactivada pel teu servidor o per la política de compilació.',
         },
@@ -3432,20 +3607,24 @@ export const ca = {
             title: 'Pujades de fitxers',
         },
         uploadLocation: {
+            rowTitle: 'Desa les pujades a',
             title: 'Ubicació de pujada',
             footer: 'Les pujades a l’espai de treball són l’opció més compatible. Les pujades al directori temporal del sistema poden ser útils per evitar artefactes al repositori, però poden no ser llegibles en sandboxes més estrictes.',
             options: {
                 workspace: {
+                    short: 'Espai de treball',
                     title: 'Directori de l’espai de treball (recomanat)',
                     subtitle: 'Les pujades s’escriuen en un directori relatiu a l’espai de treball perquè el sandbox de l’agent les pugui llegir de manera fiable.',
                 },
                 osTemp: {
+                    short: 'Temporal del sistema',
                     title: 'Directori temporal del sistema',
                     subtitle: 'Les pujades s’escriuen al directori temporal del sistema. Això pot fallar en sandboxes més estrictes.',
                 },
             },
         },
         workspaceDirectory: {
+            usedForWorkspace: 'S\'utilitza quan les pujades es desen a l\'espai de treball',
             title: 'Directori de l’espai de treball',
             footer: 'Només s’utilitza quan la ubicació de pujada és Directori de l’espai de treball.',
             uploadsDirectory: {
@@ -3457,23 +3636,28 @@ export const ca = {
             },
         },
         sourceControlIgnore: {
+            rowTitle: 'Ignora les pujades',
             title: 'Ignorats del control de versions',
             footer: 'Els ignorats només locals eviten commits accidentals. Si tries .gitignore, això pot modificar un fitxer rastrejat.',
             options: {
                 gitInfoExclude: {
+                    short: 'Localment',
                     title: 'Ignora localment (.git/info/exclude) (recomanat)',
                     subtitle: 'Evita commits accidentals sense modificar fitxers del repositori.',
                 },
                 gitignore: {
+                    short: '.gitignore',
                     title: 'Ignora via .gitignore',
                     subtitle: 'Escriu una entrada al fitxer .gitignore de l’espai de treball (es pot cometre).',
                 },
                 none: {
+                    short: 'Desactivat',
                     title: 'No escriguis regles d’ignorat',
                     subtitle: 'Les pujades poden aparèixer al control de versions segons la configuració del repositori.',
                 },
             },
             writeIgnoreRules: {
+                subtitle: 'Permet que Happier afegeixi la regla d\'ignorar quan desa una pujada.',
                 title: 'Escriure regles d’ignorat',
             },
         },
@@ -3482,7 +3666,7 @@ export const ca = {
             footer: 'Aquests límits s’apliquen al gestor local de pujades del CLI (millor esforç).',
             invalidValueTitle: 'Valor no vàlid',
             maxAttachmentSize: {
-                title: 'Mida màxima de l’adjunt (bytes)',
+                title: 'Mida màxima de l’adjunt',
                 promptTitle: 'Mida màxima de l’adjunt (bytes)',
                 promptMessage: 'Exemple: 26214400 per a 25MB.',
                 invalidValueMessage: 'Introdueix un número entre 1024 i 1073741824.',
@@ -3491,6 +3675,84 @@ export const ca = {
     },
 
     settingsSourceControl: {
+        page: {
+            description: "Com funcionen els commits, els pushes i els diffs a les teves sessions.",
+            commits: {
+                title: "Commits",
+                description: "Com els canvis fets en una sessió esdevenen commits.",
+            },
+            commitStrategy: {
+                title: "Estratègia de commit",
+                atomic: "Atòmic",
+                gitStaging: "Staging de Git",
+                atomicDescription: "Fa commit de tots els canvis pendents alhora, perquè els agents no comparteixin mai l’índex de Git.",
+                gitStagingDescription: "Inclou o exclou fitxers i línies abans de fer commit.",
+            },
+            coAuthoredByDescription: "Acredita l’agent als missatges de commit que escriu.",
+            generator: {
+                description: "Un agent redacta un missatge a partir dels canvis pendents. Cal suport de subagents a la màquina.",
+                agentTitle: "Agent",
+                agentDescription: "Escriu el missatge suggerit.",
+                instructionsTitle: "Instruccions",
+                instructionsDescription: "S’afegeixen a cada petició, com ara l’estil a seguir.",
+            },
+            remote: {
+                title: "Pull i push",
+                description: "Confirmacions, i què passa quan es rebutja un push.",
+            },
+            pushRejection: {
+                title: "Quan es rebutja un push",
+                ask: "Preguntar",
+                fetch: "Fer fetch",
+                manual: "Manual",
+                askDescription: "Pregunta abans de fer fetch quan la branca va per darrere de l’upstream.",
+                fetchDescription: "Fa fetch automàticament quan la branca va per darrere de l’upstream.",
+                manualDescription: "Deixa la recuperació a les teves mans.",
+            },
+            routing: {
+                title: "Backend del repositori",
+                description: "Quin backend gestiona els repositoris amb una carpeta .git a la màquina seleccionada.",
+                rowTitle: "Backend per a repositoris .git",
+                git: "Git",
+                sapling: "Sapling",
+                chooseMachine: "Tria una màquina",
+                chooseMachineDescription: "Els backends es llegeixen de la màquina que triïs a dalt.",
+                waiting: ({ machine }: { machine: string }) => `Esperant ${machine}`,
+                offline: ({ machine }: { machine: string }) => `${machine} està fora de línia`,
+                unavailable: ({ machine }: { machine: string }) => `${machine} no està disponible`,
+                waitingDescription: "Els seus backends apareixen quan estigui en línia i respongui.",
+                unavailableDescription: "Tria una altra màquina a dalt.",
+            },
+            services: {
+                description: "Comptes dels serveis de codi amb què treballen els teus backends.",
+            },
+            files: {
+                title: "Diffs i fitxers",
+                description: "Com es veuen els canvis i els fitxers quan els revises. El ressaltat de sintaxi és experimental i es pot desactivar en diffs molt grans.",
+                renderer: "Renderitzador de diffs",
+                rendererPierre: "Pierre",
+                rendererHappier: "Happier",
+                layout: "Disposició del diff",
+                unified: "Unificat",
+                split: "Costat a costat",
+                highlighting: "Ressaltat de sintaxi",
+                off: "Desactivat",
+                simple: "Simple",
+                advanced: "Avançat",
+                density: "Fitxers canviats",
+                comfortable: "Còmode",
+                compact: "Compacte",
+            },
+            backend: {
+                defaultDiff: "Vista de diff per defecte",
+            },
+            editor: {
+                description: "Com es desen els fitxers i com s’obre el markdown. Els fitxers que l’editor enriquit no pot conservar intactes s’obren sempre com a text.",
+                markdownTitle: "El markdown s’obre com a",
+                rich: "Enriquit",
+                raw: "Text",
+            },
+        },
         title: 'Fitxers i control de versions',
         editor: 'Editor de fitxers',
         editorFooter: 'Configura el comportament de l’editor de fitxers.',
@@ -3661,10 +3923,12 @@ export const ca = {
     },
 
     settingsDesktop: {
+        ...menuBarModeTranslations.ca,
         title: 'Escriptori',
-        footer: 'Controla les integracions d’escriptori de Tauri en aquest ordinador.',
-        startOnLoginTitle: 'Inicia en entrar',
-        startOnLoginSubtitle: 'Inicia Happier automàticament quan iniciïs sessió en aquest ordinador.',
+        footer: 'Com s\'inicia l\'app d\'escriptori i com mostra l\'activitat en aquest ordinador.',
+        startupTitle: 'Inici',
+        unavailableTitle: 'Només a l\'app d\'escriptori',
+        unavailableSubtitle: 'Obre l\'app d\'escriptori de Happier a l\'ordinador per canviar aquests ajustos.',
     },
 
     settingsPets: {
@@ -3675,7 +3939,8 @@ export const ca = {
         disabledSubtitle: 'Activa Mascotes a Funcions per fer servir companys en aquest dispositiu.',
         disabledByServerTitle: 'Aquest servidor ha desactivat les mascotes',
         disabledByServerSubtitle: 'L’administrador ha desactivat els companys de mascota per a aquest servidor.',
-        accountTitle: 'Valor per defecte del compte',
+        accountTitle: 'Company',
+        accountDescription: 'Activat per al teu compte; cada dispositiu pot triar per si mateix.',
         enabledTitle: 'Activa les mascotes',
         enabledSubtitle: 'Mostra superfícies de companyia per a aquest compte.',
         companionSizeTitle: 'Mida de la mascota',
@@ -3695,6 +3960,9 @@ export const ca = {
         helpDocsTitle: 'Ajuda de mascotes',
         helpDocsSubtitle: 'Obre la documentació de Happier per configurar i diagnosticar la companya.',
         detectCodexPetsTitle: 'Detecta mascotes de Codex',
+        codexPetsTitle: 'Mascotes de Codex',
+        codexPetsDescription: 'Porta a aquest dispositiu les mascotes que has creat a Codex.',
+        detectedCodexPetsTitle: 'Trobades a Codex',
         detectCodexPetsSubtitle: 'Cerca mascotes compatibles als Codex homes locals.',
         detectedCodexPetsTileSubtitle: 'Trobada a Codex i a punt d’unir-se a aquest dispositiu.',
         detectedCodexPetsEmptyTitle: 'No s’han trobat mascotes de Codex',
@@ -3720,6 +3988,7 @@ export const ca = {
         importToAccountTitle: 'Importa al compte',
         importToAccountSubtitle: 'Puja una mascota local compatible per fer-la servir entre dispositius.',
         desktopOverlayTitle: 'Superposició d’escriptori',
+        desktopOverlayDescription: 'La mascota pot seure a l\'escriptori, fora de la finestra de l\'app.',
         overlayTrayTitle: 'Activitat de la mascota',
         overlayStatusWaiting: 'En espera',
         overlayStatusFailed: 'Fallat',
@@ -3748,6 +4017,30 @@ export const ca = {
     },
 
     settingsNotifications: {
+        activitySurfaces: {
+            liveActivities: {
+                maxConcurrentNeedsSessionSpecific: 'Disponible amb l\'estratègia Específica de sessió.',
+            },
+            widgets: {
+                modeTitle: 'Contingut',
+            },
+        },
+        sounds: {
+            previewAction: 'Reprodueix',
+            customSubtitle: 'Hi ha sons personalitzats. Triar una opció els substitueix.',
+            accountDefaultShort: 'Sistema',
+            accountHappierShort: 'Happier',
+            accountRowTitle: 'So',
+        },
+        quietHours: {
+            customSubtitle: 'Hi ha un horari personalitzat. Triar una opció el substitueix.',
+            syncedShort: 'Sincronitzat',
+            nightlyShort: 'Cada nit',
+            offShort: 'Desactivat',
+            deviceRowTitle: 'En aquest dispositiu',
+            accountRowTitle: 'Horari del compte',
+        },
+        pageDescription: 'Tria què t\'avisa, on, i quan es manté en silenci.',
         remoteAlerts: {
             title: "Alertes de sessió amb l’app tancada",
             accountTitle: "Permet alertes de sessió remotes",
@@ -3765,7 +4058,7 @@ export const ca = {
             deviceUnavailable: "Aquesta versió de l’app no pot registrar aquest dispositiu.",
             deviceEnrolled: "Registre del dispositiu confirmat",
             deviceNotEnrolled: "Registre del dispositiu sense confirmar",
-            supportedEvents: "Aquest dispositiu admet actualment alertes de sessió preparada. El lliurament també depèn del permís de notificacions del sistema.",
+            supportedEvents: "Aquest dispositiu admet alertes d’activitat de les sessions. El lliurament també depèn del permís de notificacions del sistema.",
         },
         badges: {
             title: 'Insígnies en aquest dispositiu',
@@ -3846,6 +4139,7 @@ export const ca = {
             openSettingsFailed: 'No s\'ha pogut obrir la configuració del sistema.',
         },
         pushTroubleshooting: {
+            pageDescription: 'Comprova per què les notificacions push no arriben a aquest dispositiu i soluciona-ho.',
             status: {
                 title: 'Estat',
                 footer: 'Comprova l’ajust del compte, el permís del sistema i el registre al servidor.',
@@ -3866,8 +4160,8 @@ export const ca = {
                 allowedSubtitle: 'Les notificacions estan permeses per a aquesta app.',
                 denied: 'Denegat',
                 notRequested: 'No sol·licitat',
-                canAskAgainSubtitle: 'Toca per sol·licitar permís.',
-                openSettingsSubtitle: 'Toca per obrir la configuració del sistema.',
+                canAskAgainSubtitle: 'Happier pot demanar permís en aquest dispositiu.',
+                openSettingsSubtitle: 'Permet les notificacions de Happier a la configuració del sistema.',
             },
             token: {
                 title: 'Aquest dispositiu',
@@ -3909,6 +4203,8 @@ export const ca = {
             },
         },
         webhooks: {
+            signingSecretReplaceAction: 'Substitueix',
+            signingSecretAddAction: 'Afegeix secret',
             title: 'Notificacions de webhook',
             footer: 'Envia notificacions d’activitat remota a punts finals de webhook addicionals d’aquest compte.',
             addTitle: 'Afegeix un webhook',
@@ -3946,6 +4242,9 @@ export const ca = {
             userActionsSubtitle: 'Envia quan una sessió necessita una resposta o confirmació',
             },
         foregroundBehavior: {
+            needsDeviceNotifications: 'Activa les notificacions del dispositiu per canviar-ho.',
+            accountShort: 'Sincronitzat',
+            rowTitle: 'Bàner i so',
             title: "Notificacions a l'app",
             footer: "Controla les notificacions mentre fas servir l'app. Les notificacions de la sessió que estàs veient sempre se silencien.",
             full: 'Completes',
@@ -4009,15 +4308,90 @@ export const ca = {
         },
     },
 
+    mcpSettings: mcpSettingsTranslations.ca,
+    agentInstallJob: agentInstallJobTranslations.ca,
+    secretsSettings: secretsSettingsTranslations.ca,
     settingsProviders: settingsProvidersTranslations.ca,
 
     settingsAgents: {
         authoring: {
+            setUpMachine: 'Configura una màquina',
             configureAcpBackendPrompt: 'Ajuda\'m a afegir un agent ACP personalitzat a Happier. Pregunta\'m quin agent vull executar i com s\'inicia (ordre, arguments, variables d\'entorn), comprova que l\'ordre funciona en aquesta màquina i desa\'l amb l\'acció agents.acp.backends.upsert (llegeix abans la seva entrada amb action_spec_get). Avisa\'m quan aparegui a Configuració → Agents.',
             addAgentPrompt: 'Vull afegir un agent de programació nou a Happier. Pregunta\'m quin. Si parla ACP (Agent Client Protocol) i s\'inicia amb una ordre, afegeix-lo com a agent ACP personalitzat amb l\'acció agents.acp.backends.upsert. Si no, crea un connector de Happier que l\'afegeixi seguint la skill happier-plugin-authoring i començant per l\'acció plugins.scaffold. Digues-me quin camí has triat i per què abans de canviar res.',
             needsMachine: 'Necessita una màquina. Obre la configuració de màquines.',
             useAgentToConfigure: 'Configura amb un agent',
             useAgentToConfigureDescription: 'Un agent et pregunta què vols executar i ho desa per tu.',
+        },
+        customAcp: {
+            newTitle: 'Nou agent ACP',
+            description: 'Un agent personalitzat que Happier inicia amb una ordre i amb qui parla per ACP.',
+            agentSection: 'Agent',
+            agentSectionDescription: 'Com apareix quan inicies una sessió.',
+            nameTitle: 'Nom',
+            namePlaceholder: 'El meu agent',
+            idTitle: 'ID',
+            idDerivedDescription: 'Es crea a partir del nom. Les sessions el fan servir per trobar aquest agent.',
+            idFixedDescription: 'Fix un cop desat: les sessions el fan servir per trobar aquest agent.',
+            idPending: 'Es crea a partir del nom',
+            shortNameTitle: 'Nom curt',
+            shortNameDescription: 'Un nom compacte, únic entre els teus agents personalitzats.',
+            descriptionTitle: 'Descripció',
+            optionalPlaceholder: 'Opcional',
+            launchSection: 'Inici',
+            launchSectionDescription: 'El que Happier executa en una màquina per iniciar l’agent.',
+            commandTitle: 'Ordre',
+            argsTitle: 'Arguments',
+            argsDescription: 'Es passen a l’ordre en aquest ordre.',
+            argumentLabel: ({ position }: { position: number }) => `Argument ${position}`,
+            argumentPlaceholder: 'Argument',
+            addArgument: 'Afegeix un argument',
+            removeArgument: ({ position }: { position: number }) => `Elimina l’argument ${position}`,
+            defaultModeTitle: 'Mode per defecte',
+            defaultModelTitle: 'Model per defecte',
+            agentDefaultPlaceholder: 'El de l’agent',
+            environmentSection: 'Entorn',
+            environmentSectionDescription: 'Es defineixen per a l’ordre quan s’inicia. Els valors poden venir de secrets desats.',
+            addVariable: 'Afegeix una variable',
+            noVariablesTitle: 'Cap variable',
+            noVariablesDescription: 'L’ordre s’inicia amb l’entorn de la màquina.',
+            signInSection: 'Inici de sessió',
+            signInSectionDescription: 'Com s’inicia sessió a l’agent en una màquina.',
+            signInMethodTitle: 'Mètode',
+            authLoginTerminal: 'Inicia sessió des d’un terminal',
+            authStatusOnly: 'Només comprova l’estat',
+            authManualOnly: 'Inicia sessió manualment',
+            authUnsupported: 'Sense inici de sessió',
+            loginCommandTitle: 'Ordre d’inici de sessió',
+            loginArgsTitle: 'Arguments d’inici de sessió',
+            docsUrlTitle: 'Guia d’inici de sessió',
+            docsUrlDescription: 'Una pàgina que explica com iniciar sessió.',
+            machineLoginKeyTitle: 'Clau d’estat d’inici de sessió',
+            machineLoginKeyDescription: 'La clau amb què una màquina informa de l’inici de sessió d’aquest agent.',
+            capabilitiesSection: 'Capacitats',
+            capabilitiesSectionDescription: 'El que admet l’agent. «Desconegut» fa servir el que l’agent informa en iniciar una sessió.',
+            supportsModes: 'Modes',
+            supportsModels: 'Elecció de model',
+            supportsConfigOptions: 'Opcions de configuració',
+            promptImages: 'Imatges a les peticions',
+            hintUnknown: 'Desconegut',
+            hintYes: 'Sí',
+            hintNo: 'No',
+            discard: 'Descarta',
+            notFound: 'Aquest agent personalitzat ja no és al teu compte.',
+            deleteTitle: 'Vols suprimir aquest agent?',
+            deleteConfirm: ({ name }: { name: string }) => `${name} ja no s’oferirà quan iniciïs una sessió.`,
+            errors: {
+                nameRequired: 'Afegeix un nom.',
+                idRequired: 'Afegeix un ID.',
+                idInvalid: 'Fes servir minúscules, xifres, punts, guions o guions baixos, començant per una lletra o una xifra.',
+                idTaken: 'Un altre agent personalitzat ja fa servir aquest ID.',
+                shortNameInvalid: 'Fes servir minúscules, xifres, punts, guions o guions baixos, començant per una lletra o una xifra.',
+                shortNameTaken: 'Un altre agent personalitzat ja fa servir aquest nom curt.',
+                commandRequired: 'Afegeix l’ordre que inicia l’agent.',
+                urlInvalid: 'Introdueix una adreça completa, que comenci per https://.',
+                envInvalid: 'Els noms de variable fan servir majúscules, xifres i guions baixos.',
+                fieldInvalid: 'Revisa aquest valor.',
+            },
         },
         collection: {
             askAgentToAdd: 'Demana a un agent que n\'afegeixi un',
@@ -4726,14 +5100,16 @@ export const ca = {
     settingsFeatures: {
         // Features settings screen
         experiments: 'Experimentació',
+        generalTitle: 'General',
+        generalDescription: 'Opcions del dia a dia que pots activar o desactivar.',
         experimentsDescription: 'Activa funcions experimentals que encara estan en desenvolupament. Aquestes funcions poden ser inestables o canviar sense avís.',
         experimentalFeatures: 'Funcions experimentals',
         experimentalFeaturesEnabled: 'Funcions experimentals activades',
         experimentalFeaturesDisabled: 'Utilitzant només funcions estables',
         experimentalOptions: 'Opcions experimentals',
         experimentalOptionsDescription: 'Tria quines funcions experimentals estan activades.',
-        localTogglesTitle: 'Funcions',
-        localTogglesFooter: 'Commutadors locals per funció (independents del suport del servidor).',
+        localTogglesTitle: 'Funcions opcionals',
+        localTogglesFooter: 'Activa o desactiva parts de Happier.',
         featureDiagnostics: {
             title: 'Diagnòstics de funcions',
             footer: 'Decisions de funcions resoltes (política de build, política local, sondes de dimoni/servidor i abast).',
@@ -4743,7 +5119,7 @@ export const ca = {
                 `${state} (bloquejatPer=${blockedBy ?? 'null'}, codi=${code})`,
         },
         expAutomations: 'Automatitzacions',
-        expAutomationsSubtitle: 'Activa l\'UI d\'automatitzacions i la programació',
+        expAutomationsSubtitle: "Executa fluxos de treball segons un horari o quan passi alguna cosa.",
         expExecutionRuns: 'Execucions',
         expExecutionRunsSubtitle: 'Activa les superfícies de control per a execucions (subagents / revisions)',
         expAttachmentsUploads: 'Pujada d’adjunts',
@@ -4774,8 +5150,6 @@ export const ca = {
         voiceSubtitle: 'Activa les funcions de veu',
         expVoiceAgent: 'Agent de veu',
         expVoiceAgentSubtitle: 'Activa superfícies d’agent de veu amb daemon (requereix execucions)',
-        expConnectedServicesQuotas: 'Quotes de serveis connectats',
-        expConnectedServicesQuotasSubtitle: 'Mostra insígnies de quota i mesuradors d’ús per als serveis connectats',
         expMemorySearch: 'Cerca de memòria',
         expMemorySearchSubtitle: 'Activa pantalles i ajustos de cerca de memòria local',
         expSessionsDirect: 'Sessions externes',
@@ -4819,8 +5193,6 @@ export const ca = {
         },
         groupInactiveSessionsByProject: 'Agrupa les sessions inactives per projecte',
         groupInactiveSessionsByProjectSubtitle: 'Organitza els xats inactius per projecte',
-        environmentBadge: 'Insígnia d\'entorn',
-        environmentBadgeSubtitle: 'Mostra una petita insígnia al costat del títol Happier indicant l\'entorn actual de l\'app',
         enhancedSessionWizard: 'Assistent de sessió millorat',
         enhancedSessionWizardEnabled: 'Llançador de sessió amb perfil actiu',
         enhancedSessionWizardDisabled: 'Usant el llançador de sessió estàndard',
@@ -4989,6 +5361,7 @@ export const ca = {
     },
 
   newSession: {
+    folder: folderlessSessionTranslations.ca.composer,
     ...newSessionMcpTranslationExtension,
     ...acpCatalogTranslationExtension.newSession,
     // Used by new-session screen and launch flows
@@ -5085,6 +5458,7 @@ export const ca = {
         temporaryComputer: {
             title: 'Ordinador temporal',
             subtitle: 'Prepara un paquet Runner verificat per a un altre ordinador.',
+            continueLater: 'Continua més tard',
             cancelConnectedTitle: 'Vols cancel·lar aquest ordinador temporal?',
             cancelConnectedBody: 'L’altre ordinador ja s’ha connectat. Cancel·lar tanca aquesta sol·licitud per a totes dues bandes i manté aquí el teu esborrany actual.',
             choosePlatform: 'Tria la plataforma de l’ordinador',
@@ -5164,8 +5538,8 @@ export const ca = {
                 reconciling: 'S’està comprovant aquesta sol·licitud…',
                 preparing: 'S’està preparant el paquet…',
                 waiting_for_computer: 'Esperant l’ordinador',
-                review_unavailable: 'Encara no es pot preparar l’accés a la IA seleccionat per a aquest ordinador temporal. Cancel·la la sol·licitud i torna-ho a provar després d’actualitzar Happier.',
-                materialization_unavailable: 'Aquest ordinador temporal encara no pot crear la sessió. Cancel·la la sol·licitud i torna-ho a provar després d’actualitzar Happier.',
+                review_unavailable: 'Encara no es pot preparar l’accés a la IA seleccionat per a aquest ordinador temporal. La sol·licitud està desada. Torna-ho a provar quan l’accés estigui disponible.',
+                materialization_unavailable: 'Aquest ordinador temporal encara no pot crear la sessió. La sol·licitud està desada. Torna-ho a provar quan l’accés estigui disponible.',
                 waiting_for_approval: 'Esperant l’aprovació',
                 connected: 'Ordinador connectat',
                 installing_agent: 'S’està instal·lant l’Agent seleccionat…',
@@ -5358,20 +5732,22 @@ export const ca = {
     sessionHandoff: sessionHandoffTranslationExtensions.ca,
 
     session: {
+        folderless: folderlessSessionTranslations.ca.display,
         access: sessionAccessTranslations['ca'],
+        untitled: 'Sessió sense títol',
         follow: sessionFollowTranslations['ca'],
         homeFreshness: sessionHomeFreshnessTranslations['ca'],
+        embedded: sessionEmbeddedTranslations['ca'],
         providerBinding: providerSessionTranslations.ca,
         transcriptNavigation: {
             title: 'Navega',
             modeAll: 'Tot',
             modePinned: 'Fixats',
-            entryCount: ({ count }: { count: number }) => `${count} ${count === 1 ? 'entrada' : 'entrades'}`,
+            turnCount: ({ count }: { count: number }) => `${count} torn${count === 1 ? '' : 's'}`,
             pinnedCount: ({ count }: { count: number }) => `${count} fixats`,
-            emptyPinnedTitle: 'No hi ha missatges fixats',
-            emptyPinnedBody: 'Fixa missatges per mantenir aquí els torns importants.',
-            emptyAllTitle: 'No hi ha entrades de navegació',
-            emptyAllBody: 'Els torns d’usuari i els missatges fixats apareixeran aquí.',
+            emptyPinnedTitle: 'Fixa els torns als quals tornaràs',
+            emptyAllTitle: "Cada missatge es converteix en una parada aquí",
+            emptyAllBody: "El més nou a dalt. Toca un torn per tornar-hi; fixa els que voldràs recuperar.",
             entryA11y: ({ label }: { label: string }) => `Salta a ${label}`,
             entryPinnedA11y: ({ label }: { label: string }) => `Salta al missatge fixat: ${label}`,
             fallbackPinnedAssistant: 'Missatge de l’assistent fixat',
@@ -5389,6 +5765,44 @@ export const ca = {
             railScrollDownA11y: 'Desplaça la navegació avall',
             emptyPinnedHint: 'Passa el cursor per sobre d’un missatge i tria la icona de fixar per fixar-lo.',
             emptyPinnedPrivacy: 'Els missatges fixats només es desen en aquest dispositiu.',
+            showAllTurns: 'Mostra tots els torns',
+            filterApprovals: "Aprovacions",
+            filterErrors: "Errors",
+            filtersA11y: "Mostra torns",
+            approvalsCount: ({ count }: { count: number }) => `${count} ${count === 1 ? 'aprovació' : 'aprovacions'}`,
+            errorsCount: ({ count }: { count: number }) => `${count} ${count === 1 ? 'torn' : 'torns'} amb errors`,
+            waitingCount: ({ count }: { count: number }) => `${count} esperant-te`,
+            soFar: "fins ara",
+            toolCount: ({ count }: { count: number }) => `${count} ${count === 1 ? 'eina' : 'eines'}`,
+            allowedCount: ({ count }: { count: number }) => `${count} permesos`,
+            deniedCount: ({ count }: { count: number }) => `${count} denegats`,
+            failedCount: ({ count }: { count: number }) => `${count} fallats`,
+            durationSeconds: ({ seconds }: { seconds: number }) => `${seconds}s`,
+            durationMinutes: ({ minutes, seconds }: { minutes: number; seconds: string }) => `${minutes}m ${seconds}s`,
+            durationHours: ({ hours, minutes }: { hours: number; minutes: string }) => `${hours}h ${minutes}m`,
+            now: "ara",
+            waitingForYou: "T'espera",
+            waitingForYouOn: ({ label }: { label: string }) => `T'espera · ${label}`,
+            approvalAllowed: ({ label }: { label: string }) => `Permès · ${label}`,
+            approvalDenied: ({ label }: { label: string }) => `Denegat · ${label}`,
+            pinnedAnswer: "Resposta fixada",
+            sessionStarted: "Sessió iniciada",
+            agentOnMachine: ({ agent, machine }: { agent: string; machine: string }) => `${agent} a ${machine}`,
+            partialApprovals: "Aprovacions dels torns carregats fins ara.",
+            partialErrors: "Errors dels torns carregats fins ara.",
+            filterEndApprovals: ({ count, total }: { count: number; total: number }) => `${count} de ${total} torns han demanat aprovació.`,
+            filterEndErrors: ({ count, total }: { count: number; total: number }) => `${count} de ${total} torns han tingut un pas fallat.`,
+            loadEarlierTurns: "Carrega torns anteriors",
+            loadingEarlierTurns: "Carregant torns anteriors…",
+            earlierTurnsNotListed: "Els torns anteriors encara no hi són.",
+            noApprovals: "Cap torn ha demanat aprovació.",
+            noApprovalsSoFar: "Cap aprovació als torns carregats fins ara.",
+            noErrors: "Cap pas fallat en aquesta sessió.",
+            noErrorsSoFar: "Cap pas fallat als torns carregats fins ara.",
+            machineOffline: ({ machine }: { machine: string }) => `${machine} està fora de línia`,
+            sessionOffline: "Aquesta sessió està fora de línia",
+            backToTime: ({ time }: { time: string }) => `Torna a ${time}`,
+            backToReading: "Torna on eres",
         },
 
         inputPlaceholder: 'Escriu un missatge...',
@@ -5747,7 +6161,7 @@ export const ca = {
                 openSubagents: ({ count }: { count: number }) => (count > 0 ? `Obre agents (${count})` : 'Obre agents'),
                 participants: {
                     to: 'A',
-                    lead: 'Principal',
+                    lead: 'Aquesta sessió',
                     sendToTitle: 'Envia a',
                     broadcast: ({ teamId }: { teamId: string }) => `Difusió: ${teamId}`,
                     executionRun: ({ runId }: { runId: string }) => `Execució ${runId}`,
@@ -5940,6 +6354,8 @@ export const ca = {
                     invalid: 'El missatge no s’ha pogut acceptar tal com està.',
                     archived: 'Aquesta sessió està arxivada i ja no accepta entrades.',
                     unauthorized: 'No tens permís per enviar a aquesta sessió.',
+                    modelNotGranted: 'El model seleccionat no està permès.',
+                    permissionModeNotGranted: 'El mode de permisos seleccionat no està permès.',
                     targetUnavailable: 'La conversa d’agent seleccionada ja no està disponible. No s’ha enviat res.',
                     targetUpdateRequired: 'Enviar a una conversa d’agent requereix un Home i un ordinador actualitzats. No s’ha enviat res.',
                     cancelled: 'L’enviament s’ha cancel·lat abans de ser acceptat.',
@@ -6114,6 +6530,7 @@ export const ca = {
     },
 
     universalSearch: {
+        scopeFilterLabel: 'Home',
         commitsUpdateRequired: 'Actualitza Happier en aquesta màquina per cercar commits.',
         moreResultsAvailable: 'Hi ha més resultats disponibles. Refina la cerca.',
         sections: {
@@ -6137,23 +6554,18 @@ export const ca = {
         shortcutsHelpHelp: 'Obre les dreceres de teclat',
         shortcutsHelpNewSession: 'Nova sessió',
         commands: {
-            sessionsCategory: 'Sessions',
-            navigationCategory: 'Navegació',
+            actionsCategory: 'Accions',
+            navigationCategory: 'Ves a',
             recentSessionsCategory: 'Sessions recents',
             runsCategory: 'Corre',
             voiceCategory: 'veu',
             systemCategory: 'Sistema',
             developerCategory: 'Desenvolupador',
             newSessionTitle: 'Nova sessió',
-            newSessionSubtitle: 'Inicia una nova sessió de xat',
             viewAllSessionsTitle: 'Veure totes les sessions',
-            viewAllSessionsSubtitle: 'Navega pel teu historial de xat',
             settingsTitle: 'Configuració',
-            settingsSubtitle: 'Configura les teves preferències',
             accountTitle: 'Compte',
-            accountSubtitle: 'Gestiona el teu compte',
             connectTerminalTitle: 'Escaneja QR per connectar el terminal',
-            connectTerminalSubtitle: 'Aprova la connexió que es mostra al teu terminal',
             memorySearchTitle: 'Cerca memòria',
             memorySearchSubtitle: 'Cerca en converses anteriors',
             sessionFallbackTitle: ({ id }: { id: string }) => `Session ${id}`,
@@ -6163,29 +6575,26 @@ export const ca = {
             startReviewRunTitle: 'Començar l\'execució de revisió',
             startPlanRunTitle: 'Inicia l\'execució del pla',
             startDelegationRunTitle: 'Començar la marxa de la delegació',
-            executionRunsSubtitle: 'Execució cursa',
             openSessionRunsTitle: 'La sessió oberta funciona',
             runsForCurrentSessionSubtitle: 'S\'executa per a la sessió actual',
             runsAcrossMachinesSubtitle: 'Corre per màquines',
             resetVoiceAgentTitle: 'Restableix l\'agent de veu',
-            voiceSubtitle: 'veu',
             signOutTitle: 'Tanca la sessió',
-            signOutSubtitle: 'Tanqueu la sessió del vostre compte',
             developerMenuTitle: 'Menú de desenvolupadors',
-            developerMenuSubtitle: 'Accediu a les eines de desenvolupament',
         },
         pets: {
             category: 'Mascotes',
             wakeTitle: 'Desperta la mascota',
-            wakeSubtitle: 'Mostra la companya en aquesta superfície.',
             tuckTitle: 'Amaga la mascota',
-            tuckSubtitle: 'Oculta la companya en aquesta superfície.',
             resetPositionTitle: 'Restableix la posició de la mascota',
-            resetPositionSubtitle: 'Torna la companya al seu lloc predeterminat.',
             chooseTitle: 'Tria mascota',
             chooseSubtitle: 'Obre la configuració de mascotes.',
             refreshCodexTitle: 'Actualitza mascotes de Codex',
-            refreshCodexSubtitle: 'Obre la configuració i detecta mascotes locals de Codex.',
+        },
+        hints: {
+            move: 'Moure',
+            open: 'Obrir',
+            close: 'Tancar',
         },
     },
 
@@ -6357,7 +6766,30 @@ export const ca = {
       },
 
     server: {
+        pageSections: {
+            savedDescription: 'Canvia el Home on treballes, o canvia el nom i elimina els desats.',
+            addTitle: 'Afegeix un Home',
+        },
+        page: {
+            description: 'Els Homes a què es connecta aquest dispositiu i com hi arriba.',
+            connectionTitle: 'Connexió',
+            connectionDescription: 'Com arriba aquest dispositiu als teus Homes.',
+        },
         // Used by Server Configuration screen (app/(app)/server.tsx)
+        homeOnHost: ({ host }: { host: string }) => `Home a ${host}`,
+        homes: {
+            currentTitle: 'Aquest dispositiu fa servir',
+            currentPill: 'Actual',
+            switch: 'Canvia',
+            signIn: 'Inicia la sessió',
+            signInAgainTitle: ({ name }: { name: string }) => `Torna a iniciar la sessió per fer servir ${name}`,
+            signInAgainDescription: 'Aquest dispositiu ha tancat la sessió d’aquest Home, així que les seves sessions i màquines no es poden carregar aquí.',
+            unavailableTitle: ({ name }: { name: string }) => `No es pot accedir a ${name}`,
+            unavailableDescription: 'Aquest Home no ha respost. Comprova que estigui en marxa i que s’hi pugui accedir des d’aquest dispositiu.',
+            connectionDetails: 'Detalls de la connexió',
+            nameThisHome: 'Posa nom a aquest Home',
+            addByAddress: 'Afegeix per adreça',
+        },
         serverConfiguration: 'Configuració de Home',
         enterServerUrl: 'Introdueix una adreça de Home',
         notValidHappyServer: 'No és un Home de Happier vàlid',
@@ -6428,6 +6860,8 @@ export const ca = {
             keepForever: 'Sense supressio automatica',
             automaticDeletionEnabled: 'La supressió automàtica està activada',
             detailsUnavailable: 'La supressió automàtica està activada, però aquest client no pot mostrar totes les polítiques actives',
+            readFailed: "No s'ha pogut llegir la política de retenció d'aquest Home",
+            disclosureUnreadable: "No s'ha pogut comprovar la retenció de dades d'aquest Home",
             singlePolicySummary: ({ domain, policy }: { domain: string; policy: string }) => `${domain}: ${policy}`,
             relayCleanupSummary: ({ policies }: { policies: string }) => `Aquest Home neteja ${policies}.`,
             relayCleanupAfterDays: ({ domain, count }: { domain: string; count: number }) => `${domain} al cap de ${count} ${plural({ count, singular: 'dia', plural: 'dies' })}`,
@@ -6450,8 +6884,16 @@ export const ca = {
             globalLocks: 'Bloquejos globals',
             automationRuns: 'Execucions d\'automatitzacio',
             automationRunEvents: 'Esdeveniments d\'execucio d\'automatitzacio',
+            homeAdministrationEvents: 'Activitat (auditoria d’aquest Home)',
         },
         multiServerView: {
+            presentationChoice: {
+                title: 'Mostra les sessions',
+                flat: 'En una llista',
+                grouped: 'Per Home',
+                flatDescription: 'Cada sessió mostra el seu Home com a insígnia.',
+                groupedDescription: 'Cada Home té la seva pròpia secció.',
+            },
             editMembersAction: 'Edita els Homes d’aquest grup',
             title: 'Homes en aquesta vista',
             footer: 'Tria com apareixen aquests Homes a la teva llista de sessions i quins pertanyen a aquest grup.',
@@ -6489,6 +6931,7 @@ export const ca = {
         viewOptions: 'Opcions de vista',
         searchSessions: 'Cerca sessions',
         searchSessionsPlaceholder: 'Cerca sessions...',
+        closeSearch: 'Tanca la cerca',
         searchEverythingFor: ({ query }: { query: string }) => `Cerca «${query}» a tot arreu`,
         searchGroupInThisView: 'En aquesta vista',
         searchGroupOtherMatches: 'Altres coincidències',
@@ -6559,8 +7002,6 @@ export const ca = {
             created: 'Sort by created date',
             updated: 'Sort by last activity',
         },
-        attentionSectionTitle: 'Requereix atenció',
-        workingSectionTitle: 'Treballant',
         loadingSectionTitle: 'Carregant',
         backgroundWorkingSectionTitle: 'Treballant en segon pla',
         selectionSelectedCount: ({ count }: { count: number }) => count === 1 ? '1 session selected' : `${count} sessions selected`,
@@ -6621,6 +7062,7 @@ export const ca = {
     },
 
     workspacePresentation: {
+        homeFolder: 'Carpeta personal',
         checkoutKinds: {
             primary: 'Check-out principal',
             git_worktree: 'Arbre de treball de Git',
@@ -6827,7 +7269,9 @@ export const ca = {
             references: 'Referències',
             skills: 'Habilitats',
             commands: 'Ordres',
+            people: 'Persones',
         },
+        suggestionTypeMoreToNarrow: 'Escriu més per acotar',
         stopCodingTurn: 'Atura el torn de programació',
         nonSteerableSend: {
             title: 'L\'agent està ocupat',
@@ -6887,6 +7331,8 @@ export const ca = {
         agent: {
             sectionTitle: 'Agent',
             unselected: 'Tria un agent',
+            noLongerAvailableOn: ({ machine }: { machine: string }) => `Ja no està disponible a ${machine} · Tria’n un altre`,
+            noLongerAvailable: 'Ja no està disponible · Tria’n un altre',
             claude: 'Claude',
             codex: 'Codex',
             cursor: 'Cursor',
@@ -6908,7 +7354,7 @@ export const ca = {
             off: 'Indexació desactivada',
         },
           model: {
-              title: 'MODEL',
+              title: 'Model',
               useCliSettings: 'Fes servir la configuració del CLI',
               running: ({ model }: { model: string }) => `En execució: ${model}`,
               lastUsed: ({ model }: { model: string }) => `Últim model utilitzat: ${model}`,
@@ -7254,6 +7700,7 @@ export const ca = {
     },
 
       files: {
+            pane: filesPaneTranslations.ca,
             revealInFiles: "Mostra a Fitxers",
             openChanges: "Obre els canvis",
           searchPlaceholder: 'Cerca fitxers...',
@@ -7408,7 +7855,7 @@ export const ca = {
 	          stash: {
 	              summaryA11y: 'Obre els detalls del stash',
 	              summaryTitle: 'Stashes gestionats',
-	              detailsTitle: 'Stashes gestionats',
+	              detailsTitle: 'Stashes',
 	              empty: 'No hi ha stashes gestionats.',
 	              failedToLoad: 'No s\'han pogut carregar els stashes.',
 	              failedToLoadDiff: 'No s\'ha pogut carregar el diff del stash.',
@@ -7472,7 +7919,6 @@ export const ca = {
         notRepo: 'No és un repositori de control de versions',
         notUnderSourceControl: 'Aquest directori no està sota control de versions',
         sourceControlStale: {
-            title: 'El control de versions necessita atenció',
             body: 'Es mostra la darrera actualització correcta. La comprovació més recent no ha finalitzat.',
         },
         repositoryInit: {
@@ -7611,6 +8057,8 @@ export const ca = {
                 missingContext: 'Falta el context del commit',
                 failedToLoadDiff: 'No s\'ha pogut carregar el diff del commit',
                 diffUnavailableTitle: 'Diff del commit no disponible',
+                couldNotOpenTitle: ({ sha }: { sha: string }) => `No s’ha pogut obrir el commit ${sha}`,
+                couldNotOpenReason: 'No s’han pogut llegir els canvis. Torna-ho a provar o torna a l’historial.',
                 diffUnavailableHint: 'Prova d\'obrir el commit de nou des de la pantalla Fitxers.',
                 commitLabel: 'Commit (Git)',
                 running: ({ operation }: { operation: string }) => `En execució: ${operation}`,
@@ -7632,6 +8080,7 @@ export const ca = {
 	                commit: 'Fes commit',
 	                generateFailed: "No s'ha pogut generar el missatge de commit",
 	                generatorDisabled: 'El generador de missatges de commit està desactivat',
+	                title: 'Crea un commit',
 	            },
             commitAdjacentPush: {
                 accessibilityLabel: ({ target }: { target: string }) => `Fes push a ${target}`,
@@ -7986,6 +8435,26 @@ export const ca = {
             diagnostic: ({ value }: { value: string }) => `Diagnostic: ${value}`,
             countBadge: ({ total, running }: { total: string; running: string }) => `${total} services · ${running} running`,
         },
+        pane: {
+            runningOn: ({ count, machine }: { count: number; machine: string }) => `${count} en marxa a ${machine}`,
+            running: ({ count }: { count: number }) => `${count} en marxa`,
+            nothingRunningOn: ({ machine }: { machine: string }) => `Res en marxa a ${machine}`,
+            nothingRunning: 'Res en marxa',
+            offlineOn: ({ machine }: { machine: string }) => `${machine} està fora de línia`,
+            offline: 'Aquesta màquina està fora de línia',
+            offlineReason: 'Els seus servidors de desenvolupament tornaran a aparèixer aquí quan torni.',
+            checkAgain: 'Torna-ho a comprovar',
+            sectionRunning: 'En marxa',
+            sectionReady: 'A punt per iniciar',
+            sectionElsewhereOn: ({ machine }: { machine: string }) => `En altres llocs a ${machine}`,
+            sectionElsewhere: 'En altres llocs d’aquesta màquina',
+            happierServices: ({ count }: { count: number }) => `Serveis de Happier (${count})`,
+            emptyTitle: 'Previsualitza el que estàs construint',
+            emptyReason: 'Els servidors de desenvolupament iniciats en aquest espai de treball apareixen aquí, amb un enllaç que també s’obre al telèfon.',
+            copyAddress: 'Copia l’adreça',
+            publicLinkTitle: 'Enllaç públic',
+            publicLinkScanHint: 'Escaneja’l per obrir-lo al telèfon.',
+        },
         session: {
             thisSessionTitle: 'Aquesta sessió',
             workspaceTitle: 'Espai de treball',
@@ -8104,14 +8573,15 @@ export const ca = {
             },
             createActionA11y: 'Crea un enllaç de previsualització pública',
             revokeActionA11y: 'Revoca l’enllaç de previsualització pública',
-            confirmTitle: 'Fer públic el servei?',
+            confirmTitle: 'Vols compartir un enllaç a aquest servei?',
             confirmMessage: ({ service }: { service: string }) =>
-                `"${service}" serà accessible públicament a Internet mitjançant un enllaç secret per compartir.`,
-            confirmCta: 'Crea l’enllaç públic',
+                `"${service}" rep un enllaç que l’obre des d’altres dispositius.`,
+            confirmCta: `Crea l’enllaç`,
             revokeConfirmTitle: 'Revocar l’enllaç públic?',
             revokeConfirmMessage: ({ url }: { url: string }) => `Vols revocar l’enllaç de previsualització pública ${url}? Tothom qui l’utilitzi perdrà l’accés.`,
             revokeConfirmCta: 'Revoca l’enllaç',
             consequenceReach: 'Qualsevol persona que tingui l’enllaç pot obrir aquest servei. No cal iniciar sessió.',
+            consequenceReachSignedIn: `Només les persones que han iniciat sessió a Happier i poden obrir aquesta sessió poden obrir l’enllaç.`,
             consequenceExpiry: 'L’enllaç deixa de funcionar tot sol quan s’esgota la durada indicada a sota.',
             consequenceRevoke: 'El pots revocar en qualsevol moment, des d’aquest tauler.',
             lifetimeLabel: 'Durada',
@@ -8124,6 +8594,7 @@ export const ca = {
         actions: {
             terminateDetectedA11y: 'Finalitza el servei local detectat',
             forgetA11y: 'Amaga aquest servei de la llista',
+            hiddenNotice: 'Servei amagat',
             terminatePidOnlyConfidence: 'Confiança de finalització: identitat només per PID; cal confirmació',
             copyAddressA11y: 'Copia l’adreça del servei',
             terminateConfirmTitle: 'Finalitzar el servei?',
@@ -8132,7 +8603,9 @@ export const ca = {
             stopConfirmTitle: 'Aturar el servei?',
             stopConfirmMessage: ({ service }: { service: string }) => `Vols aturar ${service}? El servei no serà accessible fins que torni a iniciar-se.`,
             stopConfirmCta: 'Atura',
+            openA11y: ({ service }: { service: string }) => `Obre ${service}`,
             startA11y: 'Inicia el servei',
+            runScriptA11y: 'Executa l’script en una pestanya de terminal nova',
             failure: {
                 title: 'L’acció no s’ha completat',
                 refused: 'La màquina ha rebutjat aquesta acció. Comprova els permisos de serveis locals d’aquesta màquina i torna-ho a provar.',
@@ -8192,57 +8665,21 @@ export const ca = {
             stop: 'Atura la gravació',
             cancel: 'Cancel·la la gravació',
         },
-        fidelity: {
-            pixel: 'Captura visual',
-            cdp: 'Captura del navegador',
-            injectedPage: 'Captura de la pàgina',
-            nativeCallback: 'Captura nativa',
-            streamFrame: 'Captura del flux',
-            previewProxy: 'Captura de la previsualització',
-            unavailable: 'Captura pendent',
+        failure: {
+            stopTitle: 'No s’ha pogut aturar l’enregistrament',
+            stopBody: 'Potser encara està enregistrant. Torna-ho a provar d’aquí a un moment.',
+            discardTitle: 'No s’ha pogut descartar l’enregistrament',
+            discardBody: 'El clip no s’ha eliminat. Torna-ho a provar d’aquí a un moment.',
         },
         status: {
             noView: 'No hi ha cap vista del navegador seleccionada.',
-            unavailable: ({ reason }: { reason: string }) => `Gravació no disponible: ${reason}`,
-            ready: ({ fidelity }: { fidelity: string }) => `Gravació a punt (${fidelity})`,
-            recording: ({ elapsed, fidelity }: { elapsed: string; fidelity: string }) => `Gravant ${elapsed} (${fidelity})`,
-            temporary: 'Temporal',
-            attached: 'Adjuntada',
-            discarded: 'Descartada',
         },
     },
 
-    browserAutomation: {
-        actions: {
-            cancel: 'Cancel·la l’automatització',
-        },
-        status: {
-            noView: 'No hi ha cap vista del navegador seleccionada.',
-            unavailable: 'Automatització no disponible',
-            running: 'Automatització en execució',
-            readyForActions: 'Automatització a punt',
-            ready: ({ authority }: { authority: string }) => `Automatització a punt (${authority})`,
-            active: ({ requestId }: { requestId: string }) => `Automatització en execució: ${requestId}`,
-        },
-        timeline: {
-            entry: ({ action, status }: { action: string; status: string }) => `${action}: ${status}`,
-            action: {
-                inspect: 'Inspecciona la pàgina',
-                interact: 'Interacciona amb la pàgina',
-                navigate: 'Navega per la pàgina',
-                browserAction: 'Acció del navegador',
-            },
-            status: {
-                succeeded: 'Fet',
-                failed: 'Ha fallat',
-                canceled: 'Cancel·lat',
-                timedOut: 'Temps esgotat',
-                stale: 'Pàgina desactualitzada',
-                blocked: 'Bloquejat',
-                unsupported: 'No compatible',
-            },
-        },
-    },
+    browserPresence: browserPresenceTranslations.ca,
+
+    computerUse: computerUseTranslations.ca,
+    browserTool: browserToolTranslations.ca,
 
     browserSurface: {
         title: 'Navegador',
@@ -8252,6 +8689,10 @@ export const ca = {
     },
 
     browserLaunchpad: {
+        pane: {
+            previewsFrom: ({ machine }: { machine: string }) => `Previsualitzacions de ${machine}`,
+            previews: 'Previsualitzacions d’aquesta màquina',
+        },
         refreshing: 'Actualitzant destinacions del navegador',
         sections: {
             running: 'Previsualitzacions en execució',
@@ -8280,7 +8721,6 @@ export const ca = {
         },
         error: {
             title: 'Les destinacions del navegador requereixen atenció',
-            subtitle: ({ reason }: { reason: string }) => `L'actualització ha fallat: ${reason}`,
         },
     },
 
@@ -8289,7 +8729,6 @@ export const ca = {
             label: 'Adreça del navegador',
             placeholder: 'Introdueix un URL',
             copy: 'Copia l’URL',
-            searchUnconfigured: 'No hi ha cap cercador configurat: escriu una adreça web.',
         },
         frame: {
             errorTitle: "No s'ha pogut carregar la pàgina",
@@ -8375,6 +8814,9 @@ export const ca = {
         },
           unavailable: {
             generic: 'Aquesta pàgina no està disponible ara mateix.',
+            previewElsewhereTitle: ({ service, machine }: { service: string; machine: string }) => `${service} s’executa a ${machine}`,
+            previewElsewhereTitleUnknownMachine: ({ service }: { service: string }) => `${service} s’executa en una altra màquina`,
+            previewElsewhere: `Aquest dispositiu no el pot obrir directament. Comparteix un enllaç des de Serveis locals per obrir-lo aquí.`,
             desktopEngineUnavailable: 'El motor del navegador integrat no està disponible en aquest equip.',
             desktopWebView: 'El motor del navegador integrat no està disponible en aquest equip. Encara pots obrir aquesta pàgina al navegador del sistema.',
             desktopWebViewUnsupportedPlatform: 'La navegació integrada encara no està disponible en aquesta plataforma.',
@@ -8433,15 +8875,9 @@ export const ca = {
             lowBandwidth: 'Amplada de banda baixa',
             degradedCodec: 'Còdec degradat',
         },
-        actions: {
-            requestKeyframe: 'Demana un fotograma clau',
-            lowerQuality: 'Redueix la qualitat',
-        },
         controls: {
             readOnly: 'Només lectura',
             controlling: 'Controlant',
-            controlsUnavailable: 'Controls no disponibles',
-            controlsAvailable: 'Controls disponibles',
         },
         renderer: {
             fallback: 'Renderitzador de reserva',
@@ -8723,8 +9159,6 @@ export const ca = {
     },
 
             settingsActions: {
-        aboutSubtitle: 'Tria on es mostra cada acció a l’aplicació, la veu i les integracions. Les fitxes no disponibles es mantenen visibles perquè puguis entendre què està bloquejat per funcions, privadesa o suport del runtime.',
-        aboutFooter: 'Aquests paràmetres s’apliquen globalment als valors per defecte del teu compte. Les fitxes no disponibles expliquen per què un destí està bloquejat actualment.',
         searchPlaceholder: 'Cerca accions',
         detailSearchPlaceholder: 'Cerca superfícies',
         noResults: 'Cap acció coincideix amb la cerca actual.',
@@ -8734,11 +9168,8 @@ export const ca = {
         invalidActionTitle: 'Acció no trobada',
         invalidActionSubtitle: 'Aquesta acció ja no està disponible en aquesta compilació.',
         configureActionAccessibilityLabel: 'Configura l’acció',
-        approvalHelpTitle: 'Modes d’aprovació',
         approvalHelpBody: '“Demana primer” mostra una confirmació abans que aquesta acció s’executi des d’aquesta superfície. “Permès” deixa executar l’acció des d’aquesta superfície sense demanar aprovació.',
         contributed: {
-            machineSelectionTitle: 'Tria una màquina per a les accions aportades',
-            machineSelectionBody: 'Selecciona una màquina per veure i configurar les accions declarades pels seus connectors instal·lats.',
             removedDescription: 'Aquesta acció aportada ja no està disponible a la màquina seleccionada. Se’n conserven els paràmetres desats.',
             removedTargetsTitle: 'Acció aportada no disponible',
             removedTargetsBody: 'La màquina seleccionada no declara aquesta acció actualment. Els paràmetres desats es conserven aquí.',
@@ -8769,6 +9200,14 @@ export const ca = {
             },
         },
         spawnPolicy: {
+            allowLists: {
+                rolesTitle: "Rols permesos",
+                rolesSubtitle: "Tria els rols que poden iniciar els agents.",
+                agentsTitle: "Agents permesos",
+                agentsSubtitle: "Tria els agents per al treball delegat.",
+                none: "Cap de permès",
+                selected: ({ count }: { count: number }) => `${count} seleccionats`,
+            },
             title: 'Política de creació de sessions d’IA',
             footer: 'Aquests controls només s’apliquen quan un assistent dins d’una sessió de Happier crea una altra sessió. La configuració heretada del pare continua permesa; els elements denegats rebutgen substitucions explícites amb un error clar.',
             toggles: {
@@ -8803,6 +9242,10 @@ export const ca = {
                 allowProfileOverride: {
                     title: 'Perfil',
                     subtitle: 'Permet seleccionar un perfil per identificador sense exposar secrets.',
+                },
+                allowEnvironmentVariables: {
+                    title: 'Variables d’entorn',
+                    subtitle: 'Permet variables d’entorn explícites a sessions noves.',
                 },
                 allowConnectedServicesOverride: {
                     title: 'Serveis connectats',
@@ -8902,7 +9345,7 @@ export const ca = {
             voiceFeature: 'Activa la configuració de l’Assistent de veu per utilitzar aquest destí.',
             voiceInventoryPrivacy: 'Activa Comparteix l’inventari del dispositiu a la privadesa de l’Assistent de veu per utilitzar aquest destí.',
             mcpFeature: 'Activa servidors MCP per mostrar aquesta acció a través de MCP.',
-            executionRunsFeature: 'Activa les execucions per utilitzar aquesta acció o destí.',
+            executionRunsFeature: 'Activa les execucions en segon pla per utilitzar aquesta acció o destí.',
             memorySearchFeature: 'Activa la Cerca de memòria local per utilitzar aquesta acció.',
             sessionHandoffFeature: 'Activa el suport de traspàs de sessió per utilitzar aquesta acció.',
             notAvailableInThisApp: 'Aquest destí encara no es mostra en aquest client.',
@@ -8944,11 +9387,11 @@ export const ca = {
             },
             run_list: {
                 title: 'Llista d’execucions',
-                subtitle: 'Visible a les llistes d’execucions.',
+                subtitle: 'Visible a les llistes d’execucions en segon pla.',
             },
             run_card: {
                 title: 'Targetes d’execució',
-                subtitle: 'Visible a les targetes d’execució.',
+                subtitle: 'Visible a les targetes d’execució en segon pla.',
             },
             voice_tool: {
                 title: 'Eina de veu',
@@ -9141,7 +9584,7 @@ settingsSession: {
             composer: { title: 'Compositor i enviament', entrySubtitle: 'Retorn per enviar, historial, aparença del compositor i enviament quan l’agent està ocupat.' },
             providerLimits: { title: 'Límits i ús del proveïdor', entrySubtitle: 'Recuperació de límits d’ús i indicador d’ús al costat del compositor.' },
             resume: { title: 'Represa i traspàs', entrySubtitle: 'Represa per repetició del transcript i opcions per moure sessions entre màquines.' },
-            runtime: { title: 'Runtime i terminal', entrySubtitle: 'Tmux, finestres de Windows Terminal i compatibilitat de Terminal Connect.' },
+            runtime: { title: 'Runtime i terminal', entrySubtitle: 'Inicia les sessions a tmux a les teves màquines.' },
             banners: {
                 title: 'Bàners',
                 footer: 'Els bàners sobre el camp de missatge es poden plegar en una insígnia d’estat. Tria si es recorda.',
@@ -9519,7 +9962,7 @@ settingsSession: {
                     customBackendIdSubtitle: 'Introdueix un id de backend (p. ex. claude).',
                     customModelIdSubtitle: 'Introdueix un id de model (p. ex. default).',
                     requiresModelNotice: 'Tria un model de resum a sota. Sense cap, la reproducció recorre només als missatges recents.',
-                    requiresExecutionRunsNotice: 'Els resums necessiten execucions, que estan desactivades en aquest compte. La reproducció només farà servir els missatges recents.',
+                    requiresExecutionRunsNotice: 'Els resums necessiten execucions en segon pla, que estan desactivades en aquest compte. La reproducció només farà servir els missatges recents.',
                 },
                 recentMessagesTitle: 'Missatges recents a incloure',
                 recentMessagesPlaceholder: '16',
@@ -9558,7 +10001,7 @@ settingsSession: {
               rememberLastEngineSelectionsDisabledSubtitle: 'Les sessions noves fan servir els valors predeterminats tret que una drecera de projecte o un esborrany indiqui una configuració.',
               wizardSettingsTitle: 'Assistent de sessió nova',
               wizardSettingsSubtitle: 'Tria si cada selector de l’assistent apareix com a llista o desplegable.',
-              wizardDispositionTitle: 'Disposició de l’assistent',
+              wizardDispositionTitle: 'Disseny de l’assistent',
               wizardDispositionSubtitle: 'Tria quins selectors de l’assistent apareixen com a llistes o desplegables.',
               wizardLayoutTitle: 'Disseny de l’assistent',
               wizardLayoutFooter: 'Controla com s’organitzen les seccions de l’assistent en pantalles amples.',
@@ -9602,6 +10045,7 @@ settingsSession: {
               title: 'Tipus de sessió per defecte',
               footer: 'Tria si les sessions noves comencen com a sessions Happier o com a sessions directes del proveïdor.',
               globalTitle: 'Predeterminat global',
+              noDirectAgents: 'Cap dels teus agents activats pot iniciar sessions directes encara, així que les sessions noves són sessions de Happier.',
               persistedSubtitle: 'Desa les sessions noves a Happier i sincronitza-les entre dispositius per defecte.',
               directSubtitle: 'Inicia sessions directes lligades a la màquina quan el proveïdor ho admeti.',
               globalSubtitle: ({ label }: { label: string }) => `Predeterminat global: ${label}`,
@@ -9640,14 +10084,15 @@ settingsSession: {
         ...voiceDiagnosticsTranslations.ca,
         intents: {
             dictation: { title: 'Dictat', subtitle: 'Converteix una frase parlada en text del quadre de redacció.' },
-            conversations: { title: 'Converses de veu', subtitle: 'Tria un proveïdor i configura els seus ajustos principals.' },
-            privacy: { title: 'Privadesa i dades', subtitle: 'Revisa el processament del proveïdor, el context compartit i l’historial de veu.', processingTitle: 'Processament del proveïdor' },
-            advanced: { title: 'Avançat', subtitle: 'Configura la interfície de veu, la màquina d’execució i els diagnòstics.' },
+            conversations: { title: 'Converses de veu', subtitle: 'Parla amb els teus agents en veu alta: tria un proveïdor de veu i configura’l.' },
+            privacy: { title: 'Privadesa i dades', subtitle: 'Què reben els proveïdors de veu i l’historial de veu que Happier conserva.', processingTitle: 'Processament del proveïdor' },
+            advanced: { title: 'Avançat', subtitle: 'Com es mostra la veu a la pantalla, on s’executa la veu local i els diagnòstics.' },
         },
         history: {
             title: 'Historial de veu',
             sectionTitle: 'Historial',
             sectionFooter: 'Revisa o elimina transcripcions de converses de veu globals i sense destinació.',
+            pageDescription: 'Transcripcions de la veu global i de converses iniciades fora d’una sessió.',
             entryTitle: 'Historial de veu',
             entrySubtitle: 'Cerca, exporta o esborra transcripcions de veu desades.',
             searchTitle: 'Cerca a l’historial carregat',
@@ -9719,6 +10164,8 @@ settingsSession: {
         },
         // Voice settings screen
         modeTitle: 'Veu',
+        providerSectionTitle: 'Proveïdor',
+        providerSectionDescription: 'Qui t’escolta i et respon quan parles. Només hi ha un proveïdor actiu alhora.',
         modeDescription: 'Configura les funcions de veu. Pots desactivar la veu del tot, utilitzar Happier Voice (requereix subscripció) o utilitzar el teu compte d’ElevenLabs.',
         mode: {
             off: 'Desactivat',
@@ -9751,7 +10198,7 @@ settingsSession: {
         },
         ui: {
             title: 'Superficie de veu',
-            footer: 'Feed opcional en pantalla dels esdeveniments de veu (no s\'escriu a la sessio).',
+            footer: 'Com apareix la veu a la pantalla mentre parles. Res d’això s’escriu a la sessió.',
             activityFeedEnabled: 'Activa el feed d\'activitat de veu',
             activityFeedEnabledSubtitle: 'Mostra esdeveniments de veu recents a la pantalla',
             activityFeedAutoExpandOnStart: 'Expandeix automaticament en iniciar',
@@ -10370,7 +10817,6 @@ settingsSession: {
             mediatorVerbosityBalanced: 'Equilibrat',
             mediatorIdleTtl: 'TTL d’inactivitat del mediador',
             mediatorIdleTtlSubtitle: 'Atura automàticament després d’inactivitat (60–3600s)',
-            mediatorIdleTtlTitle: 'TTL d’inactivitat del mediador (segons)',
             mediatorIdleTtlDescription: 'Introdueix un número entre 60 i 3600.',
             mediatorIdleTtlInvalid: 'Introdueix un número entre 60 i 3600.',
             mediatorChatModelSource: 'Origen del model (chat)',
@@ -10586,8 +11032,8 @@ settingsSession: {
                 feature_unavailable: 'Veu no està disponible per a l’entorn de l’agent seleccionat.',
             },},
         privacy: {
-            title: 'Privadesa',
-            footer: 'Els proveïdors de veu reben el context de sessió seleccionat.',
+            title: 'Context compartit',
+            footer: 'Què pot incloure la veu sobre les teves sessions i aquesta app quan parla amb el proveïdor.',
             shareSessionSummary: 'Comparteix el resum de la sessió',
             shareSessionSummarySubtitle: 'Inclou el resum de la sessió al context de veu',
             shareRecentMessages: 'Comparteix missatges recents',
@@ -10641,12 +11087,49 @@ settingsSession: {
     },
 
     settingsAccount: {
+        providerCatalogUnavailable: 'No s’han pogut comprovar les connexions d’inici de sessió disponibles.',
         securityPageDescription: "Mètodes d’inici de sessió, recuperació, sessions i xifratge d’aquest Home.",
+        accountServiceUnsupportedTitle: ({ accountService }: { accountService: string }) => `${accountService} encara no pot trobar Homes`,
+        accountServiceUnsupportedBody: "Inicia la sessió amb un servei que pugui trobar Homes per fer servir aquestes funcions. Els teus Homes funcionen com fins ara.",
+        accountServiceUnreachableTitle: ({ accountService }: { accountService: string }) => `No es pot connectar amb ${accountService}`,
+        accountServiceUnreachableBody: "Els teus Homes i aquest dispositiu no es veuen afectats. Torna-ho a provar o tria un altre servei.",
+        accountServiceCustodyTitle: ({ accountService }: { accountService: string }) => `No es pot obrir la sessió desada de ${accountService}`,
+        accountServiceCustodyBody: "L’emmagatzematge segur d’aquest dispositiu no ha respost. Torna-ho a provar o torna a iniciar la sessió.",
+        accountServiceChangeService: "Canvia de servei",
+        accountServiceChooserTitle: "Servei d’inici de sessió",
+        accountServiceChooserDescription: "On viu el teu compte. Els teus Homes i com inicies la sessió en aquest Home no canvien.",
+        accountServiceChooserCurrent: "Actual",
+        accountServiceChooserDefault: "Per defecte",
+        accountServiceChooserHomeOffersSignIn: "Un Home que fas servir i que també ofereix inici de sessió",
+        accountServiceChooserAnother: "Un altre servei…",
+        accountServiceChooserAnotherDescription: "Introdueix-ne l’adreça",
+        accountServiceChooserAddressLabel: "Adreça del servei d’inici de sessió",
+        accountServiceChooserAddressHelp: "L’adreça del servei que fas servir per iniciar la sessió i trobar els teus Homes.",
+        accountServiceCheck: "Comprova",
+        accountServiceUse: ({ accountService }: { accountService: string }) => `Fes servir ${accountService}`,
+        accountServiceUseThis: "Fes servir aquest servei",
+        accountServiceFindsHomes: "Troba Homes",
+        accountServiceSignsInToHomes: "Inicia la sessió als Homes",
+        accountServiceKeepsSignIn: ({ accountService }: { accountService: string }) => `La teva sessió de ${accountService} queda desada en aquest dispositiu, així que si hi tornes continuaràs amb la sessió iniciada.`,
+        accountServiceSignedInWith: ({ provider }: { provider: string }) => `Sessió iniciada amb ${provider}`,
+        accountServiceSignedIn: "Sessió iniciada",
+        accountServiceLinkUnreachableHome: "Els teus altres dispositius encara no poden arribar a aquest Home, així que no es pot vincular.",
+        accountServiceSignOut: ({ accountService }: { accountService: string }) => `Tanca la sessió de ${accountService}`,
+        accountServiceLinkLocalHomeDescription: "Només en aquest dispositiu. Vincula’l perquè els teus altres dispositius el puguin trobar.",
+        accountServiceLink: "Vincula",
+        accountServiceMoreWays: "Més maneres d’iniciar la sessió",
+        accountServiceFewerWays: "Menys opcions",
+        accountServiceCreateAccount: "Ets nou? Crea un compte",
+        accountServiceRecoveryKeyTitle: ({ accountService }: { accountService: string }) => `Clau de recuperació de ${accountService}`,
+        accountServiceRecoveryKeyBody: "Es va mostrar una sola vegada, en crear aquest compte, i aquest dispositiu no la guarda. Si oblides la contrasenya, només aquesta clau restaura el teu compte.",
+        accountServiceRecoveryKeySaved: "L’he desada",
+        accountServiceRecoveryKeyKeyOnly: ({ accountService }: { accountService: string }) => `Aquest compte de ${accountService} no té contrasenya, així que la seva clau no es pot desbloquejar aquí. És la clau amb què inicies sessió; aquest dispositiu no la guarda.`,
+        accountServiceCreateExplanation: ({ accountService }: { accountService: string }) => `T’enviarem un enllaç per correu. Obre’l en aquest dispositiu i tria una contrasenya per a ${accountService}.`,
+        accountServiceForgotExplanation: ({ accountService }: { accountService: string }) => `T’enviarem un enllaç per restablir la contrasenya de ${accountService}.`,
         hideRecoveryKey: "Amaga la clau de recuperació",
         showRecoveryKey: "Mostra la clau de recuperació",
         accountIdCopy: "Copia l’ID del compte",
         accountIdLabel: "ID del compte",
-        accountServiceSignInCta: ({ accountService }: { accountService: string }) => `Inicia la sessió a ${accountService}`,
         accountServiceBenefitFindHomes: "Els teus Homes, trobats",
         thisHome: "aquest Home",
         thisHomeTitle: "Aquest Home",
@@ -10659,6 +11142,8 @@ settingsSession: {
         apiAccessSectionTitle: "Accés a l’API",
         endToEndEncrypted: "Xifrat d’extrem a extrem",
         notEndToEndEncrypted: "Sense xifratge d’extrem a extrem",
+        encryptionFactChecking: "Comprovant el xifratge…",
+        encryptionFactUnread: "No s’ha pogut llegir el xifratge",
         editUsername: "Edita el nom d’usuari",
         chooseUsername: "Tria un nom d’usuari",
         signInSecurityDescription: ({ home }: { home: string }) => `Com inicies la sessió a ${home}.`,
@@ -10683,8 +11168,7 @@ settingsSession: {
         accountServiceBenefitDevicesDescription: "Connecta el mòbil i els altres dispositius amb els teus Homes.",
         accountServiceLinkedHomes: "Homes vinculats",
         accountServiceRefreshedAt: ({ time }: { time: string }) => `Actualitzat ${time}`,
-        accountServiceSignInAgain: "Torna a iniciar la sessió",
-        accountServiceAdvancedSummary: "Servei d’inici de sessió · diagnòstics",
+        accountServiceAdvancedSummary: "Identitat del servei · diagnòstics",
         accountDetails: "Detalls del compte",
         devices: "Dispositius",
         security: "Inici de sessió i seguretat",
@@ -10743,10 +11227,9 @@ settingsSession: {
         accountServiceHomes: 'Homes',
         accountServiceFindHomes: 'Troba els teus Homes',
         accountServiceFindHomesDescription: 'Troba els Homes enllaçats i obre el Home seleccionat o preferit.',
-        accountServiceCheckingConnection: 'S’està comprovant la connexió…',
         accountServiceReconnectRequired: ({ accountService }: { accountService?: string }) => accountService ? `Torna a iniciar sessió a ${accountService}` : 'Torna a iniciar sessió al teu compte',
         accountServiceReconnectDescription: 'L’inici de sessió del teu compte ha caducat. Torna a iniciar la sessió per actualitzar o connectar Homes.',
-        accountServiceDiscoveryDescription: 'Descobreix i connecta automàticament els Homes vinculats. Els teus Homes existents i el focus actual no canvien.',
+        accountServiceDiscoveryDescription: "Els Homes vinculats al teu compte apareixen a cada dispositiu on inicies la sessió.",
         accountServiceDiscoveringHomes: 'S’estan cercant Homes vinculats…',
         accountServiceDiscoveryUnsupported: 'La cerca de Homes no està disponible',
         accountServiceDiscoveryUnsupportedDescription: 'Utilitza un altre compte per trobar Homes enllaçats.',
@@ -10775,10 +11258,10 @@ settingsSession: {
         server: 'Servidor',
         backup: 'Còpia de seguretat',
         backupDescription: "La clau de recuperació restaura l’accés a aquest compte xifrat. Desa-la en un lloc segur, com un gestor de contrasenyes.",
+        recoveryKeyRowDescription: "Restaura l’accés si perds tots els dispositius.",
         secretKey: "Clau de recuperació",
         tapToReveal: 'Toca per revelar',
         tapToHide: 'Toca per ocultar',
-        secretKeyLabel: 'CLAU DE RECUPERACIÓ (TOCA PER COPIAR)',
         secretKeyCopied: 'Clau de recuperació copiada al porta-retalls. Desa-la en un lloc segur!',
         secretKeyCopyFailed: 'Ha fallat copiar la clau de recuperació',
         privacy: 'Privadesa',
@@ -10824,10 +11307,13 @@ settingsSession: {
     settingsLanguage: {
         // Language settings screen
         title: 'Idioma',
+        pageDescription: 'L\'idioma que fa servir Happier a tots els teus dispositius.',
+        appLanguageTitle: 'Idioma de l\'app',
+        listDescription: 'En canviar-lo, l\'app es reinicia.',
         description: 'Tria el teu idioma preferit per a la interfície de l\'app. Això se sincronitzarà a tots els teus dispositius.',
         currentLanguage: 'Idioma actual',
         automatic: 'Automàtic',
-        automaticSubtitle: 'Detecta des de la configuració del dispositiu',
+        automaticSubtitle: 'Segueix aquest dispositiu',
         needsRestart: 'Idioma canviat',
         needsRestartMessage: 'L\'aplicació necessita reiniciar-se per aplicar la nova configuració d\'idioma.',
         restartNow: 'Reinicia ara',
@@ -10840,17 +11326,9 @@ settingsSession: {
     },
 
     updateBanner: {
-        updateShort: 'Actualitza',
         updateAvailable: 'Actualització disponible',
-        pressToApply: 'Prem per aplicar l\'actualització',
-        whatsNew: 'Novetats',
-        seeLatest: 'Mira les últimes actualitzacions i millores',
         nativeUpdateAvailable: 'Actualització de l\'aplicació disponible',
-        tapToUpdateAppStore: 'Toca per actualitzar a l\'App Store',
-        tapToUpdatePlayStore: 'Toca per actualitzar a Play Store',
 
-        checkNowTitle: 'Comprova-ho ara',
-        checkNowSubtitle: 'Comprova si hi ha actualitzacions de l\'aplicació disponibles.',
         lastCheckedTitle: 'Darrera comprovació',},
 
     changelog: {
@@ -11624,6 +12102,16 @@ settingsSession: {
         back: 'Enrere',
         notFound: 'Màquina no trobada',
         unknownMachine: 'màquina desconeguda',
+        unnamedMachine: "Màquina sense nom",
+        lockedMachine: "Màquina bloquejada",
+        removedMachine: "Màquina eliminada",
+        replacedMachine: "Màquina substituïda",
+        unlistedMachine: "Màquina no llistada",
+        lockedReason: {
+            missingKey: "Xifrat d'extrem a extrem, i aquest dispositiu encara no té la clau",
+            unopenable: "Xifrat d'extrem a extrem, i la clau d'aquest dispositiu no el pot obrir",
+            unreadable: "Aquest dispositiu no en pot llegir els detalls",
+        },
         unknownPath: 'camí desconegut',
         previousSessionsTitle: 'Sessions anteriors (fins a les 5 més recents)',
         tmux: {
@@ -11713,6 +12201,10 @@ settingsSession: {
         pluginAttributionExternalForwarded: ({ sender, pluginId }: { sender: string; pluginId: string }) => `Reenviat per ${sender} mitjançant el connector ${pluginId}`,
         pluginAttributionExternalSender: 'un remitent extern',
         pluginAttributionExternalBot: 'un bot extern',
+        provenanceFrom: ({ source }: { source: string }) => `De ${source}`,
+        provenanceSession: 'Sessió',
+        provenanceAutomation: 'Automatització',
+        provenanceWorkflow: 'Flux de treball',
         unknownEvent: 'Esdeveniment desconegut',
         runtimeConfigOutcomeAppliesBeforeNextMessage: "S'aplicarà abans del teu proper missatge",
         runtimeConfigOutcomeQueuedUntilReady: 'En cua fins que estigui a punt',
@@ -12505,6 +12997,8 @@ settingsSession: {
     projects: {
         emptyTitle: 'Encara no hi ha projectes',
         emptyDescription: 'Els projectes et permeten navegar i editar fitxers, i fer servir Git a les teves màquines fora de les sessions.',
+        noneOpenTitle: 'Cap projecte obert',
+        noneOpenDescription: 'Tria un projecte de la llista o afegeix una carpeta d’una de les teves màquines.',
         groups: {
             pinned: 'Fixats',
             addFirst: 'Afegeix un projecte',
@@ -12554,6 +13048,19 @@ settingsSession: {
         },
     },
    ...apiTokenSettingsTranslations.ca,
+   ...embedSettingsTranslations.ca,
+   ...embedTranslations.ca,
+   ...actionFamilyTranslations.ca,
+   ...providerCollectionTranslations.ca,
+   ...settingsSearchKeywordsTranslations.ca,
+   ...automationPageTranslations.ca,
+    ...settingsSessionPagesTranslations.ca,
+    ...workspaceTabTranslations.ca,
+    ...workspaceBarTranslations.ca,
+   ...settingsProfilesRemoteHostsPageTranslations.ca,
+   ...profilesPageTranslations.ca,
+   ...machineDetailPageTranslations.ca,
+   ...sessionPageTranslations.ca,
    settingsPlugins: {
       updateReview: pluginUpdateReviewTranslations.ca,
       ...pluginWebhookAdministrationTranslations['ca'],
@@ -12572,6 +13079,11 @@ settingsSession: {
       administrationMachineTitle: "Gestiona a",
       executionOriginTitle: "Executa a",
       targetSelection: {
+        missingInHome: ({ home }: { home: string }) => `Aquesta màquina ja no és a ${home}`,
+        missingInThisHome: "Aquesta màquina ja no és en aquesta Home",
+        unreachableHome: ({ home }: { home: string }) => `No es pot accedir a ${home}`,
+        unreachableThisHome: "No es pot accedir a aquesta Home",
+        chooseAnother: "Tria’n una altra",
         clear: "Esborra la selecció",
         locked: "Els detalls de la màquina estan bloquejats. Tria una altra màquina.",
         missing: "Ja no es troba. Tria una altra màquina.",
@@ -12736,7 +13248,6 @@ settingsSession: {
       genericSettingsUnavailable: "La configuració del connector no està disponible per a aquesta màquina.",
       genericSettingsLoadError: "No s'ha pogut carregar la configuració del connector.",
       genericSettingsSaveError: "No s'ha pogut desar la configuració del connector.",
-      genericSettingsEmpty: "Aquest connector no ha projectat cap configuració editable.",
       registriesTitle: "Registres npm privats",
       registriesFooter: "L'inici de sessió al registre només controla l'accés als paquets. Els connectors instal·lats i de confiança continuen disponibles si s'elimina un registre o se'n tanca la sessió.",
       registriesAdd: "Afegeix un registre",
@@ -12805,7 +13316,137 @@ settingsSession: {
         cacheTitle: 'Memòria cau de resums',
         cacheSubtitle: 'Els resums de checkpoint es reutilitzen per rebut; els resums del working tree són temporals.',
     },
+    updates: {
+        pageDescription: 'Tot el que Happier pot actualitzar, en aquest dispositiu i a les teves màquines.',
+        catalogSubtitle: 'Aquesta app, línies d’ordres i eines d’agents',
+        title: 'Actualitzacions',
+        thisAppTitle: 'Happier',
+        happierCliTitle: 'Happier CLI',
+        sections: {
+            thisApp: 'Aquesta app',
+            thisComputer: 'Aquest ordinador',
+            machine: 'Màquina',
+        },
+        offline: 'Sense connexió',
+        pill: {
+            updates: ({ count }: { count: number }) => plural({ count, singular: 'actualització', plural: 'actualitzacions' }),
+            running: 'Actualitzant…',
+            ready: 'Reinicia per actualitzar',
+            failed: 'L’actualització no ha acabat',
+            required: 'Cal actualitzar',
+            completed: 'Actualitzat',
+        },
+        a11y: {
+            pillAvailable: ({ count }: { count: number }) => plural({ count, singular: `Actualitzacions, ${count} disponible`, plural: `Actualitzacions, ${count} disponibles` }),
+            pillRunning: 'Actualitzacions, actualitzant',
+            pillReady: 'Actualitzacions, reinicia per acabar',
+            pillFailed: 'Actualitzacions, una actualització no ha acabat',
+            pillRequired: 'Actualitzacions, cal actualitzar',
+            pillCompleted: 'Actualitzacions, completat',
+            rowOn: ({ title, where }: { title: string; where: string }) => `${title} a ${where}`,
+            actionOn: ({ action, title, where }: { action: string; title: string; where: string }) => `${action} ${title} a ${where}`,
+            progress: ({ percent }: { percent: number }) => `${percent} per cent`,
+        },
+        summary: {
+            checking: 'Cercant actualitzacions…',
+            available: ({ count }: { count: number }) => plural({ count, singular: '1 actualització disponible', plural: `${count} actualitzacions disponibles` }),
+            updatingBatch: ({ done, total }: { done: number; total: number }) => `Actualitzant ${Math.min(done + 1, total)} de ${total}…`,
+            updating: 'Actualitzant…',
+            keepWorking: 'Pots continuar treballant.',
+            ready: 'Reinicia per acabar d’actualitzar Happier',
+            failedCount: ({ count }: { count: number }) => plural({ count, singular: '1 actualització no ha acabat', plural: `${count} actualitzacions no han acabat` }),
+            notCheckedYet: 'Encara no comprovat',
+            required: 'Cal una actualització',
+            upToDate: 'Tot està al dia',
+            unknown: 'No s’han pogut comprovar algunes versions',
+            unchecked: 'Cap actualització coneguda',
+            uncheckedMeta: 'Algunes eines encara no s’han comprovat.',
+            offline: 'Algunes màquines estan sense connexió',
+            checkedAt: ({ time }: { time: string }) => `Última comprovació: ${time}`,
+            upToDateDescription: 'Happier, la seva línia d’ordres i els teus agents estan al dia.',
+            unknownDescription: 'Tot el que s’ha pogut comprovar està al dia. La resta es tornarà a comprovar quan sigui accessible.',
+            offlineDescription: 'Tot el que és accessible està al dia. Les màquines sense connexió es comprovaran quan tornin.',
+        },
+        settingsSubtitle: {
+            upToDate: 'Al dia',
+            available: ({ count }: { count: number }) => plural({ count, singular: '1 actualització disponible', plural: `${count} actualitzacions disponibles` }),
+            running: 'Actualitzant…',
+            ready: 'Reinicia per acabar l’actualització',
+            required: 'Cal una actualització',
+            failed: 'Una actualització no ha acabat',
+            unknown: 'No s’han pogut comprovar totes les actualitzacions',
+            unchecked: 'Algunes eines no s’han comprovat',
+            offline: 'Algunes màquines estan sense connexió',
+            checking: 'Cercant actualitzacions…',
+        },
+        action: {
+            update: 'Actualitza',
+            updateAll: 'Actualitza-ho tot',
+            restart: 'Reinicia per actualitzar',
+            reload: 'Recarrega',
+            storeIos: 'Actualitza a l’App Store',
+            storeAndroid: 'Actualitza a Google Play',
+            checkNow: 'Cerca actualitzacions',
+            stopAfterThis: 'Atura després d’aquesta',
+            skipVersion: 'Omet aquesta versió',
+            openUpdates: 'Obre Actualitzacions',
+            whatsNew: 'Novetats',
+            viewLog: 'Mostra el registre',
+        },
+        row: {
+            cliNotManaged: 'Happier no ha instal·lat aquesta línia d’ordres, així que no la substituirà.',
+            versionChange: ({ from, to }: { from: string; to: string }) => `${from} → ${to}`,
+            upToDateVersion: ({ version }: { version: string }) => `Al dia · ${version}`,
+            available: ({ version }: { version: string }) => `${version} disponible`,
+            downloading: ({ version }: { version: string }) => `Baixant ${version}`,
+            downloadingUpdate: 'Baixant l’actualització',
+            updatingTo: ({ version }: { version: string }) => `Actualitzant a ${version}…`,
+            updating: 'Actualitzant…',
+            restarting: 'Reiniciant…',
+            restartingService: 'Reiniciant el servei en segon pla…',
+            readyVersion: ({ version }: { version: string }) => `${version} està a punt`,
+            ready: 'Actualització a punt',
+            webNewBuild: 'Hi ha una versió més nova de Happier a punt',
+            requiredApp: 'Aquesta versió ja no és compatible. Actualitza per continuar fent servir Happier.',
+            appCheckFailed: 'No s’ha pogut comprovar si hi ha una versió més nova.',
+            appDownloadFailed: 'La baixada no ha acabat.',
+            appInstallFailed: 'No s’ha pogut instal·lar l’actualització.',
+            latestUnknown: 'No s’ha pogut comprovar si hi ha una versió més nova',
+            rolledBack: ({ kept, target }: { kept: string; target: string }) => `${target} no s’ha iniciat en aquesta màquina, així que continua amb la ${kept}.`,
+            installedByYou: 'Instal·lat per tu',
+            updateItYourWay: 'Actualitza’l de la mateixa manera que el vas instal·lar.',
+            offline: 'No es pot actualitzar sense connexió',
+            skipped: ({ version }: { version: string }) => `${version} omesa`,
+            checking: 'Comprovant…',
+            failedGeneric: 'L’actualització no ha acabat. Torna-ho a provar.',
+            remoteUnsupported: 'Aquesta màquina no pot actualitzar la línia d’ordres a distància. Actualitza-la a la mateixa màquina.',
+            updateNotVerified: 'L’actualització s’ha executat, però la versió no ha canviat.',
+            rolledBackLocal: 'L’actualització no s’ha iniciat, així que aquest ordinador ha tornat a la versió anterior.',
+            smokeFailed: 'La nova versió no ha funcionat en aquest ordinador, així que no ha canviat res.',
+            waitingReconnect: 'Instal·lada, esperant que aquesta màquina es torni a connectar',
+            couldNotStart: ({ message }: { message: string }) => `No s’ha pogut iniciar l’actualització: ${message}`,
+            restartsService: 'Reinicia el servei en segon pla; les sessions es tornen a connectar.',
+            alreadyCurrent: 'Ja està actualitzat',
+            anotherUpdateRunning: 'Hi ha una altra actualització en curs en aquesta màquina. Torna-ho a provar quan acabi.',
+            outcomeUnknown: 'No s’ha pogut confirmar que l’actualització hagi començat. Torna-ho a provar per comprovar-ho.',
+            othersUpToDate: ({ count }: { count: number }) => plural({ count, singular: '1 més està al dia', plural: `${count} més estan al dia` }),
+            waitingOffline: ({ count }: { count: number }) => plural({ count, singular: '1 actualització esperant que torni a estar en línia', plural: `${count} actualitzacions esperant que torni a estar en línia` }),
+        },
+        footer: 'Les actualitzacions s’instal·len a cada màquina. Després d’actualitzar la línia d’ordres, Happier reinicia el servei en segon pla d’aquella màquina.',
+        tray: {
+            available: ({ count }: { count: number }) => `Actualitzacions disponibles (${count})…`,
+            running: 'Actualitzant…',
+            ready: 'Reinicia per actualitzar Happier',
+            required: 'Cal actualitzar…',
+            failed: 'Una actualització no ha acabat…',
+        },
+    },
     machinePools: machinePoolTranslations.ca,
+    settingsConnections: settingsConnectionsTranslations.ca,
+    settingsMachines: settingsMachinesTranslations.ca,
+    connectedServicesSettings: connectedServicesSettingsTranslations.ca,
+    connectedServicesPool: connectedServicesPoolTranslations.ca,
+    connectedServicesCollection: connectedServicesCollectionTranslations.ca,
     externalSessions: {
         ...externalSessionOperationTranslations.ca,
         ...externalSessionSettingsTranslations.ca,
@@ -12858,6 +13499,7 @@ settingsSession: {
         browseActivityIdle: "Inactiva",
         browseActivityUnknown: "Desconeguda",
         browseSearchPlaceholder: "Cerca sessions carregades…",
+        browseSearchAgentPlaceholder: ({ agent }: { agent: string }) => `Cerca sessions de ${agent}…`,
         browseNoSearchResults: "Cap sessió carregada coincideix encara amb aquesta cerca.",
         browseIndexing: "S'estan indexant les sessions externes…",
         browseIndexingProgress: ({ scanned, total }: { scanned: number; total: number }) => `${scanned} de ${total} sessions indexades`,
@@ -12895,6 +13537,8 @@ settingsSession: {
     },
     workflows: workflowTranslations.ca,
     homeGovernance: homeGovernanceTranslations.ca,
+    homeFeatures: homeFeatureTranslations.ca,
+    homeSettings: homeSettingsTranslations.ca,
     teams: teamsTranslations.ca.teams,
     identityAdministration: identityAdministrationTranslations.ca.identityAdministration,
     personalHome: {
@@ -12923,6 +13567,8 @@ settingsSession: {
     },
     settingsSearch: {
         placeholder: 'Cerca els ajustos',
+        pagesTitle: 'Pàgines',
+        settingsTitle: 'Ajustos',
     },
     onboardingJourney: {
         accessibility: {

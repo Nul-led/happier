@@ -4,6 +4,7 @@ import renderer from 'react-test-renderer';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { SystemTaskRunner } from '@/components/systemTasks/types';
+import { useSystemTaskSnapshot } from '@/components/systemTasks/useSystemTaskSnapshot';
 import { renderScreen } from '@/dev/testkit';
 import { buildRelayDriftRepairSystemTaskSpec } from '@/sync/domains/server/relayDrift/relayDriftSystemTask';
 import { buildLocalDaemonServiceSystemTaskSpec } from '@/components/systemTasks/specs/localControl/buildLocalDaemonServiceSystemTaskSpec';
@@ -121,10 +122,34 @@ vi.mock('@/components/machines/doctorSnapshot/machineDoctorSnapshotCache', () =>
 }));
 
 vi.mock('@/components/settings/machines/localControl/useLocalDaemonControl', () => ({
-    useLocalDaemonControl: () => ({
-        status: localDaemonControlState.status,
-        isUnavailable: localDaemonControlState.isUnavailable,
-    }),
+    useLocalDaemonControl: () => {
+        const [repairTaskId, setRepairTaskId] = React.useState<string | null>(null);
+        // Every test installs its runner before rendering the hook. Keep the mock on
+        // the same canonical runner boundary as production rather than inventing a
+        // second local task state machine for this suite.
+        const runner = state.runner!;
+        const activeTaskSnapshot = useSystemTaskSnapshot(runner, repairTaskId);
+        const repairBackgroundService = React.useCallback(async () => {
+            const taskId = await runner.start(buildRelayDriftRepairSystemTaskSpec({
+                activeRelayUrl: state.activeServerSnapshot.serverUrl,
+                activeWebappUrl: state.activeServerSnapshot.serverUrl,
+                activeLocalRelayUrl: state.activeServerSnapshot.activeLocalRelayUrl ?? null,
+            }));
+            setRepairTaskId(taskId);
+            return taskId;
+        }, [runner]);
+        const cancel = React.useCallback(() => {
+            if (repairTaskId) void runner.cancel(repairTaskId);
+        }, [repairTaskId, runner]);
+        return {
+            status: localDaemonControlState.status,
+            isUnavailable: localDaemonControlState.isUnavailable,
+            activeTaskSnapshot,
+            repairBackgroundService,
+            cancel,
+            lastErrorMessage: null,
+        };
+    },
 }));
 
 // Partial mock: the rest of the profile owner keeps its real exports so an
@@ -187,7 +212,7 @@ vi.mock('@/components/systemTasks', async (importOriginal) => {
     const actual = await importOriginal<typeof import('@/components/systemTasks')>();
     return {
         ...actual,
-        getDefaultSystemTaskRunner: () => state.runner,
+        getDefaultSystemTaskRunner: () => state.runner!,
     };
 });
 
@@ -396,8 +421,90 @@ describe('useRelayDriftBanner', () => {
 
         expect(banner).toMatchObject({
             kind: 'warning',
-            title: 'server.relayDrift.bannerDifferentRelayTitle',
+            title: 'machine.thisComputer.title.daemon_url_mismatch',
         });
+    });
+
+    // S11: this computer's daemon is healthy on the app's own Home but signed in to another
+    // account, so it is not in this account's machine list and no Administration target can
+    // name it. The desktop's own status is still a fact about THIS computer: it must be explained.
+    it('explains a daemon of another account on this Home even when it is not one of this account\'s machines', async () => {
+        const { storage } = await import('@/sync/domains/state/storageStore');
+        const { profileDefaults } = await import('@/sync/domains/profiles/profile');
+        storage.setState({ profile: { ...profileDefaults, id: 'acct_app', username: 'leeroy' } });
+        administrationTargetState.current = null;
+        state.cachedDoctorSnapshot = null;
+        localDaemonControlState.status = {
+            serviceInstalled: true,
+            daemonRunning: true,
+            needsAuth: false,
+            machineId: 'machine-of-other-account',
+            daemonServerUrl: 'https://relay.example.test',
+            daemonAccountId: 'acct_other',
+        };
+        const { useRelayDriftBanner } = await import('./useRelayDriftBanner');
+        let banner: RelayDriftBanner | null = null;
+        function Probe() {
+            banner = useRelayDriftBanner();
+            return null;
+        }
+
+        await renderScreen(React.createElement(Probe));
+
+        expect(banner).toMatchObject({
+            kind: 'warning',
+            title: 'machine.thisComputer.title.daemon_account_mismatch',
+            description: 'machine.thisComputer.description.daemon_account_mismatch',
+            actionLabel: 'machine.thisComputer.action.daemon_account_mismatch',
+        });
+        storage.setState({ profile: { ...profileDefaults } });
+    });
+
+    // R10 D1: moving this computer's daemon off another account is never silent.
+    it('asks before switching a daemon of another account and starts nothing when declined', async () => {
+        const { storage } = await import('@/sync/domains/state/storageStore');
+        const { profileDefaults } = await import('@/sync/domains/profiles/profile');
+        const { Modal } = await import('@/modal');
+        storage.setState({ profile: { ...profileDefaults, id: 'acct_app', username: 'leeroy' } });
+        administrationTargetState.current = null;
+        localDaemonControlState.status = {
+            serviceInstalled: true,
+            daemonRunning: true,
+            needsAuth: false,
+            machineId: 'machine-of-other-account',
+            daemonServerUrl: 'https://relay.example.test',
+            daemonAccountId: 'acct_other',
+        };
+        const start = vi.fn(async () => 'task_1');
+        state.runner = { ...state.runner!, start };
+        const confirm = vi.mocked(Modal.confirm);
+        confirm.mockClear();
+        confirm.mockResolvedValueOnce(false);
+        const { useRelayDriftBanner } = await import('./useRelayDriftBanner');
+        let banner: RelayDriftBanner | null = null;
+        function Probe() {
+            banner = useRelayDriftBanner();
+            return null;
+        }
+        await renderScreen(React.createElement(Probe));
+
+        await renderer.act(async () => {
+            await (banner as RelayDriftBanner | null)?.onPress();
+        });
+        expect(confirm).toHaveBeenCalledTimes(1);
+        expect(confirm.mock.calls[0]?.[0]).toBe('machine.thisComputer.moveConfirm.title');
+        expect(start).not.toHaveBeenCalled();
+
+        confirm.mockResolvedValueOnce(true);
+        await renderer.act(async () => {
+            await (banner as RelayDriftBanner | null)?.onPress();
+        });
+        expect(start).toHaveBeenCalledWith(buildRelayDriftRepairSystemTaskSpec({
+            activeRelayUrl: 'https://relay.example.test',
+            activeWebappUrl: 'https://relay.example.test',
+            activeLocalRelayUrl: null,
+        }));
+        storage.setState({ profile: { ...profileDefaults } });
     });
 
     it('does not fall back to the active machine when the Administration target is unavailable', async () => {
@@ -1041,7 +1148,7 @@ describe('useRelayDriftBanner', () => {
 
         const resolvedBanner = banner as RelayDriftBanner | null;
         expect(resolvedBanner).not.toBeNull();
-        expect(resolvedBanner?.actionLabel).toBe('common.authenticate');
+        expect(resolvedBanner?.actionLabel).toBe('machine.thisComputer.action.daemon_needs_auth');
     });
 
     it('restarts the existing local background service instead of launching full repair when the relay matches but the daemon is not running', async () => {
@@ -1164,7 +1271,7 @@ describe('useRelayDriftBanner', () => {
 
         const resolvedBanner = banner as RelayDriftBanner | null;
         expect(resolvedBanner).not.toBeNull();
-        expect(resolvedBanner?.actionLabel).toBe('sessionGettingStarted.title.startDaemon');
+        expect(resolvedBanner?.actionLabel).toBe('machine.thisComputer.action.daemon_not_running');
 
         await renderer.act(async () => {
             await resolvedBanner?.onPress();

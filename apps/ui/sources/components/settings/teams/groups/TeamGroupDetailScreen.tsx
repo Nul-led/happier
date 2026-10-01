@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { useRouter } from 'expo-router';
+import { useNavigation, useRouter } from '@/components/appShell/workspace/destinationRoute';
 import {
     TEAM_GROUP_NAME_MAX_LENGTH_V1,
     validateTeamGroupDescriptionV1,
@@ -13,16 +13,24 @@ import { Platform } from 'react-native';
 import { useUnistyles } from 'react-native-unistyles';
 
 import { Avatar } from '@/components/ui/avatar/Avatar';
+import { RoundButton } from '@/components/ui/buttons/RoundButton';
+import { FieldTextInput } from '@/components/ui/forms/FieldTextInput';
 import { Icon } from '@/components/ui/icons/Icon';
+import { PageHeader } from '@/components/ui/layout/PageHeader';
+import { PageHeaderMarkTile } from '@/components/ui/layout/PageHeaderEntityParts';
+import { AttentionBanner } from '@/components/ui/lists/AttentionBanner';
 import { Item } from '@/components/ui/lists/Item';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
+import { ItemList } from '@/components/ui/lists/ItemList';
 import { ItemRowActions } from '@/components/ui/lists/ItemRowActions';
+import { SectionActionButton } from '@/components/ui/lists/SectionActionButton';
+import { SectionButtonRow } from '@/components/ui/lists/SectionButtonRow';
 import { VirtualizedList } from '@/components/ui/lists/virtualized';
-import { TextInput } from '@/components/ui/text/Text';
+import { SurfaceStateCard } from '@/components/ui/surfaces/SurfaceStateCard';
 import { useTeamGroup, useTeamGroupMembers } from '@/hooks/teams/useTeamGroups';
 import { useTeamMembersRoster } from '@/hooks/teams/useTeamMembersRoster';
 import { Modal } from '@/modal';
-import { formatAccountDisplayName } from '@/sync/domains/account/formatAccountDisplayName';
+import { resolveAccountDisplayName } from '@/sync/domains/account/formatAccountDisplayName';
 import {
     addTeamGroupMember,
     archiveTeamGroup,
@@ -35,6 +43,7 @@ import {
     isTeamActionApprovalPendingError,
 } from '@/sync/ops/teams/teamActionClient';
 import { t } from '@/text';
+import { useUnsavedDraftNavigationGuard } from '@/utils/navigation/useUnsavedDraftNavigationGuard';
 
 import { TeamSection } from '../TeamSection';
 import { useEditedMetadataDraft } from '../useEditedMetadataDraft';
@@ -88,6 +97,7 @@ const GroupMetadataSection = React.memo(function GroupMetadataSection(props: Rea
     current: boolean;
 }>) {
     const { context, group, current } = props;
+    const navigation = useNavigation();
     const [saving, setSaving] = React.useState(false);
     const [error, setError] = React.useState<string | null>(null);
     const saveInFlightRef = React.useRef(false);
@@ -104,6 +114,12 @@ const GroupMetadataSection = React.memo(function GroupMetadataSection(props: Rea
         description: group.description ?? '',
     });
     const { name, description, conflict } = draft;
+    useUnsavedDraftNavigationGuard({
+        navigation,
+        isDirty: draft.isDirty,
+        onDiscard: draft.reset,
+        tag: 'TeamGroupDetailScreen.beforeRemove',
+    });
 
     const nameValidation = validateTeamGroupNameV1(name);
     const descriptionValidation = validateTeamGroupDescriptionV1(description);
@@ -116,96 +132,113 @@ const GroupMetadataSection = React.memo(function GroupMetadataSection(props: Rea
 
     if (!group.capabilities.updateMetadata) return null;
 
+    const save = async () => {
+        if (saveInFlightRef.current
+            || nameValidation.status !== 'ok'
+            || descriptionValidation.status !== 'ok') return;
+        saveInFlightRef.current = true;
+        setSaving(true);
+        setError(null);
+        let outcome: Awaited<ReturnType<typeof updateTeamGroup>>;
+        try {
+            outcome = await updateTeamGroup({
+                scope: context.scope,
+                address: context.address,
+                groupId: group.id,
+                name: nameValidation.name,
+                description: descriptionValidation.description,
+            });
+        } catch (cause) {
+            saveInFlightRef.current = false;
+            setSaving(false);
+            if (isTeamActionApprovalPendingError(cause)) {
+                context.requestApproval(cause.artifactId);
+            } else {
+                setError(t('teams.errors.generic'));
+            }
+            return;
+        }
+        saveInFlightRef.current = false;
+        setSaving(false);
+        if (outcome.kind === 'failed') {
+            setError(outcome.failure.kind === 'conflict'
+                ? t('teams.groups.nameTaken')
+                : teamMutationFailureLabel(outcome.failure));
+            return;
+        }
+        draft.commit({
+            name: outcome.value.name,
+            description: outcome.value.description ?? '',
+        });
+    };
+
     return (
         <>
-            <ItemGroup title={t('teams.groups.nameLabel')}>
-                <TextInput
-                    testID="team-group-name"
-                    value={name}
-                    onChangeText={draft.setName}
-                    placeholder={t('teams.groups.namePlaceholder')}
-                    accessibilityLabel={t('teams.groups.nameLabel')}
-                    maxLength={TEAM_GROUP_NAME_MAX_LENGTH_V1}
-                    editable={editable}
+            {conflict ? (
+                <AttentionBanner
+                    testID="team-group-identity-conflict-notice"
+                    title={t('teams.errors.conflict')}
+                    description={[group.name, group.description ?? ''].filter(Boolean).join('\n')}
+                    accessibilityLiveRegion="assertive"
+                    action={{
+                        label: t('common.continue'),
+                        onPress: draft.acceptPublished,
+                        disabled: saving,
+                        testID: 'team-group-identity-conflict',
+                    }}
+                />
+            ) : null}
+            <ItemGroup title={t('teams.groups.detailsSection')}>
+                <Item
+                    title={t('teams.groups.nameLabel')}
+                    accessoryLayout="adaptive"
+                    showChevron={false}
+                    rightElement={(
+                        <FieldTextInput
+                            testID="team-group-name"
+                            value={name}
+                            onChangeText={draft.setName}
+                            placeholder={t('teams.groups.namePlaceholder')}
+                            accessibilityLabel={t('teams.groups.nameLabel')}
+                            maxLength={TEAM_GROUP_NAME_MAX_LENGTH_V1}
+                            editable={editable}
+                        />
+                    )}
+                />
+                <Item
+                    title={t('teams.create.descriptionLabel')}
+                    accessoryLayout="stacked"
+                    showChevron={false}
+                    rightElement={(
+                        <FieldTextInput
+                            testID="team-group-description"
+                            value={description}
+                            onChangeText={draft.setDescription}
+                            placeholder={t('teams.groups.descriptionPlaceholder')}
+                            accessibilityLabel={t('teams.create.descriptionLabel')}
+                            multiline
+                            minLines={2}
+                            editable={editable}
+                            error={descriptionValidation.status !== 'ok' ? t('teams.errors.invalidDescription') : null}
+                        />
+                    )}
                 />
             </ItemGroup>
-            <ItemGroup
-                title={t('teams.create.descriptionLabel')}
-                footer={error ?? (descriptionValidation.status !== 'ok'
-                    ? t('teams.errors.invalidDescription')
-                    : undefined)}
-            >
-                <TextInput
-                    testID="team-group-description"
-                    value={description}
-                    onChangeText={draft.setDescription}
-                    placeholder={t('teams.create.descriptionPlaceholder')}
-                    accessibilityLabel={t('teams.create.descriptionLabel')}
-                    multiline
-                    editable={editable}
-                />
-                {conflict ? (
-                    <Item
-                        testID="team-group-identity-conflict"
-                        title={t('teams.errors.conflict')}
-                        subtitle={[group.name, group.description ?? ''].filter(Boolean).join('\n')}
-                        detail={t('common.continue')}
-                        accessibilityLiveRegion="assertive"
-                        disabled={saving}
-                        onPress={draft.acceptPublished}
-                        showChevron={false}
+            <ItemGroup surface="none">
+                <SectionButtonRow footnote={error} footnoteTone="danger" footnoteTestID="team-group-identity-error">
+                    <RoundButton
+                        testID="team-group-save"
+                        size="small"
+                        title={t('common.save')}
+                        loading={saving}
+                        disabled={!changed
+                            || conflict
+                            || descriptionValidation.status !== 'ok'
+                            || saving
+                            || !editable}
+                        onPress={() => void save()}
                     />
-                ) : null}
-                <Item
-                    testID="team-group-save"
-                    title={t('common.save')}
-                    loading={saving}
-                    disabled={!changed
-                        || conflict
-                        || descriptionValidation.status !== 'ok'
-                        || saving
-                        || !editable}
-                    onPress={async () => {
-                        if (saveInFlightRef.current
-                            || nameValidation.status !== 'ok'
-                            || descriptionValidation.status !== 'ok') return;
-                        saveInFlightRef.current = true;
-                        setSaving(true);
-                        setError(null);
-                        let outcome: Awaited<ReturnType<typeof updateTeamGroup>>;
-                        try {
-                            outcome = await updateTeamGroup({
-                                scope: context.scope,
-                                address: context.address,
-                                groupId: group.id,
-                                name: nameValidation.name,
-                                description: descriptionValidation.description,
-                            });
-                        } catch (cause) {
-                            saveInFlightRef.current = false;
-                            setSaving(false);
-                            if (isTeamActionApprovalPendingError(cause)) {
-                                context.requestApproval(cause.artifactId);
-                            } else {
-                                setError(t('teams.errors.generic'));
-                            }
-                            return;
-                        }
-                        saveInFlightRef.current = false;
-                        setSaving(false);
-                        if (outcome.kind === 'failed') {
-                            setError(outcome.failure.kind === 'conflict'
-                                ? t('teams.groups.nameTaken')
-                                : teamMutationFailureLabel(outcome.failure));
-                            return;
-                        }
-                        draft.commit({
-                            name: outcome.value.name,
-                            description: outcome.value.description ?? '',
-                        });
-                    }}
-                    showChevron={false}
-                />
+                </SectionButtonRow>
             </ItemGroup>
         </>
     );
@@ -422,19 +455,48 @@ const GroupDetail = React.memo(function GroupDetail(props: Readonly<{
         const result: GroupDetailVirtualizedRow[] = [];
         if (group === null) return result;
         const add = (key: string, render: () => React.ReactElement) => result.push({ key, render });
+        // Adding happens in the roster: its section carries the "+", which opens the picker below.
+        const addMemberAction = canEditRoster ? (
+            <SectionActionButton
+                testID="team-group-add-member"
+                icon="plus"
+                title={t('teams.groups.addMember')}
+                expanded={picking}
+                onPress={() => setPicking((current) => !current)}
+            />
+        ) : undefined;
 
-        add('summary', () => (
-            <ItemGroup title={group.name} footer={group.description ?? undefined}>
-                <Item
-                    testID="team-group-member-count"
-                    detailTestID="team-group-member-count-value"
-                    title={t('teams.groups.membersSection')}
-                    detail={t('teams.groups.memberCount', { count: group.memberCount })}
-                    showChevron={false}
+        if (archived) {
+            add('archived', () => (
+                <AttentionBanner
+                    testID="team-group-archived"
+                    tone="neutral"
+                    title={t('teams.directory.archivedBadge')}
+                    description={t('teams.groups.archivedReadOnly')}
                 />
-                {/* Metadata ownership is stated where it applies, and says what
-                    stays possible: an externally created Group is read-only for
-                    its name and lifecycle, never for its native roster. */}
+            ));
+        }
+
+        if (groupStale) {
+            const failure = detail.error;
+            add('group-stale', () => (
+                <AttentionBanner
+                    testID="team-group-stale"
+                    title={t('teams.stale.label')}
+                    description={failure ? teamReadFailureLabel(failure) : undefined}
+                    accessibilityLiveRegion="polite"
+                    action={failure === null || failure.retryable ? {
+                        label: t('teams.unavailable.retry'),
+                        onPress: () => void detail.reload(),
+                        testID: 'team-group-stale-retry',
+                    } : null}
+                />
+            ));
+        }
+
+        if (managedBy) {
+            add('management', () => (
+                <ItemGroup>
                 {managedBy ? (() => {
                     const management = group.management;
                     const managementPath = management.kind === 'directory_created'
@@ -459,39 +521,6 @@ const GroupDetail = React.memo(function GroupDetail(props: Readonly<{
                     />
                     );
                 })() : null}
-                {archived ? (
-                    <Item
-                        testID="team-group-archived"
-                        title={t('teams.directory.archivedBadge')}
-                        subtitle={t('teams.groups.archivedReadOnly')}
-                        icon={<Icon name="warning" size={29} color={theme.colors.state.warning.foreground} />}
-                        showChevron={false}
-                    />
-                ) : null}
-            </ItemGroup>
-        ));
-
-        if (groupStale) {
-            const failure = detail.error;
-            add('group-stale', () => (
-                <ItemGroup footer={failure
-                    ? teamReadFailureLabel(failure)
-                    : t('teams.stale.label')}>
-                    <Item
-                        testID="team-group-stale"
-                        title={t('teams.stale.label')}
-                        icon={<Icon name="warning" size={29} color={theme.colors.state.warning.foreground} />}
-                        accessibilityLiveRegion="polite"
-                        showChevron={false}
-                    />
-                    {failure === null || failure.retryable ? (
-                        <Item
-                            testID="team-group-stale-retry"
-                            title={t('teams.unavailable.retry')}
-                            onPress={() => void detail.reload()}
-                            showChevron={false}
-                        />
-                    ) : null}
                 </ItemGroup>
             ));
         }
@@ -507,11 +536,13 @@ const GroupDetail = React.memo(function GroupDetail(props: Readonly<{
             add(`members:${chunk[0]!.membershipId}`, () => (
                 <ItemGroup
                     title={first ? t('teams.groups.membersSection') : undefined}
-                    footer={last ? notice ?? undefined : undefined}
+                    action={first ? addMemberAction : undefined}
+                    description={first ? notice ?? undefined : undefined}
                     virtualizedSegment={{ first, last }}
                 >
                     {chunk.map((member) => {
-                        const displayName = formatAccountDisplayName(member.account) ?? member.accountId;
+                        const person = resolveAccountDisplayName({ profile: member.account, accountId: member.accountId, viewerAccountId: context.scope.accountId });
+                        const displayName = person.name;
                         const external = contributionLabel(member);
                         const isNative = member.contributions.native;
                         return (
@@ -519,7 +550,7 @@ const GroupDetail = React.memo(function GroupDetail(props: Readonly<{
                                 key={member.membershipId}
                                 testID={`team-group-member:${member.accountId}`}
                                 title={displayName}
-                                subtitle={external ?? undefined}
+                                subtitle={[external, person.hint].filter((part): part is string => Boolean(part)).join(' · ') || undefined}
                                 leftElement={(
                                     <Avatar
                                         id={member.accountId}
@@ -623,8 +654,18 @@ const GroupDetail = React.memo(function GroupDetail(props: Readonly<{
 
         if (members.rows.length === 0 && members.status === 'ready') {
             add('members-empty', () => (
-                <ItemGroup footer={notice ?? t('teams.groups.emptyBody')}>
-                    <Item testID="team-group-members-empty" title={t('teams.groups.emptyRosterTitle')} showChevron={false} />
+                <ItemGroup
+                    title={t('teams.groups.membersSection')}
+                    action={addMemberAction}
+                    description={notice ?? undefined}
+                >
+                    <Item
+                        testID="team-group-members-empty"
+                        title={t('teams.groups.emptyRosterTitle')}
+                        subtitle={t('teams.groups.emptyBody')}
+                        mode="info"
+                        showChevron={false}
+                    />
                 </ItemGroup>
             ));
         }
@@ -632,17 +673,15 @@ const GroupDetail = React.memo(function GroupDetail(props: Readonly<{
         const membersError = members.error;
         if (membersError) {
             add('members-error', () => (
-                <ItemGroup footer={teamReadFailureLabel(membersError)}>
-                    {membersError.retryable ? (
-                        <Item
-                            testID="team-group-members-retry"
-                            title={t('teams.unavailable.retry')}
-                            icon={<Icon name="arrow-clockwise" size={29} color={theme.colors.text.secondary} />}
-                            onPress={() => void members.reload()}
-                            showChevron={false}
-                        />
-                    ) : null}
-                </ItemGroup>
+                <AttentionBanner
+                    testID="team-group-members-error"
+                    title={teamReadFailureLabel(membersError)}
+                    action={membersError.retryable ? {
+                        label: t('teams.unavailable.retry'),
+                        onPress: () => void members.reload(),
+                        testID: 'team-group-members-retry',
+                    } : null}
+                />
             ));
         } else if (members.hasMore && members.rows.length > 0) {
             add('members-load-more', () => (
@@ -659,26 +698,12 @@ const GroupDetail = React.memo(function GroupDetail(props: Readonly<{
             ));
         }
 
-        if (canEditRoster) {
-            add('add-member', () => (
-                <ItemGroup>
-                    <Item
-                        testID="team-group-add-member"
-                        title={t('teams.groups.addMember')}
-                        accessibilityExpanded={picking}
-                        onPress={() => setPicking((current) => !current)}
-                        showChevron={false}
-                    />
-                </ItemGroup>
-            ));
-        }
-
         if (picking) {
             add('history', () => (
                     // The Group's own history intent, asked once for the add.
                     <ItemGroup
                         title={t('teams.history.label')}
-                        footer={t('teams.history.scopeNote')}
+                        description={t('teams.history.scopeNote')}
                         accessibilityRole="radiogroup"
                         accessibilityLabel={t('teams.history.label')}
                     >
@@ -718,7 +743,8 @@ const GroupDetail = React.memo(function GroupDetail(props: Readonly<{
                                 <Item
                                     key={membership.id}
                                     testID={`team-group-candidate:${membership.accountId}`}
-                                    title={formatAccountDisplayName(membership.account) ?? membership.accountId}
+                                    title={resolveAccountDisplayName({ profile: membership.account, accountId: membership.accountId, viewerAccountId: context.scope.accountId }).name}
+                                    subtitle={resolveAccountDisplayName({ profile: membership.account, accountId: membership.accountId, viewerAccountId: context.scope.accountId }).hint ?? undefined}
                                     leftElement={(
                                         <Avatar
                                             id={membership.accountId}
@@ -764,7 +790,6 @@ const GroupDetail = React.memo(function GroupDetail(props: Readonly<{
                                     testID="team-group-candidates-retry"
                                     title={t('teams.unavailable.retry')}
                                     subtitle={teamReadFailureLabel(candidatesError)}
-                                    icon={<Icon name="arrow-clockwise" size={29} color={theme.colors.text.secondary} />}
                                     onPress={() => void candidates.reload()}
                                     showChevron={false}
                                 />
@@ -813,11 +838,14 @@ const GroupDetail = React.memo(function GroupDetail(props: Readonly<{
 
         if (group.capabilities.archive && !archived) {
             add('archive', () => (
-                <ItemGroup>
-                    <Item
+                <ItemGroup surface="none">
+                    <SectionButtonRow>
+                    <RoundButton
                         testID="team-group-archive"
+                        size="small"
+                        display="destructive"
                         title={t('teams.groups.archiveAction', { name: group.name })}
-                        destructive
+                        titleNumberOfLines="complete"
                         disabled={busy || !context.canMutate || !groupCurrent}
                         onPress={async () => {
                             if (mutationInFlightRef.current) return;
@@ -851,18 +879,22 @@ const GroupDetail = React.memo(function GroupDetail(props: Readonly<{
                                 setBusy(false);
                             }
                         }}
-                        showChevron={false}
                     />
+                    </SectionButtonRow>
                 </ItemGroup>
             ));
         }
 
         if (group.capabilities.restore && archived) {
             add('restore', () => (
-                <ItemGroup>
-                    <Item
+                <ItemGroup surface="none">
+                    <SectionButtonRow>
+                    <RoundButton
                         testID="team-group-restore"
+                        size="small"
+                        display="secondary"
                         title={t('teams.groups.restoreAction', { name: group.name })}
+                        titleNumberOfLines="complete"
                         // Restore is legitimate *because* the Group is archived,
                         // so it gates on host readiness rather than on the
                         // ordinary-write rule — but an unresolved approval for
@@ -896,8 +928,8 @@ const GroupDetail = React.memo(function GroupDetail(props: Readonly<{
                                 setBusy(false);
                             }
                         }}
-                        showChevron={false}
                     />
+                    </SectionButtonRow>
                 </ItemGroup>
             ));
         }
@@ -933,29 +965,60 @@ const GroupDetail = React.memo(function GroupDetail(props: Readonly<{
     );
 
     if (group === null) {
-        if (detail.status === 'loading') {
-            return (
-                <ItemGroup>
-                    <Item testID="team-group-loading" title={t('teams.tabs.groups')} loading showChevron={false} />
-                </ItemGroup>
-            );
-        }
         const failure = detail.error;
         const message = failure ? teamReadFailureLabel(failure) : t('teams.errors.notFound');
         return (
-            <ItemGroup footer={message}>
-                <Item testID="team-group-unavailable" title={message} showChevron={false} />
-                {failure?.retryable ? (
-                    <Item
-                        testID="team-group-retry"
-                        title={t('teams.unavailable.retry')}
-                        onPress={() => void detail.reload()}
-                        showChevron={false}
+            <ItemList presentation="page">
+                <PageHeader testID="team-group-header" title={t('teams.tabs.groups')} alwaysShowTitle meta={[
+                    { key: 'team', text: context.team.name },
+                    { key: 'home', icon: 'house', text: context.homeName },
+                ]} />
+                {props.header}
+                {detail.status === 'loading' ? (
+                    <ItemGroup>
+                        <Item testID="team-group-loading" title={t('teams.loading')} loading mode="info" showChevron={false} />
+                    </ItemGroup>
+                ) : (
+                    <SurfaceStateCard
+                        testID="team-group-unavailable"
+                        kind="unavailable"
+                        title={message}
+                        action={failure?.retryable
+                            ? { label: t('teams.unavailable.retry'), onPress: () => void detail.reload() }
+                            : undefined}
+                        accessibilitySemantics="alert"
                     />
-                ) : null}
-            </ItemGroup>
+                )}
+            </ItemList>
         );
     }
+
+    const pageHeader = (
+        <>
+            <PageHeader
+                testID="team-group-header"
+                alwaysShowTitle
+                title={group.name}
+                description={group.description ?? undefined}
+                leading={(
+                    <PageHeaderMarkTile appearance="glyph">
+                        <Icon name="users" size={22} color={theme.colors.text.secondary} />
+                    </PageHeaderMarkTile>
+                )}
+                meta={[
+                    { key: 'team', text: context.team.name },
+                    { key: 'home', icon: 'house', text: context.homeName },
+                    {
+                        key: 'members',
+                        testID: 'team-group-member-count',
+                        text: t('teams.groups.memberCount', { count: group.memberCount }),
+                    },
+                    ...(managedBy ? [{ key: 'managed', text: managedBy }] : []),
+                ]}
+            />
+            {props.header}
+        </>
+    );
 
     return (
         <VirtualizedList
@@ -963,10 +1026,10 @@ const GroupDetail = React.memo(function GroupDetail(props: Readonly<{
             data={rows}
             keyExtractor={(item) => item.key}
             renderItem={renderRow}
-            ListHeaderComponent={props.header === undefined ? null : <>{props.header}</>}
+            ListHeaderComponent={pageHeader}
             style={{
                 flex: 1,
-                backgroundColor: theme.colors.background.canvas,
+                backgroundColor: theme.colors.surface.base,
                 ...(Platform.OS === 'web' ? { minHeight: 0 } : {}),
             }}
             contentContainerStyle={{ paddingBottom: Platform.OS === 'ios' ? 34 : 16 }}
@@ -991,6 +1054,7 @@ export const TeamGroupDetailScreen = React.memo(function TeamGroupDetailScreen(p
             teamId={props.teamId}
             title={t('teams.tabs.groups')}
             presentation="virtualized-list"
+            childRendersHeader
         >
             {(context, header) => <GroupDetail context={context} groupId={props.groupId} header={header} />}
         </TeamSection>

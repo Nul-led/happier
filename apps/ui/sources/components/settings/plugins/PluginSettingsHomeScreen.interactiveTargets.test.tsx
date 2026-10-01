@@ -35,7 +35,7 @@ vi.mock('./model/usePluginSettingsScreenState', () => ({
         daemonOperationsAvailable: true,
         isPluginActionInFlight: () => false,
         decidePendingPluginChange: () => {},
-        administrationTargetSelection: { selectedTarget: null, canExecute: false, resolveExecutionTarget: () => null },
+        administrationTargetSelection: { state: { kind: 'unselected' }, candidates: [], selectedTarget: null, canExecute: false, resolveExecutionTarget: () => null },
         installedPlugins: [],
         installedPluginById: new Map(),
         canRefreshInstalledPlugins: true,
@@ -70,7 +70,17 @@ vi.mock('./model/usePluginSettingsScreenState', () => ({
         runDevelopmentSourceInstall: () => {},
         currentDiagnostics: [],
         refreshPluginTruth: () => {},
+        installedPluginsRead: true,
+        pluginProjectionById: {},
+        discoverResultsSearchText: '',
+        clearDiscoverSearch: () => {},
     }),
+}));
+vi.mock('./detail/PluginDetailScreen', async () => ({
+    PluginDetailView: (await import('@/dev/testkit/mocks/components')).createPassThroughComponent('PluginDetailView'),
+}));
+vi.mock('./listing/PluginListingScreen', async () => ({
+    PluginListingView: (await import('@/dev/testkit/mocks/components')).createPassThroughComponent('PluginListingView'),
 }));
 vi.mock('@/components/settings/machines/MachineAdministrationTargetSelector', async () => ({
     MachineAdministrationTargetSelector: (await import('@/dev/testkit/mocks/components')).createPassThroughComponent('MachineAdministrationTargetSelector'),
@@ -91,10 +101,16 @@ vi.mock('./PluginMarketplaceSections', async () => {
     const { createPassThroughComponent } = await import('@/dev/testkit/mocks/components');
     return {
         DevelopmentPluginsSection: createPassThroughComponent('DevelopmentPluginsSection'),
-        DiscoverListingsSection: createPassThroughComponent('DiscoverListingsSection'),
+        // A collection section is the page: it draws the page's header and footer around its items.
+        DiscoverListingsSection: (props: Readonly<{ header?: React.ReactNode; footer?: React.ReactNode }>) => React.createElement(
+            React.Fragment, null, props.header, React.createElement('DiscoverListingsSection', props), props.footer,
+        ),
         DiscoverStatusSummary: createPassThroughComponent('DiscoverStatusSummary'),
-        InstalledPluginsSection: createPassThroughComponent('InstalledPluginsSection'),
+        InstalledPluginsSection: (props: Readonly<{ header?: React.ReactNode; footer?: React.ReactNode }>) => React.createElement(
+            React.Fragment, null, props.header, React.createElement('InstalledPluginsSection', props), props.footer,
+        ),
         PendingPluginChangesSection: createPassThroughComponent('PendingPluginChangesSection'),
+        PluginRoutineOperationSettlementRow: createPassThroughComponent('PluginRoutineOperationSettlementRow'),
         PluginDiagnosticsSnapshotSection: createPassThroughComponent('PluginDiagnosticsSnapshotSection'),
     };
 });
@@ -111,20 +127,41 @@ vi.mock('@/components/ui/lists/ItemList', async () => ({
 import { PluginSettingsHomeScreen } from './PluginSettingsHomeScreen';
 
 /**
+ * The page renders under the app root's pane state: its details pane stands in the app's pane host
+ * (`AppScopePaneHost`), exactly as in the app.
+ */
+async function renderInAppPanes(
+    element: React.ReactElement,
+    options: Parameters<typeof renderSettingsView>[1] = {},
+): ReturnType<typeof renderSettingsView> {
+    const { AppPaneProvider } = await import('@/components/appShell/panes/AppPaneProvider');
+    const Outer = options?.wrapper;
+    return renderSettingsView(element, {
+        ...options,
+        wrapper: (props: React.PropsWithChildren) => React.createElement(
+            AppPaneProvider,
+            null,
+            Outer ? React.createElement(Outer, null, props.children) : props.children,
+        ),
+    });
+}
+
+
+/**
  * Both plugin-management segmented bars sit inside their own horizontal
  * scroller, so the consumer genuinely owns the room the platform floor asks
  * for. A control the reader taps to change what the whole screen shows must
  * meet 44pt/48dp rather than the dense flush-row 24px WCAG floor.
  */
-async function readSegmentMinimumWidths(testID: string): Promise<readonly string[]> {
+async function readSegmentMinimumWidths(testID: string, dimension: 'minWidth' | 'minHeight' = 'minWidth'): Promise<readonly string[]> {
     const { Platform } = await import('react-native');
     const previousPlatform = Platform.OS;
     const observed: string[] = [];
     try {
         for (const platform of ['ios', 'android'] as const) {
             (Platform as { OS: string }).OS = platform;
-            const screen = await renderSettingsView(React.createElement(PluginSettingsHomeScreen));
-            observed.push(`${platform}: ${flattenTestStyle(screen.findByTestId(testID)?.props.style).minWidth}`);
+            const screen = await renderInAppPanes(React.createElement(PluginSettingsHomeScreen));
+            observed.push(`${platform}: ${flattenTestStyle(screen.findByTestId(testID)?.props.style)[dimension]}`);
         }
     } finally {
         (Platform as { OS: string }).OS = previousPlatform;
@@ -148,18 +185,25 @@ describe('PluginSettingsHomeScreen segmented controls', () => {
 
     it('meets the platform interactive target on the Discover source filter', async () => {
         mocks.activeView = 'discover';
-        expect(await readSegmentMinimumWidths('settings.plugins.marketplace.sourceFilter:all'))
+        expect(await readSegmentMinimumWidths('settings.plugins.marketplace.sourceFilter.trigger', 'minHeight'))
+            .toEqual(['ios: 44', 'android: 48']);
+    });
+
+    it('meets the platform interactive target on Grid | List and the Installed status filter', async () => {
+        expect(await readSegmentMinimumWidths('settings.plugins.collectionView:grid'))
+            .toEqual(['ios: 44', 'android: 48']);
+        expect(await readSegmentMinimumWidths('settings.plugins.marketplace.installed.statusFilter.trigger', 'minHeight'))
             .toEqual(['ios: 44', 'android: 48']);
     });
 
     it('discloses the administration target above the pending decision controls', async () => {
-        const screen = await renderSettingsView(React.createElement(PluginSettingsHomeScreen));
+        const screen = await renderInAppPanes(React.createElement(PluginSettingsHomeScreen));
         // An approve/reject is a consequential machine-scoped operation, so the
         // exact target it would land on is disclosed above the decision rows —
         // the screen reads target first, decision second, in traversal order.
         const ordered = screen
-            .findAll((node) => node.type === 'MachineAdministrationTargetSelector'
-                || node.type === 'PendingPluginChangesSection')
+            .findAll((node) => String(node.type) === 'MachineAdministrationTargetSelector'
+                || String(node.type) === 'PendingPluginChangesSection')
             .map((node) => String(node.type));
         expect(ordered).toEqual(['MachineAdministrationTargetSelector', 'PendingPluginChangesSection']);
     });

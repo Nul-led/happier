@@ -74,6 +74,30 @@ describe('Recovery key disclosure', () => {
         await later.unmount();
     });
 
+    it('offers one primary action and no second label restating the title', async () => {
+        let footer: React.ReactNode = null;
+        const screen = await renderScreen(
+            <SecretKeyBackupModal
+                secret={secret}
+                onClose={vi.fn()}
+                setChrome={(chrome) => { footer = chrome?.kind === 'card' ? chrome.footer : null; }}
+            />,
+        );
+        const footerScreen = await renderScreen(<>{footer}</>);
+        const displays = new Map<string, unknown>();
+        for (const view of [screen, footerScreen]) {
+            for (const node of view.findAll((candidate) => typeof candidate.type !== 'string'
+                && typeof candidate.props?.testID === 'string'
+                && candidate.props.testID.startsWith('recovery-key-')
+                && typeof candidate.props.title === 'string')) {
+                if (!displays.has(node.props.testID)) displays.set(node.props.testID, node.props.display ?? 'default');
+            }
+        }
+        expect([...displays.keys()].sort()).toEqual(['recovery-key-copy', 'recovery-key-download', 'recovery-key-later', 'recovery-key-saved']);
+        expect([...displays].filter(([, display]) => display === 'default').map(([testID]) => testID)).toEqual(['recovery-key-saved']);
+        expect(screen.getTextContent()).not.toContain('settingsAccount.secretKeyLabel');
+    });
+
     it('clears recovered key bytes when the disclosure unmounts', async () => {
         const recovered = new Uint8Array(32).fill(17);
         const screen = await renderScreen(<SecretKeyBackupModal secret={recovered} onClose={vi.fn()} />);

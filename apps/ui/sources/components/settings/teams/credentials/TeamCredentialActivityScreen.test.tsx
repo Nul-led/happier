@@ -79,12 +79,15 @@ beforeEach(async () => {
 afterEach(() => standardCleanup());
 
 describe('TeamCredentialActivityScreen', () => {
-    it('renders only the Home-projected administrative metadata', async () => {
+    it.each([
+        ['audience_changed', 'audienceChanged'],
+        ['external_key_authorized', 'externalKeyAuthorized'],
+    ])('renders only the Home-projected administrative metadata for %s', async (kind, label) => {
         const serverId = await addHome();
         harness.answer(serverId, ACTIVITY_LIST_PATH, {
             body: {
                 items: [{
-                    kind: 'audience_changed',
+                    kind,
                     actorDisplayName: 'Ada Lovelace',
                     subjectDisplayName: 'Engineering',
                     createdAt: '2026-09-11T12:00:00.000Z',
@@ -96,7 +99,7 @@ describe('TeamCredentialActivityScreen', () => {
         const screen = await renderActivity(serverId);
         await waitForTestId(screen, 'team-credential-activity-row:0');
 
-        expect(screen.getTextContent()).toContain('teams.credentials.activity.kind.audienceChanged');
+        expect(screen.getTextContent()).toContain(`teams.credentials.activity.kind.${label}`);
         expect(screen.getTextContent()).toContain('Ada Lovelace');
         expect(screen.getTextContent()).toContain('Engineering');
         expect(screen.getTextContent()).not.toContain('secret');

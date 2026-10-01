@@ -15,6 +15,7 @@ import {
 } from '@happier-dev/protocol';
 
 import type { ResolvedManagedProviderRuntime } from '@/plugins/projection/registry/types';
+import { createManagedPluginSourceCustody } from '@/plugins/runtime/lifecycle/contributions/runtimeIdentity.testkit';
 
 import { createProviderLaunchResourceScope } from './resourceScope';
 import { startPublicManagedProviderRuntime } from './publicManagedProviderRuntimeStart';
@@ -81,8 +82,8 @@ function resolvedRuntime(
 ): ResolvedManagedProviderRuntime {
   return Object.freeze({
     runtime,
-    activationGeneration: 'activation-7',
-    immutableGenerationId: 'immutable-7',
+    activationOccurrenceId: 'activation-7',
+    sourceCustody: createManagedPluginSourceCustody('immutable-7'),
     isCurrent,
   });
 }
@@ -580,8 +581,11 @@ describe('public managed Provider runtime start coordinator', () => {
     const replacementRuntime = Object.freeze({ start: runtime.start });
     const settledRuntimes = [
       Object.freeze({ ...acquired, runtime: replacementRuntime }),
-      Object.freeze({ ...acquired, activationGeneration: 'activation-8' }),
-      Object.freeze({ ...acquired, immutableGenerationId: 'immutable-8' }),
+      Object.freeze({ ...acquired, activationOccurrenceId: 'activation-8' }),
+      Object.freeze({
+        ...acquired,
+        sourceCustody: createManagedPluginSourceCustody('immutable-8'),
+      }),
     ] satisfies readonly ResolvedManagedProviderRuntime[];
 
     for (const settled of settledRuntimes) {

@@ -90,22 +90,10 @@ export function registerMachineVoiceClientCredentialRpcHandlers(params: Readonly
         : null;
       const lease = await acquireAuthoritativePluginRuntimeRegistryLease();
       try {
-        const identity = request.data.cacheIdentity;
-        if (
-          identity.platform !== 'web'
-          && identity.platform !== 'ios'
-          && identity.platform !== 'android'
-        ) {
-          return Object.freeze({
-            ok: false as const,
-            errorCode: 'plugin_voice_provider_result_invalid' as const,
-          });
-        }
-        const realm = identity.platform;
-        if (lease.registry.generation !== identity.projectionGeneration) return failure(null);
+        const realm = request.data.platform;
         const provider = lease.registry.contributes.voiceProviders?.find((candidate) => (
-          candidate.identity.pluginId === identity.pluginId
-          && candidate.identity.localId === identity.contributionId
+          candidate.identity.pluginId === request.data.contribution.pluginId
+          && candidate.identity.localId === request.data.contribution.localId
           && candidate.definition.kind === 'conversation'
           && candidate.definition.platforms.includes(realm)
         )) ?? null;
@@ -147,7 +135,6 @@ export function registerMachineVoiceClientCredentialRpcHandlers(params: Readonly
             phase: request.data.phase,
             machineId: params.machineId,
             materialization: caller,
-            immutableGenerationId: lifecycle.generation,
             isRuntimeAuthorityCurrent: lifecycle.isCurrent,
           },
           ...(dependencies.credentials ? { credentials: dependencies.credentials } : {}),

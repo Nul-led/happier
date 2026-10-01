@@ -60,16 +60,15 @@ describe('managedIdentityProviderState', () => {
         expect(failed.kind === 'ready' && failed.stale).toBe(true);
     });
 
-    it('never treats an impossible read approval as provider data', () => {
+    it('surfaces a settled read failure without treating it as provider data', () => {
         const state = settleManagedIdentityProviderRefresh(INITIAL_MANAGED_IDENTITY_PROVIDER_STATE, {
-            kind: 'approval_pending',
-            artifactId: 'approval-1',
-            approval: { artifactId: 'approval-1', onExecuted: async () => 'consumed' as const },
+            kind: 'failed',
+            failure: { code: 'approval_rejected', retryable: true },
         });
 
         expect(state).toEqual({
             kind: 'unavailable',
-            failure: { code: 'invalid_action_output', retryable: false },
+            failure: { code: 'approval_rejected', retryable: true },
         });
     });
 });

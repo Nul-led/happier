@@ -1,27 +1,40 @@
 import * as React from 'react';
-import { Platform, View } from 'react-native';
-import { useUnistyles } from 'react-native-unistyles';
+import { useHappierCollection, type CollectionAnatomy, type CollectionRowActions } from '@happier-dev/plugin-ui';
+import { ActivityIndicator, ScrollView, View } from 'react-native';
+import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 import type { PluginProjectionDiagnostic } from '@/agents/backendCatalog/daemonContributionRegistryProjectionAdapters';
 import { Item } from '@/components/ui/lists/Item';
+import { AttentionBanner } from '@/components/ui/lists/AttentionBanner';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
-import { ExpandableItem } from '@/components/ui/lists/ExpandableItem';
 import { ItemRowActions } from '@/components/ui/lists/ItemRowActions';
+import { SectionActionButton } from '@/components/ui/lists/SectionActionButton';
+import { SegmentedTabBar } from '@/components/ui/navigation/SegmentedTabBar';
 import { buildActionRowAccessibilityLabel } from '@/components/ui/lists/actionRowAccessibility';
+import { PAGE_LIST_METRICS } from '@/components/ui/lists/pageListMetrics';
+import { resolveItemGroupContentHorizontalInsetPx } from '@/components/ui/lists/itemGroupSpacing';
+import { Switch } from '@/components/ui/forms/Switch';
+import { SelectionTiles } from '@/components/ui/forms/SelectionTiles';
 import { Text } from '@/components/ui/text/Text';
 import { StatusPill } from '@/components/ui/status/StatusPill';
-import { t } from '@/text';
-import { CardGrid, CardGridColumn } from '@/components/ui/cards/CardGrid';
-import { SurfaceCard } from '@/components/ui/cards/SurfaceCard';
+import { EmptyState } from '@/components/ui/empty/EmptyState';
+import { SurfaceStateCard } from '@/components/ui/surfaces/SurfaceStateCard';
 import { RoundButton } from '@/components/ui/buttons/RoundButton';
 import { useLayoutMaxWidthStyle } from '@/components/ui/layout/layout';
-import { ITEM_GROUP_COLUMN_MIN_WIDTH_PX } from '@/components/ui/lists/itemGroupColumnLayout';
-import { ITEM_SUBTITLE_TEXT_METRICS } from '@/components/ui/lists/itemDensityMetrics';
-import { resolveItemGroupContentHorizontalInsetPx } from '@/components/ui/lists/itemGroupSpacing';
-import { resolveMinimumInteractiveTargetSize } from '@/components/ui/interactiveTargetSize';
-import { catalogReviewStatusLabel, usePluginCatalogDetails } from './PluginCatalogDetailsDialog';
+import { Typography } from '@/constants/Typography';
+import { t, type TranslationKeyNoParams } from '@/text';
 import { formatPathRelativeToHome } from '@/utils/sessions/formatPathRelativeToHome';
 
+import { PluginMark } from './PluginMark';
+import { PluginCardStatus } from './collection/PluginCardStatus';
+import { PluginsPageCollection } from './collection/PluginsPageCollection';
+import { buildPluginMarketplaceDiscoverIssues } from './model/pluginMarketplaceDiscoverIssues';
+import { resolvePluginContributionKindLabel } from './model/pluginContributionKindLabel';
+import type { PluginProjectionEntry } from '@/agents/backendCatalog/daemonContributionRegistryProjectionAdapters';
+
+/** The machine's contribution projection facts a plugin row reads: its Agent mark and what it adds. */
+type PluginProjectionFactsById = Readonly<Record<string, Pick<PluginProjectionEntry, 'iconAgentId' | 'contributionKinds'> | undefined>>;
+import type { PluginsCollectionState } from './model/pluginsCollectionState';
 import { PluginDiagnosticsSection } from './diagnostics/PluginDiagnosticsSection';
 import type {
     PluginMarketplaceCatalogEntry,
@@ -32,112 +45,335 @@ import type {
 import { Icon } from '@/components/ui/icons/Icon';
 import type { InstalledPluginActionId, PluginRoutineOperationSettlement } from './model/usePluginSettingsScreenState';
 import {
-    formatCatalogEntryVersion,
+    catalogReviewStatusLabel,
+    projectBrowseShelves,
     formatPendingPluginChangeSubtitle,
     formatPendingPluginChangeTitle,
     projectDevelopmentPluginPresentation,
     projectInstalledPluginLifecycleCapabilities,
     projectInstalledPluginPresentation,
+    installedPluginVersionLabel,
+    isPluginIncludedWithHappier,
+    partitionInstalledPlugins,
     readPendingPluginChangeListingId,
     type DevelopmentPluginEntry,
+    type DiscoverShelf,
     type InstalledPluginEntry,
     type PendingPluginChangeListing,
     type PluginMarketplaceActionRequest,
 } from './model/pluginMarketplaceModel';
 
+/** Grid (cards, the default) or List (rows) — the Plugins page's two presentations of one collection. */
+export type PluginsCollectionPresentation = 'grid' | 'list';
+
+/**
+ * The selected machine's installed plugins, as cards (grid) or rows (list): identity, what each one
+ * is for, and its state with the one control beside it — the enable switch, or Review when the
+ * plugin needs a decision. The body opens the plugin; everything rarer lives there.
+ *
+ * It is the page: the page's own `header` above and `footer` below scroll with the plugins in the one
+ * Collection. Every state is terminal and says what is true, in the Collection's place for items: a machine to
+ * choose, the grid's shape while the machine answers, a failed read with Retry, nothing installed yet, or a search
+ * that hid every plugin. A machine that went offline keeps its last-known plugins, with controls off.
+ */
 export function InstalledPluginsSection(props: Readonly<{
+    collectionState: PluginsCollectionState;
+    /** The plugins the search and filter leave visible. */
     installedPlugins: readonly InstalledPluginEntry[];
-    truthSettled: boolean;
-    unavailable: boolean;
+    presentation: PluginsCollectionPresentation;
+    /** The plugin whose detail is open beside the collection. */
+    selectedPluginId?: string | null;
+    /** What the search or filter is narrowed to, named by the "no match" line. */
+    searchText: string;
+    /** A search or status filter is on. */
+    filtering?: boolean;
+    /** The machine's contribution projection by plugin id: the Agent mark and what each plugin adds. */
+    projectionByPluginId?: PluginProjectionFactsById;
+    /** Where each plugin runs across the Account ("On 3 machines"), from the machine matrix owner. */
+    machineCoverageByPluginId?: Readonly<Record<string, string>>;
+    onClearSearch: () => void;
     onDiscover: () => void;
+    onRetry: () => void;
     canRunActions: boolean;
     isPluginActionInFlight: (pluginId: string) => boolean;
     onNavigateToPlugin: (pluginId: string) => void;
+    /** The open plugin closes (Escape inside the collection). */
+    onClosePlugin?: () => void;
     onRunAction: (action: InstalledPluginActionId, pluginId: string) => void;
+    /** The page above and below the plugins, in the page's one scroller. */
+    header?: React.ReactNode;
+    footer?: React.ReactNode;
+}>) {
+    const { theme } = useUnistyles();
+    const styles = sectionStylesheet;
+    const maxWidthStyle = useLayoutMaxWidthStyle();
+    const ready = props.collectionState === 'ready' || props.collectionState === 'offline';
+    const offline = props.collectionState === 'offline';
+    const rows = ready ? projectInstalledPluginRows(props, offline) : NO_INSTALLED_ROWS;
+    const { onNavigateToPlugin, onClosePlugin } = props;
+    const onOpenChange = React.useCallback((key: string | null) => {
+        if (key === null) onClosePlugin?.();
+        else onNavigateToPlugin(key);
+    }, [onClosePlugin, onNavigateToPlugin]);
+    const model = useHappierCollection<InstalledPluginRow>({
+        items: rows,
+        keyOf: readInstalledPluginRowKey,
+        groups: INSTALLED_PLUGIN_GROUPS,
+        openKey: props.selectedPluginId ?? null,
+        onOpenChange,
+    });
+    const anatomy = useInstalledPluginAnatomy(props.projectionByPluginId);
+    const controls = React.useMemo(
+        () => new Map(rows.map((row) => [row.entry.pluginId, row.control] as const)),
+        [rows],
+    );
+    const empty = (() => {
+        switch (props.collectionState) {
+            case 'noTarget':
+                return (
+                    <ItemGroup>
+                        <Item
+                            testID="settings.plugins.marketplace.installed.noTarget"
+                            title={t('settingsPlugins.surfaces.chooseMachineInstalled')}
+                            mode="info"
+                            showChevron={false}
+                        />
+                    </ItemGroup>
+                );
+            case 'loading':
+                // The grid holds its shape with skeleton cards (the Collection's `loading`); the list says so.
+                return props.presentation === 'grid' ? (
+                    <View testID="settings.plugins.marketplace.installed.loading" />
+                ) : (
+                    <ItemGroup>
+                        <Item
+                            testID="settings.plugins.marketplace.installed.loading"
+                            title={t('common.loading')}
+                            loading
+                            mode="info"
+                            showChevron={false}
+                        />
+                    </ItemGroup>
+                );
+            case 'readFailed':
+                return (
+                    <View style={[styles.stateFrame, maxWidthStyle]}>
+                        <SurfaceStateCard
+                            testID="settings.plugins.marketplace.installed.readFailed"
+                            kind="error"
+                            title={t('settingsPlugins.surfaces.readFailedTitle')}
+                            reason={t('settingsPlugins.surfaces.readFailedBody')}
+                            action={{ label: t('common.retry'), onPress: props.onRetry }}
+                            accessibilitySemantics="alert"
+                        />
+                    </View>
+                );
+            case 'empty':
+                return (
+                    <View style={[styles.stateFrame, maxWidthStyle]}>
+                        <EmptyState
+                            testID="settings.plugins.marketplace.installed.empty"
+                            icon={<Icon name="puzzle-piece" size={28} color={theme.colors.text.secondary} />}
+                            title={t('settingsPlugins.surfaces.emptyTitle')}
+                            subtitle={t('settingsPlugins.surfaces.emptyBody')}
+                            action={(
+                                <RoundButton
+                                    testID="settings.plugins.marketplace.installed.empty.browse"
+                                    size="normal"
+                                    title={t('settingsPlugins.surfaces.browsePlugins')}
+                                    onPress={props.onDiscover}
+                                />
+                            )}
+                        />
+                    </View>
+                );
+            case 'noMatch':
+                return (
+                    <PluginsNoMatch
+                        testID="settings.plugins.marketplace.installed.noMatch"
+                        clearTestID="settings.plugins.marketplace.installed.clearSearch"
+                        query={props.searchText}
+                        onClear={props.onClearSearch}
+                    />
+                );
+            case 'ready':
+            case 'offline':
+                return undefined;
+        }
+    })();
+    return (
+        <InstalledPluginControlsContext.Provider value={controls}>
+            <PluginsPageCollection<InstalledPluginRow>
+                testID="settings.plugins.marketplace.installed"
+                model={model}
+                anatomy={anatomy}
+                presentation={props.presentation}
+                accessibilityLabel={t('settingsPlugins.surfaces.navigationTitle')}
+                header={props.header}
+                footer={props.footer}
+                loading={props.collectionState === 'loading'}
+                {...(empty === undefined ? {} : { empty })}
+                useRowActions={useInstalledPluginRowActions}
+            />
+        </InstalledPluginControlsContext.Provider>
+    );
+}
+
+type InstalledPluginRow = Readonly<{
+    entry: InstalledPluginEntry;
+    group: 'added' | 'included';
+    statusLabel: string | null;
+    statusTone: 'quiet' | 'warning' | 'danger';
+    control: React.ReactNode;
+    /** The source line, unless the section it sits in already names it. */
+    byline: string | null;
+}>;
+
+const NO_INSTALLED_ROWS: readonly InstalledPluginRow[] = Object.freeze([]);
+const NO_ROW_ACTIONS = Object.freeze({});
+
+const readInstalledPluginRowKey = (row: InstalledPluginRow) => row.entry.pluginId;
+
+/** What the user added, then what ships with Happier: the column's own two groups. */
+const INSTALLED_PLUGIN_GROUPS = {
+    get axis() {
+        return [
+            { key: 'added', title: t('settingsPlugins.surfaces.addedGroup') },
+            { key: 'included', title: t('settingsPlugins.rowSource.bundled') },
+        ];
+    },
+    groupOf: (row: InstalledPluginRow) => row.group,
+};
+
+/** Each row's one control (the switch, or Review), read by the row where the List draws it. */
+const InstalledPluginControlsContext = React.createContext<ReadonlyMap<string, React.ReactNode>>(new Map());
+
+/** A list row carries its control beside the row; a card carries it in its footer (the anatomy's `action`). */
+function useInstalledPluginRowActions(row: InstalledPluginRow): CollectionRowActions {
+    const control = React.useContext(InstalledPluginControlsContext).get(row.entry.pluginId);
+    return control === undefined || control === null ? NO_ROW_ACTIONS : { accessory: control };
+}
+
+function projectInstalledPluginRows(
+    props: Readonly<{
+        installedPlugins: readonly InstalledPluginEntry[];
+        machineCoverageByPluginId?: Readonly<Record<string, string>>;
+        canRunActions: boolean;
+        isPluginActionInFlight: (pluginId: string) => boolean;
+        onNavigateToPlugin: (pluginId: string) => void;
+        onRunAction: (action: InstalledPluginActionId, pluginId: string) => void;
+    }>,
+    offline: boolean,
+): readonly InstalledPluginRow[] {
+    const { added, included } = partitionInstalledPlugins(props.installedPlugins);
+    /** `sectionNamesSource`: the group header already says where these plugins come from. */
+    const project = (entry: InstalledPluginEntry, group: InstalledPluginRow['group']): InstalledPluginRow => {
+        const capabilities = projectInstalledPluginLifecycleCapabilities(entry);
+        const toggleAction = entry.enabled ? 'disable' as const : 'enable' as const;
+        const canToggle = entry.enabled ? capabilities.canDisable : capabilities.canEnable;
+        const busy = props.isPluginActionInFlight(entry.pluginId);
+        const presentation = projectInstalledPluginPresentation(entry);
+        const needsDecision = presentation.status.id === 'incompatible'
+            || presentation.status.id === 'trustRemoved'
+            || presentation.status.id === 'needsAttention';
+        // The default state (enabled and healthy) has no status line; only a state worth reading does.
+        const statusLabel = offline
+            ? t('settingsPlugins.surfaces.lastKnown', { status: presentation.status.label })
+            : presentation.status.id === 'enabled' ? null : presentation.attentionLabel ?? presentation.status.label;
+        // A healthy, enabled plugin says where it runs; anything else keeps its own status.
+        const coverage = !offline && !needsDecision && entry.enabled
+            ? props.machineCoverageByPluginId?.[entry.pluginId] ?? null
+            : null;
+        const statusTone = offline || !needsDecision
+            ? 'quiet' as const
+            : presentation.status.id === 'needsAttention' ? 'warning' as const : 'danger' as const;
+        // Review replaces the switch only where the plugin can be fixed; an incompatible one keeps
+        // its (disabled) switch in the same place.
+        const showReview = needsDecision && !offline && presentation.status.id !== 'incompatible';
+        const control = showReview ? (
+            <RoundButton
+                testID={`settings.plugins.marketplace.installed.${entry.pluginId}.fix`}
+                size="small"
+                display="secondary"
+                title={t('settingsPlugins.surfaces.review')}
+                accessibilityLabel={buildActionRowAccessibilityLabel([t('settingsPlugins.surfaces.review'), entry.title])}
+                accessibilityHint={presentation.status.label}
+                onPress={() => props.onNavigateToPlugin(entry.pluginId)}
+            />
+        ) : (
+            <Switch
+                testID={`settings.plugins.marketplace.installed.${entry.pluginId}.action.${toggleAction}`}
+                value={entry.enabled}
+                disabled={offline || !canToggle || !props.canRunActions || busy}
+                onValueChange={() => props.onRunAction(toggleAction, entry.pluginId)}
+                accessibilityLabel={buildActionRowAccessibilityLabel([t('common.enabled'), entry.title])}
+            />
+        );
+        // A plugin that ships with Happier and cannot be switched off says so quietly instead of
+        // showing a switch that does nothing.
+        const locked = !showReview && !canToggle && isPluginIncludedWithHappier({ installed: entry });
+        return {
+            entry,
+            group,
+            statusLabel: coverage ?? statusLabel,
+            statusTone,
+            control: locked ? null : control,
+            byline: group === 'included' ? null : presentation.sourceLabel,
+        };
+    };
+    return [...added.map((entry) => project(entry, 'added')), ...included.map((entry) => project(entry, 'included'))];
+}
+
+/** One anatomy for the grid's cards and the list's rows. */
+function useInstalledPluginAnatomy(projectionByPluginId: PluginProjectionFactsById | undefined): CollectionAnatomy<InstalledPluginRow> {
+    return React.useMemo(() => ({
+        glyph: (row) => (
+            <PluginMark title={row.entry.title} iconAgentId={projectionByPluginId?.[row.entry.pluginId]?.iconAgentId ?? null} />
+        ),
+        title: (row) => row.entry.title,
+        // The version, and the source unless the group names it.
+        where: (row) => [installedPluginVersionLabel(row.entry), row.byline].filter(Boolean).join(' · ') || null,
+        // What it is for, else the kind of thing it adds.
+        description: (row) => row.entry.description
+            ?? resolvePluginContributionKindLabel(projectionByPluginId?.[row.entry.pluginId]?.contributionKinds)
+            ?? null,
+        reason: (row) => (row.statusLabel
+            ? <PluginCardStatus label={row.statusLabel} tone={row.statusTone} />
+            : null),
+        action: (row) => row.control,
+        accessibilityLabel: (row) => buildActionRowAccessibilityLabel([row.entry.title, t('common.details')]) ?? row.entry.title,
+        testID: (row) => `settings.plugins.marketplace.installed.${row.entry.pluginId}`,
+        columnTitles: { title: t('settingsPlugins.surfaces.navigationTitle') },
+    }), [projectionByPluginId]);
+}
+
+/**
+ * A search or filter that hid everything: one line on the collection's text edge naming what was
+ * searched, and Clear. It exists only while something is searched or filtered.
+ */
+function PluginsNoMatch(props: Readonly<{
+    testID: string;
+    clearTestID: string;
+    query: string;
+    onClear?: () => void;
 }>) {
     const { theme } = useUnistyles();
     return (
-        <ItemGroup title={t('deps.ui.installed')}>
-            {props.installedPlugins.length > 0 ? props.installedPlugins.map((entry) => {
-                const capabilities = projectInstalledPluginLifecycleCapabilities(entry);
-                const toggleAction = entry.enabled ? 'disable' : 'enable';
-                const canToggle = entry.enabled ? capabilities.canDisable : capabilities.canEnable;
-                const busy = props.isPluginActionInFlight(entry.pluginId);
-                // Update sits beside the enable/disable toggle because it acts
-                // on this installed record, not on a marketplace listing: the
-                // daemon update owner reads the record's own trusted channel,
-                // so it is answerable here whether or not Discover is loaded.
-                const actions = [
-                    ...(canToggle ? [{
-                        id: toggleAction,
-                        title: entry.enabled ? t('common.disable') : t('common.enable'),
-                        subtitle: entry.enabled ? t('common.enabled') : t('common.disabled'),
-                        icon: entry.enabled ? 'x-circle' as const : 'check-circle' as const,
-                        inlineTestID: `settings.plugins.marketplace.installed.${entry.pluginId}.action.${toggleAction}`,
-                        disabled: !props.canRunActions || busy,
-                        onPress: () => props.onRunAction(toggleAction, entry.pluginId),
-                    }] : []),
-                    ...(capabilities.canUpdate ? [{
-                        id: 'update',
-                        title: t('common.update'),
-                        subtitle: t('settingsPlugins.updateFromInstalledRecordSubtitle'),
-                        icon: 'arrow-circle-up' as const,
-                        inlineTestID: `settings.plugins.marketplace.installed.${entry.pluginId}.action.update`,
-                        disabled: !props.canRunActions || busy,
-                        onPress: () => props.onRunAction('update', entry.pluginId),
-                    }] : []),
-                ];
-                const presentation = projectInstalledPluginPresentation(entry);
-                return (
-                    <Item
-                        key={entry.pluginId}
-                        testID={`settings.plugins.marketplace.installed.${entry.pluginId}`}
-                        title={entry.title}
-                        subtitle={[entry.description, presentation.attentionLabel].filter(Boolean).join('\n') || undefined}
-                        subtitleLines={0}
-                        subtitleAccessory={(
-                            <View style={{ flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: 8 }}>
-                                <Text style={{ ...ITEM_SUBTITLE_TEXT_METRICS.comfortable, color: theme.colors.text.secondary }}>{presentation.sourceLabel}</Text>
-                                <StatusPill
-                                    testID={`settings.plugins.marketplace.installed.${entry.pluginId}.status`}
-                                    chrome="plain"
-                                    labelVariant="phrase"
-                                    variant={presentation.status.variant}
-                                    label={presentation.status.label}
-                                />
-                            </View>
-                        )}
-                        detail={entry.version}
-                        icon={<Icon name="archive" size={29} color={theme.colors.text.secondary} />}
-                        onPress={() => props.onNavigateToPlugin(entry.pluginId)}
-                        rightElementOutsidePressable={actions.length > 0}
-                        rightElement={actions.length > 0 ? (
-                            <ItemRowActions
-                                title={entry.title}
-                                compactActionIds={canToggle ? [toggleAction] : ['update']}
-                                overflowTriggerTestID={`settings.plugins.marketplace.installed.${entry.pluginId}.actions.overflow`}
-                                actions={actions}
-                            />
-                        ) : null}
+        <ItemGroup>
+            <EmptyState
+                testID={props.testID}
+                layout="inline"
+                icon={<Icon name="magnifying-glass" size={18} color={theme.colors.text.tertiary} />}
+                title={t('settingsPlugins.surfaces.noMatch', { query: props.query.trim() })}
+                action={props.onClear ? (
+                    <SectionActionButton
+                        testID={props.clearTestID}
+                        title={t('settingsPlugins.surfaces.clearSearch')}
+                        icon="x"
+                        onPress={props.onClear}
                     />
-                );
-            }) : props.unavailable ? null : !props.truthSettled ? (
-                <Item
-                    testID="settings.plugins.marketplace.installed.loading"
-                    title={t('common.loading')}
-                    loading
-                    mode="info"
-                    showChevron={false}
-                />
-            ) : (
-                <Item
-                    testID="settings.plugins.marketplace.installed.empty"
-                    title={t('settingsPlugins.installedEmpty')}
-                    detail={t('settingsPlugins.catalog.browse')}
-                    icon={<Icon name="archive" size={29} color={theme.colors.text.secondary} />}
-                    onPress={props.onDiscover}
-                />
-            )}
+                ) : null}
+            />
         </ItemGroup>
     );
 }
@@ -148,8 +384,8 @@ export function InstalledPluginsSection(props: Readonly<{
  * This is the app half of the agent-authored plugin loop: an Agent can prepare
  * a plugin change but cannot approve source-root or package trust, so without
  * this section its change is invisible and expires unanswered. The section is
- * rendered only when something is actually waiting, so it reads as attention
- * rather than as permanent furniture.
+ * rendered only when something is actually waiting, as one tinted notice at
+ * the top of the page, so it reads as attention rather than as furniture.
  */
 export function PendingPluginChangesSection(props: Readonly<{
     pendingChanges: readonly PendingPluginChangeListing[];
@@ -158,6 +394,7 @@ export function PendingPluginChangesSection(props: Readonly<{
     onDecide: (pendingChangeId: string, decision: 'approve' | 'reject') => void;
 }>) {
     const { theme } = useUnistyles();
+    const styles = sectionStylesheet;
     if (props.pendingChanges.length === 0) return null;
     return (
         <View
@@ -166,7 +403,8 @@ export function PendingPluginChangesSection(props: Readonly<{
         >
             <ItemGroup
                 title={t('settingsPlugins.pendingChangesTitle')}
-                footer={t('settingsPlugins.pendingChangesFooter')}
+                description={t('settingsPlugins.pendingChangesFooter')}
+                containerStyle={styles.pendingNotice}
             >
                 {props.pendingChanges.map((entry) => {
                     const pendingChangeId = readPendingPluginChangeListingId(entry);
@@ -181,11 +419,12 @@ export function PendingPluginChangesSection(props: Readonly<{
                             subtitleLines={0}
                             icon={<Icon
                                 name={decidable ? 'shield-check' : 'arrow-clockwise'}
-                                size={29}
-                                color={decidable ? theme.colors.accent.indigo : theme.colors.text.secondary}
+                                size={20}
+                                color={decidable ? theme.colors.state.info.foreground : theme.colors.text.secondary}
                             />}
                             showChevron={false}
                             mode="info"
+                            accessoryLayout="adaptive"
                             rightElementOutsidePressable
                             rightElement={decidable ? (
                                 // The row action opens the full install-and-trust
@@ -292,7 +531,49 @@ export function DevelopmentPluginsSection(props: Readonly<{
     const { theme } = useUnistyles();
     const createdPlugin = props.createdPlugin;
     return (
-        <ItemGroup title={t('settingsPlugins.developmentTitle')} footer={t('settingsPlugins.developmentFooter')}>
+        <>
+        {/*
+          * Three ways to start, as tiles: each one opens its own flow, and none
+          * is a setting. What this machine is already developing follows.
+          */}
+        <ItemGroup surface="none">
+            <SelectionTiles
+                variant="action"
+                accessibilityLabel={t('settingsPlugins.developmentTitle')}
+                options={[
+                    {
+                        id: 'create',
+                        title: t('settingsPlugins.developmentCreate'),
+                        subtitle: t('settingsPlugins.developmentCreateSubtitle'),
+                        icon: 'plus',
+                        disabled: !props.canRunActions || !props.createAvailable,
+                        testID: 'settings.plugins.management.development.action.create',
+                    },
+                    {
+                        id: 'createWithAgent',
+                        title: t('settingsPlugins.developmentCreateWithAgent'),
+                        subtitle: t('settingsPlugins.developmentCreateWithAgentSubtitle'),
+                        icon: 'sparkle',
+                        disabled: !props.canRunActions || !props.createAvailable,
+                        testID: 'settings.plugins.management.development.action.createWithAgent',
+                    },
+                    {
+                        id: 'develop',
+                        title: t('settingsPlugins.developmentSourceInstall'),
+                        subtitle: t('settingsPlugins.developmentSourceInstallSubtitle'),
+                        icon: 'folder-open',
+                        disabled: !props.canRunActions || !props.sourceInstallAvailable,
+                        testID: 'settings.plugins.management.development.action.develop',
+                    },
+                ]}
+                onPress={(id) => {
+                    if (id === 'create') props.onCreate();
+                    else if (id === 'createWithAgent') props.onCreateWithAgent();
+                    else props.onDevelopSourceRoot();
+                }}
+            />
+        </ItemGroup>
+        <ItemGroup title={t('settingsPlugins.surfaces.developmentSourcesTitle')} description={t('settingsPlugins.developmentFooter')}>
             {createdPlugin ? (
                 <View
                     testID="settings.plugins.management.development.createSettlement"
@@ -341,34 +622,6 @@ export function DevelopmentPluginsSection(props: Readonly<{
                 settlement={props.operationSettlement}
                 scope="development"
             />
-            <Item
-                testID="settings.plugins.management.development.action.create"
-                title={t('settingsPlugins.developmentCreate')}
-                subtitle={t('settingsPlugins.developmentCreateSubtitle')}
-                icon={<Icon name="plus-circle" size={29} color={theme.colors.text.secondary} />}
-                onPress={props.onCreate}
-                disabled={!props.canRunActions || !props.createAvailable}
-                showChevron={false}
-            />
-            <Item
-                testID="settings.plugins.management.development.action.createWithAgent"
-                title={t('settingsPlugins.developmentCreateWithAgent')}
-                subtitle={t('settingsPlugins.developmentCreateWithAgentSubtitle')}
-                icon={<Icon name="magic-wand" size={29} color={theme.colors.text.secondary} />}
-                onPress={props.onCreateWithAgent}
-                disabled={!props.canRunActions || !props.createAvailable}
-                showChevron={false}
-            />
-            <Item
-                testID="settings.plugins.management.development.action.develop"
-                title={t('settingsPlugins.developmentSourceInstall')}
-                subtitle={t('settingsPlugins.developmentSourceInstallSubtitle')}
-                subtitleLines={0}
-                icon={<Icon name="folder" size={29} color={theme.colors.text.secondary} />}
-                onPress={props.onDevelopSourceRoot}
-                disabled={!props.canRunActions || !props.sourceInstallAvailable}
-                showChevron={false}
-            />
             {/*
               * One plugin is one row. Edit with Agent, Test and Pack all act on
               * the same development source, so they are that row's actions
@@ -404,7 +657,8 @@ export function DevelopmentPluginsSection(props: Readonly<{
                             />
                         )}
                         detail={entry.installed.version}
-                        icon={<Icon name="code" size={29} color={theme.colors.text.secondary} />}
+                        icon={<PluginMark title={entry.installed.title} />}
+                        iconBoxSize={36}
                         showChevron={false}
                         mode="info"
                         rightElementOutsidePressable
@@ -465,19 +719,18 @@ export function DevelopmentPluginsSection(props: Readonly<{
                     testID="settings.plugins.management.development.empty"
                     title={t('settingsPlugins.developmentEmpty')}
                     subtitle={t('settingsPlugins.developmentEmptySubtitle')}
-                    icon={<Icon name="code" size={29} color={theme.colors.text.secondary} />}
                     showChevron={false}
                     mode="info"
                 />
             )}
         </ItemGroup>
+        </>
     );
 }
 
 export function PluginDiagnosticsSnapshotSection(props: Readonly<{
     diagnostics: readonly PluginProjectionDiagnostic[];
 }>) {
-    const { theme } = useUnistyles();
     return (
         <View
             testID="settings.plugins.management.diagnostics.live"
@@ -486,12 +739,11 @@ export function PluginDiagnosticsSnapshotSection(props: Readonly<{
             {props.diagnostics.length > 0 ? (
                 <RegistryDiagnosticsSection diagnostics={props.diagnostics} />
             ) : (
-                <ItemGroup title={t('settingsPlugins.diagnosticsSnapshotTitle')} footer={t('settingsPlugins.diagnosticsSnapshotFooter')}>
+                <ItemGroup title={t('settingsPlugins.diagnosticsSnapshotTitle')} description={t('settingsPlugins.diagnosticsSnapshotFooter')}>
                     <Item
                         testID="settings.plugins.management.diagnostics.empty"
                         title={t('settingsPlugins.diagnosticsSnapshotEmpty')}
                         subtitle={t('settingsPlugins.diagnosticsSnapshotEmptySubtitle')}
-                        icon={<Icon name="pulse" size={29} color={theme.colors.text.secondary} />}
                         showChevron={false}
                         mode="info"
                     />
@@ -527,14 +779,31 @@ export function DiscoverStatusSummary(props: Readonly<{
     diagnostics: readonly PluginMarketplaceDiscoverDiagnostic[];
     nonInstallable: readonly PluginMarketplaceNonInstallableListing[];
     selectedSourceTitle: string | null;
+    /** No machine is chosen yet: nothing was searched, so no result count is claimed. */
+    noTarget?: boolean;
+    /** The search the shown results answer. "No match" is said only when something was searched. */
+    searchText?: string;
+    onClearSearch?: () => void;
+    /** Asks every source again; offered on each source notice when a refresh can run. */
+    onRetry?: () => void;
+    /** Opens Sources & registries, where a source that keeps failing is fixed. */
+    onOpenSources?: () => void;
 }>) {
     const { theme } = useUnistyles();
-    const degradedSources = props.sourceStatuses.filter((source) => source.freshness !== 'fresh');
-    const detailedDiagnostics = [
-        ...props.sourceStatuses.flatMap((source) => source.diagnostics),
-        ...props.diagnostics,
-    ];
-    const message = props.loading
+    const styles = sectionStylesheet;
+    const maxWidthStyle = useLayoutMaxWidthStyle();
+    const searched = (props.searchText ?? '').trim().length > 0;
+    const noMatch = searched && !props.loading && props.error === null && !props.noTarget
+        && props.entryCount === 0 && props.nonInstallable.length === 0;
+    // One issue per source (and one for the index), however many ways the daemon reported it.
+    const issues = React.useMemo(
+        () => buildPluginMarketplaceDiscoverIssues({ sourceStatuses: props.sourceStatuses, diagnostics: props.diagnostics }),
+        [props.diagnostics, props.sourceStatuses],
+    );
+    const sourceIssueCount = issues.filter((issue) => issue.sourceId !== null).length;
+    const message = props.noTarget && props.entryCount === 0 && !props.loading
+        ? t('settingsPlugins.surfaces.chooseMachineBrowse')
+        : props.loading
         ? props.selectedSourceTitle === null
             ? t('settingsPlugins.discover.status.loading')
             : t('settingsPlugins.discover.status.loadingSource', { source: props.selectedSourceTitle })
@@ -543,7 +812,9 @@ export function DiscoverStatusSummary(props: Readonly<{
             : props.entryCount === 0 && props.nonInstallable.length > 0
                 ? t('settingsPlugins.discover.status.nonInstallable', { count: props.nonInstallable.length })
                 : props.entryCount === 0
-                    ? t('settingsPlugins.discover.status.empty')
+                    ? searched
+                        ? t('settingsPlugins.surfaces.noMatch', { query: (props.searchText ?? '').trim() })
+                        : t('settingsPlugins.surfaces.browseEmpty')
                     : t('settingsPlugins.discover.status.results', {
                         count: props.entryCount,
                         sources: props.sourceStatuses.length,
@@ -553,8 +824,8 @@ export function DiscoverStatusSummary(props: Readonly<{
     const qualifiers = [
         ...(props.error !== null && !props.loading ? [props.error] : []),
         ...(props.stale && !props.loading ? [t('settingsPlugins.discover.status.stale')] : []),
-        ...(degradedSources.length > 0
-            ? [t('settingsPlugins.discover.status.partial', { count: degradedSources.length })]
+        ...(sourceIssueCount > 0
+            ? [t('settingsPlugins.discover.status.partial', { count: sourceIssueCount })]
             : []),
         ...(props.nonInstallable.length > 0 && props.entryCount > 0
             ? [t('settingsPlugins.discover.status.nonInstallable', { count: props.nonInstallable.length })]
@@ -563,171 +834,402 @@ export function DiscoverStatusSummary(props: Readonly<{
 
     return (
         <View testID="settings.plugins.marketplace.discover.status">
-            <View
+            {noMatch ? (
+                <PluginsNoMatch
+                    testID="settings.plugins.marketplace.discover.noMatch"
+                    clearTestID="settings.plugins.marketplace.discover.clearSearch"
+                    query={props.searchText ?? ''}
+                    onClear={props.onClearSearch}
+                />
+            ) : null}
+            {/*
+              * One quiet line under the toolbar: what the results are, then any
+              * qualifier. It is the pane's only live region; the rows below it
+              * stay outside so each one can be traversed on its own.
+              */}
+            {noMatch ? null : (<View
+                style={[styles.statusLine, maxWidthStyle]}
                 accessible
                 accessibilityRole={props.error === null ? 'text' : 'alert'}
                 accessibilityLiveRegion="polite"
                 accessibilityLabel={[message, ...qualifiers].join(' ')}
             >
-                <Item
-                    testID="settings.plugins.marketplace.discover.status.summary"
-                    title={message}
-                    subtitle={qualifiers.length > 0 ? qualifiers.join('\n') : undefined}
-                    subtitleLines={0}
-                    icon={(
-                        <Icon
-                            name={props.error === null ? 'info' : 'warning'}
-                            size={29}
-                            color={props.error === null
-                                ? theme.colors.text.secondary
-                                : theme.colors.state.warning.foreground}
+                {props.loading ? <ActivityIndicator size="small" color={theme.colors.text.secondary} /> : null}
+                <View style={styles.statusText}>
+                    <Text
+                        testID="settings.plugins.marketplace.discover.status.summary"
+                        style={[styles.statusMessage, props.error === null ? null : styles.statusMessageError]}
+                    >
+                        {message}
+                    </Text>
+                    {qualifiers.length > 0 ? (
+                        <Text style={styles.statusQualifier}>{qualifiers.join('\n')}</Text>
+                    ) : null}
+                </View>
+            </View>)}
+            {issues.map((issue) => (
+                <AttentionBanner
+                    key={issue.id}
+                    testID={`settings.plugins.marketplace.discover.issue.${issue.sourceId ?? 'index'}`}
+                    title={issue.sourceId === null
+                        ? t('settingsPlugins.discover.diagnostic.indexTitle')
+                        : issue.reachable
+                            ? t('settingsPlugins.discover.diagnostic.behindTitle', { source: issue.sourceTitle ?? issue.sourceId })
+                            : t('settingsPlugins.discover.diagnostic.unreachableTitle', { source: issue.sourceTitle ?? issue.sourceId })}
+                    description={issue.sourceId === null ? undefined : t('settingsPlugins.discover.diagnostic.otherSourcesShown')}
+                    action={props.onRetry ? { label: t('common.retry'), onPress: props.onRetry } : null}
+                    secondaryAction={props.onOpenSources && issue.sourceId !== null
+                        ? { label: t('settingsPlugins.sourceAdministration.title'), onPress: props.onOpenSources }
+                        : null}
+                    details={issue.details.flatMap((detail) => [
+                        detail.message,
+                        t('settingsPlugins.diagnosticsTechnicalCode', { code: detail.code }),
+                    ])}
+                />
+            ))}
+            {props.nonInstallable.length > 0 ? (
+                <ItemGroup title={t('settingsPlugins.surfaces.notShownTitle')}>
+                    {props.nonInstallable.map((listing) => (
+                        <Item
+                            key={`${listing.sourceId}:${listing.pluginId}`}
+                            testID={`settings.plugins.marketplace.discover.nonInstallable.${listing.sourceId}.${listing.pluginId}`}
+                            title={listing.title}
+                            subtitle={`${t('settingsPlugins.discoveredVia', { source: listing.sourceTitle })}\n${
+                                t(`settingsPlugins.discover.nonInstallableReason.${listing.reason}` as
+                                    'settingsPlugins.discover.nonInstallableReason.sourceStale')
+                            }`}
+                            subtitleLines={0}
+                            icon={<PluginMark title={listing.title} />}
+                            iconBoxSize={36}
+                            showChevron={false}
+                            mode="info"
                         />
-                    )}
-                    loading={props.loading}
-                    showChevron={false}
-                    mode="info"
-                />
-            </View>
-            {degradedSources.map((source) => (
-                <Item
-                    key={source.id}
-                    testID={`settings.plugins.marketplace.discover.sourceHealth.${source.id}`}
-                    title={source.title}
-                    subtitle={[
-                        t(`settingsPlugins.discover.sourceFreshness.${source.freshness}` as
-                            'settingsPlugins.discover.sourceFreshness.stale'),
-                        t('settingsPlugins.discover.diagnostic.recovery'),
-                    ].join('\n')}
-                    subtitleLines={0}
-                    icon={<Icon name="globe" size={29} color={theme.colors.state.warning.foreground} />}
-                    showChevron={false}
-                    mode="info"
-                />
-            ))}
-            {detailedDiagnostics.map((diagnostic) => (
-                <Item
-                    key={diagnostic.id}
-                    testID={`settings.plugins.marketplace.discover.diagnostic.${diagnostic.id}`}
-                    title={diagnostic.sourceTitle === null
-                        ? t('settingsPlugins.discover.diagnostic.title')
-                        : `${diagnostic.sourceTitle} · ${t('settingsPlugins.discover.diagnostic.title')}`}
-                    subtitle={`${t('settingsPlugins.discover.diagnostic.recovery')}\n${diagnostic.message}\n${t('settingsPlugins.diagnosticsTechnicalCode', { code: diagnostic.code })}`}
-                    subtitleLines={0}
-                    icon={<Icon name="warning" size={29} color={theme.colors.state.warning.foreground} />}
-                    showChevron={false}
-                    mode="info"
-                />
-            ))}
-            {props.nonInstallable.map((listing) => (
-                <Item
-                    key={`${listing.sourceId}:${listing.pluginId}`}
-                    testID={`settings.plugins.marketplace.discover.nonInstallable.${listing.sourceId}.${listing.pluginId}`}
-                    title={listing.title}
-                    subtitle={`${t('settingsPlugins.discoveredVia', { source: listing.sourceTitle })}\n${
-                        t(`settingsPlugins.discover.nonInstallableReason.${listing.reason}` as
-                            'settingsPlugins.discover.nonInstallableReason.sourceStale')
-                    }`}
-                    subtitleLines={0}
-                    icon={<Icon name="cloud-slash" size={29} color={theme.colors.text.secondary} />}
-                    showChevron={false}
-                    mode="info"
-                />
-            ))}
+                    ))}
+                </ItemGroup>
+            ) : null}
         </View>
     );
 }
 
-/** Source and trust belong to each result; the full trust decision stays in the install review. */
+const SHELF_COPY = {
+    curated: {
+        title: 'settingsPlugins.surfaces.shelfCurated',
+        description: 'settingsPlugins.surfaces.shelfCuratedDescription',
+    },
+    user: {
+        title: 'settingsPlugins.surfaces.shelfUser',
+        description: 'settingsPlugins.surfaces.shelfUserDescription',
+    },
+    'community-npm': {
+        title: 'settingsPlugins.surfaces.shelfCommunity',
+        description: 'settingsPlugins.surfaces.shelfCommunityDescription',
+    },
+} as const satisfies Record<DiscoverShelf['id'], Readonly<{ title: TranslationKeyNoParams; description: TranslationKeyNoParams }>>;
+
+/**
+ * Browse: the loaded results as shelves (curated, your sources, community), each compact until the reader asks
+ * for all of it, filtered by a category chip, as the same page-sized Collection as Installed — one grid, one list.
+ * Each listing says its review state and offers Install (or Open, once installed); its body opens the listing.
+ */
 export function DiscoverListingsSection(props: Readonly<{
     entries: readonly PluginMarketplaceCatalogEntry[];
+    presentation?: PluginsCollectionPresentation;
+    /** The listing whose detail is open beside the collection. */
+    selectedListing?: Readonly<{ sourceId: string; pluginId: string }> | null;
     loading: boolean;
     loadingMore: boolean;
     canLoadMore: boolean;
     installedPluginById: ReadonlyMap<string, InstalledPluginEntry>;
+    /** Listings of installed plugins that contribute an Agent show that Agent's logo. */
+    projectionByPluginId?: PluginProjectionFactsById;
     canRunActions: boolean;
     isPluginActionInFlight: (pluginId: string) => boolean;
     onAction: (request: PluginMarketplaceActionRequest) => void;
     onLoadMore: () => void;
     onNavigateToPlugin: (pluginId: string) => void;
-    administrationTargetKey: string;
-    administrationTargetLabel: Readonly<{ machine: string; server: string }> | null;
+    onOpenListing: (entry: PluginMarketplaceCatalogEntry) => void;
+    /** The open listing closes (Escape inside the collection). */
+    onCloseListing?: () => void;
+    /** The page above the listings (its header, the search's status) and below them, in one scroller. */
+    header?: React.ReactNode;
+    footer?: React.ReactNode;
 }>) {
-    const { theme } = useUnistyles();
+    const styles = sectionStylesheet;
     const maxWidthStyle = useLayoutMaxWidthStyle();
-    const openDetails = usePluginCatalogDetails(props);
-    return (
-        <View style={[{ width: '100%', alignSelf: 'center', paddingHorizontal: resolveItemGroupContentHorizontalInsetPx(), paddingBottom: 16 }, maxWidthStyle]}>
-            <CardGrid columns={2} minColumnWidthPx={ITEM_GROUP_COLUMN_MIN_WIDTH_PX}>
-                {props.entries.map((entry) => {
-                    const installed = props.installedPluginById.has(entry.id);
-                    const action = installed ? 'manage' : 'install';
-                    return (
-                        <CardGridColumn key={`${entry.sourceId}:${entry.id}`}>
-                            <SurfaceCard padding="none" style={{ flex: 1, overflow: 'hidden' }}>
-                                <Item
-                                    testID={`settings.plugins.marketplace.entry.${entry.sourceId}.${entry.id}`}
-                                    title={entry.title}
-                                    titleLines={2}
-                                    subtitle={entry.description}
-                                    subtitleLines={3}
-                                    icon={<Icon name="stack" size={29} color={theme.colors.text.secondary} />}
-                                    onPress={() => openDetails(entry)}
-                                    accessibilityLabel={buildActionRowAccessibilityLabel([entry.title, t('common.details'), entry.sourceTitle])}
-                                    showChevron={false}
-                                    showDivider={false}
-                                />
-                                <View style={{ paddingHorizontal: 16, paddingBottom: 16, gap: 12, flex: 1 }}>
-                                    <Text testID={`settings.plugins.marketplace.source.${entry.sourceId}.${entry.id}`}
-                                        style={{ ...ITEM_SUBTITLE_TEXT_METRICS.comfortable, color: theme.colors.text.secondary }}>
-                                        {t('settingsPlugins.catalog.byPublisher', { publisher: entry.publisher.displayName })}
-                                        {' · '}{entry.sourceTitle}
-                                    </Text>
-                                    <View style={{ flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: 8 }}>
-                                        <StatusPill testID={`settings.plugins.marketplace.reviewStatus.${entry.sourceId}.${entry.id}`}
-                                            chrome="plain" labelVariant="phrase"
-                                            variant={entry.warning === undefined ? 'info' : 'warning'} label={catalogReviewStatusLabel(entry)} />
-                                        <Text style={{ ...ITEM_SUBTITLE_TEXT_METRICS.comfortable, color: theme.colors.text.secondary }}>
-                                            {formatCatalogEntryVersion(entry.version)}
-                                        </Text>
-                                    </View>
-                                    {!installed && entry.registrySelectionOrigin !== null ? (
-                                        <Text testID={`settings.plugins.marketplace.registrySelection.${entry.sourceId}.${entry.id}`}
-                                            style={{ ...ITEM_SUBTITLE_TEXT_METRICS.comfortable, color: theme.colors.text.secondary }}>
-                                            {t('settingsPlugins.discover.registrySelectionRequired', { origin: entry.registrySelectionOrigin })}
-                                        </Text>
-                                    ) : null}
-                                    {installed || entry.installable ? (
-                                        <View style={{ marginTop: 'auto', alignItems: 'flex-start' }}>
-                                            <RoundButton size="small" titleNumberOfLines="complete"
-                                                display="inverted"
-                                                style={{ minHeight: resolveMinimumInteractiveTargetSize(Platform.OS) }}
-                                                testID={`settings.plugins.marketplace.action.${action}.${entry.sourceId}.${entry.id}`}
-                                                title={installed ? t('settingsPlugins.managePlugin') : t('settingsPlugins.installAndTrust')}
-                                                accessibilityLabel={buildActionRowAccessibilityLabel([
-                                                    installed ? t('settingsPlugins.managePlugin') : t('settingsPlugins.installAndTrust'),
-                                                    entry.title, entry.sourceTitle,
-                                                ])}
-                                                accessibilityHint={installed ? undefined : t('settingsPlugins.discover.installSubtitle', { source: entry.sourceTitle })}
-                                                disabled={!installed && (!props.canRunActions || props.isPluginActionInFlight(entry.id) || props.loading)}
-                                                onPress={() => installed ? props.onNavigateToPlugin(entry.id) : props.onAction({
-                                                    method: 'install', pluginId: entry.id, sourceId: entry.sourceId,
-                                                })}
-                                            />
-                                        </View>
-                                    ) : null}
-                                </View>
-                            </SurfaceCard>
-                        </CardGridColumn>
-                    );
-                })}
-            </CardGrid>
+    const presentation = props.presentation ?? 'grid';
+    // Presentation only: which slice of the loaded results the page shows. The query and its results stay with
+    // the Discover owner.
+    const [category, setCategory] = React.useState<string | null>(null);
+    const [focusedShelfId, setFocusedShelfId] = React.useState<DiscoverShelf['id'] | null>(null);
+    const view = projectBrowseShelves(props.entries, { category, focusedShelfId });
+    // A chip or focus the new results dropped is forgotten, so it cannot return unasked later.
+    React.useEffect(() => {
+        if (category !== view.category) setCategory(view.category);
+        if (focusedShelfId !== view.focusedShelfId) setFocusedShelfId(view.focusedShelfId);
+    }, [category, focusedShelfId, view.category, view.focusedShelfId]);
+    const shelves = view.shelves;
+    const activeCategory = view.category ?? DISCOVER_ALL_CATEGORIES_ID;
+    const items = React.useMemo(
+        () => shelves.flatMap((shelf) => shelf.entries.map((entry): DiscoverListingItem => ({ entry, shelfId: shelf.id }))),
+        [shelves],
+    );
+    const groups = React.useMemo(() => ({
+        axis: shelves.map((shelf) => ({
+            key: shelf.id,
+            title: t(SHELF_COPY[shelf.id].title),
+            description: t(SHELF_COPY[shelf.id].description),
+        })),
+        groupOf: (item: DiscoverListingItem) => item.shelfId,
+    }), [shelves]);
+    const { onOpenListing, onCloseListing } = props;
+    const onOpenChange = React.useCallback((key: string | null) => {
+        if (key === null) {
+            onCloseListing?.();
+            return;
+        }
+        const item = items.find((candidate) => readDiscoverListingKey(candidate) === key);
+        if (item) onOpenListing(item.entry);
+    }, [items, onCloseListing, onOpenListing]);
+    const model = useHappierCollection<DiscoverListingItem>({
+        items,
+        keyOf: readDiscoverListingKey,
+        groups,
+        openKey: props.selectedListing ? `${props.selectedListing.sourceId}:${props.selectedListing.pluginId}` : null,
+        onOpenChange,
+    });
+    const anatomy = useDiscoverListingAnatomy(props);
+    const controls = React.useMemo(() => new Map(items.map((item) => [
+        readDiscoverListingKey(item),
+        discoverListingControl(item.entry, props),
+    ] as const)), [items, props]);
+    // "See all" on a shelf the page shortened, "All results" on the one it focused.
+    const groupAction = React.useCallback((shelfId: string) => {
+        if (view.focusedShelfId === shelfId) {
+            return { label: t('settingsPlugins.surfaces.allResults'), onPress: () => setFocusedShelfId(null) };
+        }
+        const shelf = shelves.find((candidate) => candidate.id === shelfId);
+        return shelf && shelf.hiddenCount > 0
+            ? { label: t('settingsPlugins.surfaces.seeAll'), onPress: () => setFocusedShelfId(shelf.id) }
+            : null;
+    }, [shelves, view.focusedShelfId]);
+    const header = (
+        <>
+            {props.header}
+            {view.categories.length > 0 ? (
+                <View style={[styles.chips, maxWidthStyle]}>
+                    <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+                        <SegmentedTabBar
+                            tabs={[
+                                { id: DISCOVER_ALL_CATEGORIES_ID, label: t('settingsPlugins.discoverSourceAll') },
+                                ...view.categories.map((id) => ({ id, label: id })),
+                            ]}
+                            activeTabId={activeCategory}
+                            onSelectTab={(id) => setCategory(id === DISCOVER_ALL_CATEGORIES_ID ? null : id)}
+                            testIDPrefix="settings.plugins.marketplace.category"
+                            accessibilityLabel={t('settingsPlugins.surfaces.categoriesLabel')}
+                            segmentSizing="content"
+                            slidingThumb
+                            targetSize="platform"
+                        />
+                    </ScrollView>
+                </View>
+            ) : null}
+        </>
+    );
+    const footer = (
+        <>
             {props.canLoadMore ? (
-                <View style={{ alignItems: 'center', paddingTop: 16 }}>
-                    <RoundButton testID="settings.plugins.marketplace.loadMore" size="normal" display="inverted"
+                <View style={[styles.loadMore, maxWidthStyle]}>
+                    <RoundButton testID="settings.plugins.marketplace.loadMore" size="normal" display="secondary"
                         title={t('settingsPlugins.discoverLoadMore')} onPress={props.onLoadMore}
                         disabled={props.loadingMore || props.loading} loading={props.loadingMore} />
                 </View>
             ) : null}
-        </View>
+            {props.footer}
+        </>
+    );
+    return (
+        <DiscoverListingControlsContext.Provider value={controls}>
+            <PluginsPageCollection<DiscoverListingItem>
+                testID="settings.plugins.marketplace.discover"
+                model={model}
+                anatomy={anatomy}
+                presentation={presentation}
+                accessibilityLabel={t('settingsPlugins.surfaces.navigationTitle')}
+                header={header}
+                footer={footer}
+                groupAction={groupAction}
+                useRowActions={useDiscoverListingRowActions}
+            />
+        </DiscoverListingControlsContext.Provider>
     );
 }
+
+/** The "All" category chip: no category filter. Not a category id, so it cannot collide with one. */
+const DISCOVER_ALL_CATEGORIES_ID = '__all__';
+
+type DiscoverListingItem = Readonly<{ entry: PluginMarketplaceCatalogEntry; shelfId: DiscoverShelf['id'] }>;
+
+const readDiscoverListingKey = (item: DiscoverListingItem) => `${item.entry.sourceId}:${item.entry.id}`;
+
+const DiscoverListingControlsContext = React.createContext<ReadonlyMap<string, React.ReactNode>>(new Map());
+
+function useDiscoverListingRowActions(item: DiscoverListingItem): CollectionRowActions {
+    const control = React.useContext(DiscoverListingControlsContext).get(readDiscoverListingKey(item));
+    return control === undefined || control === null ? NO_ROW_ACTIONS : { accessory: control };
+}
+
+type DiscoverListingActionInputs = Readonly<{
+    installedPluginById: ReadonlyMap<string, InstalledPluginEntry>;
+    canRunActions: boolean;
+    loading: boolean;
+    isPluginActionInFlight: (pluginId: string) => boolean;
+    onAction: (request: PluginMarketplaceActionRequest) => void;
+    onNavigateToPlugin: (pluginId: string) => void;
+}>;
+
+/**
+ * A listing's one action: Install, or Open once installed. "Installed" stays a status and never turns into an
+ * uninstall affordance.
+ */
+function discoverListingControl(entry: PluginMarketplaceCatalogEntry, props: DiscoverListingActionInputs): React.ReactNode {
+    const installed = props.installedPluginById.has(entry.id);
+    if (!installed && !entry.installable) return null;
+    const action = installed ? 'manage' : 'install';
+    const installDisabled = !props.canRunActions || props.isPluginActionInFlight(entry.id) || props.loading;
+    return (
+        <RoundButton
+            size="small"
+            display="secondary"
+            testID={`settings.plugins.marketplace.action.${action}.${entry.sourceId}.${entry.id}`}
+            title={installed ? t('settingsPlugins.surfaces.open') : t('common.install')}
+            accessibilityLabel={buildActionRowAccessibilityLabel([
+                installed ? t('settingsPlugins.managePlugin') : t('settingsPlugins.installAndTrust'),
+                entry.title, entry.sourceTitle,
+            ])}
+            accessibilityHint={installed ? undefined : t('settingsPlugins.discover.installSubtitle', { source: entry.sourceTitle })}
+            disabled={!installed && installDisabled}
+            onPress={() => installed ? props.onNavigateToPlugin(entry.id) : props.onAction({
+                method: 'install', pluginId: entry.id, sourceId: entry.sourceId,
+            })}
+        />
+    );
+}
+
+/** One anatomy for the grid's cards and the list's rows. A withdrawal outranks "Installed". */
+function useDiscoverListingAnatomy(props: DiscoverListingActionInputs & Readonly<{
+    projectionByPluginId?: PluginProjectionFactsById;
+}>): CollectionAnatomy<DiscoverListingItem> {
+    const { installedPluginById, projectionByPluginId } = props;
+    return React.useMemo(() => ({
+        glyph: ({ entry }) => (
+            <PluginMark title={entry.title} iconAgentId={projectionByPluginId?.[entry.id]?.iconAgentId ?? null} />
+        ),
+        title: ({ entry }) => entry.title,
+        // A registry the install needs is the one fact to read before installing, on cards and rows alike; it
+        // takes the byline's place until the listing is installed.
+        where: ({ entry }) => (!installedPluginById.has(entry.id) && entry.registrySelectionOrigin !== null
+            ? t('settingsPlugins.discover.registrySelectionRequired', { origin: entry.registrySelectionOrigin })
+            : `${entry.publisher.displayName} · ${entry.sourceTitle}`),
+        description: ({ entry }) => entry.description ?? null,
+        reason: ({ entry }) => (installedPluginById.has(entry.id) && entry.warning !== 'withdrawn' ? (
+            <PluginCardStatus
+                testID={`settings.plugins.marketplace.installedStatus.${entry.sourceId}.${entry.id}`}
+                label={t('settingsPlugins.surfaces.installed')}
+                tone="quiet"
+            />
+        ) : (
+            <PluginCardStatus
+                testID={`settings.plugins.marketplace.reviewStatus.${entry.sourceId}.${entry.id}`}
+                label={catalogReviewStatusLabel(entry)}
+                tone={entry.warning === 'withdrawn' ? 'warning' : 'quiet'}
+            />
+        )),
+        action: (item) => discoverListingControl(item.entry, props),
+        accessibilityLabel: ({ entry }) => buildActionRowAccessibilityLabel([entry.title, t('common.details'), entry.sourceTitle]) ?? entry.title,
+        testID: ({ entry }) => `settings.plugins.marketplace.entry.${entry.sourceId}.${entry.id}`,
+        columnTitles: { title: t('settingsPlugins.surfaces.navigationTitle') },
+    // `props` carries the action inputs `discoverListingControl` reads; its identity is the render's.
+    }), [installedPluginById, projectionByPluginId, props]);
+}
+
+const sectionStylesheet = StyleSheet.create((theme) => ({
+    version: {
+        ...Typography.mono(),
+        fontSize: 11,
+        lineHeight: 16,
+        color: theme.colors.text.tertiary,
+        flexShrink: 1,
+    },
+    rowControls: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 12,
+    },
+    source: {
+        ...Typography.default(),
+        fontSize: 12,
+        lineHeight: 16,
+        color: theme.colors.text.tertiary,
+        maxWidth: 140,
+    },
+    pendingNotice: {
+        backgroundColor: theme.colors.state.info.background,
+        borderColor: theme.colors.state.info.border,
+    },
+    statusLine: {
+        width: '100%',
+        alignSelf: 'center',
+        flexDirection: 'row',
+        alignItems: 'flex-start',
+        gap: 8,
+        paddingHorizontal: PAGE_LIST_METRICS.pageTextInsetPx,
+        paddingTop: 4,
+        paddingBottom: 4,
+    },
+    statusText: {
+        flex: 1,
+        gap: 2,
+    },
+    statusMessage: {
+        ...Typography.default(),
+        fontSize: 12.5,
+        lineHeight: 18,
+        color: theme.colors.text.secondary,
+    },
+    statusMessageError: {
+        color: theme.colors.state.warning.foreground,
+    },
+    statusQualifier: {
+        ...Typography.default(),
+        fontSize: 12.5,
+        lineHeight: 18,
+        color: theme.colors.text.tertiary,
+    },
+    chips: {
+        width: '100%',
+        alignSelf: 'center',
+        paddingHorizontal: resolveItemGroupContentHorizontalInsetPx(),
+        paddingTop: 8,
+    },
+    loadMore: {
+        width: '100%',
+        alignSelf: 'center',
+        alignItems: 'center',
+        paddingTop: 4,
+        paddingBottom: 16,
+    },
+    stateFrame: {
+        width: '100%',
+        alignSelf: 'center',
+        paddingHorizontal: resolveItemGroupContentHorizontalInsetPx(),
+        paddingTop: 12,
+        paddingBottom: 8,
+    },
+    registryNote: {
+        ...Typography.default(),
+        fontSize: 12,
+        lineHeight: 16,
+        color: theme.colors.text.secondary,
+    },
+}));

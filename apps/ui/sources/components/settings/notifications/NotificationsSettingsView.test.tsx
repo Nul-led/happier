@@ -197,8 +197,9 @@ const localSettingsState = {
 
 type NotificationsSettingsScreen = Awaited<ReturnType<typeof renderSettingsView>>;
 
+/** The row component itself (the outermost element with this test id), with the props it was given. */
 function requireRow(screen: NotificationsSettingsScreen, testID: string) {
-    const row = screen.findRow(testID);
+    const row = screen.findAllByTestId(testID)[0];
     expect(row).toBeTruthy();
     return row!;
 }
@@ -207,11 +208,6 @@ function requireRowByTitle(screen: NotificationsSettingsScreen, title: string) {
     const row = screen.findRowByTitle(title);
     expect(row).toBeTruthy();
     return row!;
-}
-
-function createPassthroughComponentMock(tag: string) {
-    return (props: Record<string, unknown> & { children?: React.ReactNode }) =>
-        React.createElement(tag, props, props.children);
 }
 
 installSettingsViewCommonModuleMocks({
@@ -312,25 +308,19 @@ vi.mock('@/sync/domains/server/serverProfiles', async (importOriginal) => ({
     getServerProfileById: (serverId: string) => activeHomeState.profiles[serverId] ?? null,
 }));
 
-vi.mock('@/components/ui/lists/ItemList', () => ({
-    ItemList: createPassthroughComponentMock('ItemList'),
-}));
+// The page renders through the real list rows, segmented controls and switches.
 
-vi.mock('@/components/ui/lists/ItemGroup', () => ({
-    ItemGroup: createPassthroughComponentMock('ItemGroup'),
-}));
-
-vi.mock('@/components/ui/lists/Item', () => ({
-    Item: createPassthroughComponentMock('Item'),
-}));
-
-vi.mock('@/components/ui/lists/ItemRowActions', () => ({
-    ItemRowActions: createPassthroughComponentMock('ItemRowActions'),
-}));
-
-vi.mock('@/components/ui/forms/Switch', () => ({
-    Switch: createPassthroughComponentMock('Switch'),
-}));
+/**
+ * Choices whose labels are too long for a phone-width segmented control are field selects (R5); pick
+ * one through the menu the way a user does.
+ */
+async function selectFromMenu(screen: { findAll: (predicate: (node: any) => boolean) => any[] }, menuTestID: string, id: string) {
+    const menu = screen.findAll((node) => node.props?.testID === menuTestID && typeof node.props?.onSelect === 'function')[0];
+    expect(menu).toBeTruthy();
+    await act(async () => {
+        menu.props.onSelect(id);
+    });
+}
 
 describe('NotificationsSettingsView', () => {
     beforeEach(() => {
@@ -435,6 +425,8 @@ describe('NotificationsSettingsView', () => {
 
         expect(screen.findRow('settings-notifications-remote-account')).toBeNull();
         expect(screen.findRow('settings-notifications-remote-device')).toBeNull();
+        // The section stays and says why, so a search for its settings lands on an explanation.
+        expect(screen.findRow('settings-notifications-remote-unavailable')).toBeTruthy();
     });
 
     it('names the focused Home for synced push consent', async () => {
@@ -449,12 +441,13 @@ describe('NotificationsSettingsView', () => {
             'settingsNotifications.push.enabledSubtitle',
             { home: 'Studio Home' },
         );
-        expect(screen.findRow('settings-notifications-sounds-device-enabled')?.props.subtitle).toBe(
+        expect(screen.findAllByTestId('settings-notifications-sounds-device-enabled')
+            .find((node) => node.props.subtitle !== undefined)?.props.subtitle).toBe(
             'settingsNotifications.sounds.deviceEnabledSubtitle',
         );
     });
 
-    it('renders the activity-surface section alongside the badge and notification sections', async () => {
+    it('orders the notification sections by task', async () => {
         const { NotificationsSettingsView } = await import('./NotificationsSettingsView');
 
         const screen = await renderSettingsView(<NotificationsSettingsView />);
@@ -467,25 +460,36 @@ describe('NotificationsSettingsView', () => {
             'settingsNotifications.badges.title',
             'settingsNotifications.local.title',
             'settingsNotifications.sounds.title',
+            'settingsNotifications.quietHours.title',
             'settingsNotifications.push.title',
             'settingsNotifications.webhooks.title',
             'settingsNotifications.types.title',
             'settingsNotifications.foregroundBehavior.title',
-        ].map((title) => screen.findGroup(title)?.props.title);
+        ];
+        const renderedOrder = screen.findAll((node) => (
+            typeof node.props?.title === 'string'
+            && node.props.title.startsWith('settingsNotifications.')
+            && groupTitles.includes(node.props.title)
+            && node.props.children !== undefined
+            && node.props.description !== undefined
+        )).map((node) => node.props.title as string).filter((title, index, all) => all.indexOf(title) === index);
 
-        expect(groupTitles).toEqual([
+        // Sections read in task order: the channel, what it sends, how it sounds, when it is
+        // quiet, then this device, glanceable surfaces and extra endpoints.
+        expect(renderedOrder).toEqual([
+            'settingsNotifications.push.title',
+            'settingsNotifications.types.title',
+            'settingsNotifications.sounds.title',
+            'settingsNotifications.quietHours.title',
+            'settingsNotifications.local.title',
+            'settingsNotifications.foregroundBehavior.title',
+            'settingsNotifications.badges.title',
             'settingsNotifications.activitySurfaces.title',
             'settingsNotifications.activitySurfaces.shared.title',
             'settingsNotifications.activitySurfaces.liveActivities.title',
-            'settingsNotifications.activitySurfaces.liveActivities.remoteUpdates.title',
             'settingsNotifications.activitySurfaces.widgets.title',
-            'settingsNotifications.badges.title',
-            'settingsNotifications.local.title',
-            'settingsNotifications.sounds.title',
-            'settingsNotifications.push.title',
+            'settingsNotifications.activitySurfaces.liveActivities.remoteUpdates.title',
             'settingsNotifications.webhooks.title',
-            'settingsNotifications.types.title',
-            'settingsNotifications.foregroundBehavior.title',
         ]);
     });
 
@@ -498,14 +502,14 @@ describe('NotificationsSettingsView', () => {
         expect(screen.findRow('settings-notifications-activity-surfaces-enabled')).toBeTruthy();
         expect(screen.findRow('settings-notifications-badges-enabled')).toBeTruthy();
         expect(screen.findRow('settings-notifications-local-enabled')).toBeTruthy();
-        expect(screen.findRow('settings-notifications-sounds-account-happier')).toBeTruthy();
-        expect(screen.findRow('settings-notifications-sounds-account-system')).toBeTruthy();
+        expect(screen.findRow('settings-notifications-sounds-account:happier')).toBeTruthy();
+        expect(screen.findRow('settings-notifications-sounds-account:system')).toBeTruthy();
         expect(screen.findRow('settings-notifications-sounds-device-enabled')).toBeTruthy();
-        expect(screen.findRow('settings-notifications-quiet-hours-account-off')).toBeTruthy();
-        expect(screen.findRow('settings-notifications-quiet-hours-account-nightly')).toBeTruthy();
-        expect(screen.findRow('settings-notifications-quiet-hours-device-account')).toBeTruthy();
-        expect(screen.findRow('settings-notifications-quiet-hours-device-disabled')).toBeTruthy();
-        expect(screen.findRow('settings-notifications-quiet-hours-device-custom-nightly')).toBeTruthy();
+        expect(screen.findRow('settings-notifications-quiet-hours-account:off')).toBeTruthy();
+        expect(screen.findRow('settings-notifications-quiet-hours-account:nightly')).toBeTruthy();
+        expect(screen.findRow('settings-notifications-quiet-hours-device:account')).toBeTruthy();
+        expect(screen.findRow('settings-notifications-quiet-hours-device:disabled')).toBeTruthy();
+        expect(screen.findRow('settings-notifications-quiet-hours-device:nightly')).toBeTruthy();
         expect(screen.findRow('settings-notifications-push-enabled')).toBeTruthy();
         expect(screen.findRow('settings-notifications-add-webhook')).toBeTruthy();
     });
@@ -554,7 +558,7 @@ describe('NotificationsSettingsView', () => {
 
         const screen = await renderSettingsView(<NotificationsSettingsView />);
 
-        expect(requireRow(screen, 'settings-notifications-sounds-account-happier').props.selected).toBe(true);
+        expect(requireRow(screen, 'settings-notifications-sounds-account').props.value).toBe('happier');
     });
 
     it('writes the activity surfaces master toggle through the local settings writer', async () => {
@@ -574,11 +578,7 @@ describe('NotificationsSettingsView', () => {
         const { NotificationsSettingsView } = await import('./NotificationsSettingsView');
 
         const screen = await renderSettingsView(<NotificationsSettingsView />);
-        const liveActivitiesModeItem = requireRowByTitle(screen, 'settingsNotifications.activitySurfaces.liveActivities.focusedTitle');
-
-        await act(async () => {
-            liveActivitiesModeItem.props.onPress();
-        });
+        await selectFromMenu(screen, 'settings-notifications-live-activities-mode', 'focused');
 
         expect(applyLocalSettingsMock).toHaveBeenCalledWith({ liveActivitiesMode: 'focused' });
     });
@@ -587,11 +587,7 @@ describe('NotificationsSettingsView', () => {
         const { NotificationsSettingsView } = await import('./NotificationsSettingsView');
 
         const screen = await renderSettingsView(<NotificationsSettingsView />);
-        const strategyItem = requireRowByTitle(screen, 'settingsNotifications.activitySurfaces.liveActivities.dynamicPrimaryTitle');
-
-        await act(async () => {
-            strategyItem.props.onPress();
-        });
+        await selectFromMenu(screen, 'settings-notifications-live-activities-strategy', 'dynamic_primary');
 
         expect(applyLocalSettingsMock).toHaveBeenCalledWith({ liveActivitiesStrategy: 'dynamic_primary' });
     });
@@ -609,8 +605,8 @@ describe('NotificationsSettingsView', () => {
 
         const screen = await renderSettingsView(<NotificationsSettingsView />);
 
-        expect(requireRowByTitle(screen, 'settingsNotifications.activitySurfaces.liveActivities.maxConcurrentTitle').props.disabled).toBe(true);
-        expect(requireRowByTitle(screen, 'settingsNotifications.activitySurfaces.liveActivities.maxConcurrentTwoTitle').props.disabled).toBe(true);
+        expect(requireRow(screen, 'settings-notifications-live-activities-max-concurrent').props.disabled).toBe(true);
+        expect(requireRow(screen, 'settings-notifications-live-activities-max-concurrent:2').props.disabled).toBe(true);
     });
 
     it('enables live-activity concurrency controls for the session-specific strategy', async () => {
@@ -622,8 +618,8 @@ describe('NotificationsSettingsView', () => {
 
             const screen = await renderSettingsView(<NotificationsSettingsView />);
 
-            expect(requireRowByTitle(screen, 'settingsNotifications.activitySurfaces.liveActivities.maxConcurrentTitle').props.disabled).toBe(false);
-            expect(requireRowByTitle(screen, 'settingsNotifications.activitySurfaces.liveActivities.maxConcurrentTwoTitle').props.disabled).toBe(false);
+            expect(requireRow(screen, 'settings-notifications-live-activities-max-concurrent').props.disabled).toBe(false);
+            expect(requireRow(screen, 'settings-notifications-live-activities-max-concurrent:2').props.disabled).toBe(false);
         } finally {
             localSettingsState.liveActivitiesStrategy = previousStrategy;
         }
@@ -633,11 +629,7 @@ describe('NotificationsSettingsView', () => {
         const { NotificationsSettingsView } = await import('./NotificationsSettingsView');
 
         const screen = await renderSettingsView(<NotificationsSettingsView />);
-        const widgetsModeItem = requireRowByTitle(screen, 'settingsNotifications.activitySurfaces.widgets.summaryTitle');
-
-        await act(async () => {
-            widgetsModeItem.props.onPress();
-        });
+        await selectFromMenu(screen, 'settings-notifications-widgets-mode', 'summary');
 
         expect(applyLocalSettingsMock).toHaveBeenCalledWith({ widgetsPresetMode: 'summary' });
     });
@@ -882,10 +874,8 @@ describe('NotificationsSettingsView', () => {
         const { NotificationsSettingsView } = await import('./NotificationsSettingsView');
 
         const screen = await renderSettingsView(<NotificationsSettingsView />);
-        const accountDefaultItem = requireRow(screen, 'settings-notifications-foreground-account');
-
         await act(async () => {
-            accountDefaultItem.props.onPress();
+            screen.pressRow('settings-notifications-foreground:account');
         });
 
         expect(applyLocalSettingsMock).toHaveBeenCalledWith(expect.objectContaining({
@@ -895,14 +885,31 @@ describe('NotificationsSettingsView', () => {
         }));
     });
 
+    it("shows the foreground choices that need this device's notifications as unavailable while they are off", async () => {
+        localSettingsState.attentionDeviceOverridesV1 = {
+            ...DEFAULT_ATTENTION_DEVICE_OVERRIDES_V1,
+            localNotifications: {
+                ...DEFAULT_ATTENTION_DEVICE_OVERRIDES_V1.localNotifications,
+                enabled: false,
+            },
+        };
+        const { NotificationsSettingsView } = await import('./NotificationsSettingsView');
+
+        const screen = await renderSettingsView(<NotificationsSettingsView />);
+
+        // Following the Account stays available; the choices this device cannot apply say so.
+        expect(screen.findByTestId('settings-notifications-foreground:account')?.props.accessibilityState?.disabled).toBe(false);
+        for (const id of ['full', 'silent', 'off']) {
+            expect(screen.findByTestId(`settings-notifications-foreground:${id}`)?.props.accessibilityState?.disabled).toBe(true);
+        }
+    });
+
     it('writes account quiet-hours presets through the canonical policy', async () => {
         const { NotificationsSettingsView } = await import('./NotificationsSettingsView');
 
         const screen = await renderSettingsView(<NotificationsSettingsView />);
-        const nightlyItem = requireRow(screen, 'settings-notifications-quiet-hours-account-nightly');
-
         await act(async () => {
-            nightlyItem.props.onPress();
+            screen.pressRow('settings-notifications-quiet-hours-account:nightly');
         });
 
         expect(applySettingsMock).toHaveBeenCalledWith(expect.objectContaining({
@@ -921,14 +928,32 @@ describe('NotificationsSettingsView', () => {
         }));
     });
 
+    it('shows a quiet-hours schedule the presets do not describe without selecting a preset', async () => {
+        settingsState.attentionDeliveryPolicyV1 = {
+            ...settingsState.attentionDeliveryPolicyV1,
+            quietHours: {
+                enabled: true,
+                timezone: 'UTC',
+                windows: [{ startLocalTime: '12:00', endLocalTime: '13:00' }],
+            },
+        };
+        const { NotificationsSettingsView } = await import('./NotificationsSettingsView');
+
+        const screen = await renderSettingsView(<NotificationsSettingsView />);
+        const accountSchedule = requireRow(screen, 'settings-notifications-quiet-hours-account');
+
+        expect(accountSchedule.props.value).toBe('custom');
+        expect(requireRow(screen, 'settings-notifications-quiet-hours-account:nightly').props.accessibilityState).toMatchObject({ selected: false });
+        expect(requireRow(screen, 'settings-notifications-quiet-hours-account:off').props.accessibilityState).toMatchObject({ selected: false });
+        expect(accountSchedule.props.subtitle).toBe('settingsNotifications.quietHours.customSubtitle');
+    });
+
     it('writes device quiet-hours overrides through canonical local settings', async () => {
         const { NotificationsSettingsView } = await import('./NotificationsSettingsView');
 
         const screen = await renderSettingsView(<NotificationsSettingsView />);
-        const disabledItem = requireRow(screen, 'settings-notifications-quiet-hours-device-disabled');
-
         await act(async () => {
-            disabledItem.props.onPress();
+            screen.pressRow('settings-notifications-quiet-hours-device:disabled');
         });
 
         expect(applyLocalSettingsMock).toHaveBeenCalledWith(expect.objectContaining({
@@ -944,10 +969,8 @@ describe('NotificationsSettingsView', () => {
         const { NotificationsSettingsView } = await import('./NotificationsSettingsView');
 
         const screen = await renderSettingsView(<NotificationsSettingsView />);
-        const customItem = requireRow(screen, 'settings-notifications-quiet-hours-device-custom-nightly');
-
         await act(async () => {
-            customItem.props.onPress();
+            screen.pressRow('settings-notifications-quiet-hours-device:nightly');
         });
 
         expect(applyLocalSettingsMock).toHaveBeenCalledWith(expect.objectContaining({
@@ -1088,10 +1111,8 @@ describe('NotificationsSettingsView', () => {
         const { NotificationsSettingsView } = await import('./NotificationsSettingsView');
 
         const screen = await renderSettingsView(<NotificationsSettingsView />);
-        const silentItem = requireRowByTitle(screen, 'settingsNotifications.sounds.accountSilentTitle');
-
         await act(async () => {
-            silentItem.props.onPress();
+            screen.pressRow('settings-notifications-sounds-account:silent');
         });
 
         const delta = applySettingsMock.mock.calls[0]?.[0] as Record<string, unknown>;
@@ -1109,10 +1130,8 @@ describe('NotificationsSettingsView', () => {
         const { NotificationsSettingsView } = await import('./NotificationsSettingsView');
 
         const screen = await renderSettingsView(<NotificationsSettingsView />);
-        const systemItem = requireRow(screen, 'settings-notifications-sounds-account-system');
-
         await act(async () => {
-            systemItem.props.onPress();
+            screen.pressRow('settings-notifications-sounds-account:system');
         });
 
         const delta = applySettingsMock.mock.calls[0]?.[0] as Record<string, unknown>;
@@ -1243,13 +1262,13 @@ describe('NotificationsSettingsView', () => {
         const { NotificationsSettingsView } = await import('./NotificationsSettingsView');
 
         const screen = await renderSettingsView(<NotificationsSettingsView />);
-        const webhookItem = requireRow(screen, 'settings-notifications-webhook-webhook-primary');
-
-        const deleteAction = webhookItem.props.rightElement.props.actions.find((action: { id: string }) => action.id === 'delete');
-        expect(deleteAction).toBeTruthy();
-
+        // A webhook's settings open in place from its row.
+        expect(screen.findRow('settings-notifications-webhook-webhook-primary-delete')).toBeNull();
         await act(async () => {
-            await deleteAction.onPress();
+            screen.pressRow('settings-notifications-webhook-webhook-primary');
+        });
+        await act(async () => {
+            await requireRow(screen, 'settings-notifications-webhook-webhook-primary-delete').props.onPress();
         });
 
         expect(applySettingsMock).toHaveBeenCalledWith(expect.objectContaining({
@@ -1300,7 +1319,10 @@ describe('NotificationsSettingsView', () => {
         const screen = await renderSettingsView(<NotificationsSettingsView />);
 
         await act(async () => {
-            screen.pressRowByTitle('settingsNotifications.webhooks.signingSecretTitle');
+            screen.pressRow('settings-notifications-webhook-webhook-primary');
+        });
+        await act(async () => {
+            await requireRow(screen, 'settings-notifications-webhook-webhook-primary-set-secret').props.onPress();
         });
 
         expect(applySettingsMock).toHaveBeenCalledWith(expect.objectContaining({
@@ -1370,13 +1392,11 @@ describe('NotificationsSettingsView', () => {
         const { NotificationsSettingsView } = await import('./NotificationsSettingsView');
 
         const screen = await renderSettingsView(<NotificationsSettingsView />);
-        const signingSecretItem = requireRowByTitle(screen, 'settingsNotifications.webhooks.signingSecretTitle');
-
-        const clearAction = signingSecretItem.props.rightElement.props.actions.find((action: { id: string }) => action.id === 'clear-signing-secret');
-        expect(clearAction).toBeTruthy();
-
         await act(async () => {
-            await clearAction.onPress();
+            screen.pressRow('settings-notifications-webhook-webhook-primary');
+        });
+        await act(async () => {
+            await requireRow(screen, 'settings-notifications-webhook-webhook-primary-clear-secret').props.onPress();
         });
 
         expect(applySettingsMock).toHaveBeenCalledWith(expect.objectContaining({

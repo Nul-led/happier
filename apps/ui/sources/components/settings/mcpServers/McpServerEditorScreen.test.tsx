@@ -115,6 +115,11 @@ function updateLiveSecrets(next: SavedSecret[]) {
 }
 
 const mcpServersCommonModuleMockOptions = {
+    // The default text mock serializes parameters (`key(name=value)`), so copy can be checked for what it names.
+    text: async () => {
+        const { createTextModuleMock } = await import('@/dev/testkit/mocks/text');
+        return createTextModuleMock();
+    },
     modal: async () => {
         const { createModalModuleMock } = await import('@/dev/testkit/mocks/modal');
         return createModalModuleMock({
@@ -258,6 +263,12 @@ vi.mock('@/constants/Typography', async (importOriginal) => {
     };
 });
 
+/** The draft rule's target select (the page header also holds a `⋯` menu). */
+function findBindingTargetDropdown(screen: Awaited<ReturnType<typeof renderEditorScreen>>) {
+    return screen.findAllByType('DropdownMenu')
+        .find((dropdown) => dropdown.props.itemTrigger?.title === 'settings.mcpServersBindingTarget')!;
+}
+
 async function renderEditorScreen() {
     const { McpServerEditorScreen } = await import('./McpServerEditorScreen');
     return renderScreen(React.createElement(McpServerEditorScreen));
@@ -307,10 +318,8 @@ describe('McpServerEditorScreen', () => {
     it('prompts to discard unsaved changes when navigating away via the navigation back action', async () => {
         const screen = await renderEditorScreen();
 
-        const initialHeaderRightCall = navigationSetOptionsSpy.mock.calls
-            .map((call) => call[0])
-            .find((options) => options && typeof options === 'object' && 'headerRight' in options) as any;
-        expect(initialHeaderRightCall).toBeTruthy();
+        // Save lives in the page header and is offered only once there is something to save.
+        expect(screen.findByTestId('mcp.server.editor.save')?.props.disabled).toBe(true);
 
         await act(async () => {
             screen.changeTextByTestId('mcp.server.editor.name', 'server_edited');
@@ -318,16 +327,7 @@ describe('McpServerEditorScreen', () => {
 
         expect(navigationPreventRemove.enabled).toBe(true);
         expect(navigationPreventRemove.callback).not.toBeNull();
-
-        const lastHeaderRightCall = navigationSetOptionsSpy.mock.calls
-            .map((call) => call[0])
-            .filter((options) => options && typeof options === 'object' && 'headerRight' in options)
-            .at(-1) as any;
-        const headerRight = lastHeaderRightCall?.headerRight as (() => React.ReactElement | null) | undefined;
-        expect(typeof headerRight).toBe('function');
-        const headerRightNode = headerRight?.();
-        expect(React.isValidElement(headerRightNode)).toBe(true);
-        expect((headerRightNode as any).props.disabled).toBe(false);
+        expect(screen.findByTestId('mcp.server.editor.save')?.props.disabled).toBe(false);
 
         const action = { type: 'GO_BACK' };
 
@@ -364,8 +364,10 @@ describe('McpServerEditorScreen', () => {
     it('falls back to the MCP settings screen after delete when there is no back stack entry', async () => {
         const screen = await renderEditorScreen();
 
+        // Delete is the rare operation in the header's ⋯ menu.
         await act(async () => {
-            screen.pressByTestId('mcp.server.editor.secondaryAction');
+            screen.find((node) => node.props?.testID === 'mcp.server.editor.menu' && typeof node.props?.onSelect === 'function')
+                .props.onSelect('delete');
             await flushHookEffects({ cycles: 1, turns: 1 });
         });
 
@@ -377,6 +379,60 @@ describe('McpServerEditorScreen', () => {
         });
         expect(routerReplaceSpy).toHaveBeenCalledWith('/settings/mcp');
         expect(routerBackSpy).not.toHaveBeenCalled();
+    });
+
+    it('confirms deleting the saved server by the name the collection shows, not an unsaved edit', async () => {
+        liveMcpSettings = {
+            v: 1,
+            strictMode: false,
+            servers: [{
+                id: 'server-1', name: 'github', title: 'GitHub tools', transport: 'stdio',
+                stdio: { command: 'node', args: [] }, env: {}, createdAt: 1, updatedAt: 1,
+            }],
+            bindings: [],
+        };
+        modalConfirmSpy.mockResolvedValueOnce(false);
+        const screen = await renderEditorScreen();
+        await act(async () => {
+            screen.changeTextByTestId('mcp.server.editor.name', 'github_renamed_unsaved');
+        });
+        await act(async () => {
+            screen.find((node) => node.props?.testID === 'mcp.server.editor.menu' && typeof node.props?.onSelect === 'function')
+                .props.onSelect('delete');
+            await flushHookEffects({ cycles: 1, turns: 1 });
+        });
+
+        expect(modalConfirmSpy).toHaveBeenCalledWith(
+            'settings.mcpServersDeleteTitle',
+            expect.stringContaining('GitHub tools'),
+            expect.anything(),
+        );
+        expect(modalConfirmSpy.mock.calls.at(-1)?.[1]).not.toContain('github_renamed_unsaved');
+    });
+
+    it('titles a new server with the placeholder until the user names it', async () => {
+        mcpServersModuleState.routerSearchParams = {};
+        liveMcpSettings = { v: 1, strictMode: false, servers: [], bindings: [] };
+        const { mcpServerDraftTitle } = await import('./collection/mcpServerCollectionModel');
+        const published: string[] = [];
+        const originalPublish = mcpServerDraftTitle.publish;
+        const publishSpy = vi.spyOn(mcpServerDraftTitle, 'publish').mockImplementation((title) => {
+            published.push(title);
+            originalPublish(title);
+        });
+
+        const screen = await renderEditorScreen();
+        expect(screen.find((node) => node.props?.testID === 'mcp.server.editor.header' && typeof node.props?.title === 'string').props.title)
+            .toBe('mcpSettings.newServer');
+        expect(published.at(-1)).toBe('');
+
+        await act(async () => {
+            screen.changeTextByTestId('mcp.server.editor.name', 'playwright');
+        });
+        expect(screen.find((node) => node.props?.testID === 'mcp.server.editor.header' && typeof node.props?.title === 'string').props.title)
+            .toBe('playwright');
+        expect(published.at(-1)).toBe('playwright');
+        publishSpy.mockRestore();
     });
 
     it('does not overwrite an additive MCP settings root when saving an editor draft', async () => {
@@ -589,7 +645,7 @@ describe('McpServerEditorScreen', () => {
         expect(findTestInstanceByTypeContainingText(screen, 'Text', 'settings.mcpServersBindingTargetAllMachines')).toBeTruthy();
 
         await act(async () => {
-            screen.findByType('DropdownMenu').props.onSelect?.('machine');
+            findBindingTargetDropdown(screen).props.onSelect?.('machine');
         });
 
         expect(screen.findAllByProps({ title: 'settings.mcpServersBindingMachine' })).toHaveLength(0);
@@ -611,7 +667,7 @@ describe('McpServerEditorScreen', () => {
             screen.findByType('InlineAddExpander').props.onOpenChange?.(true);
         });
         await act(async () => {
-            screen.findAllByType('DropdownMenu')[0].props.onSelect?.('allMachines');
+            findBindingTargetDropdown(screen).props.onSelect?.('allMachines');
         });
 
         expect(findTestInstanceByTypeContainingText(screen, 'Text', 'settings.mcpServersBindingTargetAllMachines')).toBeTruthy();
@@ -633,11 +689,11 @@ describe('McpServerEditorScreen', () => {
             screen.findByType('InlineAddExpander').props.onOpenChange?.(true);
         });
         await act(async () => {
-            screen.findAllByType('DropdownMenu')[0].props.onSelect?.('allMachines');
+            findBindingTargetDropdown(screen).props.onSelect?.('allMachines');
         });
 
         await act(async () => {
-            screen.findAllByType('DropdownMenu')[0].props.onSelect?.('machine');
+            findBindingTargetDropdown(screen).props.onSelect?.('machine');
         });
 
         expect(modalAlertSpy).toHaveBeenCalledWith('common.error', 'settings.mcpServersNoMachineSelected');

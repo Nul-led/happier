@@ -6,6 +6,9 @@ import { Modal } from '@/modal';
 import { t } from '@/text';
 import type { RemoteHostTrustedHostKeyRecord } from '@/sync/domains/remoteHosts/hostKeys/model';
 import { getRemoteHostTrustedHostKeyStore } from '@/sync/domains/remoteHosts/hostKeys/trustedHostKeyStore';
+import { SettingRow, SettingSection } from '@/components/settings/shell/SettingRow';
+
+import { REMOTE_HOSTS_ACCESS_SETTINGS } from './remoteHostsSettings';
 
 function formatTrustedHostKeyTitle(record: RemoteHostTrustedHostKeyRecord): string {
     return `${record.hostLower}:${record.port}`;
@@ -22,12 +25,31 @@ export const TrustedHostKeysSection = React.memo(function TrustedHostKeysSection
         setRecords(store.readAll());
     }, [store]);
 
+    // With no keys the section stays, empty, so a search for "Clear trusted host keys" lands on it.
     if (records.length === 0) {
-        return null;
+        return (
+            <SettingSection section={REMOTE_HOSTS_ACCESS_SETTINGS.sectionRefs.trustedHostKeys}>
+                <ItemGroup
+                    title={t('settings.remoteHostsTrustedHostKeysTitle')}
+                    description={t('settingsRemoteHostsPage.trustedHostKeysDescription')}
+                >
+                    <Item
+                        testID="settings.remoteHosts.trustedHostKeys.empty"
+                        title={t('settingsRemoteHostsPage.trustedHostKeysEmpty')}
+                        titleLines={0}
+                        mode="info"
+                        showChevron={false}
+                    />
+                </ItemGroup>
+            </SettingSection>
+        );
     }
 
     return (
-        <ItemGroup title={t('settings.remoteHostsTrustedHostKeysTitle')}>
+        <ItemGroup
+            title={t('settings.remoteHostsTrustedHostKeysTitle')}
+            description={t('settingsRemoteHostsPage.trustedHostKeysDescription')}
+        >
             {records.map((record) => (
                 <Item
                     key={`${record.hostLower}:${record.port}:${record.algorithm}`}
@@ -57,9 +79,10 @@ export const TrustedHostKeysSection = React.memo(function TrustedHostKeysSection
                     }}
                 />
             ))}
-            <Item
+            <SettingRow
                 testID="settings.remoteHosts.trustedHostKeys.clear"
-                title={t('settings.remoteHostsTrustedHostKeysClearTitle')}
+                setting={REMOTE_HOSTS_ACCESS_SETTINGS.settings.clearTrustedHostKeys}
+                destructive
                 showChevron={false}
                 onPress={() => {
                     void (async () => {

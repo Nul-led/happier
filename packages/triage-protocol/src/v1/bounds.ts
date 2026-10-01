@@ -314,3 +314,29 @@ export type TriageReviewWorkspaceRefusedReasonV1 =
     (typeof TRIAGE_REVIEW_WORKSPACE_REFUSED_REASONS_V1)[number];
 export type TriageReviewWorkspaceStaleReasonV1 =
     (typeof TRIAGE_REVIEW_WORKSPACE_STALE_REASONS_V1)[number];
+
+/**
+ * The target-owned detail tab vocabulary (r0.42), in the one order the target
+ * renders it. A source declares which of these it supports per entry kind and
+ * renders the requested one as a panel; its own extra tabs follow them.
+ */
+export const TRIAGE_DETAIL_SHARED_TABS_V1 = [
+    'overview',
+    'activity',
+    'files',
+    'checks',
+] as const;
+export type TriageDetailSharedTabIdV1 = (typeof TRIAGE_DETAIL_SHARED_TABS_V1)[number];
+
+/**
+ * The four shared tabs plus room for the source-only views the six sources
+ * actually declare (at most three: stack trace, occurrences, release).
+ */
+export const MAX_TRIAGE_DETAIL_TABS_V1 = 8;
+
+/**
+ * The one non-tab panel: a kind that declares `detailActions` renders its
+ * write controls (merge, close, reviewers…) when asked for this panel, and the
+ * target places them in the detail header (r0.42).
+ */
+export const TRIAGE_DETAIL_ACTIONS_PANEL_V1 = 'actions';

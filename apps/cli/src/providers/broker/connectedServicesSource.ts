@@ -28,15 +28,6 @@ function sameSource(left: TeamCredentialSourceBindingV1 | null, right: Connected
   return left !== null && JSON.stringify(left) === JSON.stringify(right);
 }
 
-/**
- * The default signal for reads that answer the *operation's* authority rather
- * than one caller's stream. It never aborts: an operation outlives the stream
- * that created it, so a closed stream must not make the retained operation
- * permanently non-current. Callers pass their own signal explicitly where the
- * read genuinely belongs to them.
- */
-const OPERATION_AUTHORITY_SIGNAL = new AbortController().signal;
-
 type ConnectedSelectionInput = Pick<ConnectedOpenInput, 'source' | 'application' | 'signal'>;
 
 /**
@@ -117,21 +108,17 @@ export function createConnectedServicesBrokerSourceOpen(input: Readonly<{
 }> | null> {
   return async (request) => {
     const readsResourceCurrent = async (
-      signal: AbortSignal = OPERATION_AUTHORITY_SIGNAL,
+      signal: AbortSignal,
     ): Promise<boolean> => {
       if (signal.aborted) return false;
-      try {
-        const resource = await input.readResource(request.resourceId, signal);
-        // Source currentness is enabled, placement and source identity. The
-        // revision is a policy fact the Home rechecks per request, so a policy
-        // edit is not a source replacement (`04-private-iroh-broker-transport.md:272`).
-        return resource !== null
-          && resource.enabled
-          && teamCredentialBrokerPlacementAcceptsMachine(resource.brokerPlacement, request.brokerMachineId)
-          && sameSource(resource.source, request.source);
-      } catch {
-        return false;
-      }
+      const resource = await input.readResource(request.resourceId, signal);
+      // Source currentness is enabled, placement and source identity. The
+      // revision is a policy fact the Home rechecks per request, so a policy
+      // edit is not a source replacement (`04-private-iroh-broker-transport.md:272`).
+      return resource !== null
+        && resource.enabled
+        && teamCredentialBrokerPlacementAcceptsMachine(resource.brokerPlacement, request.brokerMachineId)
+        && sameSource(resource.source, request.source);
     };
     const chosen = await resolveConnectedServicesBrokerSelection(
       input.resolveBindingIntentSelection,
@@ -172,13 +159,14 @@ export function createConnectedServicesBrokerSourceOpen(input: Readonly<{
 
     const acquired = await acquireBrokerSourceOperation({
       custody: input.custody,
+      ...(request.retirementGroup ? { retirementGroup: request.retirementGroup } : {}),
       identity: request.application.implementationIdentity,
       contributionKey: `${request.application.implementationIdentity.pluginId}/${request.application.implementationIdentity.localId}`,
       endpointTemplateId: request.application.endpointTemplateId,
       operationClaim: { kind: 'providerBroker', operation: request.operation },
       purposeBindings,
       isSourceCurrent: async (signal) => (
-        await readsResourceCurrent(signal) && await selection.isCurrent()
+        await readsResourceCurrent(signal) && await selection.isCurrent(signal)
       ),
       ...(request.revalidateOperationAuthorization
         ? { revalidateOperationAuthorization: request.revalidateOperationAuthorization }

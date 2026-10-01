@@ -124,7 +124,7 @@ describe('Provider Connection CPX bridge', () => {
         resolvedAddresses: ['203.0.113.10'],
       },
       signal: caller.signal,
-      isCurrent: async () => sourceCurrent,
+      isCurrent: async (signal = caller.signal) => !signal.aborted && sourceCurrent,
       acquireRequestCredential: async () => credentialLease(),
     });
     const retained = managed.acquire.mock.calls[0]![0];
@@ -135,12 +135,15 @@ describe('Provider Connection CPX bridge', () => {
     caller.abort();
     await projection!.cleanup();
     expect(retained.isAuthorizationCurrent()).toBe(true);
-    await expect(retained.revalidateAuthorization()).resolves.toBe(true);
+    await expect(retained.revalidateAuthorization()).resolves.toBe(false);
+    expect(retained.isAuthorizationCurrent()).toBe(true);
+    const operationRead = new AbortController();
+    await expect(retained.revalidateAuthorization(operationRead.signal)).resolves.toBe(true);
     expect(managed.owner.retire).not.toHaveBeenCalled();
 
     // The operation's own authority still ends it.
     sourceCurrent = false;
-    await expect(retained.revalidateAuthorization()).resolves.toBe(false);
+    await expect(retained.revalidateAuthorization(operationRead.signal)).resolves.toBe(false);
     expect(retained.isAuthorizationCurrent()).toBe(false);
   });
 

@@ -1,8 +1,13 @@
 import * as React from 'react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { renderScreen } from '@/dev/testkit';
+import { createWorkflowRunSummaryFixture } from '@/dev/testkit/fixtures/workflowRunFixtures';
+import { buildInboxWorkGroups } from '@/activity/presentation/buildInboxWorkGroups';
+import { EMPTY_WORKFLOW_ATTENTION_SOURCE } from '@/hooks/inbox/useWorkflowAttentionSource';
 import { buildServerScopedSessionKey } from '@/sync/domains/session/navigation/sessionNavigationOrder';
+import type { Session } from '@/sync/domains/state/storageTypes';
+import { workflowRunRowFromSummary } from '@/sync/store/domains/workflowRuns';
 
 import type { InboxModel } from '@/hooks/inbox/useInboxModel';
 
@@ -30,15 +35,21 @@ vi.mock('@/components/ui/lists/Item', () => ({
 }));
 vi.mock('@/components/ui/lists/ItemGroup', () => ({
     ItemGroup: (props: Record<string, unknown>) => React.createElement(
-        'ItemGroup', props, props.title as React.ReactNode, props.children as React.ReactNode,
+        'ItemGroup', props, props.action as React.ReactNode, props.children as React.ReactNode,
     ),
 }));
-vi.mock('@/components/ui/buttons/IconButton', () => ({ IconButton: 'IconButton' }));
+vi.mock('@/components/ui/lists/SectionActionButton', () => ({ SectionActionButton: 'SectionActionButton' }));
+vi.mock('@/components/ui/surfaces/SurfaceFreshnessLine', () => ({ SurfaceFreshnessLine: 'SurfaceFreshnessLine' }));
+vi.mock('@/components/ui/buttons/RoundButton', () => ({ RoundButton: 'RoundButton' }));
+vi.mock('@/components/ui/empty/EmptyState', () => ({ EmptyState: 'EmptyState' }));
 vi.mock('@/components/ui/icons/Icon', async (importOriginal) => ({
     ...await importOriginal<typeof import('@/components/ui/icons/Icon')>(),
     Icon: 'Icon',
 }));
-vi.mock('@/components/ui/feedback/ActivitySpinner', () => ({ ActivitySpinner: 'ActivitySpinner' }));
+vi.mock('@/components/ui/feedback/ActivitySpinner', async (importOriginal) => ({
+    ...await importOriginal<typeof import('@/components/ui/feedback/ActivitySpinner')>(),
+    ActivitySpinner: 'ActivitySpinner',
+}));
 vi.mock('@/components/ui/cards/UserCard', () => ({ UserCard: 'UserCard' }));
 vi.mock('@/components/account/RecoveryKeyReminderBanner', () => ({ RecoveryKeyReminderBanner: 'RecoveryKeyReminderBanner' }));
 vi.mock('@/components/inbox/cards/ApprovalInboxCard', () => ({ ApprovalInboxCard: 'ApprovalInboxCard' }));
@@ -50,6 +61,8 @@ vi.mock('@/components/sessions/shell/SessionListIdentity', () => ({
 vi.mock('@/components/sessions/shell/resolveSessionListDensityViewState', () => ({
     SESSION_LIST_ROW_IDENTITY_METRICS: { compact: { slotSize: 30, agentLogoSize: 23 } },
 }));
+vi.mock('./workGroups/InboxSessionRowMenu', () => ({ InboxSessionRowMenu: 'InboxSessionRowMenu' }));
+vi.mock('@/utils/platform/responsive', () => ({ useIsTablet: () => true }));
 vi.mock('./InboxReadySessionRow', () => ({ InboxReadySessionRow: 'InboxReadySessionRow' }));
 vi.mock('./actionOperations/ActionOperationLedger', () => ({ ActionOperationRows: 'ActionOperationRows' }));
 vi.mock('./actionOperations/actionOperationPresentationRuntime', () => ({ openActionOperation: vi.fn() }));
@@ -58,65 +71,93 @@ vi.mock('@/text', async () => {
     return createTextModuleMock({ translate: (key: string) => key });
 });
 
-function candidate(id: string, attentionState: string, reasons: readonly string[]) {
+const NOW = Date.parse('2026-09-30T12:00:00.000Z');
+
+function storedSession(id: string, facts: Readonly<{ lead?: string; reports?: number; turn?: string }> = {}): Session {
     return {
-        sessionId: id,
+        id,
         serverId: 'server-a',
-        address: { serverId: 'server-a', sessionId: id },
-        session: { id, serverId: 'server-a', active: false, presence: 'online', metadata: {} },
-        title: `Session ${id}`,
-        subtitle: `/workspace/${id}`,
-        context: { contextLine: `Home · ${id}` },
-        route: `/session/${id}`,
+        active: false,
+        presence: 'online',
+        metadata: {},
+        updatedAt: NOW - 3 * 60_000,
+        ...(facts.lead ? { reportsTo: { sessionId: facts.lead } } : {}),
+        ...(facts.reports ? { reports: { total: facts.reports, working: 1, needsYou: 1, stalled: 1 } } : {}),
+        ...(facts.turn ? { latestTurnStatus: facts.turn } : {}),
+    } as unknown as Session;
+}
+
+function candidate(session: Session, attentionState: string, reasons: readonly string[]) {
+    return {
+        sessionId: session.id,
+        serverId: 'server-a',
+        address: { serverId: 'server-a', sessionId: session.id },
+        session,
+        awareness: {},
+        title: `Session ${session.id}`,
+        subtitle: `/workspace/${session.id}`,
+        context: { contextLine: `Home · ${session.id}` },
+        route: `/session/${session.id}`,
         attentionState,
         personalAttention: { reasons, presentation: 'full' },
     } as never;
 }
 
+const lead = storedSession('lead', { reports: 3 });
+const worker = storedSession('worker', { lead: 'lead' });
+const stalledWorker = storedSession('stalled-worker', { lead: 'lead' });
+const stopped = storedSession('stopped');
+const failed = storedSession('failed', { turn: 'failed' });
+const snoozed = storedSession('snoozed');
+const sessions = new Map([lead, worker, stalledWorker, stopped, failed, snoozed].map((value) => [value.id, value]));
+
 function createModel(options: Readonly<{
-    failedHasPrompt?: boolean;
     openApprovals?: ReadonlyArray<Readonly<{ id: string; header: Record<string, unknown> }>>;
+    workflowStale?: boolean;
+    needsYou?: boolean;
 }> = {}): InboxModel {
-    const failed = candidate(
-        'failed',
-        'failed',
-        options.failedHasPrompt ? ['failed', 'permission_required'] : ['failed'],
-    );
-    const actionable = candidate('actionable', 'action_required', ['pending_blocked']);
-    const ready = candidate('ready', 'ready', ['unread']);
+    const needsYou = options.needsYou ?? true;
+    const sessionEntries = needsYou ? [
+        // A worker permission prompt and a stopped session's pending request (A17: "Resume").
+        { candidate: candidate(worker, 'action_required', ['permission_required']), pendingPermissions: [{ id: 'p-worker' }], pendingUserActions: [] },
+        { candidate: candidate(stopped, 'action_required', ['permission_required']), pendingPermissions: [{ id: 'p-stopped' }], pendingUserActions: [] },
+        { candidate: candidate(failed, 'failed', ['failed']), pendingPermissions: [], pendingUserActions: [] },
+    ] : [];
+    const readySession = storedSession('ready');
+    const ready = candidate(readySession, 'ready', ['unread']);
     const readyTarget = {
         key: buildServerScopedSessionKey('ready', 'server-a'),
         sessionId: 'ready',
         serverId: 'server-a',
         readState: 'unread',
     };
+    const workGroups = buildInboxWorkGroups({
+        sessionEntries: sessionEntries as never,
+        workflowRuns: needsYou ? [workflowRunRowFromSummary(createWorkflowRunSummaryFixture({
+            id: 'library-run',
+            state: 'interrupted',
+            updatedAt: '2026-09-30T11:54:00.000Z',
+        }), null)] : [],
+        stalledSessions: needsYou ? [stalledWorker] : [],
+        landings: [],
+        snoozed: needsYou ? [{ session: snoozed, remindAt: NOW + 3_600_000 }] : [],
+        resolveSession: (id) => sessions.get(id),
+        resolveOriginRunId: () => null,
+    });
     return {
         source: {},
-        openApprovals: options.openApprovals ?? [{ id: 'approval-1', header: {} }],
+        openApprovals: needsYou ? (options.openApprovals ?? [{ id: 'approval-1', header: {} }]) : [],
         friendRequests: [{ id: 'friend-1', username: 'friend' }],
         sessionPresentation: {
-            sessionsNeedingAttention: [
-                {
-                    candidate: failed,
-                    pendingPermissions: options.failedHasPrompt ? [{ id: 'permission-1' }] : [],
-                    pendingUserActions: [],
-                },
-                { candidate: actionable, pendingPermissions: [], pendingUserActions: [] },
-            ],
+            sessionsNeedingAttention: sessionEntries,
             readySessions: [ready],
             markAllReadTargets: [readyTarget],
         },
         targetBySessionAddress: new Map([[readyTarget.key, readyTarget]]),
-        actionOperationEntries: [
-            {
-                reason: 'failed',
-                operation: { serverId: 'server-a', snapshot: { operationId: 'op-failed' } },
-            },
-            {
-                reason: 'status_unavailable',
-                operation: { serverId: 'server-a', snapshot: { operationId: 'op-unavailable' } },
-            },
-        ],
+        actionOperationEntries: needsYou ? [{
+            reason: 'failed',
+            operation: { serverId: 'server-a', snapshot: { operationId: 'op-failed' } },
+        }] : [],
         pendingReadKeys: new Set(),
         markAllPending: false,
         isLoading: false,
@@ -124,73 +165,167 @@ function createModel(options: Readonly<{
         showCaughtUp: false,
         markRead: vi.fn(async () => {}),
         resolveActionOperation: vi.fn(),
+        workGroups,
+        workflowAttention: options.workflowStale
+            ? { ...EMPTY_WORKFLOW_ATTENTION_SOURCE, available: true, phase: 'loaded', refreshFailed: true, knownAt: NOW - 60_000 }
+            : EMPTY_WORKFLOW_ATTENTION_SOURCE,
+        settle: vi.fn(async () => {}),
+        setReminder: vi.fn(async () => {}),
     } as unknown as InboxModel;
 }
 
-describe('InboxContent visual sections', () => {
+type Node = { props: Record<string, unknown>; findAll: (predicate: (node: Node) => boolean) => readonly Node[] };
+
+function groupOrder(tree: { root: Node }): string[] {
+    return Array.from(new Set(tree.root
+        .findAll((node) => typeof node.props.testID === 'string' && /^inbox\.group\.[a-z:_-]+$/.test(node.props.testID))
+        .map((node) => String(node.props.testID))));
+}
+
+describe('InboxContent grouped by work root (ORC R-10, lab inbox-I1)', () => {
     beforeEach(() => {
         identityState.display = 'agentLogo';
         routerPush.mockClear();
+        vi.useFakeTimers({ now: NOW, toFake: ['Date'] });
+    });
+    afterEach(() => {
+        vi.useRealTimers();
     });
 
-    it('renders grouped screen sections in attention order and scopes mark-all to the Ready header', async () => {
-        const model = createModel();
-        const { tree, pressByTestId } = await renderScreen(<InboxContent model={model} />);
-        const sectionHeaders = tree.root.findAllByType('SelectionListSectionHeader');
+    it('renders one section per work root, with its mark, name, one quiet fact and Open, Other sessions last', async () => {
+        const { InboxContent } = await import('./InboxContent');
+        const { tree } = await renderScreen(<InboxContent model={createModel()} />);
 
-        expect(sectionHeaders.map((node) => node.props.testID)).toEqual([
-            'inbox.section.errors.header',
-            'inbox.section.ready.header',
-            'inbox.section.needs_attention.header',
-            'inbox.section.friends.header',
+        expect(groupOrder(tree as never)).toEqual([
+            'inbox.group.lead:lead',
+            'inbox.group.run:library-run',
+            'inbox.group.other',
         ]);
-        expect(tree.root.findAllByType('ItemGroup' as never)).toHaveLength(4);
-        expect(tree.root.findAllByType('ApprovalInboxCard')).toHaveLength(1);
-        const errorOperationRows = tree.root.findByProps({ testID: 'inbox.section.errors' })
-            .findAllByType('ActionOperationRows');
-        const attentionOperationRows = tree.root.findByProps({ testID: 'inbox.section.needs_attention' })
-            .findAllByType('ActionOperationRows');
-        expect(errorOperationRows).toHaveLength(1);
-        expect(errorOperationRows[0]?.props.operations[0]?.snapshot.operationId).toBe('op-failed');
-        expect(attentionOperationRows).toHaveLength(1);
-        expect(attentionOperationRows[0]?.props.operations[0]?.snapshot.operationId).toBe('op-unavailable');
-        expect(tree.root.findAllByType('ActionOperationLedgerView' as never)).toHaveLength(0);
+        const groups = tree.root.findAllByType('ItemGroup' as never);
+        expect(groups).toHaveLength(3);
+        expect(groups[2]?.props.title).toBe('inbox.work.groups.otherTitle');
+        expect(groups[0]?.props.titleLeading).toBeTruthy();
+        expect(groups[0]?.props.action).toBeTruthy();
+        expect(groups[2]?.props.action).toBeUndefined();
 
-        const failedRow = tree.root.findByProps({ testID: 'inbox.session.failed' });
-        expect(failedRow.props.rightElement).toBeUndefined();
-        expect(failedRow.props.detail).toBeUndefined();
-        expect(failedRow.props.subtitle).toContain('status.error');
-        expect(failedRow.findAllByType('SessionListIdentity')).toHaveLength(1);
+        // The worker's prompt keeps the canonical answer card inside its lead's section.
+        const leadSection = tree.root.findByProps({ testID: 'inbox.group.lead:lead' });
+        expect(leadSection.findAllByType('InboxSessionAttentionGroupCard').map((card) => card.props.session.id)).toEqual(['worker']);
+        expect(leadSection.findByProps({ testID: 'inbox.stalled.stalled-worker' }).props.subtitle)
+            .toBe('inbox.work.rows.stalled · inbox.work.rows.stalledReason');
 
-        const readyRow = tree.root.findByType('InboxReadySessionRow');
-        expect(readyRow.props.subtitle).toContain('status.readyForReview');
-        expect(readyRow.props.identityDisplay).toBe('agentLogo');
-        expect(tree.root.findByProps({ testID: 'inbox.ready.mark_all_read' }).props.hitSlop).toBe(17);
+        // An interrupted run with no orchestrator is its own root, reviewed from its row.
+        const runSection = tree.root.findByProps({ testID: 'inbox.group.run:library-run' });
+        runSection.findByProps({ testID: 'inbox.run.library-run.review' }).props.onPress();
+        expect(routerPush).toHaveBeenCalledWith(expect.stringContaining('library-run'));
 
+        // Approvals and operations belong to Other sessions, beside loose sessions.
+        const other = tree.root.findByProps({ testID: 'inbox.group.other' });
+        expect(other.findAllByType('ApprovalInboxCard')).toHaveLength(1);
+        expect(other.findAllByType('ActionOperationRows')).toHaveLength(1);
+        expect(tree.root.findAllByType('InboxReadySessionRow')).toHaveLength(0);
+    });
+
+    it('marks the one item the person came to see (Boards opens the Inbox item, INT §5.1)', async () => {
+        const { InboxContent } = await import('./InboxContent');
+        const { createInboxItemRoute, readInboxItemFocus } = await import('./inboxItemFocus');
+        const selectedRows = (tree: { root: Node }) => Array.from(new Set(tree.root
+            .findAll((node) => typeof node.props.testID === 'string' && node.props.selected === true)
+            .map((node) => String(node.props.testID))));
+
+        const runRoute = createInboxItemRoute({ kind: 'workflow_run', id: 'library-run' });
+        expect(runRoute.pathname).toBe('/inbox');
+        const run = await renderScreen(<InboxContent model={createModel()} focusedItem={readInboxItemFocus(runRoute.params.item)} />);
+        expect(selectedRows(run.tree as never)).toEqual(['inbox.run.library-run']);
+
+        const sessionRoute = createInboxItemRoute({ kind: 'session', id: 'stalled-worker' });
+        const session = await renderScreen(<InboxContent model={createModel()} focusedItem={readInboxItemFocus([sessionRoute.params.item])} />);
+        expect(selectedRows(session.tree as never)).toEqual(['inbox.stalled.stalled-worker']);
+
+        const none = await renderScreen(<InboxContent model={createModel()} />);
+        expect(selectedRows(none.tree as never)).toEqual([]);
+
+        const invalid = await renderScreen(<InboxContent model={createModel()} focusedItem={readInboxItemFocus('session: ')} />);
+        expect(selectedRows(invalid.tree as never)).toEqual([]);
+    });
+
+    it("keeps a stopped session's pending request in its row as the Resume card (stale request, A17)", async () => {
+        const { InboxContent } = await import('./InboxContent');
+        const { tree } = await renderScreen(<InboxContent model={createModel()} />);
+
+        const other = tree.root.findByProps({ testID: 'inbox.group.other' });
+        const cards = other.findAllByType('InboxSessionAttentionGroupCard');
+        expect(cards.map((card) => card.props.session.id)).toEqual(['stopped']);
+        expect(cards[0]?.props.permissionRequests).toEqual([{ id: 'p-stopped' }]);
+        // Answer controls exist once per request: nowhere else in the Inbox.
+        expect(tree.root.findAllByType('InboxSessionAttentionGroupCard')).toHaveLength(2);
+    });
+
+    it('shows a snoozed session quietly in place with its time and the row menu', async () => {
+        const { InboxContent } = await import('./InboxContent');
+        const { tree } = await renderScreen(<InboxContent model={createModel()} />);
+
+        const row = tree.root.findByProps({ testID: 'inbox.snoozed.snoozed' });
+        expect(String(row.props.subtitle)).toContain('inbox.work.rows.snoozedUntil');
+        expect(row.findAllByType('InboxSessionRowMenu')).toHaveLength(1);
+        const other = tree.root.findByProps({ testID: 'inbox.group.other' });
+        const keys = other.findAll((node) => typeof node.props.testID === 'string'
+            && /^inbox\.(session|snoozed)\.[a-z-]+$/.test(String(node.props.testID)))
+            .map((node) => String(node.props.testID));
+        // Snoozed rows follow what still needs the person.
+        expect(Array.from(new Set(keys))).toEqual(['inbox.session.failed', 'inbox.snoozed.snoozed']);
+    });
+
+    it('says once that the workflow input is stale while keeping the last-known rows', async () => {
+        const { InboxContent } = await import('./InboxContent');
+        const model = createModel({ workflowStale: true });
+        const { tree } = await renderScreen(<InboxContent model={model} />);
+
+        const line = tree.root.findByType('SurfaceFreshnessLine' as never);
+        expect(line.props.asOf).toBe(NOW - 60_000);
+        expect(line.props.action.onPress).toBe(model.workflowAttention.retry);
+        expect(tree.root.findByProps({ testID: 'inbox.group.run:library-run' })).toBeTruthy();
+    });
+
+    it('keeps finished sessions and people in Updates, with mark-all as that section action', async () => {
+        const { InboxContent } = await import('./InboxContent');
+        const model = createModel();
+        const { tree, pressByTestId } = await renderScreen(<InboxContent model={model} view="updates" />);
+
+        expect(groupOrder(tree as never)).toEqual([]);
+        expect(tree.root.findAllByType('InboxReadySessionRow')).toHaveLength(1);
+        expect(tree.root.findAllByType('UserCard')).toHaveLength(1);
         pressByTestId('inbox.ready.mark_all_read');
         expect(model.markRead).toHaveBeenCalledWith(model.sessionPresentation.markAllReadTargets);
     });
 
-    it('keeps the popover sections flat', async () => {
+    it('shows the calm empty Needs you state with no action when nothing waits on the person', async () => {
+        const { InboxContent } = await import('./InboxContent');
+        const { tree } = await renderScreen(<InboxContent model={createModel({ needsYou: false })} />);
+
+        // Updates still hold a finished session, so this is "Nothing needs you", not "all caught up".
+        const empty = tree.root.findByType('EmptyState' as never);
+        expect(empty.props.title).toBe('inbox.work.empty.title');
+        expect(empty.props.layout).toBe('page');
+        expect(empty.props.primaryAction).toBeUndefined();
+    });
+
+    it('keeps the popover flat: work roots inline, Other sessions and Updates as one line each', async () => {
+        const { InboxContent } = await import('./InboxContent');
+        const onOpenInbox = vi.fn();
         const { tree } = await renderScreen(
-            <InboxContent model={createModel()} presentation="popover" />,
+            <InboxContent model={createModel()} presentation="popover" onOpenInbox={onOpenInbox} />,
         );
 
         expect(tree.root.findAllByType('ItemGroup' as never)).toHaveLength(0);
-    });
-
-    it('removes the leading slot when the canonical Session-list identity preference is none', async () => {
-        identityState.display = 'none';
-        const { tree } = await renderScreen(<InboxContent model={createModel()} />);
-
-        const failedRow = tree.root.findByProps({ testID: 'inbox.session.failed' });
-        expect(failedRow.props.leftElement).toBeUndefined();
-        expect(failedRow.props.iconBoxSize).toBeUndefined();
-        const readyRow = tree.root.findByType('InboxReadySessionRow');
-        expect(readyRow.props.identityDisplay).toBe('none');
+        expect(groupOrder(tree as never)).toEqual(['inbox.group.lead:lead', 'inbox.group.run:library-run']);
+        tree.root.findByProps({ testID: 'inbox.popover.more_other' }).props.onPress();
+        expect(onOpenInbox).toHaveBeenCalledTimes(1);
+        expect(tree.root.findAllByProps({ testID: 'inbox.popover.updates' }).length).toBeGreaterThan(0);
     });
 
     it('opens a V2 approval through its portable owning Home rather than the focused Home', async () => {
+        const { InboxContent } = await import('./InboxContent');
         const model = createModel({
             openApprovals: [{
                 id: 'approval-home-b',
@@ -204,26 +339,52 @@ describe('InboxContent visual sections', () => {
         expect(routerPush).toHaveBeenCalledWith('/inbox/approvals/approval-home-b?serverId=stable-home-b');
     });
 
-    it('keeps the V1 local Home route when a portable identity was never stored', async () => {
-        const model = createModel({
-            openApprovals: [{ id: 'approval-v1', header: { serverId: 'server-b' } }],
-        });
-        const { tree } = await renderScreen(<InboxContent model={model} />);
+    it("states each row's word and tone through the shared work-status owner (INT §5.3), never a local rule", async () => {
+        const { InboxContent } = await import('./InboxContent');
+        const { resolveWorkStatusTone } = await import('@/components/work/status/resolveWorkStatusTone');
+        const { readSessionWorkStatusFacts } = await import('@/components/work/status/sessionWorkStatusFacts');
+        const { workStatusWordStyle } = await import('@/components/work/status/workStatusTreatment');
+        const { describeWorkflowRunState } = await import('@/components/workflows/presentation/workflowLifecyclePresentation');
+        const { tree } = await renderScreen(<InboxContent model={createModel()} />);
 
-        tree.root.findByType('ApprovalInboxCard').props.onPress();
+        // A failed session: the Session owner's word, in the resolver's danger tone.
+        const failedStatus = resolveWorkStatusTone({ kind: 'session', facts: readSessionWorkStatusFacts(failed, NOW) });
+        expect(failedStatus.tone).toBe('danger');
+        const failedRow = tree.root.findByProps({ testID: 'inbox.session.failed' });
+        expect(failedRow.props.detail).toBe(failedStatus.word);
+        expect(failedRow.props.detailStyle).toEqual(workStatusWordStyle('danger'));
+        expect(String(failedRow.props.subtitle)).not.toContain(failedStatus.word);
 
-        expect(routerPush).toHaveBeenCalledWith('/inbox/approvals/approval-v1?serverId=server-b');
+        // A run in the attention window: the run owner's word, in the attention tone (not a local "interrupted is error").
+        const runRow = tree.root.findByProps({ testID: 'inbox.run.library-run' });
+        expect(runRow.props.detail).toBe(describeWorkflowRunState('interrupted').label);
+        expect(runRow.props.detailStyle).toEqual(workStatusWordStyle('attention'));
+
+        // A stalled worker: its Session word beside the row's own explanation.
+        const stalledStatus = resolveWorkStatusTone({ kind: 'session', facts: readSessionWorkStatusFacts(stalledWorker, NOW) });
+        const stalledRow = tree.root.findByProps({ testID: 'inbox.stalled.stalled-worker' });
+        expect(stalledRow.props.detail).toBe(stalledStatus.word);
+        expect(stalledRow.props.detailStyle).toEqual(workStatusWordStyle(stalledStatus.tone));
     });
 
-    it('keeps canonical prompt controls on a failed session inside Errors without duplicating it in Needs attention', async () => {
-        const { tree } = await renderScreen(<InboxContent model={createModel({ failedHasPrompt: true })} />);
-        const errors = tree.root.findByProps({ testID: 'inbox.section.errors' });
-        const needsAttention = tree.root.findByProps({ testID: 'inbox.section.needs_attention' });
+    it('states a finished session in Updates with its own word, healthy and neutral', async () => {
+        const { InboxContent } = await import('./InboxContent');
+        const { tree } = await renderScreen(<InboxContent model={createModel()} view="updates" />);
 
-        expect(errors.findAllByType('InboxSessionAttentionGroupCard')).toHaveLength(1);
-        expect(needsAttention.findAllByType('InboxSessionAttentionGroupCard')).toHaveLength(0);
-        expect(tree.root.findAllByType('InboxSessionAttentionGroupCard')).toHaveLength(1);
+        const row = tree.root.findByType('InboxReadySessionRow' as never);
+        // The Session owner's word replaces the Inbox-local "Ready for review" status.
+        expect(row.props.statusTone).toBe('neutral');
+        expect(typeof row.props.statusWord).toBe('string');
+        expect(String(row.props.subtitle)).not.toContain('status.readyForReview');
+    });
+
+    it('removes the leading slot when the canonical Session-list identity preference is none', async () => {
+        identityState.display = 'none';
+        const { InboxContent } = await import('./InboxContent');
+        const { tree } = await renderScreen(<InboxContent model={createModel()} />);
+
+        const failedRow = tree.root.findByProps({ testID: 'inbox.session.failed' });
+        // A failed session keeps its failure glyph; identity marks follow the preference.
+        expect(failedRow.findAllByType('SessionListIdentity')).toHaveLength(0);
     });
 });
-
-import { InboxContent } from './InboxContent';

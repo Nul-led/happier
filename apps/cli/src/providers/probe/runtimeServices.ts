@@ -97,6 +97,7 @@ import type {
 } from '@/providers/connections/service/types';
 import type { ProviderLocalCatalogFallbackResult } from './localCommand';
 import type { ProviderProbeOperationScope } from './authorization';
+import { admitRuntimeProviderSavedSecret } from '@/providers/spawn/runtimeCredential';
 import type {
   ResolveManagedProviderPurposeBindingIntent,
 } from '@/providers/managed/resolvePurposeBindingSnapshot';
@@ -105,6 +106,7 @@ import {
 } from '@/providers/managed/resolvePurposeBindingSnapshot';
 
 type SavedResolution = Readonly<{
+  savedSecretSnapshot?: ActiveAccountSettingsSnapshot;
   request: ResolvedProviderProbeRpcRequest;
   connection: ResolvedProviderConnectionRecord;
   providerSettings: ProviderSettingsV1;
@@ -326,6 +328,7 @@ export function createRuntimeProviderServices(input: Readonly<{
           return resolveProviderContributionRegistryView(
             lease.registry.contributes,
             lease.registry.generation,
+            lease.registry.readPluginOccurrenceId,
           );
         } finally {
           await lease.release();
@@ -555,6 +558,7 @@ export function createRuntimeProviderServices(input: Readonly<{
       ok: true as const,
       value: {
         connection: resolution.record,
+        snapshot,
         providerSettings,
         settingsRead,
         accountSettings,
@@ -578,6 +582,7 @@ export function createRuntimeProviderServices(input: Readonly<{
     identity: Readonly<{ connectionId: string; machineId: string }>,
     context: Extract<Awaited<ReturnType<typeof resolveConnectionContext>>, { ok: true }>['value'],
     mode: SavedProbeMode,
+    savedSecretSnapshot = context.snapshot,
   ): Promise<SavedResolutionResult> {
     const {
       connection,
@@ -869,6 +874,7 @@ export function createRuntimeProviderServices(input: Readonly<{
           probeRequestFingerprint,
         },
         accountSettings,
+        savedSecretResources: savedSecretSnapshot?.savedSecretResources,
         providerSettings,
         settingsRead,
         registry,
@@ -909,6 +915,7 @@ export function createRuntimeProviderServices(input: Readonly<{
     identity: Readonly<{ connectionId: string; machineId: string }>,
     mode: SavedProbeMode = 'catalog',
     scope: RuntimeProviderOperationScope,
+    admittedSnapshot?: ActiveAccountSettingsSnapshot,
   ): Promise<SavedResolutionResult> {
     if (!isProviderFeatureEnabled()) {
       return { ok: false, error: providerFeatureDisabled(identity).error };
@@ -929,8 +936,28 @@ export function createRuntimeProviderServices(input: Readonly<{
       return { ok: false, error: providerFeatureDisabled(identity).error };
     }
     if (!context.ok) return context;
+    const snapshot = context.value.snapshot;
+    if (!snapshot) return { ok: false, error: createProviderErrorV1('provider_authorization_changed', identity) };
+    if (admittedSnapshot && (admittedSnapshot.scopeKey !== snapshot.scopeKey
+      || admittedSnapshot.settingsVersion !== snapshot.settingsVersion
+      || admittedSnapshot.settings !== snapshot.settings)) {
+      return { ok: false, error: createProviderErrorV1('provider_authorization_changed', identity) };
+    }
+    const admission = admittedSnapshot
+      ? { ok: true as const, snapshot: admittedSnapshot }
+      : await admitRuntimeProviderSavedSecret({
+          connection: context.value.connection,
+          providerSettings: context.value.providerSettings,
+          snapshot,
+          getAccountSettingsSnapshot: getSnapshot,
+          lifetime: scope.lifetime,
+        });
+    if (!admission.ok) return admission;
     try {
-      return await resolveSavedFromConnectionContext(identity, context.value, mode);
+      const resolved = await resolveSavedFromConnectionContext(identity, context.value, mode, admission.snapshot);
+      return resolved.ok
+        ? { ok: true, value: { ...resolved.value, savedSecretSnapshot: admission.snapshot } }
+        : resolved;
     } catch (error) {
       if (error instanceof ProviderOperationAbandonedError) {
         return {
@@ -1201,7 +1228,7 @@ export function createRuntimeProviderServices(input: Readonly<{
           ? { accountSettingsBasis: resolvedAccountSettingsBasis }
           : {}),
         dnsEvidenceByConnectionId: resolvedDnsEvidenceByConnectionId,
-      });
+      }, catalog.value.savedSecretSnapshot);
       if (!health.ok || !isProviderFeatureEnabled() || health.value.request.probes.length !== 1) return null;
       if (await hasFreshExactHealthObservation(health.value.request)) return null;
       if (!isProviderFeatureEnabled()) return null;
@@ -1393,6 +1420,7 @@ export function createRuntimeProviderServices(input: Readonly<{
           const settingsRead = readProviderSettingsForCli(input.accountSettings);
           return resolveSavedFromConnectionContext(identity, {
             connection: input.resolution.record,
+            snapshot: null,
             providerSettings: settingsRead.settings,
             settingsRead,
             accountSettings: input.accountSettings,

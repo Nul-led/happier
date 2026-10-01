@@ -396,7 +396,9 @@ describe('startHappyServer (MCP integration)', () => {
       expect(names.has('subagents_plan_start')).toBe(false);
       expect(names.has('subagents_delegate_start')).toBe(false);
       expect(names.has('execution_run_start')).toBe(false);
-      expect(names.has('execution_run_get')).toBe(false);
+      expect(names.has('execution_run_list')).toBe(true);
+      expect(names.has('execution_run_get')).toBe(true);
+      expect(names.has('execution_run_wait')).toBe(true);
       expect(names.has('execution_run_action')).toBe(false);
 
       const resolvedOptionsRaw = await client.callTool({
@@ -414,12 +416,12 @@ describe('startHappyServer (MCP integration)', () => {
       expect(resolvedOptions.options).toEqual(
         expect.arrayContaining([
           expect.objectContaining({
-            value: 'backend:claude',
+            value: 'agent:happier.agent.claude/claude',
             label: expect.any(String),
           }),
         ]),
       );
-      const claudeBackendOption = resolvedOptions.options.find((option: any) => option.value === 'backend:claude');
+      const claudeBackendOption = resolvedOptions.options.find((option: any) => option.value === 'agent:happier.agent.claude/claude');
       expect(claudeBackendOption).toBeTruthy();
 
       const planRaw = await client.callTool({
@@ -436,7 +438,7 @@ describe('startHappyServer (MCP integration)', () => {
       const plan = parseMcpJsonText(planRaw);
       expect(plan.intent).toBe('plan');
       expect(plan.results?.[0]).toEqual(expect.objectContaining({
-        key: 'backend:claude',
+        key: 'agent:happier.agent.claude/claude',
         ok: true,
       }));
       const planRunId = plan.results[0].result.runId;

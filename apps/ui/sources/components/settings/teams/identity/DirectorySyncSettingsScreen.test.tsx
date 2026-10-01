@@ -46,14 +46,23 @@ function directorySource(id: string) {
     };
 }
 
-vi.mock('expo-router', () => ({ useRouter: () => ({ push: routerPushMock }) }));
-vi.mock('@/components/ui/lists/Item', () => ({ Item: 'Item' }));
+vi.mock('expo-router', async () => {
+    const { createExpoRouterMock } = await import('@/dev/testkit/mocks/router');
+    return createExpoRouterMock({ router: { push: routerPushMock } }).module;
+});
+// Rows render their right-hand control, as the real row does; page fields are text inputs.
+vi.mock('@/components/ui/lists/Item', async () => {
+    const React = await import('react');
+    return { Item: (props: { rightElement?: unknown }) => React.createElement('Item', props, props.rightElement as never) };
+});
+vi.mock('@/components/ui/forms/FieldTextInput', () => ({ FieldTextInput: 'TextInput' }));
 vi.mock('@/components/ui/lists/ItemGroup', () => ({ ItemGroup: 'ItemGroup' }));
 vi.mock('@/components/ui/feedback/ActivitySpinner', () => ({ ActivitySpinner: 'ActivitySpinner' }));
 vi.mock('@/utils/url/openExternalUrl', () => ({ openExternalUrl: openExternalUrlMock }));
 vi.mock('@/text', () => ({ t: (key: string) => key }));
 vi.mock('@/modal', () => ({ Modal: { confirm: vi.fn(async () => true) } }));
-vi.mock('./identityAdministrationClient', () => ({
+vi.mock('./identityAdministrationClient', async (importOriginal) => ({
+    ...await importOriginal<typeof import('./identityAdministrationClient')>(),
     createIdentityAdministrationClient: () => ({
         execute: executeIdentityMock,
         executeDirectory: executeDirectoryMock,
@@ -138,7 +147,7 @@ describe('DirectorySyncSettingsScreen source setup', () => {
         expect(executeDirectoryMock).toHaveBeenNthCalledWith(1, 'teams.directory.sourceSetup.list', {
             v: 1,
             teamId: 'team-1',
-        });
+        }, expect.objectContaining({ signal: expect.any(AbortSignal) }));
         expect(executeDirectoryMock).toHaveBeenNthCalledWith(2, 'teams.directory.sources.create', {
             v: 1,
             teamId: 'team-1',
@@ -276,7 +285,7 @@ describe('DirectorySyncSettingsScreen source setup', () => {
             v: 1,
             teamId: 'team-1',
             cursor: 'cursor-1',
-        });
+        }, expect.objectContaining({ signal: expect.any(AbortSignal) }));
     });
 
     it('refreshes visible setup candidates on the exact Home Team AccountChange', async () => {
@@ -318,7 +327,7 @@ describe('DirectorySyncSettingsScreen source setup', () => {
         expect(executeDirectoryMock).toHaveBeenNthCalledWith(2, 'teams.directory.sourceSetup.list', {
             v: 1,
             teamId: 'team-1',
-        });
+        }, expect.objectContaining({ signal: expect.any(AbortSignal) }));
     });
 
     it('retains server-projected setup choices when their refresh fails', async () => {
@@ -359,8 +368,8 @@ describe('DirectorySyncSettingsScreen source setup', () => {
 
         const setupGroup = screen.root.findAllByType('ItemGroup')
             .find((group) => group.props.title === 'teams.authentication.directory.setup.options');
-        expect(setupGroup?.props.footer).toBe('identityAdministration.errorInvalid');
-        expect(setupGroup?.props.footer).not.toBe('workos_portal_open_failed');
+        expect(setupGroup?.props.description).toBe('identityAdministration.errorInvalid');
+        expect(setupGroup?.props.description).not.toBe('workos_portal_open_failed');
     });
 
     it('continues approved WorkOS connection and portal Actions through the same setup flow', async () => {

@@ -21,6 +21,7 @@ export const buildDetectContext: CapabilitiesDetectContextBuilder = async (reque
                 .filter((value) => value.length > 0),
         ));
     // Forward bypassCache from both cli.* and tool.executionRuns requests
+    const verifyVersion = requests.some((r) => r.id.startsWith('cli.') && Boolean((r.params ?? {}).verifyVersion));
     const bypassCache = requests.some((r) =>
         (r.id.startsWith('cli.') || r.id === 'tool.executionRuns') && Boolean((r.params ?? {}).bypassCache)
     );
@@ -29,6 +30,7 @@ export const buildDetectContext: CapabilitiesDetectContextBuilder = async (reque
             ...(anyLogin ? { includeLoginStatus: true } : {}),
             ...(requestedCliNames.length > 0 ? { requestedCliNames } : {}),
             ...(bypassCache ? { bypassCache: true } : {}),
+            ...(verifyVersion ? { verifyVersion: true } : {}),
         })
         : null;
 

@@ -305,7 +305,12 @@ describe('Home login approval continuation (explicit target, Home-authoritative)
             home: advisoryHome,
             clientSecretKey: keyPair.privateKey,
             assertion,
-        })).resolves.toEqual({ kind: 'failed' });
+        })).resolves.toMatchObject({
+            kind: 'transport_unavailable',
+            reason: 'home_observation_unavailable',
+            resume: expect.any(Function),
+            cancel: expect.any(Function),
+        });
 
         expect(createServerFetchAtEndpointMock).toHaveBeenCalledWith(expect.objectContaining({
             endpointUrl: 'https://directory-advisory-route.test',
@@ -315,6 +320,45 @@ describe('Home login approval continuation (explicit target, Home-authoritative)
         expect(preflightHomeProfileAdoptionMock).not.toHaveBeenCalled();
         expect(setCredentialsForServerUrlMock).not.toHaveBeenCalled();
         expect(adoptHomeProfileMock).not.toHaveBeenCalled();
+    });
+
+    it('retains an explicit retry after authenticated descriptor reconciliation conflicts', async () => {
+        const keyPair = sodium.crypto_box_keypair();
+        const approvalExpiresAtMs = Date.now() + 40_000;
+        endpointFetchMock.mockResolvedValueOnce(json(200, {
+            v: 1,
+            homeServerIdentityId: 'srv_home_b',
+            sealedHomeTokenBase64Url: sealCredentialPayload('home-reconcile-token', keyPair.publicKey),
+            issuedAtMs: Date.now() - 500,
+            expiresAtMs: Date.now() + 120_000,
+        }));
+        reconcileServerProfileHomeConnectionDescriptorMock.mockResolvedValueOnce({
+            kind: 'conflict',
+            code: 'identity_mismatch',
+            profile: null,
+        });
+
+        const result = await continueHomeLoginEnrollment({
+            home: HOME_B,
+            clientSecretKey: keyPair.privateKey,
+            assertion: ASSERTION,
+            approvalId: 'approval-reconciliation-conflict',
+            approvalExpiresAtMs,
+        });
+
+        expect(result).toMatchObject({
+            kind: 'transport_unavailable',
+            reason: 'home_observation_unavailable',
+            resume: expect.any(Function),
+            cancel: expect.any(Function),
+        });
+        expect(setCredentialsForServerUrlMock).not.toHaveBeenCalled();
+        expect(adoptHomeProfileMock).not.toHaveBeenCalled();
+        if (result.kind !== 'transport_unavailable' || !result.resume) return;
+        vi.useFakeTimers();
+        vi.setSystemTime(approvalExpiresAtMs);
+        await expect(result.resume()).resolves.toEqual({ kind: 'expired' });
+        expect(endpointFetchMock).toHaveBeenCalledOnce();
     });
 
     it('rejects an assertion whose signed destination does not match the exact Directory entry before transport', async () => {

@@ -1,12 +1,12 @@
 import { defineSettingsPage } from '@/components/settings/catalog/settingDeclarations';
 
 /**
- * The searchable settings of the `connectedServices` page. Services and accounts are a collection
- * (they come from the user's data), so only the rows of "How accounts are used" are declared: the
- * per-agent default sign-in rows as one entry (anchored on the first agent's row) and state sharing.
+ * The searchable settings of Connected services. Services and accounts are a collection (they come
+ * from the user's data), so only the rows of "How agents sign in" are declared: the per-agent default
+ * sign-in rows as one entry (anchored on the first agent's row) and state sharing.
  */
 export const CONNECTED_SERVICES_SETTINGS = defineSettingsPage({
-    pageId: 'connectedServices',
+    pageId: 'connectedServicesAgentSignIn',
     sections: {
         usage: {
             titleKey: 'connectedServicesSettings.usageTitle',
@@ -40,8 +40,9 @@ export const CONNECTED_SERVICES_SETTINGS = defineSettingsPage({
     },
 });
 
-/** Settings that live inside the collapsed "State sharing" disclosure, which opens for them. */
+/** The sharing disclosure and its rows, revealed together by settings search. */
 export const CONNECTED_SERVICES_SHARING_SETTINGS = [
+    CONNECTED_SERVICES_SETTINGS.settings.sharing,
     CONNECTED_SERVICES_SETTINGS.settings.sharingConfig,
     CONNECTED_SERVICES_SETTINGS.settings.sharingState,
     CONNECTED_SERVICES_SETTINGS.settings.sharingPerAgent,

@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { usePathname, useRouter } from 'expo-router';
+import { usePathname, useRouter } from '@/components/appShell/workspace/destinationRoute';
 import { buildAuthenticatedAccountEntryHref } from '@/components/navigation/accountEntry/authenticatedAccountEntryRoute';
 import { createHomeLoginRequesterFingerprintV1 } from '@happier-dev/protocol';
 import { Platform, StyleSheet, View } from 'react-native';
@@ -17,12 +17,14 @@ import {
     formatHomeEnrollmentTargetLabel,
 } from '@/auth/pairing/pairingPresentation';
 import { TokenStorage } from '@/auth/storage/tokenStorage';
-import { announceAccessibilityMessage } from '@/components/ui/accessibility/announceAccessibilityMessage';
+import { PoliteAccessibilityStatus } from '@/components/ui/accessibility/PoliteAccessibilityStatus';
 import { Item } from '@/components/ui/lists/Item';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
+import { ItemLoadStateRows } from '@/components/ui/lists/ItemLoadStateRows';
 import { Text } from '@/components/ui/text/Text';
 import {
     buildHomeConnectionDescriptorForProfile,
+    resolveServerProfileScopeId,
     type ServerProfile,
 } from '@/sync/domains/server/serverProfiles';
 import {
@@ -33,9 +35,11 @@ import {
 } from '@/sync/ops/accountDirectory/enrollDirectoryHome';
 import type { AccountPostAuthInput, AccountPostAuthResult } from '@/sync/ops/accountDirectory/completeAccountServicePostAuth';
 import { AccountServiceContinuation } from '@/components/account/auth/AccountServiceContinuation';
+import { describeAccountPostAuthResultReason } from '@/components/account/auth/accountServiceFailurePresentation';
 import { AccountServiceHomeAuthenticationAdapter } from '@/components/account/auth/AccountServiceHomeAuthenticationAdapter';
 import { AUTHENTICATED_ACCOUNT_ENTRY_ROUTE } from '@/components/navigation/accountEntry/authenticatedAccountEntryRoute';
 import { t } from '@/text';
+import { resolveHomeDisplayLabel } from '@/components/settings/server/homeDisplayName';
 import {
     useAccountDirectoryActivePolling,
     type AccountDirectoryActivePollingOutcome,
@@ -49,7 +53,13 @@ type PendingApproval = Readonly<{
 type LoadState =
     | Readonly<{ kind: 'loading'; items: readonly PendingApproval[] }>
     | Readonly<{ kind: 'ready'; items: readonly PendingApproval[] }>
-    | Readonly<{ kind: 'error'; items: readonly PendingApproval[] }>;
+    | Readonly<{
+        kind: 'error';
+        items: readonly PendingApproval[];
+        reason: string | null;
+        /** The Homes that did not answer, when that is the whole failure (not an error they returned). */
+        unreachableServerIds: readonly string[];
+    }>;
 
 type StatusAnnouncement = Readonly<{
     revision: number;
@@ -58,6 +68,20 @@ type StatusAnnouncement = Readonly<{
 
 type ApprovalLoadMode = 'interactive' | 'poll';
 
+function homeLabel(home: ServerProfile): string {
+    return resolveHomeDisplayLabel(home, home.id);
+}
+
+/** Why the list could not load, naming the Homes that failed: unreachable ones, else erroring ones. */
+function describeApprovalLoadFailure(
+    failures: ReadonlyArray<Readonly<{ home: ServerProfile; result: Awaited<ReturnType<typeof listHomeDeviceApprovals>> }>>,
+): string | null {
+    const unreachable = failures.filter(({ result }) => !result.ok && result.status === 0).map(({ home }) => homeLabel(home));
+    if (unreachable.length > 0) return t('homeDeviceApproval.loadErrorUnreachable', { homes: unreachable.join(', ') });
+    const failing = failures.map(({ home }) => homeLabel(home));
+    return failing.length > 0 ? t('homeDeviceApproval.loadErrorFailed', { homes: failing.join(', ') }) : null;
+}
+
 function approvalSnapshotKey(items: readonly PendingApproval[]): string {
     return items
         .map(({ home, approval }) => `${home.id}:${approval.approvalId}`)
@@ -65,67 +89,28 @@ function approvalSnapshotKey(items: readonly PendingApproval[]): string {
         .join('|');
 }
 
-function HomeApprovalAccessibilityStatus({ announcement }: Readonly<{
-    announcement: StatusAnnouncement;
-}>) {
-    const lastIosRevisionRef = React.useRef<number | null>(null);
-    React.useEffect(() => {
-        if (
-            Platform.OS !== 'ios'
-            || lastIosRevisionRef.current === announcement.revision
-        ) {
-            return;
-        }
-        lastIosRevisionRef.current = announcement.revision;
-        announceAccessibilityMessage(announcement.text);
-    }, [announcement]);
-
-    if (Platform.OS === 'ios') return null;
-    return (
-        <View
-            testID="settings.server.homeApprovals.status"
-            accessible
-            accessibilityLabel={announcement.text}
-            accessibilityLiveRegion="polite"
-            pointerEvents="none"
-            style={styles.accessibilityStatus}
-            {...({
-                role: 'status',
-                'aria-live': 'polite',
-                'aria-atomic': true,
-            } as Record<string, unknown>)}
-        >
-            <Text key={announcement.revision}>{announcement.text}</Text>
-        </View>
-    );
-}
-
+/**
+ * Reads a resumed enrollment result with the continuation card's own reason, so
+ * the announcement and the card this section renders never disagree.
+ */
 function pendingEnrollmentResultAnnouncement(
     homeName: string,
     result: AccountPostAuthResult | null | void,
 ): string {
     const prefix = `${homeName}. `;
-    if (!result) return `${prefix}${t('errors.operationFailed')}`;
-    if (result.kind === 'home_enrolled' || result.kind === 'home_entered') return `${prefix}${t('connect.homeAddedPreservedFocusBody')}`;
-    if (result.kind === 'approval_required') return `${prefix}${t('connect.waitingForApproval')}`;
-    if (result.kind === 'home_material_required') return `${prefix}${t('navigation.restoreWithSecretKey')}`;
-    if (result.kind === 'failure') {
-        if (result.code.source === 'home') {
-            if (result.code.code === 'rejected') return `${prefix}${t('connect.pairingRejectedBody')}`;
-            if (result.code.code === 'expired') return `${prefix}${t('approvals.status.expired')}. ${t('connect.startAgain')}`;
-            if (result.code.code === 'partial_commit') return `${prefix}${t('connect.homeEnrollmentPartialCommitBody')}`;
-        }
-        return `${prefix}${t('errors.operationFailed')}${result.recovery === 'retry_stage' ? `. ${t('common.retry')}` : ''}`;
-    }
-    return `${prefix}${t('approvals.stopWaiting')}`;
+    if (!result || result.kind === 'stopped') return `${prefix}${t('homeDeviceApproval.stopWaiting')}`;
+    // This section's continuation offers direct Home sign-in (onOpenHomeAuthentication).
+    return `${prefix}${describeAccountPostAuthResultReason(result, { signInToHome: true, homeName })}`;
 }
 
 const styles = StyleSheet.create({
-    accessibilityStatus: {
-        position: 'absolute',
-        width: 1,
-        height: 1,
-        overflow: 'hidden',
+    requesterFingerprint: {
+        fontFamily: Platform.select({ ios: 'Menlo', android: 'monospace', default: 'monospace' }),
+    },
+    requesterDetails: {
+        paddingHorizontal: 16,
+        paddingVertical: 8,
+        gap: 4,
     },
 });
 
@@ -133,14 +118,16 @@ async function withHomeApprovalTarget<T>(
     home: ServerProfile,
     unavailable: T,
     operation: (target: HomeDeviceApprovalTarget) => Promise<T>,
+    /** The result for a Home this device cannot ask at all (no descriptor, or signed out); defaults to `unavailable`. */
+    notSignedIn: T = unavailable,
 ): Promise<T> {
     const descriptor = buildHomeConnectionDescriptorForProfile(home);
-    if (!descriptor) return unavailable;
+    if (!descriptor) return notSignedIn;
     const credentials = await TokenStorage.getCredentialsForServerUrl(
         descriptor.canonicalServerUrl,
         { serverId: descriptor.homeServerIdentityId },
     ).catch(() => null);
-    if (!credentials?.token) return unavailable;
+    if (!credentials?.token) return notSignedIn;
     const resolution = await resolveHomeEnrollmentTransport(descriptor, {
         verification: { kind: 'authenticated', token: credentials.token },
     });
@@ -163,6 +150,7 @@ export function HomeDeviceApprovalSection({ homes }: Readonly<{ homes: readonly 
     const [state, setState] = React.useState<LoadState>({ kind: 'loading', items: [] });
     const [busyKeys, setBusyKeys] = React.useState<readonly string[]>([]);
     const [decisionErrorKeys, setDecisionErrorKeys] = React.useState<readonly string[]>([]);
+    const [expandedRequestKeys, setExpandedRequestKeys] = React.useState<readonly string[]>([]);
     const [continuation, setContinuation] = React.useState<Readonly<{ input: AccountPostAuthInput; result: AccountPostAuthResult }> | null>(null);
     const [homeAuthentication, setHomeAuthentication] = React.useState<Readonly<{
         input: AccountPostAuthInput; previous: AccountPostAuthResult; homeServerIdentityId: string;
@@ -200,11 +188,14 @@ export function HomeDeviceApprovalSection({ homes }: Readonly<{ homes: readonly 
                         home,
                         { ok: false, reason: 'request_failed', status: 0 } as const,
                         listHomeDeviceApprovals,
+                        // A signed-out Home has no approvals this device can see; that is not a failure to retry.
+                        { ok: false, reason: 'unauthorized', status: 401 } as const,
                     ),
                 })));
                 if (!mountedRef.current) return 'completed';
 
-                const failed = results.some(({ result }) => !result.ok && result.reason !== 'unauthorized');
+                const failures = results.filter(({ result }) => !result.ok && result.reason !== 'unauthorized');
+                const failed = failures.length > 0;
                 if (failed && mode === 'poll') return 'backoff';
 
                 const items = results.flatMap(({ home, result }) => result.ok
@@ -216,20 +207,29 @@ export function HomeDeviceApprovalSection({ homes }: Readonly<{ homes: readonly 
 
                 approvalItemsRef.current = items;
                 approvalSnapshotKeyRef.current = failed ? null : nextSnapshotKey;
-                setState({ kind: failed ? 'error' : 'ready', items });
+                setState(failed
+                    ? {
+                        kind: 'error',
+                        items,
+                        reason: describeApprovalLoadFailure(failures),
+                        unreachableServerIds: failures.every(({ result }) => !result.ok && result.status === 0)
+                            ? failures.map(({ home }) => resolveServerProfileScopeId(home))
+                            : [],
+                    }
+                    : { kind: 'ready', items });
                 publishAnnouncement(
                     failed
-                        ? t('approvals.loadError')
+                        ? t('homeDeviceApproval.loadError')
                         : items.length === 0
                             ? t('inbox.emptyDescription')
-                            : `${t('approvals.title')}: ${items.map(({ home }) => home.name).join(', ')}`,
+                            : `${t('homeDeviceApproval.title')}: ${items.map(({ home }) => homeLabel(home)).join(', ')}`,
                 );
                 return failed ? 'backoff' : 'completed';
             } catch {
                 if (mountedRef.current && mode === 'interactive') {
                     approvalSnapshotKeyRef.current = null;
-                    setState((current) => ({ kind: 'error', items: current.items }));
-                    publishAnnouncement(t('approvals.loadError'));
+                    setState((current) => ({ kind: 'error', items: current.items, reason: null, unreachableServerIds: [] }));
+                    publishAnnouncement(t('homeDeviceApproval.loadError'));
                 }
                 return 'backoff';
             }
@@ -278,10 +278,11 @@ export function HomeDeviceApprovalSection({ homes }: Readonly<{ homes: readonly 
                 return;
             }
             setDecisionErrorKeys((current) => current.includes(key) ? current : [...current, key]);
-            publishAnnouncement(`${t('approvals.decisionError')}: ${item.home.name}`);
+            publishAnnouncement(`${t('homeDeviceApproval.decisionError')}: ${homeLabel(item.home)}`);
             return;
         }
         setDecisionErrorKeys((current) => current.filter((candidate) => candidate !== key));
+        setExpandedRequestKeys((current) => current.filter((candidate) => candidate !== key));
         const remainingItems = approvalItemsRef.current.filter((candidate) => (
             candidate.approval.approvalId !== item.approval.approvalId
             || candidate.home.id !== item.home.id
@@ -289,7 +290,7 @@ export function HomeDeviceApprovalSection({ homes }: Readonly<{ homes: readonly 
         approvalItemsRef.current = remainingItems;
         approvalSnapshotKeyRef.current = approvalSnapshotKey(remainingItems);
         setState({ kind: 'ready', items: remainingItems });
-        publishAnnouncement(`${t(`approvals.status.${decision === 'approve' ? 'approved' : 'rejected'}`)}: ${item.home.name}`);
+        publishAnnouncement(`${decision === 'approve' ? t('homeDeviceApproval.approved') : t('homeDeviceApproval.rejected')}: ${homeLabel(item.home)}`);
     }, [load, publishAnnouncement]);
 
     const runPendingEnrollmentOperation = React.useCallback(async (
@@ -306,7 +307,7 @@ export function HomeDeviceApprovalSection({ homes }: Readonly<{ homes: readonly 
             if (operationKind === 'cancel') setContinuation(null);
             publishAnnouncement(
                 operationKind === 'cancel'
-                    ? `${homeName}. ${t('approvals.stopWaiting')}`
+                    ? `${homeName}. ${t('homeDeviceApproval.stopWaiting')}`
                     : pendingEnrollmentResultAnnouncement(homeName, result),
             );
         } catch {
@@ -354,7 +355,7 @@ export function HomeDeviceApprovalSection({ homes }: Readonly<{ homes: readonly 
     useAccountDirectoryActivePolling(poll);
 
     const pendingEnrollmentGroup = pendingEnrollment ? (
-        <ItemGroup title={t('common.home')}>
+        <ItemGroup title={t('common.homeProductName')}>
             <Item
                 testID="settings.server.homeEnrollment.pending"
                 title={pendingEnrollmentName}
@@ -389,8 +390,8 @@ export function HomeDeviceApprovalSection({ homes }: Readonly<{ homes: readonly 
             />
             <Item
                 testID="settings.server.homeEnrollment.pending.cancel"
-                title={t('approvals.stopWaiting')}
-                accessibilityLabel={`${t('approvals.stopWaiting')}: ${pendingEnrollmentName}`}
+                title={t('homeDeviceApproval.stopWaiting')}
+                accessibilityLabel={`${t('homeDeviceApproval.stopWaiting')}: ${pendingEnrollmentName}`}
                 disabled={pendingEnrollmentBusy}
                 onPress={() => void runPendingEnrollmentOperation(
                     pendingEnrollmentName,
@@ -403,7 +404,11 @@ export function HomeDeviceApprovalSection({ homes }: Readonly<{ homes: readonly 
 
     const renderSection = (content: React.ReactNode) => (
         <>
-            <HomeApprovalAccessibilityStatus announcement={announcement} />
+            <PoliteAccessibilityStatus
+                announcement={announcement.text}
+                statusTestID="settings.server.homeApprovals.status"
+                transitionKey={String(announcement.revision)}
+            />
             {pendingEnrollmentGroup}
             {continuation && continuation.result.kind !== 'stopped' ? (
                 <View testID="settings.server.homeEnrollment.continuation">
@@ -428,30 +433,25 @@ export function HomeDeviceApprovalSection({ homes }: Readonly<{ homes: readonly 
         </>
     );
 
+    // Pending approvals are rare. While the first check runs, the section adds nothing rather than a
+    // loading row that would vanish again and move every section below it.
     if (state.kind === 'loading' && state.items.length === 0) {
-        return renderSection(
-            <ItemGroup title={t('approvals.title')}>
-                    <Item
-                        testID="settings.server.homeApprovals.loading"
-                        title={t('common.loading')}
-                        loading
-                        mode="info"
-                        showChevron={false}
-                    />
-            </ItemGroup>,
-        );
+        return renderSection(null);
     }
 
     if (state.kind === 'error' && state.items.length === 0) {
         return renderSection(
-            <ItemGroup title={t('approvals.title')}>
-                    <Item
-                        testID="settings.server.homeApprovals.error"
-                        title={t('approvals.loadError')}
-                        subtitle={t('common.retry')}
-                        accessibilityLabel={t('common.retry')}
-                        onPress={() => void load()}
-                    />
+            <ItemGroup title={t('homeDeviceApproval.title')}>
+                <ItemLoadStateRows
+                    testID="settings.server.homeApprovals.error"
+                    state={{
+                        kind: 'failed',
+                        reason: [t('homeDeviceApproval.loadError'), state.reason].filter(Boolean).join(' '),
+                        onRetry: () => load(),
+                        // When only unreachable Homes failed, the page's banner may already say so.
+                        ...(state.unreachableServerIds.length > 0 ? { homeServerIds: state.unreachableServerIds } : {}),
+                    }}
+                />
             </ItemGroup>,
         );
     }
@@ -461,53 +461,73 @@ export function HomeDeviceApprovalSection({ homes }: Readonly<{ homes: readonly 
     }
 
     return renderSection(
-        <ItemGroup title={t('approvals.title')}>
+        <ItemGroup title={t('homeDeviceApproval.title')}>
             {state.items.map((item) => {
                 const key = `${item.home.id}:${item.approval.approvalId}`;
                 const busy = busyKeys.includes(key);
                 const decisionFailed = decisionErrorKeys.includes(key);
+                const requestDetailsExpanded = expandedRequestKeys.includes(key);
                 const requesterFingerprint = createHomeLoginRequesterFingerprintV1(
                     item.approval.requesterBoxPublicKeyBase64,
                 );
-                const approvalExpiresAt = new Date(item.approval.expiresAtMs).toLocaleString();
+                const approvalExpiresAt = formatEnrollmentExpiry(item.approval.expiresAtMs);
+                const requestingDeviceName = item.approval.deviceLabel?.trim() || t('homeDeviceApproval.deviceFallback');
                 const approvalDetails = [
-                    item.approval.deviceLabel
-                        ? `${t('connect.deviceLabel')}: ${item.approval.deviceLabel}`
-                        : t('navigation.linkNewDevice'),
-                    `${t('connect.requestKeyFingerprintLabel')}: ${requesterFingerprint}`,
-                    `${t('connect.expiresAtLabel')}: ${approvalExpiresAt}`,
+                    t('homeDeviceApproval.homeLabel', { home: homeLabel(item.home) }),
+                    t('homeDeviceApproval.expiresLabel', { expiry: approvalExpiresAt }),
                 ];
                 return (
                     <React.Fragment key={key}>
                         <Item
                             testID={`settings.server.homeApprovals.${item.approval.approvalId}`}
-                            title={item.home.name}
+                            title={requestingDeviceName}
                             subtitle={approvalDetails.join(' · ')}
-                            accessibilityLabel={`${item.home.name}. ${approvalDetails.join('. ')}`}
+                            accessibilityLabel={`${requestingDeviceName}. ${approvalDetails.join('. ')}`}
                             mode="info"
                             showChevron={false}
                         />
+                        <Item
+                            testID={`settings.server.homeApprovals.${item.approval.approvalId}.details`}
+                            title={t('homeDeviceApproval.requestDetails')}
+                            subtitle={t('homeDeviceApproval.requestDetailsHint')}
+                            accessibilityExpanded={requestDetailsExpanded}
+                            onPress={() => setExpandedRequestKeys((current) => current.includes(key)
+                                ? current.filter((candidate) => candidate !== key)
+                                : [...current, key])}
+                            showChevron
+                        />
+                        {requestDetailsExpanded ? (
+                            <View
+                                testID={`settings.server.homeApprovals.${item.approval.approvalId}.fingerprint`}
+                                style={styles.requesterDetails}
+                            >
+                                <Text>{t('homeDeviceApproval.requestDetailsHelp')}</Text>
+                                <Text selectable style={styles.requesterFingerprint}>
+                                    {t('homeDeviceApproval.fingerprintLabel')}: {requesterFingerprint}
+                                </Text>
+                            </View>
+                        ) : null}
                         {decisionFailed ? (
                             <Item
                                 testID={`settings.server.homeApprovals.${item.approval.approvalId}.error`}
-                                title={t('errors.operationFailed')}
-                                subtitle={t('common.retry')}
+                                title={t('homeDeviceApproval.decisionError')}
+                                subtitle={t('homeDeviceApproval.decisionRecovery')}
                                 mode="info"
                                 showChevron={false}
                             />
                         ) : null}
                         <Item
                             testID={`settings.server.homeApprovals.${item.approval.approvalId}.approve`}
-                            title={t('approvals.approve')}
-                            accessibilityLabel={`${t('approvals.approve')}: ${item.home.name}`}
+                            title={t('homeDeviceApproval.approve')}
+                            accessibilityLabel={`${t('homeDeviceApproval.approve')}: ${requestingDeviceName}`}
                             disabled={busy}
                             loading={busy}
                             onPress={() => void decide(item, 'approve')}
                         />
                         <Item
                             testID={`settings.server.homeApprovals.${item.approval.approvalId}.reject`}
-                            title={t('approvals.reject')}
-                            accessibilityLabel={`${t('approvals.reject')}: ${item.home.name}`}
+                            title={t('homeDeviceApproval.reject')}
+                            accessibilityLabel={`${t('homeDeviceApproval.reject')}: ${requestingDeviceName}`}
                             disabled={busy}
                             destructive
                             onPress={() => void decide(item, 'reject')}

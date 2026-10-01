@@ -1,10 +1,111 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { ActionsSettingsV1Schema } from '@happier-dev/protocol';
+import { ActionsSettingsV1Schema, ComputerCaptureResponseV1Schema } from '@happier-dev/protocol';
 import { z } from 'zod';
+import { createHash } from 'node:crypto';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { dirname, join } from 'node:path';
+import { tmpdir } from 'node:os';
+import { configuration } from '@/configuration';
 
 import { registerHappierMcpBuiltInTools } from './registerHappierMcpBuiltInTools';
 
 describe('registerHappierMcpBuiltInTools', () => {
+  it('projects admitted native capture pixels for the host Session and refuses missing or substituted media', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'happier-native-mcp-'));
+    const daemonRoot = Object.getOwnPropertyDescriptor(configuration, 'happyHomeDir')!;
+    // The filesystem-root configuration is an environment boundary; verification stays real.
+    Object.defineProperty(configuration, 'happyHomeDir', { ...daemonRoot, value: cwd });
+    try {
+      const bytes = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a2ioAAAAASUVORK5CYII=', 'base64');
+      const mediaPath = '.happier/uploads/artifacts/sess-1/capture-1/screen.png';
+      await mkdir(dirname(join(cwd, mediaPath)), { recursive: true });
+      await writeFile(join(cwd, mediaPath), bytes);
+      const media = {
+        mediaId: 'capture-1', mediaKind: 'image', width: 1, height: 1, sizeBytes: bytes.length,
+        file: { sessionId: 'sess-1', storage: 'daemon', path: mediaPath,
+          sha256: createHash('sha256').update(bytes).digest('hex'), mimeType: 'image/png' },
+      };
+      const capture = ComputerCaptureResponseV1Schema.parse({
+        status: 'captured', target: { kind: 'display', displayId: 'display-1' }, sourceId: 'native-screen', captureId: 'capture-1',
+        geometry: { captureWidth: 1, captureHeight: 1, nativeWidth: 1, nativeHeight: 1,
+          originX: 0, originY: 0, scaleX: 1, scaleY: 1, crop: { x: 0, y: 0, width: 1, height: 1 } },
+        media,
+      });
+      let response: unknown = capture;
+      let admitted = true;
+      const handlers = new Map<string, (args: unknown) => Promise<unknown>>();
+      registerHappierMcpBuiltInTools({ registerTool: (name, _meta, handler) => { handlers.set(name, handler); } }, {
+        sessionId: 'sess-1', surface: 'agent', workingDirectory: join(cwd, 'not-the-media-owner'),
+        deps: { changeTitle: async () => ({ success: true }), executeActionByToolName: async () => admitted
+          ? { ok: true, result: response } : { ok: false, errorCode: 'approval_denied', error: 'denied' } },
+      });
+      const handler = handlers.get('action_execute');
+      if (!handler) throw new Error('Expected action_execute');
+      const execute = (actionId = 'computer.capture') => handler({ actionId, input: {} });
+      expect(await execute()).toMatchObject({ isError: false,
+        content: expect.arrayContaining([{ type: 'image', data: bytes.toString('base64'), mimeType: 'image/png' }]) });
+      admitted = false;
+      expect(await execute()).toMatchObject({ isError: true,
+        content: [{ type: 'text', text: expect.stringContaining('approval_denied') }] });
+      admitted = true;
+      response = { ...capture, media: { ...media, file: { ...media.file, sessionId: 'sess-2' } } };
+      expect(await execute()).toMatchObject({ isError: true,
+        content: [{ type: 'text', text: expect.stringContaining('session_media_unavailable') }] });
+      response = { ...capture, media: { ...media, file: { ...media.file, sha256: '0'.repeat(64) } } };
+      expect(await execute()).toMatchObject({ isError: true });
+      response = { ...capture, media: { ...media, file: undefined } };
+      expect(await execute()).toMatchObject({ isError: true });
+      response = { status: 'captured' };
+      expect(await execute()).toMatchObject({ isError: true });
+      response = capture;
+      const otherPath = '.happier/uploads/artifacts/sess-2/capture-1/screen.png';
+      await mkdir(dirname(join(cwd, otherPath)), { recursive: true });
+      await writeFile(join(cwd, otherPath), bytes);
+      const otherHandlers = new Map<string, (args: unknown) => Promise<unknown>>();
+      registerHappierMcpBuiltInTools({ registerTool: (name, _meta, handler) => { otherHandlers.set(name, handler); } }, {
+        sessionId: 'sess-1', surface: 'agent', workingDirectory: cwd, resolveSessionId: () => 'sess-2',
+        deps: { changeTitle: async () => ({ success: true }), executeActionByToolName: async () => ({ ok: true,
+          result: { ...capture, media: { ...media, file: { ...media.file, sessionId: 'sess-2', path: otherPath } } } }) },
+      });
+      expect(await otherHandlers.get('action_execute')?.({ actionId: 'computer.capture', input: {} })).toMatchObject({ isError: true });
+      // Only the approved capture Action may project local image references.
+      expect(await execute('computer.query')).toMatchObject({ isError: false,
+        content: [{ type: 'text', text: expect.any(String) }] });
+      await rm(join(cwd, mediaPath));
+      expect(await execute()).toMatchObject({ isError: true });
+    } finally {
+      Object.defineProperty(configuration, 'happyHomeDir', daemonRoot);
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+  it('projects authorized browser screenshot bytes as MCP image content and refuses missing media', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'happier-browser-mcp-'));
+    try {
+      const bytes = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a2ioAAAAASUVORK5CYII=', 'base64');
+      const mediaPath = '.happier/uploads/artifacts/sess-1/capture/screen.png';
+      await mkdir(dirname(join(cwd, mediaPath)), { recursive: true });
+      await writeFile(join(cwd, mediaPath), bytes);
+      const media = {
+        mediaId: 'screenshot', mediaKind: 'image', width: 1, height: 1, sizeBytes: bytes.length,
+        file: { sessionId: 'sess-1', storage: 'session', path: mediaPath,
+          sha256: createHash('sha256').update(bytes).digest('hex'), mimeType: 'image/png' },
+      };
+      const handlers = new Map<string, (args: unknown) => Promise<unknown>>();
+      registerHappierMcpBuiltInTools({ registerTool: (name, _meta, handler) => { handlers.set(name, handler); } }, {
+        sessionId: 'sess-1', surface: 'agent', workingDirectory: cwd,
+        deps: { changeTitle: async () => ({ success: true }), executeActionByToolName: async () => ({ ok: true, result: { media } }) },
+      });
+      const handler = handlers.get('action_execute');
+      if (!handler) throw new Error('Expected action_execute');
+      expect(await handler({ actionId: 'browser.context.captureScreenshot', input: {} })).toMatchObject({
+        isError: false, content: expect.arrayContaining([{ type: 'image', data: bytes.toString('base64'), mimeType: 'image/png' }]),
+      });
+      await rm(join(cwd, mediaPath));
+      expect(await handler({ actionId: 'browser.context.captureScreenshot', input: {} })).toMatchObject({ isError: true });
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
   afterEach(() => {
     vi.useRealTimers();
   });
@@ -294,7 +395,7 @@ describe('registerHappierMcpBuiltInTools', () => {
 
       const tool = registered.get('agents_models_list');
       expect(tool).toBeTruthy();
-      const input = { backendTargetKey: 'backend:codex', limit: 1 };
+      const input = { backendTargetKey: 'agent:happier.agent.codex/codex', limit: 1 };
       expect(tool?.meta.inputSchema?.safeParse?.(input)?.success).toBe(true);
 
       await expect(tool?.handler(input)).resolves.toMatchObject({

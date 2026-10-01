@@ -1,4 +1,11 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+
+// The projection reaches Session authoring's native style boundary; use the
+// complete canonical theme fixture rather than the historical global stub.
+vi.mock('react-native-unistyles', async () => {
+    const { createUnistylesMock } = await import('@/dev/testkit/mocks/unistyles');
+    return createUnistylesMock();
+});
 
 import {
     AutomationRunExecutionTargetV1Schema,
@@ -8,15 +15,13 @@ import {
 
 import {
     projectAutomationWorkflowRecipeToEditorDraft,
+    projectEditorDraftToNewSessionAutomationRecipe,
     projectEditorDraftToLegacyAutomationRecipe,
     projectLegacyAutomationRecipeToEditorDraft,
 } from './automationRecipeWorkflowDraft';
 import { validateWorkflowEditorDraft } from './workflowAuthoring';
-import {
-    setWorkflowDefaultField,
-    setWorkflowStepText,
-    type WorkflowEditorDraft,
-} from './workflowEditorDraft';
+import { type WorkflowEditorDraft } from './workflowEditorDraft';
+import { setWorkflowDefaultField, setWorkflowStepText } from '@happier-dev/protocol/workflows/workflowDefinitionEditV1';
 
 const AGENT_TARGET = {
     kind: 'agent' as const,
@@ -28,7 +33,7 @@ function spawnTarget(overrides?: Record<string, unknown>): AutomationRunExecutio
         kind: 'newSession',
         spawn: SessionServerStartSpawnDraftV1Schema.parse({
             executionTarget: { serverId: 'server-1', machineId: 'machine-1' },
-            directory: '/repo',
+            directory: { kind: 'path', path: '/repo' },
             agentTarget: AGENT_TARGET,
             permissionMode: 'default',
             configuration: {
@@ -60,6 +65,39 @@ function legacyDraft(target: AutomationRunExecutionTargetV1, machineId: string |
 }
 
 describe('legacy Automation recipe → shared Workflow draft', () => {
+    it('retains a managed new-Session machine and intent through prompt edits without fabricating a project path', () => {
+        const target = spawnTarget({ directory: { kind: 'managed' } });
+        const projection = legacyDraft(target);
+        expect(projection.project).toEqual({ machineId: 'machine-1', directory: { kind: 'managed' } });
+        const edited = setWorkflowStepText(projection.draft, 'step-1', 'Review the conversation');
+        const writeBack = projectEditorDraftToLegacyAutomationRecipe({
+            draft: edited,
+            target,
+            project: { machineId: 'machine-2', directory: { kind: 'managed' } },
+            configurationUpdatedAtMs: 100,
+        });
+        expect(writeBack).toMatchObject({
+            kind: 'available',
+            prompt: 'Review the conversation',
+            target: { kind: 'newSession', spawn: {
+                executionTarget: { serverId: 'server-1', machineId: 'machine-2' },
+                directory: { kind: 'managed' },
+            } },
+        });
+    });
+    it('creates a one-shot managed Automation from the shared editor without requiring a project directory', () => {
+        const projection = legacyDraft(spawnTarget({ directory: { kind: 'managed' } }));
+        const result = projectEditorDraftToNewSessionAutomationRecipe({
+            draft: projection.draft,
+            project: { machineId: 'machine-2', directory: { kind: 'managed' } },
+            serverId: 'server-1',
+            configurationUpdatedAtMs: 100,
+        });
+        expect(result).toMatchObject({ kind: 'available', target: { kind: 'newSession', spawn: {
+            executionTarget: { serverId: 'server-1', machineId: 'machine-2' },
+            directory: { kind: 'managed' },
+        } } });
+    });
     it('adapts a one-shot new-Session recipe into one valid canonical step', () => {
         const projection = legacyDraft(spawnTarget());
 
@@ -108,6 +146,29 @@ describe('legacy Automation recipe → shared Workflow draft', () => {
     });
 });
 
+describe('detached legacy Automation editing', () => {
+    it('preserves detached settings through the shared read projection and unchanged V1 write-back', () => {
+        const target = AutomationRunExecutionTargetV1Schema.parse({
+            kind: 'executionRun',
+            request: {
+                intent: 'task', backendTarget: AGENT_TARGET, permissionMode: 'read_only',
+                retentionPolicy: 'ephemeral', runClass: 'bounded', ioMode: 'request_response',
+                cwd: '/detached-repo', modelId: 'review-model',
+                sessionConfigOptionOverrides: { v: 1, updatedAt: 10, overrides: { reasoning_effort: { value: 'high', updatedAt: 10 } } },
+            },
+        });
+        const projection = legacyDraft(target);
+        expect(projection.project).toEqual({ machineId: 'machine-1', directory: '/detached-repo' });
+        expect(projection.draft.defaults).toMatchObject({
+            agentTarget: AGENT_TARGET, permissionMode: 'read-only', conversation: { kind: 'fresh' },
+            modelSelection: { ref: { modelId: 'review-model', providerConnectionId: null } },
+            sessionConfigOptionOverrides: { v: 1, updatedAt: 10, overrides: { reasoning_effort: { value: 'high', updatedAt: 10 } } },
+        });
+        expect(projectEditorDraftToLegacyAutomationRecipe({ draft: projection.draft, target, configurationUpdatedAtMs: 10 }))
+            .toMatchObject({ kind: 'available', target });
+    });
+});
+
 describe('shared Workflow draft → legacy Automation recipe', () => {
     it('writes an edited prompt back through the one-shot recipe it came from', () => {
         const target = spawnTarget();
@@ -130,7 +191,7 @@ describe('shared Workflow draft → legacy Automation recipe', () => {
         expect(writeBack.target.kind).toBe('newSession');
         // One-shot execution semantics are preserved: the same spawn target,
         // machine and directory the Automation already ran with.
-        expect(writeBack.target.kind === 'newSession' ? writeBack.target.spawn.directory : null).toBe('/repo');
+        expect(writeBack.target.kind === 'newSession' ? writeBack.target.spawn.directory : null).toEqual({ kind: 'path', path: '/repo' });
     });
 
     it('applies an edited selection to the retained spawn and keeps its configuration snapshot consistent', () => {
@@ -354,28 +415,28 @@ describe('shared Workflow draft → legacy Automation recipe', () => {
 });
 
 describe('managed Automation workflow recipe → shared Workflow draft', () => {
-    it('opens the frozen definition and retains its exact project and source revision', () => {
-        const stored = {
-            definition: {
-                version: 1 as const,
-                inputs: [],
-                defaults: { agentTarget: AGENT_TARGET },
-                blocks: [{
-                    kind: 'step' as const,
-                    id: 'analyze',
-                    document: { text: 'Analyze', references: [], attachments: [] },
-                    input: [],
-                    result: { kind: 'text' as const },
-                }],
-            },
-            project: { machineId: 'machine-2', directory: '/srv' },
-            source: { definitionId: 'definition-1', revision: { headerVersion: 2, bodyVersion: 5 } },
-        } as never;
+    it('opens a live resolved reference without copying source metadata into trigger context', () => {
+        const definition = {
+            version: 1 as const,
+            inputs: [],
+            defaults: { agentTarget: AGENT_TARGET },
+            blocks: [{
+                kind: 'step' as const,
+                id: 'analyze',
+                document: { text: 'Analyze', references: [], attachments: [] },
+                input: [],
+                result: { kind: 'text' as const },
+            }],
+        };
+        const stored = { workspace: { directory: '/srv' }, executionTarget: { kind: 'session' as const } };
 
         const projection = projectAutomationWorkflowRecipeToEditorDraft({
             draftId: 'draft-2',
             name: 'Managed',
             stored,
+            machineId: 'machine-2',
+            workflowDefinitionId: 'definition-1',
+            resolvedDefinition: definition,
         });
 
         expect(projection.draft.name).toBe('Managed');
@@ -384,7 +445,7 @@ describe('managed Automation workflow recipe → shared Workflow draft', () => {
         expect(projection.origin).toEqual({
             kind: 'workflow',
             project: { machineId: 'machine-2', directory: '/srv' },
-            source: { definitionId: 'definition-1', revision: { headerVersion: 2, bodyVersion: 5 } },
+            workflowDefinitionId: 'definition-1',
         });
     });
 });

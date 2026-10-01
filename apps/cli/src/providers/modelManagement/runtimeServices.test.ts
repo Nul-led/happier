@@ -115,7 +115,7 @@ describe('runtime provider model-management composition', () => {
         }],
         probes: [{ endpointTemplateId: 'chat', path: '/models', parser: 'openai-models' }],
       },
-      compatibilityOverrides: ['backend:codex', 'agent:happier.agent.codex/codex'].map((agentTargetKey) => ({
+      compatibilityOverrides: ['agent:happier.agent.codex/codex', 'agent:happier.agent.codex/codex'].map((agentTargetKey) => ({
         agentTargetKey, protocol: 'openai-chat' as const, status: 'verified' as const, reason: 'real integration',
         evidence: { sourceUrls: ['https://docs.example.test'], verifiedAt: '2026-07-11', testIds: ['real-session'] },
       })),
@@ -342,14 +342,14 @@ describe('runtime provider model-management composition', () => {
       modelSettingsMutation,
     });
 
-    const result = await services.projectModels({ machineId: 'machine-a', agentTargetKey: 'backend:codex' });
+    const result = await services.projectModels({ machineId: 'machine-a', agentTargetKey: 'agent:happier.agent.codex/codex' });
     expect(executable.activateContributionsOnDemand).toHaveBeenCalledWith([{
       pluginId: 'happier.agent.codex',
       family: 'agents',
       localId: 'codex',
     }]);
     expect(result).toMatchObject({
-      status: 'success', agentTargetKey: 'backend:codex',
+      status: 'success', agentTargetKey: 'agent:happier.agent.codex/codex',
       groups: [{
         connectionId, connectionRevision: 2, supportsFreeformModelIds: false,
         sourceAuthority: {
@@ -363,7 +363,7 @@ describe('runtime provider model-management composition', () => {
         modelLoadAction: 'descriptor_absent',
         modelLoadPreflightPolicy: null,
         rows: [{
-          ref: { agentTargetKey: 'backend:codex', providerConnectionId: connectionId, modelId: 'same-id' },
+          ref: { agentTargetKey: 'agent:happier.agent.codex/codex', providerConnectionId: connectionId, modelId: 'same-id' },
           descriptor: { name: 'Provider Same' },
           compatibility: { result: { status: 'verified' }, confirmed: true },
           endpointHealth: 'not_checked',
@@ -374,7 +374,7 @@ describe('runtime provider model-management composition', () => {
     expect(result.groups[0]?.rows[0]).not.toHaveProperty('requestPolicySupport');
     const requestPolicyProjection = await services.projectModels({
       machineId: 'machine-a',
-      agentTargetKey: 'backend:codex',
+      agentTargetKey: 'agent:happier.agent.codex/codex',
       includeTeamCredentialRequestPolicySupport: true,
     });
     expect(requestPolicyProjection).toMatchObject({
@@ -383,7 +383,7 @@ describe('runtime provider model-management composition', () => {
         rows: [{
           requestPolicySupport: {
             application: {
-              agentTargetKey: 'backend:codex',
+              agentTargetKey: 'agent:happier.agent.codex/codex',
               implementationIdentity: { pluginId: 'acme.gateway', localId: 'main' },
               endpointTemplateId: 'chat',
               protocol: 'openai-chat',
@@ -430,7 +430,7 @@ describe('runtime provider model-management composition', () => {
       request: { route: 'chat_completions', pathAndQuery: '/v1/chat/completions' },
     });
     const brokerApplication = {
-      agentTargetKey: 'backend:codex',
+      agentTargetKey: 'agent:happier.agent.codex/codex',
       implementationIdentity: { pluginId: 'happier.provider.cliproxyapi', localId: 'cliproxyapi' },
       endpointTemplateId: 'cliproxyapi-openai-chat',
       protocol: 'openai-chat' as const,
@@ -448,7 +448,7 @@ describe('runtime provider model-management composition', () => {
       groups: [{ rows: [{ application: brokerApplication }] }],
     });
     const directApplication = {
-      agentTargetKey: 'backend:codex',
+      agentTargetKey: 'agent:happier.agent.codex/codex',
       implementationIdentity: { pluginId: 'acme.gateway', localId: 'main' },
       endpointTemplateId: 'chat',
       protocol: 'openai-chat' as const,
@@ -525,7 +525,7 @@ describe('runtime provider model-management composition', () => {
     currentLease = preparedLease;
     const nextResult = await services.projectModels({
       machineId: 'machine-a',
-      agentTargetKey: 'backend:codex',
+      agentTargetKey: 'agent:happier.agent.codex/codex',
       includeTeamCredentialRequestPolicySupport: true,
     });
     expect(nextResult).toMatchObject({
@@ -549,7 +549,7 @@ describe('runtime provider model-management composition', () => {
       machineId: 'machine-a',
       connectionId,
       expectedConnectionRevision: 2,
-      agentTargetKey: 'backend:codex',
+      agentTargetKey: 'agent:happier.agent.codex/codex',
       modelId: projectedRow.ref.modelId,
       compatibilityFingerprint: projectedRow.compatibility.compatibilityFingerprint,
     })).resolves.toMatchObject({
@@ -561,20 +561,20 @@ describe('runtime provider model-management composition', () => {
 
     const selection = {
       v: 1 as const, updatedAt: 1,
-      ref: { agentTargetKey: 'backend:codex', providerConnectionId: connectionId, modelId: 'same-id' },
+      ref: { agentTargetKey: 'agent:happier.agent.codex/codex', providerConnectionId: connectionId, modelId: 'same-id' },
     };
     const authorization = resolveProviderSpawnAuthorization({
-      selection, machineId: 'machine-a', agentTargetKey: 'backend:codex', agentId: 'codex',
+      selection, machineId: 'machine-a', agentTargetKey: 'agent:happier.agent.codex/codex', agentId: 'codex',
       accountSettings, providerSettings: settings,
       registry, dnsEvidenceByEndpointUrl: new Map([['https://models.example/v1', ['1.1.1.1']]]), lease,
     });
     if (!authorization.ok) throw new Error('Expected provider authorization');
     await expect(services.resolveBindingStatus({
-      machineId: 'machine-a', agentTargetKey: 'backend:codex', selection,
+      machineId: 'machine-a', agentTargetKey: 'agent:happier.agent.codex/codex', selection,
       launchBinding: authorization.authorization.sessionBindingMetadata,
     })).resolves.toEqual({ status: 'current' });
     await expect(services.resolveBindingStatus({
-      machineId: 'machine-a', agentTargetKey: 'backend:codex', selection,
+      machineId: 'machine-a', agentTargetKey: 'agent:happier.agent.codex/codex', selection,
       launchBinding: {
         ...authorization.authorization.sessionBindingMetadata,
         bindingSecurityFingerprint: 'binding-security:v1:changed',
@@ -587,12 +587,12 @@ describe('runtime provider model-management composition', () => {
     const probeSelection = (modelId: string) => ({
       v: 1 as const,
       updatedAt: 1,
-      ref: { agentTargetKey: 'backend:codex', providerConnectionId: connectionId, modelId },
+      ref: { agentTargetKey: 'agent:happier.agent.codex/codex', providerConnectionId: connectionId, modelId },
     });
     const authorizePreviouslyCurrentProbe = (modelId: string) => resolveProviderSpawnAuthorization({
       selection: probeSelection(modelId),
       machineId: 'machine-a',
-      agentTargetKey: 'backend:codex',
+      agentTargetKey: 'agent:happier.agent.codex/codex',
       agentId: 'codex',
       accountSettings,
       providerSettings: settings,
@@ -638,13 +638,13 @@ describe('runtime provider model-management composition', () => {
     }
     await expect(services.resolveBindingStatus({
       machineId: 'machine-a',
-      agentTargetKey: 'backend:codex',
+      agentTargetKey: 'agent:happier.agent.codex/codex',
       selection: probeSelection('probe-current'),
       launchBinding: activeProbeAuthorization.authorization.sessionBindingMetadata,
     })).resolves.toEqual({ status: 'current' });
     await expect(services.resolveBindingStatus({
       machineId: 'machine-a',
-      agentTargetKey: 'backend:codex',
+      agentTargetKey: 'agent:happier.agent.codex/codex',
       selection: probeSelection('probe-disappeared'),
       launchBinding: disappearedProbeAuthorization.authorization.sessionBindingMetadata,
     })).resolves.toMatchObject({
@@ -654,9 +654,9 @@ describe('runtime provider model-management composition', () => {
 
     await expect(services.projectModels({
       machineId: 'machine-a',
-      agentTargetKey: 'backend:codex',
+      agentTargetKey: 'agent:happier.agent.codex/codex',
       currentSelection: {
-        agentTargetKey: 'backend:codex', providerConnectionId: connectionId, modelId: 'retired-model',
+        agentTargetKey: 'agent:happier.agent.codex/codex', providerConnectionId: connectionId, modelId: 'retired-model',
       },
     })).resolves.toMatchObject({
       status: 'success',
@@ -680,12 +680,12 @@ describe('runtime provider model-management composition', () => {
     registry.providersByContributionKey.set(contributionKey, { ...contribution, definition: freeformDefinition });
     agentDefinitionsById.set('codex', agentDefinition({ ...support, supportsFreeformModelIds: true }));
     const freeformSelection = {
-      agentTargetKey: 'backend:codex',
+      agentTargetKey: 'agent:happier.agent.codex/codex',
       providerConnectionId: connectionId,
       modelId: 'vendor/freeform-only',
     };
     const freeformProjection = await services.projectModels({
-      machineId: 'machine-a', agentTargetKey: 'backend:codex', currentSelection: freeformSelection,
+      machineId: 'machine-a', agentTargetKey: 'agent:happier.agent.codex/codex', currentSelection: freeformSelection,
     });
     expect(freeformProjection).toMatchObject({ status: 'success', currentSelectionRecovery: null });
     if (freeformProjection.status !== 'success') throw new Error('Expected model projection');
@@ -694,7 +694,7 @@ describe('runtime provider model-management composition', () => {
     // The same selection under an Agent that refuses freeform ids stays missing.
     agentDefinitionsById.set('codex', agentDefinition(support));
     await expect(services.projectModels({
-      machineId: 'machine-a', agentTargetKey: 'backend:codex', currentSelection: freeformSelection,
+      machineId: 'machine-a', agentTargetKey: 'agent:happier.agent.codex/codex', currentSelection: freeformSelection,
     })).resolves.toMatchObject({
       status: 'success',
       currentSelectionRecovery: {
@@ -719,7 +719,7 @@ describe('runtime provider model-management composition', () => {
       }),
     });
     await expect(services.projectModels({
-      machineId: 'machine-a', agentTargetKey: 'backend:codex', currentSelection: selection.ref,
+      machineId: 'machine-a', agentTargetKey: 'agent:happier.agent.codex/codex', currentSelection: selection.ref,
     })).resolves.toMatchObject({
       status: 'success',
       groups: [{
@@ -737,7 +737,7 @@ describe('runtime provider model-management composition', () => {
 
     registry.providersByContributionKey.delete(contributionKey);
     await expect(services.projectModels({
-      machineId: 'machine-a', agentTargetKey: 'backend:codex', currentSelection: selection.ref,
+      machineId: 'machine-a', agentTargetKey: 'agent:happier.agent.codex/codex', currentSelection: selection.ref,
     })).resolves.toMatchObject({
       status: 'success',
       currentSelectionRecovery: {
@@ -756,7 +756,7 @@ describe('runtime provider model-management composition', () => {
       }),
     });
     await expect(services.projectModels({
-      machineId: 'machine-a', agentTargetKey: 'backend:codex', currentSelection: selection.ref,
+      machineId: 'machine-a', agentTargetKey: 'agent:happier.agent.codex/codex', currentSelection: selection.ref,
     })).resolves.toMatchObject({
       status: 'success',
       currentSelectionRecovery: {
@@ -927,7 +927,7 @@ describe('runtime provider model-management composition', () => {
     // refresh on every candidate Machine when no observation exists yet.
     const currentOnly = await services.projectModels({
       machineId: 'machine-a',
-      agentTargetKey: 'backend:codex',
+      agentTargetKey: 'agent:happier.agent.codex/codex',
       refreshPolicy: 'current_only',
     });
     expect(currentOnly.status).toBe('success');
@@ -940,7 +940,7 @@ describe('runtime provider model-management composition', () => {
     // empty list with nothing to follow it.
     const projection = await services.projectModels({
       machineId: 'machine-a',
-      agentTargetKey: 'backend:codex',
+      agentTargetKey: 'agent:happier.agent.codex/codex',
     });
     expect(projection.status).toBe('success');
     if (projection.status !== 'success') throw new Error('Expected model projection');
@@ -980,7 +980,7 @@ describe('runtime provider model-management composition', () => {
     });
     const warm = await services.projectModels({
       machineId: 'machine-a',
-      agentTargetKey: 'backend:codex',
+      agentTargetKey: 'agent:happier.agent.codex/codex',
     });
     releaseBlockedTransport();
     expect(warm.status).toBe('success');
@@ -999,7 +999,7 @@ describe('runtime provider model-management composition', () => {
     state = createEmptyProviderRuntimeStateFileV1('machine-a');
     const failingCold = await services.projectModels({
       machineId: 'machine-a',
-      agentTargetKey: 'backend:codex',
+      agentTargetKey: 'agent:happier.agent.codex/codex',
     });
     expect(failingCold.status).toBe('success');
     if (failingCold.status !== 'success') throw new Error('Expected model projection');
@@ -1018,7 +1018,7 @@ describe('runtime provider model-management composition', () => {
     }));
     const recovered = await services.projectModels({
       machineId: 'machine-a',
-      agentTargetKey: 'backend:codex',
+      agentTargetKey: 'agent:happier.agent.codex/codex',
       forceRefresh: true,
     });
     expect(recovered.status).toBe('success');
@@ -1044,7 +1044,7 @@ describe('runtime provider model-management composition', () => {
       });
     const catalogSucceeded = await services.projectModels({
       machineId: 'machine-a',
-      agentTargetKey: 'backend:codex',
+      agentTargetKey: 'agent:happier.agent.codex/codex',
       forceRefresh: true,
     });
     expect(catalogSucceeded.status).toBe('success');
@@ -1235,7 +1235,7 @@ describe('runtime provider model-management composition', () => {
       // it submitted rather than answering with an empty catalog.
       const projection = services.projectModels({
         machineId: 'machine-a',
-        agentTargetKey: 'backend:codex',
+        agentTargetKey: 'agent:happier.agent.codex/codex',
       });
       // Every identity is submitted immediately, so the sole scheduler holds
       // its four active operations and queues its pending maximum while the

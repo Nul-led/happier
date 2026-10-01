@@ -63,6 +63,13 @@ type WorkflowProblemShape = Readonly<{
  * and one that cannot be continued both mean the same thing to the reader.
  */
 const WORKFLOW_PROBLEM_SHAPES = {
+    subtree_denied: { messageKey: 'workflows.problem.subtreeDenied', repair: 'none', accessibilitySemantics: 'alert' },
+    role_target_unavailable: { messageKey: 'workflows.problem.roleTargetUnavailable', repair: 'none', accessibilitySemantics: 'alert' },
+    role_runs_as_mismatch: { messageKey: 'workflows.problem.roleRunsAsMismatch', repair: 'none', accessibilitySemantics: 'alert' },
+    policy_denied_field: { messageKey: 'workflows.problem.policyDeniedField', repair: 'none', accessibilitySemantics: 'alert' },
+    permission_exceeds_ceiling: { messageKey: 'workflows.problem.permissionExceedsCeiling', repair: 'none', accessibilitySemantics: 'alert' },
+    work_depth_exceeded: { messageKey: 'workflows.problem.workDepthExceeded', repair: 'none', accessibilitySemantics: 'alert' },
+    definition_exceeds_authority: { messageKey: 'workflows.problem.definitionExceedsAuthority', repair: 'none', accessibilitySemantics: 'alert' },
     invalid_input: { messageKey: 'workflows.problem.needsRepair', repair: 'none', accessibilitySemantics: 'alert' },
     missing_reference: { messageKey: 'workflows.problem.needsRepair', repair: 'none', accessibilitySemantics: 'alert' },
     invalid_reference_scope: { messageKey: 'workflows.problem.needsRepair', repair: 'none', accessibilitySemantics: 'alert' },
@@ -81,12 +88,15 @@ const WORKFLOW_PROBLEM_SHAPES = {
     workflow_workspace_restore_unavailable: { messageKey: 'workflows.problem.workspaceRestore', repair: 'none', accessibilitySemantics: 'alert' },
     workflow_workspace_restore_failed: { messageKey: 'workflows.problem.workspaceRestore', repair: 'retry', accessibilitySemantics: 'alert' },
     workflow_wait_self_dependency: { messageKey: 'workflows.problem.waitSelfDependency', repair: 'none', accessibilitySemantics: 'alert' },
-    workflow_input_admission_update_required: { messageKey: 'workflows.problem.updateRequired', repair: 'none', accessibilitySemantics: 'alert' },
     ineligible_state: { messageKey: 'workflows.problem.ineligible', repair: 'refresh', accessibilitySemantics: 'status' },
     custody_pending: { messageKey: 'workflows.problem.custodyPending', repair: 'refresh', accessibilitySemantics: 'status' },
     // The Account-content owner already has this sentence; a second one here
     // would be the same concept said two ways.
     content_unavailable: { messageKey: 'workflows.contentUnavailable', repair: 'none', accessibilitySemantics: 'alert' },
+    source_unavailable: { messageKey: 'workflows.problem.sourceUnavailable', repair: 'none', accessibilitySemantics: 'alert' },
+    legacy_conversion_unsupported: { messageKey: 'workflows.problem.legacyConversionUnsupported', repair: 'none', accessibilitySemantics: 'alert' },
+    native_goal_owner: { messageKey: 'workflows.problem.nativeGoalOwner', repair: 'none', accessibilitySemantics: 'alert' },
+    session_already_started: { messageKey: 'workflows.problem.sessionAlreadyStarted', repair: 'none', accessibilitySemantics: 'alert' },
 } as const satisfies Readonly<Record<WorkflowOperationErrorCodeV1, WorkflowProblemShape>>;
 
 /**

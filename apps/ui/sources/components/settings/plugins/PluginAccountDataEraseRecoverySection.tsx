@@ -1,7 +1,5 @@
 import * as React from 'react';
-import { useUnistyles } from 'react-native-unistyles';
 
-import { Icon } from '@/components/ui/icons/Icon';
 import { Item } from '@/components/ui/lists/Item';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
 import { t } from '@/text';
@@ -17,16 +15,15 @@ type RecoveryControllerLifetime = {
 };
 
 /**
- * Settings entry for the host-present Account erase Action. With a plugin id
- * it removes data for the installed detail; without one it intentionally
- * prompts for an orphaned id rather than deriving a second plugin catalog.
+ * The host-present Account erase Action for one plugin. With a plugin id it removes that plugin's
+ * data; without one it prompts for an orphaned id rather than deriving a second plugin catalog. The
+ * controller lives as long as the caller and is retired on unmount.
  */
-export function PluginAccountDataEraseRecoverySection(props: Readonly<{
-    pluginId?: string | null;
-    testID: string;
-}>): React.ReactElement {
-    const { theme } = useUnistyles();
-    const knownPluginId = props.pluginId?.trim() || null;
+export function usePluginAccountDataErase(pluginId: string | null | undefined): Readonly<{
+    erase: () => void;
+    pending: boolean;
+}> {
+    const knownPluginId = pluginId?.trim() || null;
     const [pending, setPending] = React.useState(false);
     const controllerLifetimeRef = React.useRef<RecoveryControllerLifetime | null>(null);
 
@@ -60,12 +57,27 @@ export function PluginAccountDataEraseRecoverySection(props: Readonly<{
         })();
     }, [knownPluginId, pending]);
 
+    return { erase, pending };
+}
+
+/**
+ * Settings entry for the host-present Account erase Action. With a plugin id
+ * it removes data for the installed detail; without one it intentionally
+ * prompts for an orphaned id rather than deriving a second plugin catalog.
+ */
+export function PluginAccountDataEraseRecoverySection(props: Readonly<{
+    pluginId?: string | null;
+    testID: string;
+}>): React.ReactElement {
+    const knownPluginId = props.pluginId?.trim() || null;
+    const { erase, pending } = usePluginAccountDataErase(knownPluginId);
+
     return (
         <ItemGroup
             title={knownPluginId
                 ? t('settingsPlugins.accountDataErase.installedGroupTitle')
                 : t('settingsPlugins.accountDataErase.orphanedGroupTitle')}
-            footer={knownPluginId
+            description={knownPluginId
                 ? t('settingsPlugins.accountDataErase.installedGroupFooter')
                 : t('settingsPlugins.accountDataErase.orphanedGroupFooter')}
         >
@@ -77,7 +89,6 @@ export function PluginAccountDataEraseRecoverySection(props: Readonly<{
                 subtitle={knownPluginId
                     ? t('settingsPlugins.accountDataErase.installedEntrySubtitle')
                     : t('settingsPlugins.accountDataErase.orphanedEntrySubtitle')}
-                icon={<Icon name="trash" size={29} color={theme.colors.state.danger.foreground} />}
                 onPress={erase}
                 disabled={pending}
                 loading={pending}

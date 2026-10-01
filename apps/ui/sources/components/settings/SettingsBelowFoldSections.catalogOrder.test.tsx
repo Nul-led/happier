@@ -38,72 +38,79 @@ vi.mock('@/components/settings/SettingsDeveloperSection', () => ({
     SettingsDeveloperSection: () => null,
 }));
 
+const CATALOG_TREE: ResolvedSettingsPageNode[] = [{
+    id: 'settings',
+    title: 'Settings',
+    route: '/settings',
+    keywords: [],
+    children: [{
+        id: 'groupAiAndAgents',
+        title: 'AI and Agents',
+        keywords: [],
+        children: [{ id: 'agents', title: 'Agents', route: '/settings/agents', keywords: [] }],
+    }, {
+        id: 'groupSessionsBehavior',
+        title: 'Sessions',
+        keywords: [],
+        children: [{ id: 'session', title: 'Session', route: '/settings/session', keywords: [] }],
+    }, {
+        id: 'groupFilesAndSourceControl',
+        title: 'Files',
+        keywords: [],
+        children: [{ id: 'attachments', title: 'Attachments', route: '/settings/attachments', keywords: [] }],
+    }, {
+        id: 'groupSystem',
+        title: 'System',
+        keywords: [],
+        children: [{ id: 'servers', title: 'Servers', route: '/settings/servers', keywords: [] }],
+    }, {
+        id: 'pluginSettingsGroup:acme.review:review',
+        title: 'Review',
+        keywords: [],
+        children: [{
+            id: 'pluginSettingsPage:acme.review:policy',
+            title: 'Review policy',
+            route: '/settings/plugins/acme.review/policy',
+            keywords: ['review'],
+            pluginSettingsPage: { pluginId: 'acme.review', pageId: 'policy' },
+        }],
+    }],
+}];
+
+const GROUP_TITLES = ['AI and Agents', 'Sessions', 'Files', 'System', 'Review'];
+
+async function renderSections(props: Readonly<{ showCatalogGroups: boolean; stage: number }>) {
+    catalogState.tree = CATALOG_TREE;
+    const push = vi.fn();
+    const onNavigate = vi.fn();
+    const { SettingsBelowFoldSections } = await import('./SettingsBelowFoldSections');
+    const screen = await renderScreen(
+        <SettingsBelowFoldSections
+            appVersion="1.0.0"
+            automationsNeedLocalEnablement={false}
+            devModeEnabled={false}
+            handleGitHub={vi.fn()}
+            handleReportIssue={vi.fn()}
+            handleVersionClick={vi.fn()}
+            onNavigate={onNavigate}
+            router={{ push } as never}
+            showCatalogGroups={props.showCatalogGroups}
+            showAutomations={false}
+            showChangelog={false}
+            showRateUs={false}
+            stage={props.stage}
+            supportUs={null}
+        />,
+    );
+    const groupTitles = screen.findAllByType('ItemGroup' as never).map((group) => group.props.title);
+    return { screen, push, onNavigate, groupTitles };
+}
+
 describe('SettingsBelowFoldSections catalog order', () => {
     it('keeps catalog groups ordered and delegates every catalog destination to the host navigation owner', async () => {
-        catalogState.tree = [{
-            id: 'settings',
-            title: 'Settings',
-            route: '/settings',
-            keywords: [],
-            children: [{
-                id: 'groupAiAndAgents',
-                title: 'AI and Agents',
-                keywords: [],
-                children: [{ id: 'agents', title: 'Agents', route: '/settings/agents', keywords: [] }],
-            }, {
-                id: 'groupSessionsBehavior',
-                title: 'Sessions',
-                keywords: [],
-                children: [{ id: 'session', title: 'Session', route: '/settings/session', keywords: [] }],
-            }, {
-                id: 'groupFilesAndSourceControl',
-                title: 'Files',
-                keywords: [],
-                children: [{ id: 'attachments', title: 'Attachments', route: '/settings/attachments', keywords: [] }],
-            }, {
-                id: 'groupSystem',
-                title: 'System',
-                keywords: [],
-                children: [{ id: 'servers', title: 'Servers', route: '/settings/servers', keywords: [] }],
-            }, {
-                id: 'pluginSettingsGroup:acme.review:review',
-                title: 'Review',
-                keywords: [],
-                children: [{
-                    id: 'pluginSettingsPage:acme.review:policy',
-                    title: 'Review policy',
-                    route: '/settings/plugins/acme.review/policy',
-                    keywords: ['review'],
-                    pluginSettingsPage: { pluginId: 'acme.review', pageId: 'policy' },
-                }],
-            }],
-        }];
-        const push = vi.fn();
-        const onNavigate = vi.fn();
-        const { SettingsBelowFoldSections } = await import('./SettingsBelowFoldSections');
-        const screen = await renderScreen(
-            <SettingsBelowFoldSections
-                appVersion="1.0.0"
-                automationsNeedLocalEnablement={false}
-                devModeEnabled={false}
-                handleGitHub={vi.fn()}
-                handleReportIssue={vi.fn()}
-                handleVersionClick={vi.fn()}
-                onNavigate={onNavigate}
-                router={{ push } as never}
-                showAutomations={false}
-                showChangelog={false}
-                showRateUs={false}
-                stage={3}
-                terminalUseTmux={false}
-                theme={{ colors: { text: { secondary: '#777' } } } as never}
-            />,
-        );
+        const { screen, push, onNavigate, groupTitles } = await renderSections({ showCatalogGroups: true, stage: 3 });
 
-        const rootTitles = screen.findAllByType('ItemGroup' as never)
-            .map((group) => group.props.title)
-            .filter((title): title is string => ['AI and Agents', 'Sessions', 'Files', 'System', 'Review'].includes(title));
-        expect(rootTitles).toEqual(['AI and Agents', 'Sessions', 'Files', 'System', 'Review']);
+        expect(groupTitles.filter((title) => GROUP_TITLES.includes(title))).toEqual(GROUP_TITLES);
 
         for (const [title, route] of [
             ['Agents', '/settings/agents'],
@@ -116,5 +123,12 @@ describe('SettingsBelowFoldSections catalog order', () => {
             expect(onNavigate).toHaveBeenCalledWith(route);
         }
         expect(push).not.toHaveBeenCalled();
+    });
+
+    it('leaves the categories to the rail where it shows, keeping About', async () => {
+        const { groupTitles } = await renderSections({ showCatalogGroups: false, stage: 4 });
+
+        expect(groupTitles.filter((title) => GROUP_TITLES.includes(title))).toEqual([]);
+        expect(groupTitles).toContain('settings.about');
     });
 });

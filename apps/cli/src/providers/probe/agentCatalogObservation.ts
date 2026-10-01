@@ -46,6 +46,8 @@ export type AgentProviderCatalogObservationResult = Readonly<{
   source: 'dynamic' | 'static';
   models: readonly ProviderModelDescriptorV1[];
   stale: boolean;
+  observedAt?: number;
+  refreshError?: boolean;
 }>;
 
 export type AgentProviderCatalogObservationInput = Readonly<{
@@ -61,8 +63,20 @@ export type AgentProviderCatalogObservationInput = Readonly<{
   signal?: AbortSignal;
 }>;
 
+export type AgentProviderNativeCatalogObservationInput = Omit<
+  AgentProviderCatalogObservationInput,
+  'binding'
+> & Readonly<{
+  service: PluginContributionIdentityV1;
+  credential: Readonly<{
+    accessToken: string;
+    credentialFingerprint: string;
+  }>;
+}>;
+
 export type AgentProviderCatalogObservationService = Readonly<{
   observe(input: AgentProviderCatalogObservationInput): Promise<AgentProviderCatalogObservationResult>;
+  observeNative(input: AgentProviderNativeCatalogObservationInput): Promise<AgentProviderCatalogObservationResult>;
 }>;
 
 const MAX_OBSERVATIONS = 64;
@@ -86,6 +100,7 @@ type AgentCatalogScheduledResult =
       status: 'success';
       completedKey: string;
       result: ProviderCatalogGetResult;
+      observedAt: number;
     }>
   | Readonly<{
       status: 'error';
@@ -107,6 +122,7 @@ function requireSingleStaticProbeCatalog(provider: ProviderContributionV1): Stat
 function staticResult(catalog: StaticProbeCatalog): AgentProviderCatalogObservationResult {
   return {
     source: 'static',
+    refreshError: true,
     models: catalog.staticModels.map((model) => ({ ...model })),
     stale: false,
   };
@@ -133,6 +149,7 @@ export function createAgentProviderCatalogObservationService(dependencies: Reado
   const scheduler = dependencies.scheduler;
   const now = dependencies.now ?? Date.now;
   const transitionByIdentity = new Map<string, ProviderCatalogTransitionStateV1>();
+  type ObservationDependencies = typeof dependencies;
 
   const remember = (identity: string, transition: ProviderCatalogTransitionStateV1): void => {
     transitionByIdentity.delete(identity);
@@ -144,8 +161,10 @@ export function createAgentProviderCatalogObservationService(dependencies: Reado
     }
   };
 
-  return Object.freeze({
-    async observe(input: AgentProviderCatalogObservationInput): Promise<AgentProviderCatalogObservationResult> {
+  const observeWithDependencies = async (
+    runtimeDependencies: ObservationDependencies,
+    input: AgentProviderCatalogObservationInput,
+  ): Promise<AgentProviderCatalogObservationResult> => {
       const catalog = requireSingleStaticProbeCatalog(input.provider);
       let lease: ReturnType<ConnectedAccountPurposeBindingOwner['activatePurposeBindings']> | null = null;
       const assertInputCurrent = (): void => {
@@ -193,7 +212,7 @@ export function createAgentProviderCatalogObservationService(dependencies: Reado
         'add' | 'containsSensitiveValue' | 'close'
       > | null = null;
       let requestAuthReady = false;
-      const activateLease = (isCurrent: () => boolean) => dependencies.activatePurposeBindings({
+      const activateLease = (isCurrent: () => boolean) => runtimeDependencies.activatePurposeBindings({
         subject: {
           kind: 'agent_catalog_observation',
           operationId: input.operationId,
@@ -207,7 +226,7 @@ export function createAgentProviderCatalogObservationService(dependencies: Reado
         lease = activateLease(input.isCurrent);
         assertCurrent();
         assertLeaseCurrent(lease);
-        redaction = dependencies.createRedactionLease();
+        redaction = runtimeDependencies.createRedactionLease();
         const subject = scopeConnectedAccountPurposeBindingLease({
           lease,
           subjectId: lease.subjectId,
@@ -216,7 +235,7 @@ export function createAgentProviderCatalogObservationService(dependencies: Reado
         });
         assertCurrent();
         assertLeaseCurrent(lease);
-        let bearer = await dependencies.requestAuth.lookupRequestAuth({
+        let bearer = await runtimeDependencies.requestAuth.lookupRequestAuth({
           subject,
           purpose: input.purpose,
           ...(input.signal ? { signal: input.signal } : {}),
@@ -277,7 +296,7 @@ export function createAgentProviderCatalogObservationService(dependencies: Reado
             try {
               const assertSharedWorkCurrent = (): void => assertLeaseCurrent(sharedLease);
               assertSharedWorkCurrent();
-              sharedRedaction = dependencies.createRedactionLease();
+              sharedRedaction = runtimeDependencies.createRedactionLease();
               const sharedSubject = scopeConnectedAccountPurposeBindingLease({
                 lease: sharedLease,
                 subjectId: sharedLease.subjectId,
@@ -285,14 +304,14 @@ export function createAgentProviderCatalogObservationService(dependencies: Reado
                 registerRedaction: (values) => sharedRedaction?.add(values),
               });
               assertSharedWorkCurrent();
-              let sharedBearer = await dependencies.requestAuth.lookupRequestAuth({
+              let sharedBearer = await runtimeDependencies.requestAuth.lookupRequestAuth({
                 subject: sharedSubject,
                 purpose: input.purpose,
               });
               assertSharedWorkCurrent();
               const dispatch = async (current: OAuthBearerLeaseV1) => {
                 assertSharedWorkCurrent();
-                const result = await dependencies.client.getCatalog({
+                const result = await runtimeDependencies.client.getCatalog({
                   endpointUrl,
                   path: probe.path,
                   parser: probe.parser,
@@ -321,6 +340,7 @@ export function createAgentProviderCatalogObservationService(dependencies: Reado
                 return {
                   status: 'success',
                   result: await dispatch(sharedBearer),
+                  observedAt: now(),
                   completedKey: identityFor(sharedBearer),
                 };
               } catch (error) {
@@ -334,7 +354,7 @@ export function createAgentProviderCatalogObservationService(dependencies: Reado
                   };
                 }
                 assertSharedWorkCurrent();
-                const recovery = await dependencies.requestAuth.refreshAfterAuthFailure({
+                const recovery = await runtimeDependencies.requestAuth.refreshAfterAuthFailure({
                   subject: sharedSubject,
                   request: {
                     credentialContext: sharedBearer.credentialContext,
@@ -358,7 +378,7 @@ export function createAgentProviderCatalogObservationService(dependencies: Reado
                     ...(errorDetails ? { error: errorDetails } : {}),
                   };
                 }
-                sharedBearer = await dependencies.requestAuth.lookupRequestAuth({
+                sharedBearer = await runtimeDependencies.requestAuth.lookupRequestAuth({
                   subject: sharedSubject,
                   purpose: input.purpose,
                 });
@@ -367,6 +387,7 @@ export function createAgentProviderCatalogObservationService(dependencies: Reado
                   return {
                     status: 'success',
                     result: await dispatch(sharedBearer),
+                  observedAt: now(),
                     completedKey: identityFor(sharedBearer),
                   };
                 } catch (retryError) {
@@ -399,7 +420,7 @@ export function createAgentProviderCatalogObservationService(dependencies: Reado
           : applyProviderCatalogRefreshV1(
               previous,
               scheduled.status === 'success'
-                ? { status: 'success', observedAt: now(), models: scheduled.result.catalog.models }
+                ? { status: 'success', observedAt: scheduled.observedAt, models: scheduled.result.catalog.models }
                 : { status: 'failed', failedAt: now() },
             );
         assertCurrent();
@@ -415,6 +436,8 @@ export function createAgentProviderCatalogObservationService(dependencies: Reado
         return {
           source: 'dynamic',
           stale: transition.snapshot.stale,
+          observedAt: transition.snapshot.observedAt,
+          refreshError: scheduled.status !== 'success',
           models: merged.rows.map((row) => ({ ...row.descriptor })),
         };
       } catch (error) {
@@ -428,6 +451,54 @@ export function createAgentProviderCatalogObservationService(dependencies: Reado
         redaction?.close();
         lease?.dispose();
       }
+  };
+
+  return Object.freeze({
+    observe: async (input: AgentProviderCatalogObservationInput) => (
+      await observeWithDependencies(dependencies, input)
+    ),
+    observeNative: async (input: AgentProviderNativeCatalogObservationInput) => {
+      const nativeBinding = Object.freeze({
+        purpose: input.purpose,
+        target: Object.freeze({
+          kind: 'account' as const,
+          account: Object.freeze({ service: input.service, accountId: 'native' }),
+        }),
+      });
+      const credentialRevision = `csr_${input.credential.credentialFingerprint.slice('sha256:'.length, 'sha256:'.length + 32)}`;
+      const nativeDependencies: ObservationDependencies = {
+        ...dependencies,
+        activatePurposeBindings: ({ subject, bindings }) => {
+          let active = true;
+          return Object.freeze({
+            subjectId: `native-catalog:${input.operationId}`,
+            isCurrent: () => active && input.isCurrent(),
+            resolvePurposeBinding: (purpose) => qualifiedPurposeKey(purpose) === qualifiedPurposeKey(input.purpose)
+              ? bindings[0] ?? null
+              : null,
+            listPurposeBindings: () => bindings,
+            dispose: () => { active = false; },
+          });
+        },
+        requestAuth: {
+          lookupRequestAuth: async ({ subject }) => {
+            subject.registerRedaction([input.credential.accessToken]);
+            return Object.freeze({
+              accessToken: input.credential.accessToken,
+              credentialContext: Object.freeze({
+                account: Object.freeze({ service: input.service, accountId: 'native' }),
+                credentialRevision,
+                failingAccessTokenFingerprint: input.credential.credentialFingerprint,
+              }),
+            });
+          },
+          refreshAfterAuthFailure: async () => Object.freeze({ status: 'current_unchanged' as const }),
+        },
+      };
+      return await observeWithDependencies(nativeDependencies, {
+        ...input,
+        binding: nativeBinding,
+      });
     },
   });
 }

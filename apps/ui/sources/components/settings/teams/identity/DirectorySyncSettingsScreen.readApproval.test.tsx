@@ -1,0 +1,107 @@
+import * as React from 'react';
+import { act } from 'react-test-renderer';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+import { standardCleanup } from '@/dev/testkit/cleanup/standardCleanup';
+import { teamCapabilitiesFixture, teamSummaryFixture } from '@/dev/testkit/fixtures/teamFixtures';
+import { decideApprovalAsInbox } from '@/dev/testkit/harness/approvalInbox';
+import {
+    createHomeGovernanceHarness,
+    installHomeGovernanceBoundaries,
+    waitForHomeGovernance,
+} from '@/dev/testkit/harness/homeGovernanceHarness';
+import { renderScreen } from '@/dev/testkit/render/renderScreen';
+import { installSettingsViewCommonModuleMocks } from '../../settingsViewTestHelpers';
+
+const routeParams = vi.hoisted(() => ({ value: {} as Record<string, string> }));
+
+// Platform view boundaries only; Team state, Actions, approval custody and the
+// directory reader remain real through the Home's HTTP answers.
+installSettingsViewCommonModuleMocks({
+    storage: async (importOriginal) => await importOriginal(),
+    router: async () => {
+        const { createExpoRouterMock } = await import('@/dev/testkit/mocks/router');
+        return createExpoRouterMock({ navigation: { setOptions: () => undefined }, params: () => routeParams.value }).module;
+    },
+});
+const harness = createHomeGovernanceHarness();
+installHomeGovernanceBoundaries(harness);
+const { DirectorySyncSettingsScreen } = await import('./DirectorySyncSettingsScreen');
+const { resetTeamsSnapshotsForTests } = await import('@/sync/store/teams/teamsSnapshots');
+const { resetTeamsDirectoryEngineForTests } = await import('@/sync/engine/teams/teamsDirectoryEngine');
+
+const SOURCE_PATH = '/v1/teams/team-1/directory-sources';
+const SETUP_PATH = '/v1/teams/team-1/directory-source-setup-options';
+
+beforeEach(async () => {
+    standardCleanup();
+    routeParams.value = {};
+    resetTeamsSnapshotsForTests();
+    resetTeamsDirectoryEngineForTests();
+    await harness.reset();
+});
+afterEach(() => standardCleanup());
+
+describe('Directory setup read approval', () => {
+    it('reveals the setup section without reading options or starting WorkOS setup from a search link', async () => {
+        const serverId = await harness.addHome({
+            name: 'Searched Directory Home', serverUrl: 'https://directory-search.example',
+            accountId: 'directory-admin', teamsEnabled: true,
+        });
+        harness.answer(serverId, '/v1/teams/get', { body: teamSummaryFixture({ capabilities: teamCapabilitiesFixture({ manageAuthentication: true }) }) });
+        harness.answer(serverId, SOURCE_PATH, { body: { items: [], nextCursor: null } });
+        harness.answer(serverId, SETUP_PATH, { body: { v: 1, items: [], nextCursor: null, complete: true } });
+        routeParams.value = { setting: 'teams.directory.workosSetup' };
+        const screen = await renderScreen(<DirectorySyncSettingsScreen serverId={serverId} teamId="team-1" />);
+
+        await waitForHomeGovernance(() => expect(screen.findByTestId('team-directory-source-add')).not.toBeNull());
+        await waitForHomeGovernance(() => expect(screen.findByTestId('setting-reveal.teams.directory.actions')).not.toBeNull());
+        expect(screen.findByTestId('team-directory-setup-workos')).toBeNull();
+        expect(harness.requestsFor(SETUP_PATH)).toHaveLength(0);
+        expect(harness.requests.filter((request) => request.path.includes('/workos/'))).toHaveLength(0);
+    });
+
+    it('uses the approved list and setup pages in the mounted screen without refetching them', async () => {
+        const serverId = await harness.addHome({
+            name: 'Directory Home', serverUrl: 'https://directory-setup-approval.example',
+            accountId: 'directory-admin', teamsEnabled: true,
+        });
+        harness.answer(serverId, '/v1/teams/get', { body: teamSummaryFixture({ capabilities: teamCapabilitiesFixture({ manageAuthentication: true }) }) });
+        harness.answer(serverId, SOURCE_PATH, { body: { items: [], nextCursor: null } });
+        harness.answer(serverId, SETUP_PATH, { body: {
+            v: 1, items: [{ kind: 'github_organization', displayName: 'First org', githubAppInstallationId: 'install-1' }],
+            nextCursor: 'setup-next', complete: false,
+        } });
+        harness.answer(serverId, `${SETUP_PATH}?cursor=setup-next`, { body: {
+            v: 1, items: [{ kind: 'github_organization', displayName: 'Second org', githubAppInstallationId: 'install-2' }],
+            nextCursor: null, complete: true,
+        } });
+        await harness.requireUiApproval(serverId, 'teams.directory.sources.list');
+        const screen = await renderScreen(<DirectorySyncSettingsScreen serverId={serverId} teamId="team-1" />);
+        await waitForHomeGovernance(() => expect(harness.artifacts(serverId).list()).toHaveLength(1));
+        await decideApprovalAsInbox(serverId, harness.artifacts(serverId).list()[0]!.id, 'approve');
+        await waitForHomeGovernance(() => expect(screen.findByTestId('team-directory-source-add')).not.toBeNull());
+        await harness.requireUiApproval(serverId, 'teams.directory.sourceSetup.list');
+        await screen.pressByTestIdAsync('team-directory-source-add');
+        await waitForHomeGovernance(() => expect(harness.artifacts(serverId).list()).toHaveLength(2));
+        expect(screen.findByTestId('team-directory-setup-option:github_organization:install-1')).toBeNull();
+        await decideApprovalAsInbox(serverId, harness.artifacts(serverId).list()[1]!.id, 'approve');
+        await waitForHomeGovernance(() => expect(screen.findByTestId('team-directory-setup-option:github_organization:install-1')).not.toBeNull());
+
+        await screen.pressByTestIdAsync('team-directory-setup-load-more');
+        await waitForHomeGovernance(() => expect(harness.artifacts(serverId).list()).toHaveLength(3));
+        expect(screen.findByTestId('team-directory-setup-option:github_organization:install-1')).not.toBeNull();
+        await decideApprovalAsInbox(serverId, harness.artifacts(serverId).list()[2]!.id, 'reject');
+        await waitForHomeGovernance(() => expect(screen.findByTestId('team-directory-setup-retry')).not.toBeNull());
+        await screen.pressByTestIdAsync('team-directory-setup-retry');
+        await waitForHomeGovernance(() => expect(harness.artifacts(serverId).list()).toHaveLength(4));
+        await decideApprovalAsInbox(serverId, harness.artifacts(serverId).list()[3]!.id, 'approve');
+        await waitForHomeGovernance(() => expect(screen.findByTestId('team-directory-setup-option:github_organization:install-2')).not.toBeNull());
+        expect(screen.findByTestId('team-directory-setup-option:github_organization:install-1')).not.toBeNull();
+        expect(screen.findByTestId('team-directory-setup-load-more')).toBeNull();
+        expect(harness.requestsFor(SOURCE_PATH)).toHaveLength(1);
+        expect(harness.requestsFor(SETUP_PATH)).toHaveLength(1);
+        expect(harness.requestsFor(`${SETUP_PATH}?cursor=setup-next`)).toHaveLength(1);
+        await act(async () => screen.tree.unmount());
+    });
+});

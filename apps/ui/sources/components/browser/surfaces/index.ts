@@ -24,6 +24,7 @@ export type {
     ResolveBrowserViewTargetOpenInput,
     ResolvedBrowserViewTargetOpen,
     ResolvedBrowserViewTargetOpenTab,
+    ServicesOpenInBrowserResult,
 } from './openBrowserTargetInWorkspace';
 export {
     BROWSER_LAUNCHPAD_DETAILS_TAB_KEY,

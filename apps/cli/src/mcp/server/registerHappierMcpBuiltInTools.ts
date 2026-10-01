@@ -6,6 +6,9 @@ import {
     type ActionId,
     type ActionsSettingsV1,
     type ApprovalRequestOriginV1,
+    BrowserScreenshotMediaReferenceV1Schema,
+    type BrowserScreenshotMediaReferenceV1,
+    SessionImageMediaReferenceV1Schema,
 } from '@happier-dev/protocol';
 import { createActionToolNameToIdMap } from '@/agent/tools/happierTools/actionToolCatalog';
 import type { HappierBuiltInToolDefinition } from '@/agent/tools/happierTools/types';
@@ -13,6 +16,14 @@ import { z } from 'zod';
 import type { ProjectedPluginToolCatalogEntry } from '@/plugins/runtime/toolCatalog';
 import { projectSessionBoundActionToolInputSchema } from '@/agent/tools/happierTools/actionToolContext';
 import { logger } from '@/ui/logger';
+import { configuration } from '@/configuration';
+import {
+    BrowserMediaUnavailableError,
+    browserMediaToStructuredImageInput,
+    SessionMediaUnavailableError,
+    sessionMediaToStructuredImageInput,
+    verifySessionStructuredImageInput,
+} from '@/session/attachments/resolveTrustedSessionAttachmentLocalImagePaths';
 
 const MCP_TOOL_PROGRESS_KEEPALIVE_INTERVAL_MS = 15_000;
 
@@ -173,10 +184,31 @@ function stringifyMcpToolTextPayload(value: unknown): string {
     return typeof text === 'string' ? text : 'null';
 }
 
+function readBrowserResultMedia(value: unknown): readonly BrowserScreenshotMediaReferenceV1[] {
+    const references = new Map<string, BrowserScreenshotMediaReferenceV1>();
+    const visit = (entry: unknown): void => {
+        if (!entry || typeof entry !== 'object') return;
+        if (Array.isArray(entry)) { entry.forEach(visit); return; }
+        const record = entry as Record<string, unknown>;
+        if (record.mediaKind === 'image' && typeof record.mediaId === 'string') {
+            const parsed = BrowserScreenshotMediaReferenceV1Schema.safeParse(record);
+            if (!parsed.success) throw new BrowserMediaUnavailableError();
+            const existing = references.get(parsed.data.mediaId);
+            if (existing && JSON.stringify(existing) !== JSON.stringify(parsed.data)) throw new BrowserMediaUnavailableError();
+            references.set(parsed.data.mediaId, parsed.data);
+            return;
+        }
+        Object.values(record).forEach(visit);
+    };
+    visit(value);
+    return [...references.values()];
+}
+
 export function registerHappierMcpBuiltInTools(
     server: ToolRegistrar,
     params: Readonly<{
         sessionId: string;
+        workingDirectory?: string | null;
         sessionMachineId?: string | null;
         surface: BuiltInHappierToolsSurface;
         actionsSettings?: ActionsSettingsV1 | null;
@@ -260,8 +292,39 @@ export function registerHappierMcpBuiltInTools(
                     });
 
                     if (result.ok) {
+                        const requestedActionId = tool.name === 'action_execute' && args && typeof args === 'object'
+                            ? (args as Record<string, unknown>).actionId : actionId;
+                        const images: { type: 'image'; data: string; mimeType: string }[] = [];
+                        // Browser Action dispatch owns consent/redaction. Only its authorized result
+                        // is projected; arbitrary plugin or non-browser results are not file claims.
+                        if (typeof requestedActionId === 'string' && requestedActionId.startsWith('browser.context.')) {
+                            for (const media of readBrowserResultMedia(result.result)) {
+                                const verified = await verifySessionStructuredImageInput({
+                                    cwd: params.workingDirectory ?? process.cwd(), sessionId,
+                                    image: browserMediaToStructuredImageInput(media),
+                                    maxBytes: configuration.filesUploadMaxFileBytes,
+                                });
+                                if (verified.status !== 'verified') throw new BrowserMediaUnavailableError();
+                                images.push({ type: 'image', data: verified.bytes.toString('base64'), mimeType: verified.mimeType });
+                            }
+                        }
+                        if (typeof requestedActionId === 'string' && requestedActionId.trim() === 'computer.capture') {
+                            const capture = result.result && typeof result.result === 'object' && !Array.isArray(result.result)
+                                ? result.result as Record<string, unknown> : null;
+                            if (capture?.status === 'captured') {
+                                const media = SessionImageMediaReferenceV1Schema.safeParse(capture.media);
+                                if (!media.success) throw new SessionMediaUnavailableError();
+                                const verified = await verifySessionStructuredImageInput({
+                                    cwd: params.workingDirectory ?? process.cwd(), sessionId: params.sessionId,
+                                    image: sessionMediaToStructuredImageInput(media.data),
+                                    maxBytes: configuration.filesUploadMaxFileBytes,
+                                });
+                                if (verified.status !== 'verified') throw new SessionMediaUnavailableError();
+                                images.push({ type: 'image', data: verified.bytes.toString('base64'), mimeType: verified.mimeType });
+                            }
+                        }
                         return {
-                            content: [{ type: 'text' as const, text: stringifyMcpToolTextPayload(result.result) }],
+                            content: [{ type: 'text' as const, text: stringifyMcpToolTextPayload(result.result) }, ...images],
                             ...(tool.outputSchema === undefined ? {} : { structuredContent: result.result }),
                             isError: false as const,
                         };
@@ -282,7 +345,7 @@ export function registerHappierMcpBuiltInTools(
                     const errorText = error instanceof Error ? error.message : String(error);
                     let payload = '{"errorCode":"tool_failed","error":"tool_failed"}';
                     try {
-                        payload = JSON.stringify({ errorCode: 'tool_failed', error: errorText });
+                        payload = JSON.stringify({ errorCode: error instanceof SessionMediaUnavailableError ? error.code : 'tool_failed', error: errorText });
                     } catch {
                         // ignore
                     }

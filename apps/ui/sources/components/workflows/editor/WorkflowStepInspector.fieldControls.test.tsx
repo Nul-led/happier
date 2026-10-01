@@ -52,12 +52,13 @@ const AGENT_TARGET = {
 };
 
 async function loadHarness() {
-    const [inspector, controls, draftModule] = await Promise.all([
+    const [inspector, controls, draftModule, edits] = await Promise.all([
         import('./WorkflowStepInspector'),
         import('./workflowStepFieldControls'),
         import('@/sync/domains/workflows/workflowEditorDraft'),
+        import('@happier-dev/protocol/workflows/workflowDefinitionEditV1'),
     ]);
-    return { ...inspector, ...controls, ...draftModule };
+    return { ...inspector, ...controls, ...draftModule, ...edits };
 }
 
 type Harness = Awaited<ReturnType<typeof loadHarness>>;

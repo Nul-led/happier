@@ -41,7 +41,7 @@ vi.mock('@/plugins/runtime/context/secrets', async (importOriginal) => {
 });
 
 import { createNpmRegistryCredentialStore } from './credentials';
-import { createPurposeKeyedPluginSecretStore } from '@/plugins/runtime/context/secrets';
+import { createPluginSecretStore } from '@/plugins/runtime/context/secrets';
 import { resolvePluginStorePaths } from '@/plugins/store/paths';
 
 describe('NPM registry credential legacy migration recovery', () => {
@@ -68,7 +68,7 @@ describe('NPM registry credential legacy migration recovery', () => {
       key: Buffer.from(legacyKey).toString('base64'),
     }), 'utf8');
     await chmod(legacyKeyPath, 0o600);
-    const legacy = createPurposeKeyedPluginSecretStore({
+    const legacy = createPluginSecretStore({
       pluginId: 'happier.npm.registry.credentials',
       paths,
       secretKey: legacyKey,
@@ -90,7 +90,7 @@ describe('NPM registry credential legacy migration recovery', () => {
   it('reseals its namespace while retaining a legacy key that still protects another namespace', async () => {
     const { happyHomeDir, legacyKeyPath } = await createLegacyCredentialStore();
     const paths = resolvePluginStorePaths({ happyHomeDir });
-    const unrelatedLegacyStore = createPurposeKeyedPluginSecretStore({
+    const unrelatedLegacyStore = createPluginSecretStore({
       pluginId: 'example.other-legacy-plugin',
       paths,
       secretKey: new Uint8Array(32).fill(7),

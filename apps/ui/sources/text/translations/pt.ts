@@ -1,17 +1,26 @@
+import { folderlessSessionTranslations } from './folderlessSessionTranslations';
 import { sessionCollaborationTranslations } from './sessionCollaborationTranslations';
 import { sessionMessageAccountActorTranslations } from './sessionMessageAccountActorTranslations';
 import { sessionAccessTranslations } from './sessionAccessTranslations';
 import { nativePasswordTranslations } from './nativePasswordTranslations';
 import { sessionFollowTranslations } from './sessionFollowTranslations';
 import { sessionHomeFreshnessTranslations } from './sessionHomeFreshnessTranslations';
+import { sessionEmbeddedTranslations } from './sessionEmbeddedTranslations';
 import { sessionReminderTranslations } from './sessionReminderTranslations';
 import { settingsProvidersTranslations } from './settingsProvidersTranslations';
 import { providerSessionTranslations } from './providerSessionTranslations';
 import { externalSessionOperationTranslations } from './externalSessionOperationTranslations';
 import { externalSessionSettingsTranslations } from './externalSessionSettingsTranslations';
 import { machinePoolTranslations } from './machinePoolTranslations';
+import { settingsConnectionsTranslations } from './settingsConnectionsTranslations';
+import { settingsMachinesTranslations } from './settingsMachinesTranslations';
+import { connectedServicesSettingsTranslations } from './connectedServicesSettingsTranslations';
+import { connectedServicesPoolTranslations } from './connectedServicesPoolTranslations';
+import { connectedServicesCollectionTranslations } from './connectedServicesCollectionTranslations';
 import { cliPathExposureTranslations } from './cliPathExposureTranslations';
+import { agentInstallJobTranslations } from './agentInstallJobTranslations';
 import { thisComputerConnectionTranslations } from './thisComputerConnectionTranslations';
+import { menuBarModeTranslations } from './menuBarModeTranslations';
 import { personalHomeDecisionTranslations } from './personalHomeDecisionTranslations';
 import { cliTrustPromptTranslations } from './cliTrustPromptTranslations';
 import { pluginUpdateReviewTranslations } from './pluginUpdateReviewTranslations';
@@ -23,6 +32,15 @@ import { pluginMarketplaceDiscoverTranslations } from './pluginMarketplaceDiscov
 import { pluginSettingsPresentationTranslations } from './pluginSettingsPresentationTranslations';
 import { sessionRemotePermissionGrantTranslations } from './sessionRemotePermissionGrantTranslations';
 import { sessionAgentActivityTranslations } from './sessionAgentActivityTranslations';
+import { sessionWorkTranslations } from './sessionWorkTranslations';
+import { agentStartTranslations } from './agentStartTranslations';
+import { goalControlTranslations } from './goalControlTranslations';
+import { inboxWorkTranslations } from './inboxWorkTranslations';
+import { sessionGitPaneTranslations } from './sessionGitPaneTranslations';
+import { sessionGitDisplayTranslations } from './sessionGitDisplayTranslations';
+import { sessionGitBranchesTranslations } from './sessionGitBranchesTranslations';
+import { sessionGitPullRequestTranslations } from './sessionGitPullRequestTranslations';
+import { sessionConversationSurfaceTranslations } from './sessionConversationSurfaceTranslations';
 import { changedFileEvidenceTranslations } from './changedFileEvidenceTranslations';
 import { voiceReadinessTranslations } from './voiceReadinessTranslations';
 import { voiceDiagnosticsTranslations } from './voiceDiagnosticsTranslations';
@@ -33,6 +51,19 @@ import { voiceLocalCredentialTranslations } from './voiceLocalCredentialTranslat
 import { pluginWebhookAdministrationTranslations } from './pluginWebhookAdministrationTranslations';
 import { pluginAccountDataEraseTranslations } from './pluginAccountDataEraseTranslations';
 import { apiTokenSettingsTranslations } from './apiTokenSettingsTranslations';
+import { embedSettingsTranslations } from './embedSettingsTranslations';
+import { embedTranslations } from './embedTranslations';
+import { actionFamilyTranslations } from './actionFamilyTranslations';
+import { providerCollectionTranslations } from './providerCollectionTranslations';
+import { settingsSearchKeywordsTranslations } from './settingsSearchKeywordsTranslations';
+import { automationPageTranslations } from './automationPageTranslations';
+import { settingsSessionPagesTranslations } from './settingsSessionPagesTranslations';
+import { workspaceTabTranslations } from './workspaceTabTranslations';
+import { workspaceBarTranslations } from './workspaceBarTranslations';
+import { settingsProfilesRemoteHostsPageTranslations } from './settingsProfilesRemoteHostsPageTranslations';
+import { profilesPageTranslations } from './profilesPageTranslations';
+import { machineDetailPageTranslations } from './machineDetailPageTranslations';
+import { sessionPageTranslations } from './sessionPageTranslations';
 import { pluginAccountReleaseSelectionTranslations } from './pluginAccountReleaseSelectionTranslations';
 import { pluginMachineMatrixTranslations } from './pluginMachineMatrixTranslations';
 import { pluginInvocationLogTranslations } from './pluginInvocationLogTranslations';
@@ -40,10 +71,47 @@ import { eventAutomationComposerTranslations } from './eventAutomationComposerTr
 import { automationTriggerSetTranslations } from './automationTriggerSetTranslations';
 import { actionOperationInboxTranslations } from './actionOperationInboxTranslations';
 import { actionConfirmationTranslations } from './actionConfirmationTranslations';
+import { detailPageTranslations } from './detailPageTranslations';
+import { rolesTranslations } from './rolesTranslations';
+import { boardsTranslations } from './boardsTranslations';
+import { workStatusTranslations } from './workStatusTranslations';
+import { shareSheetTranslations } from './shareSheetTranslations';
+import { surfaceStateTranslations } from './surfaceStateTranslations';
+import { sessionCompanionTranslations } from './sessionCompanionTranslations';
+import { runPageTranslations } from './runPageTranslations';
+import { detailsChromeTranslations } from './detailsChromeTranslations';
+import { browserPresenceTranslations } from './browserPresenceTranslations';
+import { computerUseTranslations } from './computerUseTranslations';
+import { browserToolTranslations } from './browserToolTranslations';
+import { detailsFileTranslations } from './detailsFileTranslations';
+import { filesPaneTranslations } from './filesPaneTranslations';
+import { detailsHistoryTranslations } from './detailsHistoryTranslations';
+import { detailsReviewTranslations } from './detailsReviewTranslations';
 import { sessionDraftTranslations } from './sessionDraftTranslations';
+import { sessionDirectoryRecoveryTranslations } from './sessionDirectoryRecoveryTranslations';
 import { accountServiceOAuthTranslations } from './accountServiceOAuthTranslations';
 import { personalHomeSettingsTranslations } from './personalHomeSettingsTranslations';
 import { homeDeviceApprovalTranslations } from './homeDeviceApprovalTranslations';
+import { settingsOverviewTranslations } from './settingsOverviewTranslations';
+import { homeSetupTranslations } from './homeSetupTranslations';
+import { connectedServicesSetupTranslations } from './connectedServicesSetupTranslations';
+import { homeWidgetTranslations } from './homeWidgetTranslations';
+import { widgetAddTranslations } from './widgetAddTranslations';
+import { widgetFrameTranslations } from './widgetFrameTranslations';
+import { widgetGlanceTranslations } from './widgetGlanceTranslations';
+import { homeIndexTranslations } from './homeIndexTranslations';
+import { addFlowsTranslations } from './addFlowsTranslations';
+import { machineAddTranslations } from './machineAddTranslations';
+import { machineAgentsTranslations } from './machineAgentsTranslations';
+import { homeComposerTranslations } from './homeComposerTranslations';
+import { sidebarFooterTranslations } from './sidebarFooterTranslations';
+import { accountPopoverTranslations } from './accountPopoverTranslations';
+import { homesHubTranslations } from './homesHubTranslations';
+import { homesJourneysTranslations } from './homesJourneysTranslations';
+import { homeAddTranslations } from './homeAddTranslations';
+import { accountDisplayTranslations } from './accountDisplayTranslations';
+import { homeFeatureTranslations } from './homeFeatureTranslations';
+import { homeSettingsTranslations } from './homeSettingsTranslations';
 import { homeGovernanceTranslations } from './homeGovernanceTranslations';
 import { workflowTranslations } from './workflowTranslations';
 import { teamsTranslations } from './teamsTranslations';
@@ -51,6 +119,8 @@ import { identityAdministrationTranslations } from './identityAdministrationTran
 import { en } from './en';
 import { workspaceSyncTranslations } from './workspaceSyncDiagnosticTranslations';
 import { personalHomeBootstrapBlockedTranslations } from './personalHomeBootstrapBlockedTranslations';
+import { secretsSettingsTranslations } from './secretsSettingsTranslations';
+import { mcpSettingsTranslations } from './mcpSettingsTranslations';
 
 const mcpServersUxTranslationExtension = {
   mcpServersConfiguredEmptySubtitle:
@@ -240,7 +310,51 @@ const newSessionMcpTranslationExtension = {
 } as const;
 
 const settingsAppearanceTranslationExtension = {
+  switchToDarkTheme: 'Mudar para o tema escuro',
+  switchToLightTheme: 'Mudar para o tema claro',
+  themeToggle: {
+    title: 'Alternador claro e escuro',
+    description: 'Mostra um círculo meio preenchido no topo da janela. Clique para alternar; mantenha pressionado ou clique com o botão direito para mais opções.',
+    hideFromToolbar: 'Ocultar da barra de ferramentas',
+    menuLabel: 'Opções de tema',
+    matchSystem: 'Igual ao sistema',
+  },
   themeProfiles: {
+    pageDescription: 'As cores dos modos claro e escuro. Escolha um para cada, ou crie o seu.',
+    lightModeSection: 'Modo claro',
+    lightModeSectionDescription: 'O tema que o app usa quando está claro.',
+    darkModeSection: 'Modo escuro',
+    darkModeSectionDescription: 'O tema que o app usa quando está escuro.',
+    yourThemes: 'Seus temas',
+    yourThemesDescription: 'Temas que você criou ou importou. Abra um para mudar as cores.',
+    addTheme: 'Adicionar tema',
+    newTheme: 'Novo tema',
+    newThemeDescription: 'Comece de qualquer tema e mude as cores.',
+    importThemeDescription: 'Cole JSON ou escolha um arquivo.',
+    themeLimitDescription: ({ count }: { count: number }) => `Você pode manter até ${count} temas. Exclua um para adicionar outro.`,
+    noProfilesDescription: 'Crie um a partir de qualquer tema acima ou importe um.',
+    inUse: 'Em uso',
+    builtInTheme: 'Integrado',
+    customTheme: 'Seu tema',
+    builtInThemeDescription: 'Um tema integrado. Duplique-o para mudar as cores.',
+    editorDescription: 'As alterações aparecem em todo o app enquanto você edita e ficam salvas ao salvar.',
+    missingProfileDescription: 'Este tema foi excluído ou nunca foi salvo.',
+    saveAndUse: 'Salvar e usar',
+    detailsDescription: 'O nome, de onde vêm as cores e se é um tema claro ou escuro.',
+    themeName: 'Nome',
+    startFrom: 'Parte de',
+    startFromDescription: 'Escolher outro tema substitui as cores abaixo.',
+    themeAppearance: 'Claro ou escuro',
+    themeAppearanceDescription: 'Qual modo usa este tema e se ícones e imagens combinam com um fundo claro ou escuro.',
+    previewSection: 'Prévia',
+    colorsDescription: 'Todas as cores que o app usa. Uma cor alterada pode ser redefinida sozinha.',
+    colorsReadOnlyDescription: 'Todas as cores deste tema.',
+    importPageDescription: 'Adicione um tema a partir de JSON: um tema do Happier ou do VS Code.',
+    importAction: 'Importar',
+    importedWithWarnings: 'Importado com avisos',
+    exportPageDescription: 'Copie ou baixe este tema como JSON para compartilhar ou guardar uma cópia.',
+    exportMissingDescription: 'Abra um tema e escolha Exportar para obter o JSON.',
+    deleteTheme: 'Excluir tema',
     title: 'Temas',
     editorTitle: 'Perfil temático',
     activeGroup: 'Tema ativo',
@@ -324,6 +438,7 @@ const settingsAppearanceTranslationExtension = {
     deactivateProfileSubtitle: 'Desative o perfil personalizado e mantenha-o salvo',
     deleteProfile: 'Excluir perfil',
     deleteProfileSubtitle: 'Remova este perfil de tema personalizado local',
+    deleteAssignedThemeBody: ({ slots }: { slots: string }) => `É o tema de ${slots}. Ao eliminá-lo, esse modo volta ao tema predefinido.`,
     saveAndActivate: 'Salvar e ativar',
     missingProfile: 'Perfil do tema não encontrado',
     importFooter: ({ formats }: { formats: string }) => `Formatos compatíveis: ${formats}. Tokens desconhecidos são indicados como avisos.`,
@@ -481,6 +596,7 @@ const memoryEmbeddingsTranslationExtension = {
       modelPromptBody: 'Informe o id do modelo de embeddings a ser solicitado ao endpoint remoto.',
       apiKeyTitle: 'Chave de API',
       apiKeyPromptBody: 'Informe a chave de API usada pelo endpoint remoto de embeddings.',
+      removeApiKey: 'Remover chave de API',
       dimensionsTitle: 'Dimensões',
       dimensionsPromptBody: 'Substituição opcional da dimensão de saída para endpoints que a suportam.',
     },
@@ -717,9 +833,42 @@ function plural({
  */
 export const pt = {
     homeDeviceApproval: homeDeviceApprovalTranslations.pt,
+    settingsOverview: settingsOverviewTranslations.pt,
+    homeSetup: homeSetupTranslations.pt,
+    connectedServicesSetup: connectedServicesSetupTranslations.pt,
+    homeWidgets: homeWidgetTranslations.pt,
+    widgetFrame: widgetFrameTranslations.pt,
+    widgetAdd: widgetAddTranslations.pt,
+    widgetGlances: widgetGlanceTranslations.pt,
+    homeIndex: homeIndexTranslations.pt,
+    addFlows: addFlowsTranslations.pt,
+    machineAdd: machineAddTranslations.pt,
+    machineAgents: machineAgentsTranslations.pt,
+    homeComposer: homeComposerTranslations.pt,
+    sidebarFooter: sidebarFooterTranslations.pt,
+    accountPopover: accountPopoverTranslations.pt,
+    homesHub: homesHubTranslations.pt,
+    homesJourneys: homesJourneysTranslations.pt,
+    homeAdd: homeAddTranslations.pt,
+    accountDisplay: accountDisplayTranslations.pt,
     actionConfirmations: actionConfirmationTranslations.pt,
+    detailPages: detailPageTranslations.pt,
+    roles: rolesTranslations.pt,
+    boards: boardsTranslations.pt,
+    workStatus: workStatusTranslations.pt,
+    shareSheet: shareSheetTranslations.pt,
+    surfaceState: surfaceStateTranslations.pt,
+    sessionCompanion: sessionCompanionTranslations.pt,
+    runPage: runPageTranslations.pt,
+    detailsSurface: {
+        chrome: detailsChromeTranslations.pt,
+        file: detailsFileTranslations.pt,
+        history: detailsHistoryTranslations.pt,
+        review: detailsReviewTranslations.pt,
+    },
     workspaceSync: workspaceSyncTranslations.pt,
     sessionDrafts: sessionDraftTranslations.pt,
+    sessionDirectoryRecovery: sessionDirectoryRecoveryTranslations.pt,
     transferRecovery: {
         title: 'Concluir envio preparado',
         message: 'O envio chegou à máquina, mas o salvamento final precisa de atenção. Tente novamente apenas a finalização ou descarte o envio preparado.',
@@ -732,6 +881,14 @@ export const pt = {
     pluginPermissions: pluginPermissionTranslations.pt,
     sessionBoard: sessionBoardTranslations.pt,
     sessionAgentActivity: sessionAgentActivityTranslations.pt,
+    sessionWork: sessionWorkTranslations.pt,
+    agentStart: agentStartTranslations.pt,
+    goalControl: goalControlTranslations.pt,
+    sessionGitPane: sessionGitPaneTranslations.pt,
+    sessionGitDisplay: sessionGitDisplayTranslations.pt,
+    sessionGitBranches: sessionGitBranchesTranslations.pt,
+    sessionGitPullRequest: sessionGitPullRequestTranslations.pt,
+    sessionConversation: sessionConversationSurfaceTranslations.pt,
     ...changedFileEvidenceTranslations.pt,
     sessionRemotePermissionGrants: sessionRemotePermissionGrantTranslations.pt,
     pluginSurfaces: {
@@ -763,20 +920,34 @@ export const pt = {
     },
     settingsKeyboard: {
         title: 'Atalhos de teclado',
-        entrySubtitle: 'Descubra e controle atalhos de aplicativos',
-        generalGroupTitle: 'Controles de teclado',
-        generalGroupFooter: 'As preferências de atalho são sincronizadas com a sua conta.',
-        enableShortcutsTitle: 'Habilite atalhos unificados',
-        enableShortcutsSubtitle: 'Use o novo registro de comandos do teclado para atalhos de aplicativos.',
+        entrySubtitle: 'Altere as teclas que executam os comandos do app ou desative-as.',
+        generalGroupTitle: 'Atalhos',
+        generalGroupFooter: 'Seus atalhos acompanham sua conta em todos os dispositivos.',
+        enableShortcutsTitle: 'Atalhos unificados',
+        enableShortcutsSubtitle: 'As teclas de envio do compositor seguem os comandos abaixo.',
         singleKeyTitle: 'Atalhos de tecla única',
-        singleKeySubtitle: 'Permitir atalhos como ? quando a entrada de texto não está focada.',
+        singleKeySubtitle: 'Teclas como ? funcionam quando você não está digitando.',
         conflictsTitle: ({ count }: { count: number }) => `${count} shortcut conflict${count === 1 ? '' : 's'} detected`,
         conflictsSubtitle: ({ count }: { count: number }) => `${count} command${count === 1 ? '' : 's'} need review before all shortcuts can be active.`,
-        conflictsGroupTitle: 'Diagnóstico',
+        conflictsGroupTitle: 'Conflitos',
+        conflictBrowserReserved: 'Seu navegador reserva essas teclas. Escolha outras.',
+        conflictDuplicate: 'Esses comandos usam as mesmas teclas. Altere um deles.',
         commandsGroupTitle: 'Comandos',
         commandsGroupFooter: 'Os padrões são mostrados no registro de atalhos. Defina um atalho personalizado, desative um comando ou redefina-o para recuperar a ligação padrão.',
         noDefaultShortcut: 'Nenhum atalho padrão',
-        setCommandButton: 'Definir',
+        commandOff: 'Desativado',
+        noShortcut: 'Sem atalho',
+        customShortcut: 'Teclas personalizadas',
+        commandEnabledTitle: 'Ativado',
+        keysTitle: 'Teclas',
+        resetToDefaultTitle: 'Redefinir para o padrão',
+        groupApp: 'Aplicação',
+        groupSessions: 'Sessões',
+        groupComposer: 'Compositor',
+        groupTranscript: 'Transcrição',
+        groupSplitView: 'Tela dividida',
+        groupBrowser: 'Navegador',
+        setCommandButton: 'Alterar',
         setCommandAccessibility: ({ command }: { command: string }) => `Set ${command} shortcut`,
         setShortcutPromptTitle: ({ command }: { command: string }) => `Set shortcut for ${command}`,
         setShortcutPromptMessage: 'Insira um atalho como Alt+K, Alt+ArrowDown, Mod+Enter ou ?.',
@@ -935,8 +1106,10 @@ export const pt = {
 
 
   inbox: {
+        work: inboxWorkTranslations.pt,
         ...actionOperationInboxTranslations,
     openSession: ({ session }: { session: string }) => `Abrir sessão: ${session}`,
+    stoppedResumeToAnswer: 'Parada — retome para responder',
     readySessionAccessibilityLabel: ({ session }: { session: string }) => `Pronta para revisão: ${session}`,
     // Inbox screen
     emptyTitle: "Tudo em dia",
@@ -944,7 +1117,10 @@ export const pt = {
     approvals: "Aprovações",
     permissions: "Permissões",
     readySessions: "Prontas para revisão",
-    errors: "Erros",
+    pageDescription: "O que precisa de você nas suas sessões, aprovações e pessoas.",
+    needsYou: "Precisa de você",
+    failed: "Com falha",
+    friendRequests: "Pedidos de amizade",
     markAllRead: "Marcar tudo como lido",
     openInbox: "Abrir caixa de entrada",
     updates: "Atividade",
@@ -983,6 +1159,96 @@ export const pt = {
   },
 
   promptLibrary: {
+      surface: {
+          installAction: 'Instalar',
+          projectDirectoryPlaceholder: 'Caminho do projeto na máquina',
+          pageDescription: 'Prompts, skills e modelos de barra que você escreve uma vez e reutiliza nas sessões.',
+          librarySectionDescription: 'O que você escreveu, pronto para reutilizar.',
+          promptsLinkDescription: 'Texto que você insere nas sessões ou adiciona às instruções de um agente.',
+          skillsLinkDescription: 'Instruções SKILL.md com seus arquivos de apoio.',
+          skillsKeywords: 'skill, skills, habilidade, SKILL.md, pacote',
+          templatesLinkDescription: 'Comandos de barra que inserem um prompt.',
+          useSection: 'Uso da biblioteca',
+          useSectionDescription: 'Onde os itens da biblioteca têm efeito.',
+          stacksLinkDescription: 'Prompts e skills adicionados a toda sessão de código ou de voz.',
+          foldersLinkDescription: 'Grupos nomeados para prompts e skills.',
+          importSection: 'Trazer de outros lugares',
+          importSectionDescription: 'Prompts e skills que já estão nas suas máquinas ou em registros.',
+          externalAssetsLinkDescription: 'Prompts e skills que suas ferramentas guardam em uma máquina.',
+          registriesLinkDescription: 'Explore registros de skills e importe skills.',
+          itemCount: ({ count }: { count: number }) => `${count}`,
+          docsDescription: 'Texto que você insere nas sessões ou adiciona às instruções de um agente.',
+          skillsDescription: 'Instruções SKILL.md que os agentes seguem, com seus arquivos de apoio.',
+          templatesDescription: 'Comandos de barra que inserem um dos seus prompts.',
+          addPrompt: 'Novo prompt',
+          addSkill: 'Nova skill',
+          addTemplate: 'Novo modelo',
+          searchPrompts: 'Buscar prompts',
+          searchSkills: 'Buscar skills',
+          searchTemplates: 'Buscar modelos',
+          noFolder: 'Sem pasta',
+          nameTitle: 'Nome',
+          optionalPlaceholder: 'Opcional',
+          folderDescription: 'Um nome novo cria a pasta.',
+          tagsDescription: 'Separe as tags com vírgulas.',
+          promptSection: 'Instrução',
+          promptSectionDescription: 'Como aparece e é arquivado na sua biblioteca.',
+          contentSection: 'Conteúdo',
+          docContentDescription: 'Markdown inserido onde o prompt é usado.',
+          docEditorDescription: 'Texto que você pode inserir em uma sessão ou adicionar às instruções de um agente.',
+          skillSection: 'Habilidade',
+          skillSectionDescription: 'Como aparece e é arquivada na sua biblioteca.',
+          skillContentDescription: 'As instruções que os agentes leem. O cabeçalho nomeia a skill e diz quando usá-la.',
+          skillEditorDescription: 'Instruções que um agente segue, exportadas como SKILL.md com seus arquivos.',
+          supportingFilesDescription: 'Arquivos exportados ao lado do SKILL.md, como modelos e checklists.',
+          addFile: 'Adicionar arquivo',
+          externalLinksDescription: 'Onde este item está exportado nas suas máquinas. As exportações continuam vinculadas à biblioteca.',
+          manageExternalAssetsDescription: 'Exporte para uma ferramenta em uma máquina ou atualize uma exportação.',
+          templateSection: 'Modelo',
+          templateSectionDescription: 'O que você digita no compositor para usá-lo.',
+          templateEditorDescription: 'Um comando de barra que insere um dos seus prompts.',
+          tokenDescription: 'Digitado no compositor, começando com /.',
+          templateTargetDescription: 'O prompt que o comando insere.',
+          behaviorSectionDescription: 'O que acontece quando você escolhe o comando.',
+          behaviorTitle: 'Ao escolher',
+          behaviorInsertDescription: 'Adiciona o prompt ao compositor para você editar.',
+          behaviorInsertOnSendDescription: 'Expande no prompt quando você envia a mensagem.',
+          behaviorInsertAndSendDescription: 'Envia o prompt imediatamente.',
+          fileSection: 'Arquivo',
+          filePathDescription: 'Relativo à skill, como templates/review.md.',
+          supportingFileDescription: ({ skill }: { skill: string }) => `Um arquivo de ${skill}, exportado ao lado do seu SKILL.md.`,
+          foldersPageDescription: 'Agrupe prompts e skills para encontrá-los com mais facilidade.',
+          foldersSectionDescription: 'Excluir uma pasta mantém os itens; eles apenas saem da pasta.',
+          stacksPageDescription: 'Prompts e skills adicionados automaticamente às instruções de um agente.',
+          stacksSection: 'Onde se aplicam',
+          stacksSectionDescription: 'Cada lista é adicionada em ordem quando uma sessão começa.',
+          profileStacksDescription: 'Prompts extras para sessões iniciadas com um perfil.',
+          profileStacksPageDescription: 'Prompts e skills adicionados às sessões iniciadas com cada perfil.',
+          profileStackEditorDescription: 'Adicionados às sessões iniciadas com este perfil.',
+          profilesSection: 'Perfis',
+          stackEntriesDescription: 'Adicionados nesta ordem. Desative um para mantê-lo sem usar.',
+          stackPickerDescription: 'Escolha um prompt ou uma skill para adicionar.',
+          registriesPageDescription: 'Encontre skills em registros e importe-as para sua biblioteca.',
+          projectSection: 'Projeto',
+          registriesProjectDescription: 'Onde ficam as instalações de projeto na máquina.',
+          registriesSourcesDescription: 'Registros integrados e fontes Git que você adiciona. Escolha uma para ver suas skills.',
+          registriesItemsDescription: 'Skills da fonte selecionada.',
+          registryItemDescription: 'Uma skill de um registro. Importe-a para sua biblioteca ou instale-a em uma máquina.',
+          registryItemSection: 'Habilidade',
+          importToLibrary: 'Importar para a biblioteca',
+          registryInstallDescription: 'Também a grava onde uma ferramenta da máquina lê skills.',
+          installProjectScopeDescription: 'Dentro de um diretório de projeto na máquina.',
+          installUserScopeDescription: 'Nas suas pastas de usuário da máquina, para todos os projetos.',
+          installMethodLink: 'Vínculo',
+          installMethodCopy: 'Cópia',
+          installMethodLinkDescription: 'Recomendado: vincula a uma cópia que o Happier mantém atualizada.',
+          installTargetDescription: 'O nome de arquivo ou pasta que a ferramenta usa.',
+          externalAssetsPageDescription: 'Prompts e skills que suas ferramentas guardam em uma máquina. Importe-os para reutilizar e sincronizar.',
+          whereToLookSection: 'Onde procurar',
+          whereToLookDescription: 'Um projeto na máquina ou suas pastas de usuário.',
+          exportDescription: ({ title }: { title: string }) => `Gravar ${title} onde uma ferramenta em uma máquina o lê.`,
+          exportOptionsDescription: 'Escolha a ferramenta e onde ela deve encontrar o arquivo.',
+      },
     sections: "Seções",
     library: "Biblioteca",
     librarySubtitle: "Gerencie prompts e habilidades",
@@ -1217,7 +1483,7 @@ export const pt = {
         target: 'ALVO DE EXECUÇÃO',
         targetNewSession: 'Nova sessão',
         targetExistingSession: 'Sessão existente',
-        targetExecutionRun: 'Execução pontual',
+        targetExecutionRun: 'Execução em segundo plano',
         chooseExistingSession: 'Escolha uma sessão',
         searchEvents: 'Pesquisar eventos',
         executionNoTools: 'Sem ferramentas',
@@ -1463,7 +1729,7 @@ export const pt = {
         outputCeiling: "Limite de saída",
         existingSession: ({ sessionId }: { sessionId: string }) => `Sessão existente: ${sessionId}`,
         newSession: ({ machineId, directory }: { machineId: string; directory: string }) => `Nova sessão em ${machineId}: ${directory}`,
-        executionRun: ({ permissionMode }: { permissionMode: string }) => `Execução · ${permissionMode}`,
+        executionRun: ({ permissionMode }: { permissionMode: string }) => `Execução em segundo plano · ${permissionMode}`,
         prompt: "Prompt congelado",
         result: "Resultado final",
         resultAbsent: "Nenhum resultado final foi registrado.",
@@ -1603,7 +1869,9 @@ export const pt = {
     delete: "Excluir",
     deleted: "Excluído",
     optional: "Opcional",
+    draft: "Rascunho",
     noMatches: "Nenhuma correspondência",
+    choose: "Escolher…",
     all: "Todos",
     machine: "máquina",
     clearSearch: "Limpar pesquisa",
@@ -1772,6 +2040,11 @@ export const pt = {
   },
 
   connect: {
+    addPhonePage: {
+      description: 'Use o Happier no seu telefone com os Homes que você já tem.',
+      qrTitle: 'Código QR',
+      signInFirst: 'Entre primeiro',
+    },
     restoreAccount: "Restaurar conta",
     enterSecretKey: "Por favor, insira uma chave de recuperação",
     invalidSecretKey: "Chave de recuperação inválida. Verifique e tente novamente.",
@@ -1860,6 +2133,7 @@ export const pt = {
 
   bugReports: {
     composer: {
+      pageDescription: 'Diga-nos o que correu mal. Inclua diagnósticos para o encontrarmos mais depressa.',
       alerts: {
         previewUnavailableTitle: "Prévia indisponível",
         previewUnavailableBody:
@@ -1988,6 +2262,7 @@ export const pt = {
         },
       },
       environment: {
+        description: 'Preenchido a partir deste dispositivo. Corrija o que estiver errado.',
         title: "Ambiente (editável)",
         appVersionLabel: "Versão do app",
         platformLabel: "Plataforma",
@@ -2021,16 +2296,22 @@ export const pt = {
   },
 
   memorySearchSettings: {
+    indexing: {
+        description: 'Quais sessões entram no índice e quanto de cada uma.',
+        title: 'O que é indexado',
+    },
+    pagePurpose: 'Encontre conversas anteriores pelo que foi dito. O índice fica na máquina que você escolher.',
     disabled: {
       footer:
         "Ative a pesquisa de memória em Recursos para configurar a indexação local.",
       title: "A pesquisa de memória está desativada",
-      subtitle: "Abra Configurações → Recursos para ativar memory.search",
       openFeatureSettings: "Abrir configurações de recursos",
-      alertTitle: "Pesquisa de memória desativada",
-      alertBody: "Ative memory.search em Configurações → Recursos.",
     },
     enabled: {
+      updateRequired: 'O Happier desta máquina precisa ser atualizado antes de alterar as configurações de memória.',
+      unreachable: 'Não foi possível acessar esta máquina. As configurações de memória aparecem quando ela voltar a ficar online.',
+      chooseMachine: 'Escolha uma máquina acima para ver e alterar o índice dela.',
+      sectionTitle: 'Índice local',
       title: "Ativado",
       subtitle: "Crie e mantenha um índice local nesta máquina",
       footer:
@@ -2040,13 +2321,10 @@ export const pt = {
       groupTitle: "Orçamento de disco",
       groupFooter:
         "Limita quanto espaço em disco o índice de memória local pode usar (remoção best-effort).",
-      mbLabel: ({ mb }: { mb: number }) => `${mb} MB`,
       lightTitle: "Orçamento do índice leve",
-      lightPromptTitle: "Orçamento do índice leve",
       lightPromptBody:
         "MB máximos para o índice leve (resumos) nesta máquina.",
       deepTitle: "Orçamento do índice profundo",
-      deepPromptTitle: "Orçamento do índice profundo",
       deepPromptBody:
         "MB máximos para o índice profundo (chunks) nesta máquina.",
     },
@@ -2065,7 +2343,7 @@ export const pt = {
       emptyResults: "Ainda não há resultados de memória",
     },
         status: {
-            title: "Estado do índice local",
+            title: "Estado",
             diskUsageTitle: "Uso em disco",
             disabled: "A busca de memória local está desativada nesta máquina",
             empty: "A busca de memória local está ativada, mas nenhum conteúdo pesquisável foi indexado ainda",
@@ -2098,25 +2376,19 @@ export const pt = {
       noMachine: "Sem máquina",
     },
     indexMode: {
-      title: "Modo de índice",
-      footer:
-        "O modo leve armazena pequenos fragmentos de resumo. O modo profundo pode encontrar mais, mas usa mais disco.",
       triggerTitle: "Modo",
       options: {
-        lightTitle: "Leve (recomendado)",
-        lightSubtitle: "Apenas fragmentos de resumo",
+        lightTitle: "Leve",
+        lightSubtitle: "Apenas fragmentos de resumo. Recomendado.",
         deepTitle: "Profundo",
-        deepSubtitle: "Indexar trechos de mensagens localmente",
+        deepSubtitle: "Também indexa trechos de mensagens. Encontra mais, mas usa mais disco.",
       },
     },
     backfill: {
-      title: "Preenchimento",
-      footer:
-        "Controla quanto histórico é indexado ao ativar a memória local.",
-      triggerTitle: "Política",
+      triggerTitle: "Histórico",
       options: {
-        newOnlyTitle: "Somente novo (recomendado)",
-        newOnlySubtitle: "Indexar apenas conteúdo criado após ativar",
+        newOnlyTitle: "Somente novo",
+        newOnlySubtitle: "Indexar apenas conteúdo criado após ativar. Recomendado.",
         last30DaysTitle: "Últimos 30 dias",
         last30DaysSubtitle: "Preencher sessões recentes",
         allHistoryTitle: "Todo o histórico",
@@ -2124,35 +2396,28 @@ export const pt = {
       },
     },
     archived: {
-        groupTitle: 'Sessões arquivadas',
-        groupFooter: 'Quando ativado, as sessões arquivadas são indexadas para a pesquisa local. Quando desativado, são excluídas e o conteúdo indexado é removido da pesquisa.',
         includeTitle: 'Pesquisar sessões arquivadas',
-        includeSubtitle: 'Indexar sessões arquivadas nesta máquina',
+        includeSubtitle: 'Indexe também as sessões arquivadas. Ao desativar, elas saem da pesquisa.',
         unsupportedSubtitle: 'O Happier precisa ser atualizado nesta máquina',
-        unsupportedFooter: 'Esta máquina não indica suporte à indexação de arquivadas, então a configuração não pode ser aplicada aqui. O restante da pesquisa continua disponível.',
     },
     indexContents: {
-      groupTitle: "Conteúdo do índice",
+      groupTitle: "Atividade de indexação",
       title: "Conteúdo pesquisável",
       subtitle: ({ sessions, lightShards, deepChunks }: { sessions: number; lightShards: number; deepChunks: number }) =>
         `${sessions} sessões · ${lightShards} fragmentos leves · ${deepChunks} chunks profundos`,
     },
     queue: {
-      groupTitle: "Preenchimento e fila",
       title: "Fila de indexação",
       subtitle: ({ selected, queued, indexing, indexed, empty, failed, waiting }: { selected: number; queued: number; indexing: number; indexed: number; empty: number; failed: number; waiting: number }) =>
         `${selected} selecionadas · ${queued} na fila · ${indexing} indexando · ${indexed} indexadas · ${empty} vazias · ${failed} falhas · ${waiting} aguardando`,
       workerPhase: ({ phase }: { phase: string }) => `Fase atual: ${phase}`,
     },
     lastRun: {
-      groupTitle: "Última indexação",
       title: "Última execução",
       subtitle: ({ considered, processed, semanticRows, failures }: { considered: number; processed: number; semanticRows: number; failures: number }) =>
         `${considered} consideradas · ${processed} processadas · ${semanticRows} linhas semânticas · ${failures} falhas`,
     },
     coverage: {
-      title: "Cobertura de conteúdo",
-      footer: "Controla qual conteúdo semântico de transcrições é indexado nas sessões selecionadas.",
       triggerTitle: "Cobertura",
       options: {
         fullTitle: "Todo o histórico selecionado",
@@ -2180,25 +2445,23 @@ export const pt = {
       toolOutputsSubtitle: "Mantenha desativado salvo se quiser incluir texto bruto de saídas de ferramentas em índices locais",
     },
     hints: {
-      title: "Geração de dicas de memória",
+      title: "Resumos",
       footer:
-        "Controla como os fragmentos de resumo são gerados para a pesquisa de memória leve.",
+        "Como o índice leve resume cada sessão.",
       backend: {
-        title: "Backend do resumidor",
-        promptTitle: "Backend do resumidor",
+        title: "Agente de resumo",
         promptBody:
-          "Digite um id de backend de execution-run (ex.: claude, codex).",
+          "O ID do agente que escreve os resumos, como claude ou codex.",
       },
       model: {
         title: "Modelo do resumidor",
-        promptTitle: "Modelo do resumidor",
         promptBody: "Digite um id de modelo para repassar ao backend.",
       },
       permissions: {
         triggerTitle: "Permissões do resumidor",
         options: {
-          noToolsTitle: "Sem ferramentas (recomendado)",
-          noToolsSubtitle: "Resumir apenas texto",
+          noToolsTitle: "Sem ferramentas",
+          noToolsSubtitle: "Resumir apenas texto. Recomendado.",
           readOnlyTitle: "Somente leitura",
           readOnlySubtitle:
             "Permitir ferramentas não mutantes quando suportadas",
@@ -2251,6 +2514,7 @@ export const pt = {
         modelPromptBody: "Insira o id do modelo de embeddings a ser solicitado ao endpoint remoto.",
         apiKeyTitle: "Chave de API",
         apiKeyPromptBody: "Insira a chave de API usada pelo endpoint remoto de embeddings.",
+        removeApiKey: 'Remover chave de API',
         dimensionsTitle: "Dimensões",
         dimensionsPromptBody: "Substituição opcional da dimensão de saída para endpoints que oferecem suporte a isso.",
       },
@@ -2267,13 +2531,11 @@ export const pt = {
     ruleEditor: {
       header: {
         newRule: "Nova regra",
-        editRule: "Editar regra",
       },
       enabled: {
         title: "Ativado",
       },
       enabledState: {
-        enabled: "Ativado",
         disabled: "Desativado",
       },
       common: {
@@ -2327,52 +2589,36 @@ export const pt = {
       },
     },
         settings: {
+      instructionsTitle: 'Delegação',
+      pagePurpose: 'Como seus agentes passam trabalho para outros agentes e as regras que seguem ao fazer isso.',
       groupTitle: "Subagentes",
       disabled: {
+        title: 'Os subagentes estão desativados',
         footer:
           "Execution runs está desativado. Ative Execution Runs em Configurações → Recursos para usar a orientação de delegação.",
         enableExecutionRuns: {
-          title: "Ativar Execution Runs",
-          subtitle: "Abrir configurações de Recursos",
+          title: "Ativar em Recursos",
         },
       },
       footer:
         "As regras são anexadas ao prompt do sistema para que o agente principal saiba quando e como você prefere iniciar execuções de subagentes.",
-      overview: {
-        groupTitle: "Visão geral",
-        footer:
-          "Use esta página para configurar a orientação de subagentes e navegar para configurações relacionadas de provedor, backend e sessão.",
-        explainerTitle: "O que esta página controla",
-        explainerSubtitle:
-          "Orientação de delegação para Subagentes, além de links para configurações específicas de cada provedor.",
-        happierStatusTitle: "Subagentes",
-        happierStatusEnabledSubtitle:
-          "Ativado. Você pode iniciar Subagentes a partir de sessões compatíveis.",
-        happierStatusDisabledSubtitle:
-          "Desativado. Abra as configurações de Recursos para ativar Subagentes.",
-      },
       related: {
+        agentsSubtitle: 'Login, configuração e agentes ACP personalizados.',
+        agentsTitle: 'Agentes',
         groupTitle: "Configurações relacionadas",
         footer:
-          "A inicialização e o controle de subagentes também dependem do comportamento da sessão, dos provedores e dos backends configurados.",
+          "Os subagentes também seguem o comportamento das suas sessões e a configuração de cada agente.",
         sessionTitle: "Comportamento da sessão",
         sessionSubtitle:
           "Envio de mensagens, direcionamento quando ocupado e comportamento de replay/retomada.",
-        providersTitle: "Provedores",
-        providersSubtitle:
-          "Configurações específicas de autenticação, runtime e agentes de cada provedor.",
-        backendsTitle: "Catálogo ACP",
-        backendsSubtitle: "Backends configurados e alvos de inicialização personalizados.",
       },
       enableInjection: {
         title: "Instruções de execuções do Happier",
         subtitle: "Desativar remove o roteamento nativo primeiro e a mecânica de execuções do Happier dos prompts de sistema dos agentes de código.",
       },
-      notifyParentOnCompletion: { title: 'Notificar o agente pai ao terminar', subtitle: 'Envia ao agente pai um evento de conclusão estruturado.' },
+      notifyParentOnCompletion: { title: 'Conversas paralelas informam', subtitle: 'Quando uma execução em segundo plano de longa duração termina, avisa a sessão que a iniciou. Revisões, planos e tarefas delegadas informam sempre.' },
       characterBudget: {
         title: "Limite de regras personalizadas",
-        subtitle: ({ value }: { value: string }) => `${value} caracteres`,
-        promptTitle: "Limite de regras personalizadas",
         promptBody: "Máximo de caracteres para regras de execução personalizadas no prompt do sistema.",
       },
       rules: {
@@ -2383,7 +2629,6 @@ export const pt = {
         emptyTitle: "Ainda não há regras",
         emptySubtitle: "Adicione uma regra para orientar a delegação.",
         addRuleTitle: "Adicionar regra",
-        addRuleSubtitle: "Criar uma nova regra de orientação",
         untitled: "Regra sem título",
         descriptionFallback: "Descreva quando delegar.",
         tapToEdit: "Toque para editar",
@@ -2542,7 +2787,7 @@ export const pt = {
     appearance: "Aparência",
     appearanceSubtitle: "Personalize a aparência do aplicativo",
     voiceAssistant: "Assistente de voz",
-    voiceAssistantSubtitle: "Configure as preferências de interação por voz",
+    voiceAssistantSubtitle: "Converse com seus agentes e dite no compositor.",
     memorySearch: "Pesquisa de memória local",
     memorySearchSubtitle: "Pesquise em conversas anteriores (no dispositivo)",
     notifications: "Notificações",
@@ -2555,18 +2800,16 @@ export const pt = {
     automationsSubtitle: "Gerencie sessões agendadas e execuções recorrentes",
     executionRunsSubtitle: "Execuções em várias máquinas",
     connectedServices: "Serviços conectados",
-    connectedServicesSubtitle: "Assinaturas Claude/Codex e perfis OAuth",
+    connectedServicesSubtitle: 'As contas com que seus agentes entram, e quanto resta em cada uma.',
     featuresTitle: "Recursos",
-    featuresSubtitle: "Ativar ou desativar recursos do aplicativo",
+    featuresSubtitle: 'Ative ou desative partes do Happier e experimente o que ainda está em construção.',
     pets: "Mascotes",
-    petsSubtitle: "Escolha Blink e mascotes companheiras do dispositivo",
+    petsSubtitle: 'Um pequeno companheiro que mostra como estão suas sessões.',
     developer: "Desenvolvedor",
     developerTools: "Ferramentas de desenvolvedor",
     about: "Sobre",
     actionsSettingsAboutSubtitle:
       "Ative ou desative ações globalmente, por superfície (UI/voz/MCP) e por posicionamento (onde aparecem na interface). Ações desativadas são bloqueadas (fail-closed) em tempo de execução.",
-    aboutFooter:
-      "Happier Coder é um cliente móvel para Codex e Claude Code. Usa criptografia de ponta a ponta por padrão, com restauração da conta nos seus outros dispositivos. Não é afiliado à Anthropic.",
     whatsNew: "Novidades",
     whatsNewSubtitle: "Veja as atualizações e melhorias mais recentes",
     reportIssue: "Relatar um problema",
@@ -2585,7 +2828,7 @@ export const pt = {
     claudeAuthSuccess: "Conectado ao Claude com sucesso",
     exchangingTokens: "Trocando tokens...",
     usage: "Uso",
-    usageSubtitle: "Visualizar uso da API e custos",
+    usageSubtitle: 'Tokens e custos das suas sessões, agentes e modelos.',
     profiles: "Perfis",
     profilesSubtitle: "Gerenciar perfis de ambiente e variáveis",
     secrets: "Segredos",
@@ -2870,6 +3113,7 @@ export const pt = {
     machineSetupStepAuthWait: "Aguardando aprovação",
     machineSetupStepInstallService: "Instalando serviço em segundo plano",
     machineSetupStepStartService: "Iniciando serviço em segundo plano",
+    machineSetupStepRestartService: "Reiniciando serviço em segundo plano",
     machineSetupStepVerifyService: "Verificando serviço em segundo plano",
     machineSetupRemoteSshTargetPlaceholder: "user@host",
     machineSetupRemoteSshUsernameLabel: "Usuário SSH",
@@ -3017,6 +3261,7 @@ export const pt = {
     systemTaskOpenLogsFailed: "Não foi possível abrir a pasta de logs.",},
 
 	  systemStatus: {
+	    pageDescription: 'Como esta app, as suas Homes e as suas máquinas estão ligadas neste momento.',
 	    sections: {
 	      application: "Aplicação",
 	      updates: "Atualizações",
@@ -3105,14 +3350,15 @@ export const pt = {
     actions: {
       runDiagnosis: "Executar diagnóstico",
       runDiagnosisSubtitle: "Detecta incompatibilidades de Home/conta/daemon",
-      refreshMachineAttribution: "Atualizar atribuição do daemon",
+      refreshMachineAttribution: 'Verificar daemons',
       refreshMachineAttributionSubtitle: "Busca Home/conta do daemon para algumas máquinas online",
-      copyJson: "Copiar JSON de Status do sistema",
+      copyJson: 'Copiar como JSON',
       copyJsonSubtitle: "Compartilhe um snapshot redigido para suporte",
     },
   },
 
   diagnosis: {
+    pageDescription: 'Verifica esta app, a sua Home e as suas máquinas em busca de problemas de configuração, com passos para os resolver.',
     title: "Diagnóstico",
     sections: {
       overview: "Visão geral",
@@ -3242,7 +3488,7 @@ export const pt = {
     fallbackName: "Serviço conectado",
     serviceNames: {
       claudeSubscription: "Assinatura Claude",
-      openaiCodex: "Codex da OpenAI",
+      openaiCodex: 'ChatGPT',
       openai: "Chave de API da OpenAI",
       anthropic: "Chave de API da Anthropic",
       gemini: "Gemini do Google",
@@ -3446,7 +3692,6 @@ export const pt = {
       lastUpdatedStale: ({ time }: { time: string }) =>
         `Última atualização: ${time} • desatualizado`,
       noData: "Ainda não há dados de cota",
-      planLabel: ({ plan }: { plan: string }) => `Plano: ${plan}`,
       remaining: ({ percent }: { percent: string }) => `${percent} restante`,
       remainingWithReset: ({ percent, reset }: { percent: string; reset: string }) => `${percent} restante · reinicia em ${reset}`,
       usageCount: ({ used, limit }: { used: number; limit: number }) => `${used}/${limit} usado`,
@@ -3456,7 +3701,6 @@ export const pt = {
       recoveryCreditApplying: 'Aplicando…',
       recoveryCreditMachineUnavailable: 'Nenhuma máquina disponível pode aplicar este reinício agora.',
       recoveryCreditNothingToReset: 'Nenhuma janela de uso esgotada atualmente precisa de uma redefinição.',
-      recoveryCreditBadge: ({ count }: { count: number }) => count === 1 ? '1 reinício' : `${count} reinícios`,
       duration: {
         now: 'agora',
         outdated: 'Desatualizado',
@@ -3472,49 +3716,15 @@ export const pt = {
       configurationInvalid: 'As configurações da conta são inválidas. Verifique cada campo e use uma origem HTTPS exata e sem credenciais onde for necessário.',
       configurationRefreshApplied: 'As novas configurações foram salvas e a conta conectada foi atualizada.',
       configurationReconnectApplied: 'As novas configurações foram salvas e a conta conectada foi reconectada.',
-      refreshA11y: 'Atualizar uso e limites',
       usedDetail: ({ used, limit }: { used: string; limit: string }) => `${used}/${limit} usado`,
-      usageCaption: 'Uso',
-      resetsCaption: 'Reinícios',
-      poolsLabel: 'Grupos',
-      poolsCount: ({ count }: { count: number }) => count === 1 ? '1 grupo' : `${count} grupos`,
-      planEmailSubtitle: ({ plan, email }: { plan: string; email: string }) => `${plan} · ${email}`,
       activeMemberA11y: 'Conta ativa',
       setActiveA11y: 'Definir conta ativa',
-      memberEnabledLabel: 'Conta ativada',
       resets: {
         now: 'agora',
         inDays: ({ days }: { days: number }) => days === 1 ? 'em 1 dia' : `em ${days} dias`,
-        available: 'Reinício de uso disponível',
-        rowLabel: ({ date, countdown }: { date: string; countdown: string }) =>
-          countdown ? `Expira ${date} · ${countdown}` : `Expira ${date}`,
-        confirmTitle: 'Aplicar reinício de uso?',
-        confirmMessage: 'Isto consumirá um reinício disponível para esta conta conectada.',
-        confirmCta: 'Aplicar reinício',
-        use: 'Usar',
       },
     },
     pools: {
-      title: 'Grupos',
-      autoBadge: 'Automático',
-      manualBadge: 'Modo manual',
-      memberWarningsA11y: ({ count }: { count: number }) =>
-        count === 1 ? '1 membro precisa de atenção' : `${count} membros precisam de atenção`,
-      create: {
-        title: 'Criar pool',
-        subtitle: 'Agrupe contas conectadas para fallback automático.',
-      },
-      empty: {
-        title: 'Ainda não há pools',
-        subtitle: 'Crie um pool para rotear sessões entre várias contas conectadas.',
-      },
-      loadError: {
-        title: "Não foi possível carregar os pools",
-        subtitle: "Não foi possível carregar os pools de contas. Verifique sua conexão e tente novamente.",
-        staleTitle: "Mostrando os últimos pools conhecidos",
-        staleSubtitle: "Não foi possível atualizar a lista de pools mais recente. Tente novamente para atualizá-la.",
-        retry: "Tentar novamente",
-      },
       detail: {
         summaryTitle: 'Resumo',
         summary: ({ count, strategy }: { count: number; strategy: string }) =>
@@ -3524,8 +3734,6 @@ export const pt = {
         moveDown: 'Mover para baixo',
         noMembersTitle: 'Ainda não há membros',
         noMembersSubtitle: 'Adicione uma conta conectada a este pool.',
-        serverActiveStatusTitle: "Salvo no servidor",
-        serverActiveStatusSubtitle: "Esta é a conta ativa persistente. As máquinas offline a aplicarão quando se reconectarem; esta tela não afirma que todas as máquinas concluíram a convergência.",
         manualApplyDivergenceTitle: "Alterado no servidor, mas não nas sessões ativas",
         manualApplyDivergenceSubtitle: ({ detail }: { detail: string }) => `A conta ativa foi alterada no servidor, mas não foi possível aplicá-la às sessões ativas (${detail}). Tente novamente ou reverta para manter tudo na conta anterior.`,
         manualApplyRetry: "Tentar aplicar novamente às sessões ativas",
@@ -3540,9 +3748,6 @@ export const pt = {
         advancedSubtitle: 'Ajuste os gatilhos de fallback e o comportamento de recuperação.',
       },
       behavior: {
-        autoRestorePrimaryTitle: 'Restaurar principal após o reinício',
-        autoRestorePrimarySubtitle: 'Volte para a conta principal quando o limite de uso dela reiniciar.',
-        switchOnGroupSubtitle: 'Permita que esta condição acione uma troca automática de pool.',
         switchOn: {
           usageLimit: 'Limite de uso',
           authExpired: 'Autenticação expirada',
@@ -3629,17 +3834,12 @@ export const pt = {
       },
     },
     detail: {
-      segments: {
-        accounts: "Contas",
-        pools: "Piscinas",
-      },
       unknownService: "Serviço conectado desconhecido.",
       actionsGroupTitle: "Ações",
       actions: {
         setDefault: "Definir como padrão",
         unsetDefault: "Remover padrão",
         editLabel: "Editar rótulo",
-        openAccount: "Abrir conta",
         reconnect: "Reconectar",
       },
       setDefaultProfileTitle: "Definir perfil padrão",
@@ -3726,18 +3926,13 @@ export const pt = {
         statusUnknown: "Desconhecido",
         statusNeedsMembers: "Precisa de membros habilitados",
         activeMember: ({ profileId }: { profileId: string }) => `Ativo: ${profileId}`,
-        enabledMembers: ({ enabled, total }: { enabled: number; total: number }) => `${enabled}/${total} habilitados`,
         autoFallbackEnabled: "Fallback automático ativado",
         autoFallbackDisabled: "Fallback automático desativado",
-        strategyPriority: "Ordem de prioridade",
-        strategyLeastLimited: "Menos limitado primeiro",
-        strategyManual: "Troca manual",
         priority: ({ priority }: { priority: string }) => `Prioridade ${priority}`,
         cooldown: ({ time }: { time: string }) => `Em cooldown até ${time}`,
         memberActive: "Membro ativo",
         memberEnabled: "Ativado",
         memberDisabled: "Desativado",
-        memberAutoDisabledModelNotEntitled: "Desativada automaticamente: modelo selecionado indisponível",
         memberPriority: ({ priority }: { priority: number }) => `Prioridade ${priority}`,
         memberExhaustedUntil: ({ time }: { time: string }) => `Esgotado até ${time}`,
         memberQuotaExhaustedUntil: ({ time }: { time: string }) => `Uso limitado até ${time}`,
@@ -3782,7 +3977,6 @@ export const pt = {
         removeMember: "Remover membro",
         removeMemberConfirmTitle: "Remover membro",
         removeMemberConfirmBody: ({ profileId }: { profileId: string }) => `Remover "${profileId}" deste grupo?`,
-        runtimeFallbackUnsupported: 'A alternância automática não está disponível para este serviço ligado.',
         removeMembersConfirmBody: ({ count, members }: { count: number; members: string }) => `Remover ${count === 1 ? "este membro" : `estes ${count} membros`} deste Pool?\n\n${members}`,
         manageMembersTitle: 'Gerir membros',
         manageMembersSubtitle: ({ count, total }: { count: number; total: number }) => `${count} de ${total} contas`,
@@ -3795,13 +3989,6 @@ export const pt = {
         membersTitle: "Membros",
         membersSubtitle: ({ enabled, total }: { enabled: number; total: number }) => `${enabled}/${total} habilitados`,
         optionsTitle: "Opções",
-        autoSwitchTitle: "Fallback automático",
-        autoQuotaResetTitle: "Usar redefinições de quota automaticamente",
-        autoDisablePlanInvalidTitle: "Desativar contas que não podem usar o modelo selecionado",
-        autoDisablePlanInvalidSubtitle: "Desativa automaticamente uma conta do grupo quando o seu plano não pode usar o modelo selecionado. Pode reativá-la manualmente. Desativado por padrão.",
-        autoQuotaResetSubtitle: "Consome uma redefinição disponível apenas quando nenhuma conta do grupo está pronta e a quota esgotada pode ser redefinida. Desativado por padrão.",
-        autoSwitchEnabledSubtitle: "Troque para outro membro quando a conta ativa precisar de recuperação.",
-        autoSwitchDisabledSubtitle: "Continue usando o membro ativo até trocar manualmente.",
         quotaLimitsTitle: "Limites de uso",
         quotaLimitsAllTitle: "Todos os limites informados",
         quotaLimitsAllSubtitle: "Use todas as cotas informadas por este provedor para decidir as trocas.",
@@ -3816,33 +4003,10 @@ export const pt = {
         quotaLimitReportingSubtitle: ({ reporting, total }: { reporting: number; total: number }) => `${reporting} de ${total} contas ativadas informam este limite`,
         quotaLimitsSearchPlaceholder: "Buscar limites de uso",
         strategyTitle: "Estratégia de seleção",
-        strategyPriorityTitle: "Ordem de prioridade",
-        strategyPrioritySubtitle: "Tente primeiro os números de prioridade mais baixos.",
-        strategyLeastLimitedTitle: "Menos limitado primeiro",
-        strategyLeastLimitedSubtitle: "Prefira o membro com mais cota utilizável.",
-        strategyManualTitle: "Troca manual",
-        strategyManualSubtitle: "Use apenas o membro ativo até que ele seja alterado manualmente.",
-        softSwitchThresholdTitle: "Limite de troca suave",
-        softSwitchThresholdSubtitle: ({ percent }: { percent: string }) => `Trocar abaixo de ${percent}% restante quando houver um membro melhor disponível.`,
-        softSwitchThresholdPromptTitle: "Limite de troca suave",
-        softSwitchThresholdPromptBody: "Insira a porcentagem restante em que o Happier deve preferir uma conta mais segura. Use 0 para desativar a troca suave.",
-        invalidSoftSwitchThresholdTitle: "Limite inválido",
-        invalidSoftSwitchThresholdBody: "Insira um número de 0 a 100.",
-        staleProbeTitle: "Verificar cota antiga após",
-        staleProbeSubtitle: ({ minutes }: { minutes: string }) => `Verificar novamente quando os dados de cota tiverem mais de ${minutes} min.`,
-        staleProbePromptTitle: "Verificar cota antiga após",
-        staleProbePromptBody: "Insira por quantos minutos os dados de cota podem ser reutilizados antes que o Happier verifique novamente.",
-        invalidStaleProbeTitle: "Intervalo de verificação inválido",
-        invalidStaleProbeBody: "Insira pelo menos 1 minuto.",
-        switchBudgetTitle: "Limites de troca automática",
-        switchBudgetSubtitle: ({ perTurn, perHour }: { perTurn: string; perHour: string }) => `Até ${perTurn} trocas automáticas por turno e ${perHour} por hora de sessão.`,
-        recoveryModeTitle: "Modo de recuperação",
         recoveryModeOffSubtitle: "Não recuperar este grupo automaticamente.",
         recoveryModeWaitUntilResetSubtitle: "Aguarde o limite ser redefinido e depois retome.",
         recoveryModeSwitchThenResumeSubtitle: "Troque para outro membro e depois retome.",
         recoveryModeSwitchOrWaitSubtitle: "Troque para outro membro quando possível; caso contrário, aguarde a redefinição.",
-        recoveryPromptTitle: "Prompts de recuperação",
-        recoveryPromptSubtitle: "Use os prompts padrão de recuperação e retomada para este grupo.",
         missingTitle: "Grupo não encontrado",
         missingBody: ({ service, groupId }: { service: string; groupId: string }) =>
           `Nenhum grupo chamado "${groupId}" existe para ${service}.`,
@@ -3909,7 +4073,9 @@ export const pt = {
   },
 
   settingsAttachments: {
+    pageDescription: 'Onde os ficheiros que anexa são guardados e como o controlo de versões os trata.',
     disabled: {
+      bannerTitle: 'Os envios de ficheiros estão desativados',
       title: "Anexos",
       footer:
         "Este recurso está desativado pelo seu servidor ou pela política de build.",
@@ -3918,16 +4084,19 @@ export const pt = {
       title: "Uploads de arquivos",
     },
     uploadLocation: {
+      rowTitle: 'Guardar envios em',
       title: "Local de upload",
       footer:
         "Os uploads no workspace são a opção mais compatível. Uploads para o diretório temporário do sistema podem ser úteis para evitar artefatos no repositório, mas podem não ser legíveis em sandboxes mais rígidos.",
       options: {
         workspace: {
+          short: 'Área de trabalho',
           title: "Diretório do workspace (recomendado)",
           subtitle:
             "Os uploads são gravados em um diretório relativo ao workspace para que o sandbox do agente possa lê-los de forma confiável.",
         },
         osTemp: {
+          short: 'Temp. do sistema',
           title: "Diretório temporário do sistema",
           subtitle:
             "Os uploads são gravados no diretório temporário do sistema operacional. Isso pode falhar em sandboxes mais rígidos.",
@@ -3935,6 +4104,7 @@ export const pt = {
       },
     },
     workspaceDirectory: {
+      usedForWorkspace: 'Usado quando os envios são guardados na área de trabalho',
       title: "Diretório do workspace",
       footer:
         "Usado apenas quando o local de upload está definido como Diretório do workspace.",
@@ -3948,27 +4118,32 @@ export const pt = {
       },
     },
     sourceControlIgnore: {
+      rowTitle: 'Ignorar envios',
       title: "Ignorar no controle de versão",
       footer:
         "Ignorados apenas locais evitam commits acidentais. Se você escolher .gitignore, isso pode modificar um arquivo rastreado.",
       options: {
         gitInfoExclude: {
+          short: 'Localmente',
           title: "Ignorar localmente (.git/info/exclude) (recomendado)",
           subtitle:
             "Evita commits acidentais sem modificar arquivos do repositório.",
         },
         gitignore: {
+          short: '.gitignore',
           title: "Ignorar via .gitignore",
           subtitle:
             "Escreve uma entrada no arquivo .gitignore do workspace (pode ser commitado).",
         },
         none: {
+          short: 'Desligado',
           title: "Não escrever regras de ignore",
           subtitle:
             "Uploads podem ser capturados pelo controle de versão dependendo da configuração do repositório.",
         },
       },
       writeIgnoreRules: {
+        subtitle: 'Permitir que o Happier adicione a regra de ignorar ao guardar um envio.',
         title: "Escrever regras de ignore",
       },
     },
@@ -3978,7 +4153,7 @@ export const pt = {
         "Esses limites são aplicados pelo manipulador local de upload do CLI (melhor esforço).",
       invalidValueTitle: "Valor inválido",
       maxAttachmentSize: {
-        title: "Tamanho máximo do anexo (bytes)",
+        title: 'Tamanho máximo do anexo',
         promptTitle: "Tamanho máximo do anexo (bytes)",
         promptMessage: "Exemplo: 26214400 para 25MB.",
         invalidValueMessage: "Insira um número entre 1024 e 1073741824.",
@@ -3987,6 +4162,84 @@ export const pt = {
   },
 
   settingsSourceControl: {
+    page: {
+      description: "Como commits, pushes e diffs funcionam nas suas sessões.",
+      commits: {
+        title: "Commits",
+        description: "Como as alterações de uma sessão se tornam commits.",
+      },
+      commitStrategy: {
+        title: "Estratégia de commit",
+        atomic: "Atômico",
+        gitStaging: "Staging do Git",
+        atomicDescription: "Faz commit de todas as alterações pendentes de uma vez, para que os agentes nunca compartilhem o índice do Git.",
+        gitStagingDescription: "Inclua ou exclua arquivos e linhas antes de fazer commit.",
+      },
+      coAuthoredByDescription: "Dá crédito ao agente nas mensagens de commit que ele escreve.",
+      generator: {
+        description: "Um agente redige uma mensagem a partir das alterações pendentes. Requer suporte a subagentes na máquina.",
+        agentTitle: "Agente",
+        agentDescription: "Escreve a mensagem sugerida.",
+        instructionsTitle: "Instruções",
+        instructionsDescription: "Adicionadas a cada pedido, como o estilo a seguir.",
+      },
+      remote: {
+        title: "Pull e push",
+        description: "Confirmações e o que acontece quando um push é rejeitado.",
+      },
+      pushRejection: {
+        title: "Quando um push é rejeitado",
+        ask: "Perguntar",
+        fetch: "Fazer fetch",
+        manual: "Manual",
+        askDescription: "Pergunta antes do fetch quando a branch está atrás do upstream.",
+        fetchDescription: "Faz fetch automaticamente quando a branch está atrás do upstream.",
+        manualDescription: "Deixa a recuperação com você.",
+      },
+      routing: {
+        title: "Backend do repositório",
+        description: "Qual backend cuida dos repositórios com uma pasta .git na máquina selecionada.",
+        rowTitle: "Backend para repositórios .git",
+        git: "Git",
+        sapling: "Sapling",
+        chooseMachine: "Escolha uma máquina",
+        chooseMachineDescription: "Os backends são lidos da máquina escolhida acima.",
+        waiting: ({ machine }: { machine: string }) => `Aguardando ${machine}`,
+        offline: ({ machine }: { machine: string }) => `${machine} está offline`,
+        unavailable: ({ machine }: { machine: string }) => `${machine} não está disponível`,
+        waitingDescription: "Os backends aparecem quando ela estiver online e responder.",
+        unavailableDescription: "Escolha outra máquina acima.",
+      },
+      services: {
+        description: "Contas dos serviços de código com que seus backends trabalham.",
+      },
+      files: {
+        title: "Diffs e arquivos",
+        description: "Como alterações e arquivos aparecem na revisão. O realce de sintaxe é experimental e pode ser desativado em diffs muito grandes.",
+        renderer: "Renderizador de diffs",
+        rendererPierre: "Pierre",
+        rendererHappier: "Happier",
+        layout: "Layout do diff",
+        unified: "Unificado",
+        split: "Lado a lado",
+        highlighting: "Realce de sintaxe",
+        off: "Desativado",
+        simple: "Simples",
+        advanced: "Avançado",
+        density: "Arquivos alterados",
+        comfortable: "Confortável",
+        compact: "Compacto",
+      },
+      backend: {
+        defaultDiff: "Visualização de diff padrão",
+      },
+      editor: {
+        description: "Como os arquivos são salvos e como o markdown abre. Arquivos que o editor rico não consegue manter intactos sempre abrem como texto.",
+        markdownTitle: "O markdown abre como",
+        rich: "Rico",
+        raw: "Texto",
+      },
+    },
     title: 'Arquivos e controle de código-fonte',
     editor: 'Editor de arquivos',
     editorFooter: 'Configure o comportamento do editor de arquivos.',
@@ -4208,94 +4461,96 @@ export const pt = {
   },
 
   settingsDesktop: {
+    ...menuBarModeTranslations.pt,
     title: 'Área de trabalho',
-    footer: 'Controla as integrações de desktop do Tauri neste computador.',
-    startOnLoginTitle: 'Iniciar ao entrar',
-    startOnLoginSubtitle: 'Inicie o Happier automaticamente ao entrar neste computador.',
+    footer: 'Como o app para desktop inicia e mostra a atividade neste computador.',
+    startupTitle: 'Inicialização',
+    unavailableTitle: 'Somente no app para desktop',
+    unavailableSubtitle: 'Abra o app para desktop do Happier no seu computador para alterar essas configurações.',
 
     overlay: {
-      title: 'Desktop overlay',
-      footer: 'Controls the local floating activity surface on this device.',
-      enabledTitle: 'Enable desktop overlay',
-      enabledSubtitle: 'Show a local floating activity surface on this device',
-      visibilityModeTitle: 'Visibility mode',
-      visibilityModeSubtitle: 'Choose when the overlay should appear',
-      visibilityAttentionOnlyTitle: 'Attention only',
-      visibilityActiveSessionsTitle: 'Active sessions',
-      visibilityAlwaysWhenEnabledTitle: 'Always when enabled',
-      showWhenRunningTitle: 'Show when running',
-      showWhenRunningSubtitle: 'Show the overlay while sessions are running',
-      showWhenAttentionRequiredTitle: 'Show when attention is required',
-      showWhenAttentionRequiredSubtitle: 'Show the overlay when a session needs your input',
-      showWhenReadyTitle: 'Show when ready',
-      showWhenReadySubtitle: 'Show the overlay when a turn finishes and waits for input',
-      alwaysOnTopTitle: 'Always on top',
-      alwaysOnTopSubtitle: 'Keep the overlay above other windows',
-      interactionTitle: 'Interaction',
-      interactionFooter: 'Choose how the overlay behaves while it is visible.',
-      autoHideEnabledTitle: 'Auto-hide',
-      autoHideEnabledSubtitle: 'Hide the overlay after it has been idle',
-      autoHideDelayTitle: 'Auto-hide delay',
-      autoHideDelaySubtitle: 'Choose how long the overlay waits before hiding',
-      autoHideDelay3sTitle: '3 seconds',
-      autoHideDelay6sTitle: '6 seconds',
-      autoHideDelay10sTitle: '10 seconds',
-      autoHideDelay30sTitle: '30 seconds',
-      expandedBehaviorTitle: 'Expanded behavior',
-      expandedBehaviorSubtitle: 'Choose how the overlay expands',
-      expandedBehaviorClickTitle: 'Click',
-      expandedBehaviorHoverTitle: 'Hover',
-      expandedBehaviorShortcutOnlyTitle: 'Shortcut only',
-      interactiveCollapsedTitle: 'Collapsed is interactive',
-      interactiveCollapsedSubtitle: 'Allow the collapsed overlay to respond to clicks',
-      collapsedClickActionTitle: 'Collapsed click action',
-      collapsedClickActionSubtitle: 'Choose what the overlay does when collapsed',
-      collapsedClickActionExpandOverlayTitle: 'Expand overlay',
-      collapsedClickActionOpenPrimarySessionTitle: 'Open primary session',
-      collapsedClickActionOpenSessionsTitle: 'Open sessions list',
-      placementTitle: 'Placement',
-      placementFooter: 'Choose where the overlay sits on the screen.',
-      presentationModeTitle: 'Presentation mode',
-            presentationModeSubtitle: 'Choose whether the overlay follows the display notch or floats freely',
-            presentationAutomaticTitle: 'Automatic',
-            presentationNotchIntegratedTitle: 'Notch-integrated',
-            presentationFloatingOverlayTitle: 'Floating overlay',
-            hostModeFallbackTitle: 'Host mode: Floating overlay',
-            hostModeFallbackSubtitle: 'Notch-integrated mode is unavailable on this display, so the overlay falls back to a floating overlay.',
-            placementModeTitle: 'Placement mode',
-            placementModeSubtitle: 'Switch between anchored and custom placement',
-      placementAnchoredTitle: 'Anchored',
-      placementCustomTitle: 'Custom',
-      anchorPresetTitle: 'Anchor preset',
-      anchorPresetSubtitle: 'Pick the anchor used for the overlay position',
-      anchorTopCenterTitle: 'Top center',
-      anchorTopLeftTitle: 'Top left',
-      anchorTopRightTitle: 'Top right',
-      anchorBottomCenterTitle: 'Bottom center',
-      anchorBottomLeftTitle: 'Bottom left',
-      anchorBottomRightTitle: 'Bottom right',
-      anchorLeftCenterTitle: 'Left center',
-      anchorRightCenterTitle: 'Right center',
-      allowRepositioningTitle: 'Allow repositioning',
-      allowRepositioningSubtitle: 'Let the overlay be dragged into a custom position',
-      lockPositionTitle: 'Lock position',
-      lockPositionSubtitle: 'Keep the overlay fixed in place',
-      resetPositionTitle: 'Reset position',
-      resetPositionSubtitle: 'Return to the default anchored position',
-      presentationTitle: 'Presentation',
-      presentationFooter: 'Tune how the overlay looks when it is collapsed.',
-      densityTitle: 'Density',
-      densitySubtitle: 'Choose the amount of spacing used in the overlay',
-      densityCompactTitle: 'Compact',
-      densityComfortableTitle: 'Comfortable',
-      compactStyleTitle: 'Compact style',
-      compactStyleSubtitle: 'Choose the shape used for the collapsed overlay',
-      compactStylePillTitle: 'Pill',
-      compactStylePanelTitle: 'Panel',
-      showSessionCountTitle: 'Show session count',
-      showSessionCountSubtitle: 'Show how many sessions are currently represented',
-      showPreviewTextTitle: 'Show preview text',
-      showPreviewTextSubtitle: 'Show the latest preview text when space allows',
+      title: 'Sobreposição de desktop',
+      footer: 'Uma pequena janela flutuante que mostra a atividade das sessões neste computador.',
+      enabledTitle: 'Ativar sobreposição de desktop',
+      enabledSubtitle: 'Mostra uma superfície flutuante de atividade neste dispositivo',
+      visibilityModeTitle: 'Visibilidade',
+      visibilityModeSubtitle: 'Escolha quando a sobreposição aparece',
+      visibilityAttentionOnlyTitle: 'Só quando precisar de atenção',
+      visibilityActiveSessionsTitle: 'Sessões ativas',
+      visibilityAlwaysWhenEnabledTitle: 'Sempre que ativada',
+      showWhenRunningTitle: 'Mostrar em execução',
+      showWhenRunningSubtitle: 'Mostra a sobreposição enquanto há sessões em execução',
+      showWhenAttentionRequiredTitle: 'Mostrar quando precisar de atenção',
+      showWhenAttentionRequiredSubtitle: 'Mostra a sobreposição quando uma sessão precisa da sua resposta',
+      showWhenReadyTitle: 'Mostrar quando estiver pronta',
+      showWhenReadySubtitle: 'Mostra a sobreposição quando um turno termina e aguarda resposta',
+      alwaysOnTopTitle: 'Sempre visível',
+      alwaysOnTopSubtitle: 'Mantém a sobreposição acima das outras janelas',
+      interactionTitle: 'Interação',
+      interactionFooter: 'Escolha como a sobreposição se comporta enquanto está visível.',
+      autoHideEnabledTitle: 'Ocultar automaticamente',
+      autoHideEnabledSubtitle: 'Oculta a sobreposição depois de um período sem atividade',
+      autoHideDelayTitle: 'Atraso para ocultar',
+      autoHideDelaySubtitle: 'Escolha quanto tempo a sobreposição espera antes de se ocultar',
+      autoHideDelay3sTitle: '3 segundos',
+      autoHideDelay6sTitle: '6 segundos',
+      autoHideDelay10sTitle: '10 segundos',
+      autoHideDelay30sTitle: '30 segundos',
+      expandedBehaviorTitle: 'Expansão',
+      expandedBehaviorSubtitle: 'Escolha como a sobreposição se expande',
+      expandedBehaviorClickTitle: 'Clique',
+      expandedBehaviorHoverTitle: 'Passar o cursor',
+      expandedBehaviorShortcutOnlyTitle: 'Só com atalho',
+      interactiveCollapsedTitle: 'Recolhida e interativa',
+      interactiveCollapsedSubtitle: 'Permite que a sobreposição recolhida responda a cliques',
+      collapsedClickActionTitle: 'Clique com a sobreposição recolhida',
+      collapsedClickActionSubtitle: 'Escolha o que a sobreposição faz quando está recolhida',
+      collapsedClickActionExpandOverlayTitle: 'Expandir a sobreposição',
+      collapsedClickActionOpenPrimarySessionTitle: 'Abrir a sessão principal',
+      collapsedClickActionOpenSessionsTitle: 'Abrir a lista de sessões',
+      placementTitle: 'Posição',
+      placementFooter: 'Escolha onde a sobreposição fica no ecrã.',
+      presentationModeTitle: 'Modo de apresentação',
+            presentationModeSubtitle: 'Escolha se a sobreposição acompanha o entalhe do ecrã ou flutua livremente',
+            presentationAutomaticTitle: 'Automático',
+            presentationNotchIntegratedTitle: 'Integrada no entalhe',
+            presentationFloatingOverlayTitle: 'Sobreposição flutuante',
+            hostModeFallbackTitle: 'Modo atual: sobreposição flutuante',
+            hostModeFallbackSubtitle: 'O modo integrado no entalhe não está disponível neste ecrã, por isso a sobreposição aparece como janela flutuante.',
+            placementModeTitle: 'Modo de posição',
+            placementModeSubtitle: 'Alterna entre posição ancorada e personalizada',
+      placementAnchoredTitle: 'Ancorada',
+      placementCustomTitle: 'Personalizada',
+      anchorPresetTitle: 'Âncora predefinida',
+      anchorPresetSubtitle: 'Escolha a âncora da posição da sobreposição',
+      anchorTopCenterTitle: 'Em cima ao centro',
+      anchorTopLeftTitle: 'Em cima à esquerda',
+      anchorTopRightTitle: 'Em cima à direita',
+      anchorBottomCenterTitle: 'Em baixo ao centro',
+      anchorBottomLeftTitle: 'Em baixo à esquerda',
+      anchorBottomRightTitle: 'Em baixo à direita',
+      anchorLeftCenterTitle: 'Ao centro à esquerda',
+      anchorRightCenterTitle: 'Ao centro à direita',
+      allowRepositioningTitle: 'Permitir reposicionar',
+      allowRepositioningSubtitle: 'Permite arrastar a sobreposição para uma posição personalizada',
+      lockPositionTitle: 'Bloquear posição',
+      lockPositionSubtitle: 'Mantém a sobreposição fixa no lugar',
+      resetPositionTitle: 'Repor posição',
+      resetPositionSubtitle: 'Volta à posição ancorada predefinida',
+      presentationTitle: 'Apresentação',
+      presentationFooter: 'Ajuste o aspeto da sobreposição quando está recolhida.',
+      densityTitle: 'Densidade',
+      densitySubtitle: 'Escolha quanto espaço a sobreposição usa',
+      densityCompactTitle: 'Compacta',
+      densityComfortableTitle: 'Espaçosa',
+      compactStyleTitle: 'Estilo compacto',
+      compactStyleSubtitle: 'Escolha a forma da sobreposição recolhida',
+      compactStylePillTitle: 'Pílula',
+      compactStylePanelTitle: 'Painel',
+      showSessionCountTitle: 'Mostrar número de sessões',
+      showSessionCountSubtitle: 'Mostra quantas sessões estão representadas agora',
+      showPreviewTextTitle: 'Mostrar texto de pré-visualização',
+      showPreviewTextSubtitle: 'Mostra o último texto de pré-visualização quando há espaço',
     },},
 
   settingsPets: {
@@ -4306,7 +4561,8 @@ export const pt = {
     disabledSubtitle: 'Ative Mascotes em Recursos para usar companheiros neste dispositivo.',
     disabledByServerTitle: 'Este servidor desativou mascotes',
     disabledByServerSubtitle: 'Seu administrador desativou companheiros mascotes para este servidor.',
-    accountTitle: 'Padrão da conta',
+    accountTitle: 'Companheiro',
+    accountDescription: 'Vale para sua conta; cada dispositivo pode escolher por si.',
     enabledTitle: 'Ativar mascotes',
     enabledSubtitle: 'Mostra superfícies de companheiro para esta conta.',
     companionSizeTitle: 'Tamanho da mascote',
@@ -4326,6 +4582,9 @@ export const pt = {
     helpDocsTitle: 'Ajuda de mascotes',
     helpDocsSubtitle: 'Abra a documentação do Happier para configuração e solução de problemas.',
     detectCodexPetsTitle: 'Detectar mascotes Codex',
+    codexPetsTitle: 'Pets do Codex',
+    codexPetsDescription: 'Traga para este dispositivo os pets que você criou no Codex.',
+    detectedCodexPetsTitle: 'Encontrados no Codex',
     detectCodexPetsSubtitle: 'Procura mascotes compatíveis em Codex homes locais.',
     detectedCodexPetsTileSubtitle: 'Encontrada no Codex e pronta para entrar neste dispositivo.',
     detectedCodexPetsEmptyTitle: 'Nenhuma mascote Codex encontrada',
@@ -4351,6 +4610,7 @@ export const pt = {
     importToAccountTitle: 'Importar para a conta',
     importToAccountSubtitle: 'Envie uma mascote local compatível para uso entre dispositivos.',
     desktopOverlayTitle: 'Sobreposição de desktop',
+    desktopOverlayDescription: 'Seu pet pode ficar na área de trabalho, fora da janela do app.',
     overlayTrayTitle: 'Atividade da mascote',
     overlayStatusWaiting: 'Aguardando',
     overlayStatusFailed: 'Falhou',
@@ -4379,6 +4639,7 @@ export const pt = {
   },
 
   settingsNotifications: {
+        pageDescription: 'Escolha o que o avisa, onde e quando fica em silêncio.',
         remoteAlerts: {
             title: "Alertas de sessão com o app fechado",
             accountTitle: "Permitir alertas remotos de sessão",
@@ -4396,7 +4657,7 @@ export const pt = {
             deviceUnavailable: "Esta versão do app não pode registrar este dispositivo.",
             deviceEnrolled: "Registro do dispositivo confirmado",
             deviceNotEnrolled: "Registro do dispositivo não confirmado",
-            supportedEvents: "Este dispositivo aceita atualmente alertas de sessão pronta. A entrega também depende da permissão de notificações do sistema.",
+            supportedEvents: "Este dispositivo aceita alertas de atividade das sessões. A entrega também depende da permissão de notificações do sistema.",
         },
     badges: {
       title: 'Badges neste dispositivo',
@@ -4461,6 +4722,7 @@ export const pt = {
         openSettingsFailed: 'Não foi possível abrir as definições do sistema.',
     },
     pushTroubleshooting: {
+      pageDescription: 'Verifique por que as notificações push não chegam a este dispositivo e corrija.',
       status: {
         title: "Estado",
         footer: "Verifica a configuração da conta, a permissão do sistema e o estado de registro no servidor.",
@@ -4481,8 +4743,8 @@ export const pt = {
         allowedSubtitle: "As notificações estão permitidas para este app.",
         denied: "Negado",
         notRequested: "Não solicitado",
-        canAskAgainSubtitle: "Toque para solicitar permissão.",
-        openSettingsSubtitle: "Toque para abrir as configurações do sistema.",
+        canAskAgainSubtitle: 'O Happier pode pedir permissão neste dispositivo.',
+        openSettingsSubtitle: 'Permita as notificações do Happier nas definições do sistema.',
       },
       token: {
         title: "Este dispositivo",
@@ -4526,6 +4788,8 @@ export const pt = {
       },
     },
     webhooks: {
+      signingSecretReplaceAction: 'Substituir',
+      signingSecretAddAction: 'Adicionar segredo',
       title: 'Notificações por webhook',
       footer: 'Envie notificações de atividade remota para endpoints de webhook adicionais nesta conta.',
       addTitle: 'Adicionar webhook',
@@ -4563,6 +4827,9 @@ export const pt = {
       userActionsSubtitle: 'Enviar quando uma sessão precisar de uma resposta ou confirmação',
     },
     foregroundBehavior: {
+      needsDeviceNotifications: 'Ative as notificações do dispositivo para alterar isto.',
+      accountShort: 'Sincronizado',
+      rowTitle: 'Banner e som',
       title: "Notificações no app",
       footer:
         "Controla as notificações enquanto você usa o app. Notificações da sessão que você está visualizando são sempre silenciadas.",
@@ -4620,17 +4887,18 @@ export const pt = {
       privacyTitleOnlyTitle: 'Somente título',
       privacyIncludePreviewTitle: 'Incluir texto de prévia',
       liveActivities: {
-        title: 'Live Activities',
+        maxConcurrentNeedsSessionSpecific: 'Disponível com a estratégia Específica da sessão.',
+        title: 'Atividades em direto',
         footer: 'Controla a apresentação na tela de bloqueio e na Dynamic Island no iPhone.',
         enabledSubtitle: 'Ative Live Activities neste dispositivo',
-        strategyTitle: 'Activity strategy',
+        strategyTitle: 'Estratégia de atividade',
         strategySubtitle: 'Escolha se uma atividade acompanha a sessão mais importante ou permanece fixada.',
         focusedTitle: 'Sessão focada',
         attentionTitle: 'Atenção',
         runningTitle: 'Sessões em andamento',
-        dynamicPrimaryTitle: 'Dynamic primary',
-        pinnedPrimaryTitle: 'Pinned primary',
-        sessionSpecificTitle: 'Session specific',
+        dynamicPrimaryTitle: 'Principal dinâmica',
+        pinnedPrimaryTitle: 'Principal fixada',
+        sessionSpecificTitle: 'Específica da sessão',
         presentationTitle: 'Modo de apresentação',
         presentationSubtitle: 'Escolha como as Live Activities devem destacar a sessão atual.',
         maxConcurrentTitle: 'Máximo de atividades simultâneas',
@@ -4682,6 +4950,7 @@ export const pt = {
         },
       },
       widgets: {
+        modeTitle: 'Conteúdo',
         title: 'Widgets da tela inicial',
         footer: 'Controla a visão geral de widgets exibida na tela inicial do dispositivo.',
         enabledSubtitle: 'Ative widgets neste dispositivo',
@@ -4693,6 +4962,12 @@ export const pt = {
       },
     },
     quietHours: {
+      customSubtitle: 'Há um horário personalizado. Escolher uma opção substitui-o.',
+      syncedShort: 'Sincronizado',
+      nightlyShort: 'Todas as noites',
+      offShort: 'Desligado',
+      deviceRowTitle: 'Neste dispositivo',
+      accountRowTitle: 'Horário da conta',
       title: 'Horário silencioso',
       footer: 'O horário silencioso da conta se aplica em todos os lugares por padrão. Substituições do dispositivo afetam apenas este dispositivo.',
       accountOffTitle: 'Sem horário silencioso da conta',
@@ -4707,6 +4982,11 @@ export const pt = {
       deviceCustomNightlySubtitle: 'Substituir o horário da conta por 22h a 7h neste dispositivo',
     },
     sounds: {
+      previewAction: 'Reproduzir',
+      customSubtitle: 'Há sons personalizados. Escolher uma opção substitui-os.',
+      accountDefaultShort: 'Sistema',
+      accountHappierShort: 'Happier',
+      accountRowTitle: 'Som',
       title: 'Sons',
       footer: 'Os sons padrão da conta sincronizam em todos os lugares. Este dispositivo pode silenciar sons locais.',
       accountHappierTitle: 'Sons do Happier',
@@ -4753,15 +5033,90 @@ export const pt = {
       },
     },
 
+  mcpSettings: mcpSettingsTranslations.pt,
+  agentInstallJob: agentInstallJobTranslations.pt,
+  secretsSettings: secretsSettingsTranslations.pt,
   settingsProviders: settingsProvidersTranslations.pt,
 
   settingsAgents: {
         authoring: {
+              setUpMachine: 'Configurar uma máquina',
               configureAcpBackendPrompt: 'Ajude-me a adicionar um agente ACP personalizado ao Happier. Pergunte qual agente quero executar e como ele inicia (comando, argumentos, variáveis de ambiente), verifique se o comando funciona nesta máquina e salve-o com a ação agents.acp.backends.upsert (leia antes a entrada com action_spec_get). Avise quando ele aparecer em Configurações → Agentes.',
               addAgentPrompt: 'Quero adicionar um novo agente de programação ao Happier. Pergunte qual. Se ele fala ACP (Agent Client Protocol) e inicia com um comando, adicione-o como agente ACP personalizado com a ação agents.acp.backends.upsert. Caso contrário, crie um plugin do Happier que o adicione seguindo a skill happier-plugin-authoring e começando pela ação plugins.scaffold. Diga qual caminho escolheu e por quê antes de mudar qualquer coisa.',
               needsMachine: 'Precisa de uma máquina. Abre a configuração de máquinas.',
               useAgentToConfigure: 'Configurar com um agente',
               useAgentToConfigureDescription: 'Um agente pergunta o que você quer executar e salva para você.',
+        },
+        customAcp: {
+            newTitle: 'Novo agente ACP',
+            description: 'Um agente personalizado que o Happier inicia com um comando e com o qual fala via ACP.',
+            agentSection: 'Agente',
+            agentSectionDescription: 'Como aparece quando você inicia uma sessão.',
+            nameTitle: 'Nome',
+            namePlaceholder: 'Meu agente',
+            idTitle: 'ID',
+            idDerivedDescription: 'Criado a partir do nome. As sessões usam-no para encontrar este agente.',
+            idFixedDescription: 'Fixo depois de salvo: as sessões usam-no para encontrar este agente.',
+            idPending: 'Criado a partir do nome',
+            shortNameTitle: 'Nome curto',
+            shortNameDescription: 'Um nome compacto, único entre os seus agentes personalizados.',
+            descriptionTitle: 'Descrição',
+            optionalPlaceholder: 'Opcional',
+            launchSection: 'Início',
+            launchSectionDescription: 'O que o Happier executa numa máquina para iniciar o agente.',
+            commandTitle: 'Comando',
+            argsTitle: 'Argumentos',
+            argsDescription: 'Passados ao comando nesta ordem.',
+            argumentLabel: ({ position }: { position: number }) => `Argumento ${position}`,
+            argumentPlaceholder: 'Argumento',
+            addArgument: 'Adicionar argumento',
+            removeArgument: ({ position }: { position: number }) => `Remover o argumento ${position}`,
+            defaultModeTitle: 'Modo padrão',
+            defaultModelTitle: 'Modelo padrão',
+            agentDefaultPlaceholder: 'O padrão do agente',
+            environmentSection: 'Ambiente',
+            environmentSectionDescription: 'Definidas para o comando ao iniciar. Os valores podem vir de segredos salvos.',
+            addVariable: 'Adicionar variável',
+            noVariablesTitle: 'Nenhuma variável',
+            noVariablesDescription: 'O comando inicia com o ambiente da máquina.',
+            signInSection: 'Início de sessão',
+            signInSectionDescription: 'Como entrar no agente numa máquina.',
+            signInMethodTitle: 'Método',
+            authLoginTerminal: 'Entrar por um terminal',
+            authStatusOnly: 'Apenas verificar o estado',
+            authManualOnly: 'Entrar manualmente',
+            authUnsupported: 'Sem início de sessão',
+            loginCommandTitle: 'Comando de início de sessão',
+            loginArgsTitle: 'Argumentos de início de sessão',
+            docsUrlTitle: 'Guia de início de sessão',
+            docsUrlDescription: 'Uma página que explica como entrar.',
+            machineLoginKeyTitle: 'Chave do estado de sessão',
+            machineLoginKeyDescription: 'A chave com que uma máquina informa a sessão deste agente.',
+            capabilitiesSection: 'Capacidades',
+            capabilitiesSectionDescription: 'O que o agente suporta. «Desconhecido» usa o que o agente informar ao iniciar uma sessão.',
+            supportsModes: 'Modos',
+            supportsModels: 'Escolha de modelo',
+            supportsConfigOptions: 'Opções de configuração',
+            promptImages: 'Imagens nos prompts',
+            hintUnknown: 'Desconhecido',
+            hintYes: 'Sim',
+            hintNo: 'Não',
+            discard: 'Descartar',
+            notFound: 'Este agente personalizado já não está na sua conta.',
+            deleteTitle: 'Excluir este agente?',
+            deleteConfirm: ({ name }: { name: string }) => `${name} deixará de ser oferecido ao iniciar uma sessão.`,
+            errors: {
+                nameRequired: 'Adicione um nome.',
+                idRequired: 'Adicione um ID.',
+                idInvalid: 'Use minúsculas, números, pontos, hífens ou sublinhados, começando por uma letra ou número.',
+                idTaken: 'Outro agente personalizado já usa este ID.',
+                shortNameInvalid: 'Use minúsculas, números, pontos, hífens ou sublinhados, começando por uma letra ou número.',
+                shortNameTaken: 'Outro agente personalizado já usa este nome curto.',
+                commandRequired: 'Adicione o comando que inicia o agente.',
+                urlInvalid: 'Introduza um endereço completo começando por https://.',
+                envInvalid: 'Os nomes de variáveis usam maiúsculas, números e sublinhados.',
+                fieldInvalid: 'Verifique este valor.',
+            },
         },
         collection: {
               askAgentToAdd: 'Pedir a um agente para adicionar',
@@ -5478,6 +5833,8 @@ export const pt = {
   settingsFeatures: {
     // Features settings screen
     experiments: "Experimentos",
+    generalTitle: 'Geral',
+    generalDescription: 'Opções do dia a dia que você pode ativar ou desativar.',
     experimentsDescription:
       "Ative recursos experimentais que ainda estão em desenvolvimento. Estes recursos podem ser instáveis ou mudar sem aviso.",
     experimentalFeatures: "Recursos experimentais",
@@ -5486,9 +5843,8 @@ export const pt = {
     experimentalOptions: "Opções experimentais",
     experimentalOptionsDescription:
       "Escolha quais recursos experimentais estão ativados.",
-    localTogglesTitle: "Recursos",
-    localTogglesFooter:
-      "Alternâncias locais por recurso (independentes do suporte do servidor).",
+    localTogglesTitle: 'Recursos opcionais',
+    localTogglesFooter: 'Ative ou desative partes do Happier.',
     featureDiagnostics: {
       title: "Diagnóstico de recursos",
       footer:
@@ -5506,7 +5862,7 @@ export const pt = {
       }) => `${state} (blockedBy=${blockedBy ?? "null"}, code=${code})`,
     },
       expAutomations: "Automações",
-      expAutomationsSubtitle: "Ativar interface e agendamento de automações",
+      expAutomationsSubtitle: "Execute fluxos de trabalho em um horário ou quando algo acontecer.",
       expExecutionRuns: "Execuções",
       expExecutionRunsSubtitle:
         "Ativar superfícies de controle para execuções (subagentes / revisões)",
@@ -5551,13 +5907,10 @@ export const pt = {
         "Ativar superfícies de agente de voz com daemon (requer execuções)",
       expVoiceDaemonInference: 'Inferência de voz do daemon',
       expVoiceDaemonInferenceSubtitle: 'Ativar controles locais de inferência de voz pelo daemon',
-      expLiveActivities: 'Live Activities',
+      expLiveActivities: 'Atividades em direto',
       expLiveActivitiesSubtitle: 'Ativar superfícies de Live Activities para o progresso da sessão',
       expHomeScreenWidgets: 'Widgets da tela inicial',
       expHomeScreenWidgetsSubtitle: 'Ativar widgets da tela inicial para a atividade do Happier',
-      expConnectedServicesQuotas: "Cotas de serviços conectados",
-      expConnectedServicesQuotasSubtitle:
-        "Mostrar badges de cota e medidores de uso para serviços conectados",
       expMemorySearch: "Busca de memória",
       expMemorySearchSubtitle:
         "Ativar telas e configurações de busca de memória local",
@@ -5608,9 +5961,6 @@ export const pt = {
     groupInactiveSessionsByProject: "Agrupar sessões inativas por projeto",
     groupInactiveSessionsByProjectSubtitle:
       "Organize os chats inativos por projeto",
-      environmentBadge: "Badge de ambiente",
-      environmentBadgeSubtitle:
-        "Mostrar um pequeno badge ao lado do título Happier indicando o ambiente atual do app",
     enhancedSessionWizard: "Assistente de sessão aprimorado",
     enhancedSessionWizardEnabled: "Lançador de sessão com perfil ativo",
     enhancedSessionWizardDisabled: "Usando o lançador de sessão padrão",
@@ -5813,6 +6163,7 @@ export const pt = {
   },
 
   newSession: {
+    folder: folderlessSessionTranslations.pt.composer,
     ...newSessionMcpTranslationExtension,
     ...acpCatalogTranslationExtension.newSession,
     // Used by new-session screen and launch flows
@@ -5932,6 +6283,7 @@ export const pt = {
     temporaryComputer: {
         title: 'Computador temporário',
         subtitle: 'Prepare um pacote Runner verificado para outro computador.',
+        continueLater: 'Continuar mais tarde',
         cancelConnectedTitle: 'Cancelar este computador temporário?',
         cancelConnectedBody: 'O outro computador já se ligou. Cancelar encerra este pedido para ambos os lados, mantendo aqui o teu rascunho atual.',
         choosePlatform: 'Escolhe a plataforma do computador',
@@ -6011,8 +6363,8 @@ export const pt = {
             reconciling: 'A verificar este pedido…',
             preparing: 'A preparar o pacote…',
             waiting_for_computer: 'À espera do computador',
-            review_unavailable: 'O acesso à IA selecionado ainda não pode ser preparado para este computador temporário. Cancela este pedido e tenta novamente depois de atualizar o Happier.',
-            materialization_unavailable: 'Este computador temporário ainda não consegue criar a sessão. Cancela este pedido e tenta novamente depois de atualizar o Happier.',
+            review_unavailable: 'O acesso à IA selecionado ainda não pode ser preparado para este computador temporário. O pedido está guardado. Tenta novamente quando o acesso estiver disponível.',
+            materialization_unavailable: 'Este computador temporário ainda não consegue criar a sessão. O pedido está guardado. Tenta novamente quando o acesso estiver disponível.',
             waiting_for_approval: 'À espera de aprovação',
             connected: 'Computador ligado',
             installing_agent: 'A instalar o Agente selecionado…',
@@ -6235,20 +6587,22 @@ export const pt = {
   sessionHandoff: sessionHandoffTranslationExtensions.pt,
 
   session: {
+    folderless: folderlessSessionTranslations.pt.display,
         access: sessionAccessTranslations['pt'],
+        untitled: 'Sessão sem título',
         follow: sessionFollowTranslations['pt'],
         homeFreshness: sessionHomeFreshnessTranslations['pt'],
+        embedded: sessionEmbeddedTranslations['pt'],
     providerBinding: providerSessionTranslations.pt,
     transcriptNavigation: {
       title: "Navegar",
       modeAll: "Tudo",
       modePinned: "Fixados",
-      entryCount: ({ count }: { count: number }) => `${count} ${count === 1 ? "entrada" : "entradas"}`,
+      turnCount: ({ count }: { count: number }) => `${count} turno${count === 1 ? '' : 's'}`,
       pinnedCount: ({ count }: { count: number }) => `${count} fixados`,
-      emptyPinnedTitle: "Nenhuma mensagem fixada",
-      emptyPinnedBody: "Fixe mensagens para manter turnos importantes aqui.",
-      emptyAllTitle: "Nenhuma entrada de navegação",
-      emptyAllBody: "Turnos do usuário e mensagens fixadas aparecerão aqui.",
+      emptyPinnedTitle: "Fixe os turnos aos quais vai voltar",
+      emptyAllTitle: "Cada mensagem vira uma parada aqui",
+      emptyAllBody: "O mais recente no topo. Toque em um turno para voltar a ele; fixe os que você vai querer rever.",
       entryA11y: ({ label }: { label: string }) => `Ir para ${label}`,
       entryPinnedA11y: ({ label }: { label: string }) => `Ir para a mensagem fixada: ${label}`,
       fallbackPinnedAssistant: "Mensagem fixada do assistente",
@@ -6266,6 +6620,44 @@ export const pt = {
       railScrollDownA11y: "Deslocar a navegação para baixo",
       emptyPinnedHint: "Passe o cursor sobre uma mensagem e escolha o ícone de fixar para fixá-la.",
       emptyPinnedPrivacy: "As mensagens fixadas são guardadas apenas neste dispositivo.",
+      showAllTurns: "Mostrar todos os turnos",
+      filterApprovals: "Aprovações",
+      filterErrors: "Erros",
+      filtersA11y: "Mostrar turnos",
+      approvalsCount: ({ count }: { count: number }) => `${count} ${count === 1 ? 'aprovação' : 'aprovações'}`,
+      errorsCount: ({ count }: { count: number }) => `${count} ${count === 1 ? 'turno' : 'turnos'} com erros`,
+      waitingCount: ({ count }: { count: number }) => `${count} esperando por você`,
+      soFar: "até agora",
+      toolCount: ({ count }: { count: number }) => `${count} ${count === 1 ? 'ferramenta' : 'ferramentas'}`,
+      allowedCount: ({ count }: { count: number }) => `${count} permitidas`,
+      deniedCount: ({ count }: { count: number }) => `${count} negadas`,
+      failedCount: ({ count }: { count: number }) => `${count} com falha`,
+      durationSeconds: ({ seconds }: { seconds: number }) => `${seconds}s`,
+      durationMinutes: ({ minutes, seconds }: { minutes: number; seconds: string }) => `${minutes}m ${seconds}s`,
+      durationHours: ({ hours, minutes }: { hours: number; minutes: string }) => `${hours}h ${minutes}m`,
+      now: "agora",
+      waitingForYou: "Esperando por você",
+      waitingForYouOn: ({ label }: { label: string }) => `Esperando por você · ${label}`,
+      approvalAllowed: ({ label }: { label: string }) => `Permitido · ${label}`,
+      approvalDenied: ({ label }: { label: string }) => `Negado · ${label}`,
+      pinnedAnswer: "Resposta fixada",
+      sessionStarted: "Sessão iniciada",
+      agentOnMachine: ({ agent, machine }: { agent: string; machine: string }) => `${agent} em ${machine}`,
+      partialApprovals: "Aprovações dos turnos carregados até agora.",
+      partialErrors: "Erros dos turnos carregados até agora.",
+      filterEndApprovals: ({ count, total }: { count: number; total: number }) => `${count} de ${total} turnos pediram aprovação.`,
+      filterEndErrors: ({ count, total }: { count: number; total: number }) => `${count} de ${total} turnos tiveram uma etapa com falha.`,
+      loadEarlierTurns: "Carregar turnos anteriores",
+      loadingEarlierTurns: "Carregando turnos anteriores…",
+      earlierTurnsNotListed: "Os turnos anteriores ainda não aparecem.",
+      noApprovals: "Nenhum turno pediu aprovação.",
+      noApprovalsSoFar: "Nenhuma aprovação nos turnos carregados até agora.",
+      noErrors: "Nenhuma etapa com falha nesta sessão.",
+      noErrorsSoFar: "Nenhuma etapa com falha nos turnos carregados até agora.",
+      machineOffline: ({ machine }: { machine: string }) => `${machine} está offline`,
+      sessionOffline: "Esta sessão está offline",
+      backToTime: ({ time }: { time: string }) => `Voltar para ${time}`,
+      backToReading: "Voltar para onde você estava",
     },
 
     inputPlaceholder: "Digite uma mensagem ...",
@@ -6635,7 +7027,7 @@ export const pt = {
         openSubagents: ({ count }: { count: number }) => (count > 0 ? `Abrir agentes (${count})` : 'Abrir agentes'),
         participants: {
           to: 'Para',
-          lead: 'Principal',
+          lead: 'Esta sessão',
           sendToTitle: 'Enviar para',
           broadcast: ({ teamId }: { teamId: string }) => `Broadcast: ${teamId}`,
           executionRun: ({ runId }: { runId: string }) => `Execução ${runId}`,
@@ -6831,6 +7223,8 @@ export const pt = {
           invalid: 'A mensagem não pôde ser aceite tal como está.',
           archived: 'Esta sessão está arquivada e já não aceita entradas.',
           unauthorized: 'Não tem permissão para enviar para esta sessão.',
+          modelNotGranted: 'O modelo selecionado não é permitido.',
+          permissionModeNotGranted: 'O modo de permissões selecionado não é permitido.',
           targetUnavailable: 'A conversa de agente selecionada já não está disponível. Nada foi enviado.',
           targetUpdateRequired: 'Enviar para uma conversa de agente requer um Home e um computador atualizados. Nada foi enviado.',
           cancelled: 'O envio foi cancelado antes de ser aceite.',
@@ -7020,6 +7414,7 @@ export const pt = {
   },
 
     universalSearch: {
+        scopeFilterLabel: 'Home',
         commitsUpdateRequired: 'Atualize o Happier nesta máquina para pesquisar commits.',
     moreResultsAvailable: 'Há mais resultados disponíveis. Refine a pesquisa.',
     sections: {
@@ -7043,23 +7438,18 @@ export const pt = {
         shortcutsHelpHelp: 'Abrir atalhos de teclado',
         shortcutsHelpNewSession: 'Nova sessão',
         commands: {
-            sessionsCategory: 'Sessões',
-            navigationCategory: 'Navegação',
+            actionsCategory: 'Ações',
+            navigationCategory: 'Ir para',
             recentSessionsCategory: 'Sessões recentes',
             runsCategory: 'Corre',
             voiceCategory: 'Voz',
             systemCategory: 'Sistema',
             developerCategory: 'Desenvolvedor',
             newSessionTitle: 'Nova sessão',
-            newSessionSubtitle: 'Iniciar uma nova sessão de bate-papo',
             viewAllSessionsTitle: 'Ver todas as sessões',
-            viewAllSessionsSubtitle: 'Navegue pelo seu histórico de bate-papo',
             settingsTitle: 'Configurações',
-            settingsSubtitle: 'Configure suas preferências',
             accountTitle: 'Conta',
-            accountSubtitle: 'Gerencie sua conta',
             connectTerminalTitle: 'Digitalize QR para conectar o terminal',
-            connectTerminalSubtitle: 'Aprove a conexão mostrada em seu terminal',
             memorySearchTitle: 'Memória de pesquisa',
             memorySearchSubtitle: 'Pesquise conversas anteriores',
             sessionFallbackTitle: ({ id }: { id: string }) => `Session ${id}`,
@@ -7069,29 +7459,26 @@ export const pt = {
             startReviewRunTitle: 'Iniciar execução de revisão',
             startPlanRunTitle: 'Iniciar execução do plano',
             startDelegationRunTitle: 'Iniciar execução de delegação',
-            executionRunsSubtitle: 'Execuções',
             openSessionRunsTitle: 'Execuções de sessões abertas',
             runsForCurrentSessionSubtitle: 'Executa para a sessão atual',
             runsAcrossMachinesSubtitle: 'Funciona em máquinas',
             resetVoiceAgentTitle: 'Redefinir agente de voz',
-            voiceSubtitle: 'Voz',
             signOutTitle: 'Sair',
-            signOutSubtitle: 'Saia da sua conta',
             developerMenuTitle: 'Menu do desenvolvedor',
-            developerMenuSubtitle: 'Acesse ferramentas de desenvolvedor',
         },
     pets: {
       category: "Mascotes",
       wakeTitle: "Acordar mascote",
-      wakeSubtitle: "Mostra a companheira nesta superfície.",
       tuckTitle: "Guardar mascote",
-      tuckSubtitle: "Oculta a companheira nesta superfície.",
       resetPositionTitle: "Redefinir posição da mascote",
-      resetPositionSubtitle: "Move a companheira de volta ao local padrão.",
       chooseTitle: "Escolher mascote",
       chooseSubtitle: "Abre as configurações de mascotes.",
       refreshCodexTitle: "Atualizar mascotes do Codex",
-      refreshCodexSubtitle: "Abre as configurações e detecta mascotes locais do Codex.",
+    },
+    hints: {
+      move: 'Mover',
+      open: 'Abrir',
+      close: 'Fechar',
     },
   },
 
@@ -7263,7 +7650,30 @@ export const pt = {
     },},
 
   server: {
+    pageSections: {
+      savedDescription: 'Troque o Home em que você trabalha, ou renomeie e remova os salvos.',
+      addTitle: 'Adicionar um Home',
+    },
+    page: {
+      description: 'Os Homes aos quais este dispositivo se conecta e como chega até eles.',
+      connectionTitle: 'Conexão',
+      connectionDescription: 'Como este dispositivo chega aos seus Homes.',
+    },
     // Used by Server Configuration screen (app/(app)/server.tsx)
+    homeOnHost: ({ host }: { host: string }) => `Home em ${host}`,
+    homes: {
+      currentTitle: 'Este dispositivo usa',
+      currentPill: 'Atual',
+      switch: 'Trocar',
+      signIn: 'Entrar',
+      signInAgainTitle: ({ name }: { name: string }) => `Entre novamente para usar ${name}`,
+      signInAgainDescription: 'Este dispositivo saiu deste Home, então as sessões e máquinas dele não podem carregar aqui.',
+      unavailableTitle: ({ name }: { name: string }) => `Não foi possível acessar ${name}`,
+      unavailableDescription: 'Este Home não respondeu. Verifique se ele está em execução e acessível a partir deste dispositivo.',
+      connectionDetails: 'Detalhes da conexão',
+      nameThisHome: 'Dar nome a este Home',
+      addByAddress: 'Adicionar por endereço',
+    },
     serverConfiguration: "Configurações do Home",
     enterServerUrl: "Insira um endereço de Home",
     notValidHappyServer: "Não é um Home Happier válido",
@@ -7339,6 +7749,8 @@ export const pt = {
       keepForever: "Sem exclusao automatica",
       automaticDeletionEnabled: "A exclusão automática está ativada",
       detailsUnavailable: "A exclusão automática está ativada, mas este cliente não pode mostrar todas as políticas ativas",
+      readFailed: "Não foi possível ler a política de retenção deste Home",
+      disclosureUnreadable: "Não foi possível verificar a retenção de dados deste Home",
       singlePolicySummary: ({ domain, policy }: { domain: string; policy: string }) => `${domain}: ${policy}`,
       relayCleanupSummary: ({ policies }: { policies: string }) => `Este Home limpa ${policies}.`,
       relayCleanupAfterDays: ({ domain, count }: { domain: string; count: number }) => `${domain} após ${count} ${plural({ count, singular: 'dia', plural: 'dias' })}`,
@@ -7361,8 +7773,16 @@ export const pt = {
       globalLocks: "Bloqueios globais",
       automationRuns: "Execucoes de automacao",
       automationRunEvents: "Eventos de execucao de automacao",
+      homeAdministrationEvents: 'Atividade (auditoria deste Home)',
     },
     multiServerView: {
+        presentationChoice: {
+            title: 'Mostrar sessões',
+            flat: 'Em uma lista',
+            grouped: 'Por Home',
+            flatDescription: 'Cada sessão mostra seu Home como selo.',
+            groupedDescription: 'Cada Home tem sua própria seção.',
+        },
       editMembersAction: "Editar os Homes deste grupo",
       title: "Homes nesta visualização",
       footer: "Escolha como estes Homes aparecem na sua lista de sessões e quais pertencem a este grupo.",
@@ -7411,6 +7831,7 @@ export const pt = {
     viewOptions: 'Opções de visualização',
     searchSessions: 'Buscar sessões',
     searchSessionsPlaceholder: 'Buscar sessões...',
+    closeSearch: 'Fechar busca',
     searchEverythingFor: ({ query }: { query: string }) => `Buscar “${query}” em tudo`,
     searchGroupInThisView: 'Nesta visualização',
     searchGroupOtherMatches: 'Outras correspondências',
@@ -7467,8 +7888,6 @@ export const pt = {
     dragA11yBlockedUnsupportedItem: 'este item não pode ser movido para pastas',
     hideInactiveSessions: 'Ocultar sessões inativas',
     showInactiveSessions: 'Mostrar sessões inativas',
-    attentionSectionTitle: 'Precisa de atenção',
-    workingSectionTitle: 'Trabalhando',
     loadingSectionTitle: "Carregando",
         backgroundWorkingSectionTitle: 'Trabalhando em segundo plano',
     selectionSelectedCount: ({ count }: { count: number }) => count === 1 ? '1 session selected' : `${count} sessions selected`,
@@ -7542,6 +7961,7 @@ export const pt = {
   },
 
     workspacePresentation: {
+        homeFolder: 'Pasta pessoal',
         checkoutKinds: {
             primary: 'Checkout principal',
             git_worktree: 'worktree Git',
@@ -7774,7 +8194,9 @@ export const pt = {
       references: 'Referências',
       skills: 'Habilidades',
       commands: 'Comandos',
+      people: 'Pessoas',
     },
+    suggestionTypeMoreToNarrow: 'Digite mais para refinar',
     stopCodingTurn: "Parar turno de programação",
       nonSteerableSend: {
         title: 'O agente está ocupado',
@@ -7847,6 +8269,8 @@ export const pt = {
     agent: {
       sectionTitle: "Agente",
       unselected: "Escolher agente",
+      noLongerAvailableOn: ({ machine }: { machine: string }) => `Não está mais disponível em ${machine} · Escolha outro`,
+      noLongerAvailable: 'Não está mais disponível · Escolha outro',
       claude: "Claude",
       codex: "Codex",
       cursor: "Cursor",
@@ -7868,7 +8292,7 @@ export const pt = {
       off: "Indexação desativada",
     },
       model: {
-        title: "MODELO",
+        title: "Modelo",
         useCliSettings: "Usar configurações do CLI",
         running: ({ model }: { model: string }) => `Em execução: ${model}`,
         lastUsed: ({ model }: { model: string }) => `Último usado: ${model}`,
@@ -8255,6 +8679,7 @@ export const pt = {
   },
 
   files: {
+            pane: filesPaneTranslations.pt,
             revealInFiles: "Mostrar em Arquivos",
             openChanges: "Abrir alterações",
     searchPlaceholder: "Buscar arquivos...",
@@ -8417,7 +8842,7 @@ export const pt = {
     stash: {
       summaryA11y: "Abrir detalhes do stash",
       summaryTitle: "Stashes gerenciados",
-      detailsTitle: "Stashes gerenciados",
+      detailsTitle: "Stashes",
       empty: "Nenhum stash gerenciado.",
       failedToLoad: "Falha ao carregar stashes.",
       failedToLoadDiff: "Falha ao carregar o diff do stash.",
@@ -8501,7 +8926,6 @@ export const pt = {
     notRepo: "Não é um repositório de controle de versão",
     notUnderSourceControl: "Este diretório não está sob controle de versão",
     sourceControlStale: {
-        title: 'O controle de versão precisa de atenção',
         body: 'Mostrando a última atualização bem-sucedida. A atualização mais recente não foi concluída.',
     },
     repositoryInit: {
@@ -8648,6 +9072,8 @@ export const pt = {
           missingContext: "Falta o contexto do commit",
           failedToLoadDiff: "Falha ao carregar o diff do commit",
           diffUnavailableTitle: "Diff do commit indisponível",
+          couldNotOpenTitle: ({ sha }: { sha: string }) => `Não foi possível abrir o commit ${sha}`,
+          couldNotOpenReason: 'Não foi possível ler as alterações. Tente novamente ou volte ao histórico.',
           diffUnavailableHint:
             "Tente abrir o commit novamente na tela Arquivos.",
           commitLabel: "Commit (Git)",
@@ -8671,6 +9097,7 @@ export const pt = {
 	          commit: "Fazer commit",
 	          generateFailed: "Falha ao gerar mensagem de commit",
 	          generatorDisabled: "O gerador de mensagens de commit está desativado",
+	          title: "Criar commit",
 	        },
       commitAdjacentPush: {
         accessibilityLabel: ({ target }: { target: string }) => `Push para ${target}`,
@@ -9059,6 +9486,26 @@ export const pt = {
       diagnostic: ({ value }: { value: string }) => `Diagnostic: ${value}`,
       countBadge: ({ total, running }: { total: string; running: string }) => `${total} services · ${running} running`,
     },
+    pane: {
+      runningOn: ({ count, machine }: { count: number; machine: string }) => `${count} em execução em ${machine}`,
+      running: ({ count }: { count: number }) => `${count} em execução`,
+      nothingRunningOn: ({ machine }: { machine: string }) => `Nada em execução em ${machine}`,
+      nothingRunning: 'Nada em execução',
+      offlineOn: ({ machine }: { machine: string }) => `${machine} está offline`,
+      offline: 'Esta máquina está offline',
+      offlineReason: 'Os servidores de desenvolvimento dela voltam a aparecer aqui quando ela voltar.',
+      checkAgain: 'Verificar novamente',
+      sectionRunning: 'Em execução',
+      sectionReady: 'Pronto para iniciar',
+      sectionElsewhereOn: ({ machine }: { machine: string }) => `Em outros lugares em ${machine}`,
+      sectionElsewhere: 'Em outros lugares nesta máquina',
+      happierServices: ({ count }: { count: number }) => `Serviços do Happier (${count})`,
+      emptyTitle: 'Visualize o que você está construindo',
+      emptyReason: 'Servidores de desenvolvimento iniciados neste espaço de trabalho aparecem aqui, com um link que também abre no seu telefone.',
+      copyAddress: 'Copiar endereço',
+      publicLinkTitle: 'Link público',
+      publicLinkScanHint: 'Escaneie para abrir no seu telefone.',
+    },
     session: {
       thisSessionTitle: 'Esta sessão',
       workspaceTitle: 'Espaço de trabalho',
@@ -9177,14 +9624,15 @@ export const pt = {
       },
       createActionA11y: 'Criar link de pré-visualização pública',
       revokeActionA11y: 'Revogar link de pré-visualização pública',
-      confirmTitle: 'Tornar o serviço público?',
+      confirmTitle: 'Compartilhar um link para este serviço?',
       confirmMessage: ({ service }: { service: string }) =>
-        `"${service}" ficará acessível publicamente na internet por meio de um link secreto compartilhável.`,
-      confirmCta: 'Criar link público',
+        `"${service}" recebe um link que o abre em outros dispositivos.`,
+      confirmCta: `Criar link`,
             revokeConfirmTitle: 'Revogar link público?',
             revokeConfirmMessage: ({ url }: { url: string }) => `Revogar o link de prévia pública ${url}? Quem estiver usando perderá o acesso.`,
             revokeConfirmCta: 'Revogar link',
             consequenceReach: 'Qualquer pessoa com o link pode abrir este serviço. Não é preciso fazer login.',
+            consequenceReachSignedIn: `Só quem entrou no Happier e pode abrir esta sessão consegue abrir o link.`,
             consequenceExpiry: 'O link para de funcionar sozinho quando a duração indicada abaixo se esgota.',
             consequenceRevoke: 'Você pode revogá-lo a qualquer momento, por este painel.',
             lifetimeLabel: 'Duração',
@@ -9197,6 +9645,7 @@ export const pt = {
     actions: {
       terminateDetectedA11y: 'Encerrar serviço local detectado',
       forgetA11y: 'Ocultar este serviço da lista',
+      hiddenNotice: 'Serviço oculto',
       terminatePidOnlyConfidence: 'Confiança de encerramento: identidade só por PID; confirmação necessária',
             copyAddressA11y: 'Copiar endereço do serviço',
             terminateConfirmTitle: 'Encerrar serviço?',
@@ -9205,7 +9654,9 @@ export const pt = {
             stopConfirmTitle: 'Parar serviço?',
             stopConfirmMessage: ({ service }: { service: string }) => `Parar ${service}? O serviço ficará inacessível até iniciar novamente.`,
             stopConfirmCta: 'Parar',
+            openA11y: ({ service }: { service: string }) => `Abrir ${service}`,
             startA11y: 'Iniciar serviço',
+            runScriptA11y: 'Executar script em uma nova aba do terminal',
             failure: {
                 title: 'A ação não foi concluída',
                 refused: 'A máquina recusou esta ação. Verifique as permissões de serviços locais desta máquina e tente novamente.',
@@ -9265,57 +9716,21 @@ export const pt = {
       stop: 'Parar gravação',
       cancel: 'Cancelar gravação',
     },
-    fidelity: {
-        pixel: 'Captura visual',
-        cdp: 'Captura do navegador',
-        injectedPage: 'Captura da página',
-        nativeCallback: 'Captura nativa',
-        streamFrame: 'Captura do stream',
-        previewProxy: 'Captura da prévia',
-        unavailable: 'Captura pendente',
+    failure: {
+      stopTitle: 'Não foi possível parar a gravação',
+      stopBody: 'Talvez ainda esteja gravando. Tente novamente em instantes.',
+      discardTitle: 'Não foi possível descartar a gravação',
+      discardBody: 'O clipe não foi removido. Tente novamente em instantes.',
     },
     status: {
       noView: 'Nenhuma visualização do navegador selecionada.',
-      unavailable: ({ reason }: { reason: string }) => `Gravação indisponível: ${reason}`,
-      ready: ({ fidelity }: { fidelity: string }) => `Gravação pronta (${fidelity})`,
-      recording: ({ elapsed, fidelity }: { elapsed: string; fidelity: string }) => `Gravando ${elapsed} (${fidelity})`,
-      temporary: 'Temporária',
-      attached: 'Anexada',
-      discarded: 'Descartada',
     },
   },
 
-  browserAutomation: {
-    actions: {
-      cancel: 'Cancelar automação',
-    },
-    status: {
-      noView: 'Nenhuma visualização do navegador selecionada.',
-      unavailable: 'Automação indisponível',
-            running: 'Automação em execução',
-            readyForActions: 'Automação pronta',
-      ready: ({ authority }: { authority: string }) => `Automação pronta (${authority})`,
-      active: ({ requestId }: { requestId: string }) => `Automação em execução: ${requestId}`,
-    },
-    timeline: {
-      entry: ({ action, status }: { action: string; status: string }) => `${action}: ${status}`,
-            action: {
-                inspect: 'Inspecionar página',
-                interact: 'Interagir com a página',
-                navigate: 'Navegar pela página',
-                browserAction: 'Ação do navegador',
-            },
-            status: {
-                succeeded: 'Concluído',
-                failed: 'Falhou',
-                canceled: 'Cancelado',
-                timedOut: 'Tempo esgotado',
-                stale: 'Página desatualizada',
-                blocked: 'Bloqueado',
-                unsupported: 'Não compatível',
-            },
-    },
-  },
+  browserPresence: browserPresenceTranslations.pt,
+
+  computerUse: computerUseTranslations.pt,
+  browserTool: browserToolTranslations.pt,
 
   browserSurface: {
     title: 'Navegador',
@@ -9325,6 +9740,10 @@ export const pt = {
   },
 
   browserLaunchpad: {
+    pane: {
+      previewsFrom: ({ machine }: { machine: string }) => `Pré-visualizações de ${machine}`,
+      previews: 'Pré-visualizações desta máquina',
+    },
     refreshing: 'Atualizando destinos do navegador',
     sections: {
       running: 'Prévias em execução',
@@ -9353,7 +9772,6 @@ export const pt = {
     },
     error: {
       title: 'Destinos do navegador precisam de atenção',
-      subtitle: ({ reason }: { reason: string }) => `Falha ao atualizar: ${reason}`,
     },
   },
 
@@ -9362,7 +9780,6 @@ export const pt = {
       label: 'Endereço do navegador',
       placeholder: 'Digite uma URL',
             copy: 'Copiar URL',
-            searchUnconfigured: 'Nenhum mecanismo de busca configurado — digite um endereço da web.',
     },
         frame: {
             errorTitle: 'Falha ao carregar a página',
@@ -9448,6 +9865,9 @@ export const pt = {
     },
     unavailable: {
       generic: "Esta página está indisponível no momento.",
+      previewElsewhereTitle: ({ service, machine }: { service: string; machine: string }) => `${service} está rodando em ${machine}`,
+      previewElsewhereTitleUnknownMachine: ({ service }: { service: string }) => `${service} está rodando em outra máquina`,
+      previewElsewhere: `Este dispositivo não consegue abri-lo diretamente. Compartilhe um link em Serviços locais para abri-lo aqui.`,
       desktopEngineUnavailable: "O motor do navegador integrado está indisponível nesta máquina.",
       desktopWebView: "O motor do navegador integrado está indisponível nesta máquina. Ainda podes abrir esta página no navegador do sistema.",
       desktopWebViewUnsupportedPlatform: "A navegação integrada ainda não está disponível nesta plataforma.",
@@ -9506,15 +9926,9 @@ export const pt = {
       lowBandwidth: 'Baixa largura de banda',
       degradedCodec: 'Codec degradado',
     },
-    actions: {
-      requestKeyframe: 'Solicitar quadro-chave',
-      lowerQuality: 'Reduzir qualidade',
-    },
     controls: {
       readOnly: 'Somente leitura',
       controlling: 'Controlando',
-      controlsUnavailable: 'Controles indisponíveis',
-      controlsAvailable: 'Controles disponíveis',
     },
     renderer: {
       fallback: 'Renderizador de reserva',
@@ -9799,8 +10213,6 @@ export const pt = {
   },
 
         settingsActions: {
-        aboutSubtitle: 'Escolha onde cada ação é exibida no app, na voz e nas integrações. Itens indisponíveis permanecem visíveis para que você entenda o que está bloqueado por recursos, privacidade ou suporte de runtime.',
-        aboutFooter: 'Essas configurações se aplicam globalmente aos padrões da sua conta. Itens indisponíveis explicam por que um destino está bloqueado no momento.',
         searchPlaceholder: 'Pesquisar ações',
         detailSearchPlaceholder: 'Pesquisar superfícies',
         noResults: 'Nenhuma ação corresponde à sua pesquisa atual.',
@@ -9810,11 +10222,8 @@ export const pt = {
         invalidActionTitle: 'Ação não encontrada',
         invalidActionSubtitle: 'Esta ação não está mais disponível nesta versão.',
         configureActionAccessibilityLabel: 'Configurar ação',
-        approvalHelpTitle: 'Modos de aprovação',
         approvalHelpBody: '“Perguntar primeiro” mostra uma confirmação antes que esta ação seja executada nessa superfície. “Permitido” deixa a ação executar nessa superfície sem pedir aprovação.',
         contributed: {
-            machineSelectionTitle: 'Escolha uma máquina para ações fornecidas',
-            machineSelectionBody: 'Selecione uma máquina para ver e configurar as ações declaradas pelos plugins instalados nela.',
             removedDescription: 'Esta ação fornecida não está mais disponível na máquina selecionada. As configurações salvas são preservadas.',
             removedTargetsTitle: 'Ação fornecida indisponível',
             removedTargetsBody: 'Esta ação não é declarada atualmente pela máquina selecionada. As configurações salvas permanecem disponíveis aqui.',
@@ -9845,6 +10254,14 @@ export const pt = {
             },
         },
         spawnPolicy: {
+            allowLists: {
+                rolesTitle: "Papéis permitidos",
+                rolesSubtitle: "Escolha quais papéis os agentes podem iniciar.",
+                agentsTitle: "Agentes permitidos",
+                agentsSubtitle: "Escolha os agentes para trabalho delegado.",
+                none: "Nenhum permitido",
+                selected: ({ count }: { count: number }) => `${count} selecionados`,
+            },
             title: 'Política de criação de sessões de IA',
             footer: 'Estes controles só se aplicam quando um assistente dentro de uma sessão do Happier cria outra sessão. As configurações herdadas da sessão pai continuam permitidas; itens negados rejeitam substituições explícitas com um erro claro.',
             toggles: {
@@ -9856,6 +10273,7 @@ export const pt = {
                 allowAgentModeOverride: { title: 'Modo do agente', subtitle: 'Permite escolher um modo de agente ou sessão.' },
                 allowConfigOptionOverrides: { title: 'Opções de configuração', subtitle: 'Permite opções do provedor, como esforço de raciocínio e fluxos de trabalho.' },
                 allowProfileOverride: { title: 'Perfil', subtitle: 'Permite selecionar um perfil por id sem expor segredos.' },
+                allowEnvironmentVariables: { title: 'Variáveis de ambiente', subtitle: 'Permite variáveis de ambiente explícitas em novas sessões.' },
                 allowConnectedServicesOverride: { title: 'Serviços conectados', subtitle: 'Permite selecionar vínculos de serviços conectados por referência.' },
                 allowMcpSelectionOverride: { title: 'Seleção MCP', subtitle: 'Permite substituir a seleção herdada de servidores MCP.' },
                 allowTranscriptStorageOverride: { title: 'Armazenamento de transcrição', subtitle: 'Permite escolher um modo de armazenamento compatível.' },
@@ -9921,7 +10339,7 @@ export const pt = {
             voiceFeature: 'Ative as configurações do Assistente de voz para usar este destino.',
             voiceInventoryPrivacy: 'Ative Compartilhar inventário do dispositivo nas configurações de privacidade do Assistente de voz para usar este destino.',
             mcpFeature: 'Ative os servidores MCP para expor esta ação via MCP.',
-            executionRunsFeature: 'Ative execution runs para usar esta ação ou destino.',
+            executionRunsFeature: 'Ative as execuções em segundo plano para usar esta ação ou destino.',
             memorySearchFeature: 'Ative a Pesquisa de memória local para usar esta ação.',
             sessionHandoffFeature: 'Ative o suporte a handoff de sessão para usar esta ação.',
             notAvailableInThisApp: 'Este destino ainda não é exibido neste cliente.',
@@ -9963,11 +10381,11 @@ export const pt = {
             },
             run_list: {
                 title: 'Lista de execuções',
-                subtitle: 'Visível nas listas de execution runs.',
+                subtitle: 'Visível nas listas de execuções em segundo plano.',
             },
             run_card: {
                 title: 'Cartões de execução',
-                subtitle: 'Visível nos cartões de execution runs.',
+                subtitle: 'Visível nos cartões de execuções em segundo plano.',
             },
             voice_tool: {
                 title: 'Ferramenta de voz',
@@ -10160,7 +10578,7 @@ settingsSession: {
           composer: { title: 'Compositor e envio', entrySubtitle: 'Enter para enviar, histórico, aparência do compositor e envio com agente ocupado.' },
           providerLimits: { title: 'Limites e uso do provedor', entrySubtitle: 'Recuperação de limite de uso e medidor de uso ao lado do compositor.' },
           resume: { title: 'Retomada e transferência', entrySubtitle: 'Retomada por replay do transcript e padrões para mover sessões entre máquinas.' },
-          runtime: { title: 'Runtime e terminal', entrySubtitle: 'Tmux, janelas do Windows Terminal e compatibilidade do Terminal Connect.' },
+          runtime: { title: 'Runtime e terminal', entrySubtitle: 'Inicie sessões no tmux nas suas máquinas.' },
       banners: {
           title: 'Avisos',
           footer: 'Os avisos acima do campo de mensagem podem ser recolhidos num emblema de estado. Escolha se isso fica memorizado.',
@@ -10608,7 +11026,7 @@ settingsSession: {
           "Novas sessões usam os padrões, a menos que um atalho de projeto ou rascunho forneça uma configuração.",
         wizardSettingsTitle: "Assistente de nova sessão",
         wizardSettingsSubtitle: "Escolha se cada seletor do assistente aparece como lista ou menu suspenso.",
-        wizardDispositionTitle: "Disposição do assistente",
+        wizardDispositionTitle: 'Layout do assistente',
         wizardDispositionSubtitle: "Escolha quais seletores do assistente aparecem como listas ou menus suspensos.",
         wizardLayoutTitle: "Layout do assistente",
         wizardLayoutFooter: "Controla como as seções do assistente são organizadas em telas largas.",
@@ -10656,6 +11074,7 @@ settingsSession: {
               title: 'Tipo de sessão padrão',
               footer: 'Escolha se novas sessões começam como sessões do Happier ou sessões diretas apoiadas pelo provedor.',
               globalTitle: 'Padrão global',
+              noDirectAgents: 'Nenhum dos seus agentes ativados consegue iniciar sessões diretas ainda, por isso as novas sessões são sessões do Happier.',
               persistedSubtitle: 'Armazene novas sessões no Happier e sincronize-as entre dispositivos por padrão.',
               directSubtitle: 'Inicie sessões diretas vinculadas à máquina quando o provedor oferecer suporte.',
               globalSubtitle: ({ label }: { label: string }) => `Padrão global: ${label}`,
@@ -10691,7 +11110,7 @@ settingsSession: {
           customBackendIdSubtitle: "Informe um id de backend (ex.: claude).",
           customModelIdSubtitle: "Informe um id de modelo (ex.: default).",
           requiresModelNotice: "Escolha abaixo um modelo de resumo. Sem ele, o replay usa apenas as mensagens recentes.",
-          requiresExecutionRunsNotice: "Resumos precisam de execuções, que estão desativadas nesta conta. O replay usará apenas as mensagens recentes.",
+          requiresExecutionRunsNotice: "Resumos precisam de execuções em segundo plano, que estão desativadas nesta conta. O replay usará apenas as mensagens recentes.",
         },
         recentMessagesTitle: "Mensagens recentes a incluir",
         recentMessagesPlaceholder: "16",
@@ -10732,14 +11151,15 @@ settingsSession: {
     ...voiceDiagnosticsTranslations.pt,
     intents: {
       dictation: { title: 'Ditado', subtitle: 'Transforme uma fala em texto no compositor.' },
-      conversations: { title: 'Conversas por voz', subtitle: 'Escolha um provedor e configure as opções principais.' },
-      privacy: { title: 'Privacidade e dados', subtitle: 'Revise o processamento do provedor, o compartilhamento de contexto e o histórico de voz.', processingTitle: 'Processamento do provedor' },
-      advanced: { title: 'Avançado', subtitle: 'Configure a interface de voz, a máquina de execução e os diagnósticos.' },
+      conversations: { title: 'Conversas por voz', subtitle: 'Fale em voz alta com seus agentes: escolha um provedor de voz e configure-o.' },
+      privacy: { title: 'Privacidade e dados', subtitle: 'O que os provedores de voz recebem e o histórico de voz que o Happier guarda.', processingTitle: 'Processamento do provedor' },
+      advanced: { title: 'Avançado', subtitle: 'Como a voz aparece na tela, onde a voz local é executada e diagnósticos.' },
     },
     history: {
       title: 'Histórico de voz',
       sectionTitle: 'Histórico',
       sectionFooter: 'Reveja ou elimine transcrições de conversas de voz globais e sem destino.',
+      pageDescription: 'Transcrições da voz global e de conversas iniciadas fora de uma sessão.',
       entryTitle: 'Histórico de voz',
       entrySubtitle: 'Pesquise, exporte ou limpe transcrições de voz guardadas.',
       searchTitle: 'Pesquisar no histórico carregado',
@@ -10811,6 +11231,8 @@ settingsSession: {
     },
     // Voice settings screen
     modeTitle: "Voz",
+    providerSectionTitle: "Provedor",
+    providerSectionDescription: "Quem ouve e responde quando você fala. Apenas um provedor fica ativo por vez.",
     modeDescription:
       "Configure os recursos de voz. Você pode desativar a voz por completo, usar Happier Voice (requer assinatura) ou usar sua própria conta ElevenLabs.",
     mode: {
@@ -10844,7 +11266,7 @@ settingsSession: {
     },
     ui: {
       title: "Superficie de voz",
-      footer: "Feed opcional na tela com eventos de voz (nao e escrito na sessao).",
+      footer: "Como a voz aparece na tela enquanto você fala. Nada disto é gravado na sessão.",
       activityFeedEnabled: "Ativar feed de atividade de voz",
       activityFeedEnabledSubtitle: "Mostrar eventos recentes de voz na tela",
       activityFeedAutoExpandOnStart: "Expandir automaticamente ao iniciar",
@@ -11538,7 +11960,6 @@ settingsSession: {
       mediatorIdleTtl: "TTL de inatividade do mediador",
       mediatorIdleTtlSubtitle:
         "Parar automaticamente após inatividade (60–3600s)",
-      mediatorIdleTtlTitle: "TTL de inatividade do mediador (segundos)",
       mediatorIdleTtlDescription: "Digite um número entre 60 e 3600.",
       mediatorIdleTtlInvalid: "Digite um número entre 60 e 3600.",
       mediatorChatModelSource: "Origem do modelo (chat)",
@@ -11769,8 +12190,8 @@ settingsSession: {
         feature_unavailable: "A Voz não está disponível para o runtime do agente selecionado.",
       },},
     privacy: {
-      title: "Privacidade",
-      footer: "Os provedores de voz recebem o contexto de sessão selecionado.",
+      title: "Compartilhamento de contexto",
+      footer: "O que a voz pode incluir sobre suas sessões e este app ao falar com o provedor.",
       shareSessionSummary: "Compartilhar resumo da sessão",
       shareSessionSummarySubtitle:
         "Inclui o resumo da sessão no contexto de voz",
@@ -11831,12 +12252,49 @@ settingsSession: {
   },
 
   settingsAccount: {
+    providerCatalogUnavailable: 'Não foi possível verificar as conexões de login disponíveis.',
     securityPageDescription: "Métodos de início de sessão, recuperação, sessões e criptografia deste Home.",
+    accountServiceUnsupportedTitle: ({ accountService }: { accountService: string }) => `${accountService} ainda não consegue encontrar Homes`,
+    accountServiceUnsupportedBody: "Entre com um serviço que consiga encontrar Homes para usar esses recursos. Seus Homes continuam funcionando como antes.",
+    accountServiceUnreachableTitle: ({ accountService }: { accountService: string }) => `Não foi possível acessar ${accountService}`,
+    accountServiceUnreachableBody: "Seus Homes e este dispositivo não são afetados. Tente novamente ou escolha outro serviço.",
+    accountServiceCustodyTitle: ({ accountService }: { accountService: string }) => `Não foi possível abrir seu login salvo em ${accountService}`,
+    accountServiceCustodyBody: "O armazenamento seguro deste dispositivo não respondeu. Tente novamente ou entre de novo.",
+    accountServiceChangeService: "Trocar de serviço",
+    accountServiceChooserTitle: "Serviço de login",
+    accountServiceChooserDescription: "Onde fica sua conta. Seus Homes e como você entra neste Home não mudam.",
+    accountServiceChooserCurrent: "Atual",
+    accountServiceChooserDefault: "Padrão",
+    accountServiceChooserHomeOffersSignIn: "Um Home que você usa e que também oferece login",
+    accountServiceChooserAnother: "Outro serviço…",
+    accountServiceChooserAnotherDescription: "Digite o endereço",
+    accountServiceChooserAddressLabel: "Endereço do serviço de login",
+    accountServiceChooserAddressHelp: "O endereço do serviço que você usa para entrar e encontrar seus Homes.",
+    accountServiceCheck: "Verificar",
+    accountServiceUse: ({ accountService }: { accountService: string }) => `Usar ${accountService}`,
+    accountServiceUseThis: "Usar este serviço",
+    accountServiceFindsHomes: "Encontra Homes",
+    accountServiceSignsInToHomes: "Entra nos Homes",
+    accountServiceKeepsSignIn: ({ accountService }: { accountService: string }) => `Seu login em ${accountService} continua salvo neste dispositivo, então ao voltar você continua conectado.`,
+    accountServiceSignedInWith: ({ provider }: { provider: string }) => `Conectado com ${provider}`,
+    accountServiceSignedIn: "Conectado",
+    accountServiceLinkUnreachableHome: "Seus outros dispositivos ainda não conseguem acessar este Home, então ele não pode ser vinculado.",
+    accountServiceSignOut: ({ accountService }: { accountService: string }) => `Sair de ${accountService}`,
+    accountServiceLinkLocalHomeDescription: "Somente neste dispositivo. Vincule-o para que seus outros dispositivos possam encontrá-lo.",
+    accountServiceLink: "Vincular",
+    accountServiceMoreWays: "Mais formas de entrar",
+    accountServiceFewerWays: "Menos opções",
+    accountServiceCreateAccount: "Novo por aqui? Crie uma conta",
+    accountServiceRecoveryKeyTitle: ({ accountService }: { accountService: string }) => `Chave de recuperação do ${accountService}`,
+    accountServiceRecoveryKeyBody: "Ela foi mostrada uma única vez, ao criar esta conta, e este dispositivo não a guarda. Se você esquecer a senha, só essa chave restaura sua conta.",
+    accountServiceRecoveryKeySaved: "Já salvei",
+    accountServiceRecoveryKeyKeyOnly: ({ accountService }: { accountService: string }) => `Esta conta do ${accountService} não tem senha, então a chave dela não pode ser desbloqueada aqui. É a chave com que você entra; este dispositivo não a guarda.`,
+    accountServiceCreateExplanation: ({ accountService }: { accountService: string }) => `Enviaremos um link por e-mail. Abra-o neste dispositivo e escolha uma senha para ${accountService}.`,
+    accountServiceForgotExplanation: ({ accountService }: { accountService: string }) => `Enviaremos um link para redefinir sua senha do ${accountService}.`,
     hideRecoveryKey: "Ocultar a chave de recuperação",
     showRecoveryKey: "Mostrar a chave de recuperação",
     accountIdCopy: "Copiar o ID da conta",
     accountIdLabel: "ID da conta",
-    accountServiceSignInCta: ({ accountService }: { accountService: string }) => `Entrar no ${accountService}`,
     accountServiceBenefitFindHomes: "Seus Homes, encontrados",
     thisHome: "este Home",
     thisHomeTitle: "Este Home",
@@ -11849,6 +12307,8 @@ settingsSession: {
     apiAccessSectionTitle: "Acesso à API",
     endToEndEncrypted: "Criptografado de ponta a ponta",
     notEndToEndEncrypted: "Sem criptografia de ponta a ponta",
+    encryptionFactChecking: "Verificando a criptografia…",
+    encryptionFactUnread: "Não foi possível ler a criptografia",
     editUsername: "Editar nome de usuário",
     chooseUsername: "Escolher nome de usuário",
     signInSecurityDescription: ({ home }: { home: string }) => `Como você entra em ${home}.`,
@@ -11873,8 +12333,7 @@ settingsSession: {
     accountServiceBenefitDevicesDescription: "Conecte seu celular e outros dispositivos aos seus Homes.",
     accountServiceLinkedHomes: "Homes vinculados",
     accountServiceRefreshedAt: ({ time }: { time: string }) => `Atualizado ${time}`,
-    accountServiceSignInAgain: "Entrar novamente",
-    accountServiceAdvancedSummary: "Serviço de login · diagnóstico",
+    accountServiceAdvancedSummary: "Identidade do serviço · diagnóstico",
     accountDetails: "Detalhes da conta",
     devices: "Dispositivos",
     security: "Início de sessão e segurança",
@@ -11934,10 +12393,9 @@ settingsSession: {
     accountServiceHomes: 'Homes',
     accountServiceFindHomes: 'Encontre seus Homes',
         accountServiceFindHomesDescription: 'Encontre os Homes associados e abra o Home selecionado ou preferido.',
-        accountServiceCheckingConnection: 'Verificando a conexão…',
         accountServiceReconnectRequired: ({ accountService }: { accountService?: string }) => accountService ? `Inicie sessão novamente em ${accountService}` : 'Inicie sessão novamente na sua conta',
         accountServiceReconnectDescription: 'O início de sessão da sua conta expirou. Inicie sessão novamente para atualizar ou ligar Homes.',
-        accountServiceDiscoveryDescription: 'Descobre e conecta automaticamente os Homes vinculados. Seus Homes existentes e o foco atual continuam iguais.',
+        accountServiceDiscoveryDescription: "Os Homes vinculados à sua conta aparecem em cada dispositivo em que você entra.",
         accountServiceDiscoveringHomes: 'Procurando Homes vinculados…',
         accountServiceDiscoveryUnsupported: 'A descoberta de Homes não está disponível',
         accountServiceDiscoveryUnsupportedDescription: 'Use outra conta para encontrar Homes associados.',
@@ -11966,10 +12424,10 @@ settingsSession: {
     server: "Servidor",
     backup: "Cópia de segurança",
     backupDescription: "Sua chave de recuperação restaura o acesso a esta conta criptografada. Guarde-a em um local seguro, como um gerenciador de senhas.",
+    recoveryKeyRowDescription: "Restaura o acesso se você perder todos os dispositivos.",
     secretKey: "Chave de recuperação",
     tapToReveal: "Toque para revelar",
     tapToHide: "Toque para ocultar",
-    secretKeyLabel: "CHAVE DE RECUPERAÇÃO (TOQUE PARA COPIAR)",
     secretKeyCopied:
       "Chave de recuperação copiada para a área de transferência. Guarde-a em um local seguro!",
     secretKeyCopyFailed: "Falha ao copiar chave de recuperação",
@@ -12018,11 +12476,14 @@ settingsSession: {
   settingsLanguage: {
     // Language settings screen
     title: "Idioma",
+    pageDescription: 'O idioma que o Happier usa em todos os seus dispositivos.',
+    appLanguageTitle: 'Idioma do app',
+    listDescription: 'Ao alterá-lo, o app é reiniciado.',
     description:
       "Escolher o idioma preferido para a interface do aplicativo. Isso vai ser sincronizado em todos os seus dispositivos.",
     currentLanguage: "Idioma atual",
     automatic: "Automático",
-    automaticSubtitle: "Detectar das configurações do dispositivo",
+    automaticSubtitle: 'Segue este dispositivo',
     needsRestart: "Idioma alterado",
     needsRestartMessage:
       "O aplicativo precisa ser reiniciado para aplicar a nova configuração de idioma.",
@@ -12036,17 +12497,9 @@ settingsSession: {
   },
 
   updateBanner: {
-    updateShort: "Atualizar",
     updateAvailable: "Atualização disponível",
-    pressToApply: "Pressione para aplicar a atualização",
-    whatsNew: "Novidades",
-    seeLatest: "Veja as atualizações e melhorias mais recentes",
     nativeUpdateAvailable: "Atualização do aplicativo disponível",
-    tapToUpdateAppStore: "Toque para atualizar na App Store",
-    tapToUpdatePlayStore: "Toque para atualizar na Play Store",
 
-    checkNowTitle: "Verificar agora",
-    checkNowSubtitle: "Verifique se há atualizações do aplicativo disponíveis.",
     lastCheckedTitle: "Última verificação",},
 
   changelog: {
@@ -12917,6 +13370,16 @@ settingsSession: {
     back: "Voltar",
     notFound: "Máquina não encontrada",
     unknownMachine: "máquina desconhecida",
+    unnamedMachine: "Máquina sem nome",
+    lockedMachine: "Máquina bloqueada",
+    removedMachine: "Máquina removida",
+    replacedMachine: "Máquina substituída",
+    unlistedMachine: "Máquina não listada",
+    lockedReason: {
+        missingKey: "Encriptado ponto a ponto, e este dispositivo ainda não tem a chave",
+        unopenable: "Encriptado ponto a ponto, e a chave deste dispositivo não o consegue abrir",
+        unreadable: "Este dispositivo não consegue ler os detalhes",
+    },
     unknownPath: "caminho desconhecido",
     previousSessionsTitle: "Sessões anteriores (até as 5 mais recentes)",
     tmux: {
@@ -13015,6 +13478,10 @@ settingsSession: {
     pluginAttributionExternalForwarded: ({ sender, pluginId }: { sender: string; pluginId: string }) => `Encaminhado por ${sender} através do plugin ${pluginId}`,
     pluginAttributionExternalSender: 'um remetente externo',
     pluginAttributionExternalBot: 'um bot externo',
+    provenanceFrom: ({ source }: { source: string }) => `De ${source}`,
+    provenanceSession: 'Sessão',
+    provenanceAutomation: 'Automação',
+    provenanceWorkflow: 'Fluxo de trabalho',
     unknownEvent: "Evento desconhecido",
     runtimeConfigOutcomeAppliesBeforeNextMessage: 'Aplica-se antes da sua próxima mensagem',
     runtimeConfigOutcomeQueuedUntilReady: 'Na fila até estar pronto',
@@ -13888,6 +14355,8 @@ settingsSession: {
     projects: {
     emptyTitle: "Ainda não há projetos",
     emptyDescription: "Os projetos permitem navegar e editar arquivos, e usar Git nas suas máquinas fora das sessões.",
+    noneOpenTitle: "Nenhum projeto aberto",
+    noneOpenDescription: "Escolha um projeto na lista ou adicione uma pasta de uma das suas máquinas.",
     groups: {
       pinned: "Fixados",
       addFirst: "Adicionar um projeto",
@@ -13939,6 +14408,19 @@ settingsSession: {
     },
   },
    ...apiTokenSettingsTranslations.pt,
+   ...embedSettingsTranslations.pt,
+   ...embedTranslations.pt,
+   ...actionFamilyTranslations.pt,
+   ...providerCollectionTranslations.pt,
+   ...settingsSearchKeywordsTranslations.pt,
+   ...automationPageTranslations.pt,
+    ...settingsSessionPagesTranslations.pt,
+    ...workspaceTabTranslations.pt,
+    ...workspaceBarTranslations.pt,
+   ...settingsProfilesRemoteHostsPageTranslations.pt,
+   ...profilesPageTranslations.pt,
+   ...machineDetailPageTranslations.pt,
+   ...sessionPageTranslations.pt,
    settingsPlugins: {
       updateReview: pluginUpdateReviewTranslations.pt,
       ...pluginWebhookAdministrationTranslations['pt'],
@@ -13957,6 +14439,11 @@ settingsSession: {
     administrationMachineTitle: "Gerir em",
     executionOriginTitle: "Executar em",
     targetSelection: {
+      missingInHome: ({ home }: { home: string }) => `Esta máquina já não está em ${home}`,
+      missingInThisHome: "Esta máquina já não está neste Home",
+      unreachableHome: ({ home }: { home: string }) => `Não é possível contactar ${home}`,
+      unreachableThisHome: "Não é possível contactar este Home",
+      chooseAnother: "Escolher outra",
       clear: "Limpar seleção",
       locked: "Os detalhes da máquina estão bloqueados. Escolha outra máquina.",
       missing: "Já não encontrado. Escolha outra máquina.",
@@ -14121,7 +14608,6 @@ settingsSession: {
     genericSettingsUnavailable: "As definições do plugin não estão disponíveis para esta máquina.",
     genericSettingsLoadError: "Não foi possível carregar as definições do plugin.",
     genericSettingsSaveError: "Não foi possível guardar a definição do plugin.",
-    genericSettingsEmpty: "Este plugin não projetou definições editáveis.",
     registriesTitle: "Registos npm privados",
     registriesFooter: "O início de sessão no registo controla apenas o acesso a pacotes. Os plugins instalados e confiáveis continuam disponíveis se um registo for removido ou tiver a sessão terminada.",
     registriesAdd: "Adicionar registo",
@@ -14194,7 +14680,137 @@ settingsSession: {
     cacheSubtitle:
       'Resumos de checkpoint são reutilizados por recibo; resumos do working tree permanecem temporários.',
   },
+    updates: {
+        pageDescription: 'Tudo o que o Happier pode atualizar, neste dispositivo e nas suas máquinas.',
+        catalogSubtitle: 'Este app, linhas de comando e ferramentas de agentes',
+        title: "Atualizações",
+        thisAppTitle: "Happier",
+        happierCliTitle: "Happier CLI",
+        sections: {
+          thisApp: "Este app",
+          thisComputer: "Este computador",
+          machine: "Máquina",
+        },
+        offline: "Offline",
+        pill: {
+          updates: ({ count }: { count: number }) => plural({ count, singular: "atualização", plural: "atualizações" }),
+          running: "Atualizando…",
+          ready: "Reinicie para atualizar",
+          failed: "A atualização não terminou",
+          required: "Atualização necessária",
+          completed: "Atualizado",
+        },
+        a11y: {
+          pillAvailable: ({ count }: { count: number }) => plural({ count, singular: `Atualizações, ${count} disponível`, plural: `Atualizações, ${count} disponíveis` }),
+          pillRunning: "Atualizações, atualizando",
+          pillReady: "Atualizações, reinicie para concluir",
+          pillFailed: "Atualizações, uma atualização não terminou",
+          pillRequired: "Atualizações, atualização necessária",
+          pillCompleted: "Atualizações, concluído",
+          rowOn: ({ title, where }: { title: string; where: string }) => `${title} em ${where}`,
+          actionOn: ({ action, title, where }: { action: string; title: string; where: string }) => `${action} ${title} em ${where}`,
+          progress: ({ percent }: { percent: number }) => `${percent} por cento`,
+        },
+        summary: {
+          checking: "Procurando atualizações…",
+          available: ({ count }: { count: number }) => plural({ count, singular: "1 atualização disponível", plural: `${count} atualizações disponíveis` }),
+          updatingBatch: ({ done, total }: { done: number; total: number }) => `Atualizando ${Math.min(done + 1, total)} de ${total}…`,
+          updating: "Atualizando…",
+          keepWorking: "Você pode continuar trabalhando.",
+          ready: "Reinicie para concluir a atualização do Happier",
+          failedCount: ({ count }: { count: number }) => plural({ count, singular: "1 atualização não terminou", plural: `${count} atualizações não terminaram` }),
+          notCheckedYet: "Ainda não verificado",
+          required: "Uma atualização é necessária",
+          upToDate: "Tudo está atualizado",
+          unknown: "Não foi possível verificar algumas versões",
+          unchecked: "Nenhuma atualização conhecida",
+          uncheckedMeta: "Algumas ferramentas ainda não foram verificadas.",
+          offline: "Algumas máquinas estão offline",
+          checkedAt: ({ time }: { time: string }) => `Última verificação: ${time}`,
+          upToDateDescription: "O Happier, a linha de comando dele e seus agentes estão atualizados.",
+          unknownDescription: "Tudo o que pôde ser verificado está atualizado. O restante será verificado novamente quando estiver acessível.",
+          offlineDescription: "Tudo o que está acessível está atualizado. As máquinas offline serão verificadas quando voltarem.",
+        },
+        settingsSubtitle: {
+          upToDate: "Atualizado",
+          available: ({ count }: { count: number }) => plural({ count, singular: "1 atualização disponível", plural: `${count} atualizações disponíveis` }),
+          running: "Atualizando…",
+          ready: "Reinicie para concluir a atualização",
+          required: "Uma atualização é necessária",
+          failed: "Uma atualização não terminou",
+          unknown: "Não foi possível verificar todas as atualizações",
+          unchecked: "Algumas ferramentas não foram verificadas",
+          offline: "Algumas máquinas estão offline",
+          checking: "Procurando atualizações…",
+        },
+        action: {
+          update: "Atualizar",
+          updateAll: "Atualizar tudo",
+          restart: "Reiniciar para atualizar",
+          reload: "Recarregar",
+          storeIos: "Atualizar na App Store",
+          storeAndroid: "Atualizar no Google Play",
+          checkNow: "Procurar atualizações",
+          stopAfterThis: "Parar depois desta",
+          skipVersion: "Pular esta versão",
+          openUpdates: "Abrir Atualizações",
+          whatsNew: "Novidades",
+          viewLog: "Ver registro",
+        },
+        row: {
+            cliNotManaged: 'O Happier não instalou esta linha de comando, então não vai substituí-la.',
+          versionChange: ({ from, to }: { from: string; to: string }) => `${from} → ${to}`,
+          upToDateVersion: ({ version }: { version: string }) => `Atualizado · ${version}`,
+          available: ({ version }: { version: string }) => `${version} disponível`,
+          downloading: ({ version }: { version: string }) => `Baixando ${version}`,
+          downloadingUpdate: "Baixando atualização",
+          updatingTo: ({ version }: { version: string }) => `Atualizando para ${version}…`,
+          updating: "Atualizando…",
+          restarting: "Reiniciando…",
+          restartingService: "Reiniciando o serviço em segundo plano…",
+          readyVersion: ({ version }: { version: string }) => `${version} está pronta`,
+          ready: "Atualização pronta",
+          webNewBuild: "Uma versão mais recente do Happier está pronta",
+          requiredApp: "Esta versão não é mais compatível. Atualize para continuar usando o Happier.",
+          appCheckFailed: "Não foi possível verificar se há uma versão mais recente.",
+          appDownloadFailed: "O download não terminou.",
+          appInstallFailed: "Não foi possível instalar a atualização.",
+          latestUnknown: "Não foi possível verificar se há uma versão mais recente",
+          rolledBack: ({ kept, target }: { kept: string; target: string }) => `${target} não iniciou nesta máquina, então ela continua na ${kept}.`,
+          installedByYou: "Instalado por você",
+          updateItYourWay: "Atualize do mesmo jeito que você instalou.",
+          offline: "Não é possível atualizar offline",
+          skipped: ({ version }: { version: string }) => `${version} ignorada`,
+          checking: "Verificando…",
+          failedGeneric: "A atualização não terminou. Tente novamente.",
+          remoteUnsupported: "Esta máquina não pode atualizar a linha de comando remotamente. Atualize diretamente na máquina.",
+          updateNotVerified: "A atualização foi executada, mas a versão não mudou.",
+          rolledBackLocal: "A atualização não iniciou, então este computador voltou para a versão anterior.",
+          smokeFailed: "A nova versão não funcionou neste computador, então nada mudou.",
+          waitingReconnect: "Instalada, aguardando esta máquina se reconectar",
+          couldNotStart: ({ message }: { message: string }) => `Não foi possível iniciar a atualização: ${message}`,
+          restartsService: 'Reinicia o serviço em segundo plano; as sessões se reconectam.',
+          alreadyCurrent: 'Já está atualizado',
+          anotherUpdateRunning: 'Outra atualização está em andamento nesta máquina. Tente novamente quando ela terminar.',
+          outcomeUnknown: 'Não foi possível confirmar que a atualização começou. Tente novamente para verificar.',
+          othersUpToDate: ({ count }: { count: number }) => plural({ count, singular: "Mais 1 atualizado", plural: `Mais ${count} atualizados` }),
+          waitingOffline: ({ count }: { count: number }) => plural({ count, singular: "1 atualização aguardando a máquina voltar a ficar online", plural: `${count} atualizações aguardando a máquina voltar a ficar online` }),
+        },
+        footer: "As atualizações são instaladas em cada máquina. Depois de uma atualização da linha de comando, o Happier reinicia o serviço em segundo plano daquela máquina.",
+        tray: {
+          available: ({ count }: { count: number }) => `Atualizações disponíveis (${count})…`,
+          running: "Atualizando…",
+          ready: "Reiniciar para atualizar o Happier",
+          required: "Atualização necessária…",
+          failed: "Uma atualização não terminou…",
+        },
+    },
     machinePools: machinePoolTranslations.pt,
+    settingsConnections: settingsConnectionsTranslations.pt,
+    settingsMachines: settingsMachinesTranslations.pt,
+    connectedServicesSettings: connectedServicesSettingsTranslations.pt,
+    connectedServicesPool: connectedServicesPoolTranslations.pt,
+    connectedServicesCollection: connectedServicesCollectionTranslations.pt,
     externalSessions: {
         ...externalSessionOperationTranslations.pt,
         ...externalSessionSettingsTranslations.pt,
@@ -14247,6 +14863,7 @@ settingsSession: {
     browseActivityIdle: "Inativa",
     browseActivityUnknown: "Desconhecida",
         browseSearchPlaceholder: "Pesquisar sessões carregadas…",
+        browseSearchAgentPlaceholder: ({ agent }: { agent: string }) => `Pesquisar sessões do ${agent}…`,
         browseNoSearchResults: "Nenhuma sessão carregada corresponde ainda a esta pesquisa.",
     browseIndexing: "A indexar sessões externas…",
     browseIndexingProgress: ({ scanned, total }: { scanned: number; total: number }) => `${scanned} de ${total} sessões indexadas`,
@@ -14284,6 +14901,8 @@ settingsSession: {
     },
     workflows: workflowTranslations.pt,
     homeGovernance: homeGovernanceTranslations.pt,
+    homeFeatures: homeFeatureTranslations.pt,
+    homeSettings: homeSettingsTranslations.pt,
     teams: teamsTranslations.pt.teams,
     identityAdministration: identityAdministrationTranslations.pt.identityAdministration,
     personalHome: {
@@ -14312,6 +14931,8 @@ settingsSession: {
     },
     settingsSearch: {
     placeholder: "Pesquisar configurações",
+    pagesTitle: "Páginas",
+    settingsTitle: "Configurações",
   },
     onboardingJourney: {
         accessibility: {

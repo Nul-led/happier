@@ -1,8 +1,12 @@
 import * as React from 'react';
+import { SessionTranscriptSourceProvider } from '@/components/sessions/transcript/source/SessionTranscriptSourceContext';
+import { createReadOnlySessionTranscriptSource } from '@/components/sessions/transcript/source/readOnlySessionTranscriptSource';
 import { View } from 'react-native';
 import { useUnistyles } from 'react-native-unistyles';
 
 import { MessageViewWithSessionCommon } from '@/components/sessions/transcript/MessageView';
+import { UserMessageBubble } from '@/components/sessions/transcript/UserMessageBubble';
+import type { Theme } from '@/theme';
 import { ToolCallsGroupViewWithSessionCommon } from '@/components/sessions/transcript/turns/toolCalls/ToolCallsGroupView';
 import type {
     TranscriptForkCommon,
@@ -13,7 +17,11 @@ import type {
 import type { ToolViewDisplaySettings } from '@/components/tools/shell/views/toolViewDisplaySettings';
 import { createAgentSelectionActionChip } from '@/components/sessions/agentInput/definitions/createAgentSelectionActionChip';
 import { createPermissionActionChip } from '@/components/sessions/agentInput/definitions/createPermissionActionChip';
-import { createPathActionChip } from '@/components/sessions/agentInput/definitions/createPathActionChip';
+import { AgentInputFolderChip, type AgentInputFolderChipState } from '@/components/sessions/agentInput/definitions/AgentInputFolderChip';
+import { AgentInputSubmitButton } from '@/components/sessions/agentInput/components/AgentInputSubmitButton';
+import { MULTI_TEXT_INPUT_BASE_FONT_SIZE } from '@/components/ui/forms/multiTextInputTypography';
+
+const PREVIEW_FOLDER_STATE: AgentInputFolderChipState = { kind: 'folder', path: '~/happier' };
 import { createActionMenuTriggerChip } from '@/components/sessions/agentInput/definitions/createActionMenuTriggerChip';
 import {
     AGENT_INPUT_ACTION_CHIP_ICON_ONLY_STYLE,
@@ -22,7 +30,7 @@ import {
     resolveAgentInputPanelStyle,
 } from '@/components/sessions/agentInput/components/agentInputChromeStyles';
 import { Text } from '@/components/ui/text/Text';
-import type { AgentTextMessage, Message, ToolCallMessage, UserTextMessage } from '@/sync/domains/messages/messageTypes';
+import type { AgentTextMessage, Message, ToolCallMessage, UserTextMessage } from "@happier-dev/session-core/messages";
 import type { Settings } from '@/sync/domains/settings/settings';
 import { getPermissionModeLabelForAgentType } from '@/sync/domains/permissions/permissionModeOptions';
 import { t } from '@/text';
@@ -40,7 +48,8 @@ import { t } from '@/text';
 const PREVIEW_SESSION_ID = 'settings-preview';
 const CANVAS_WIDTH = 320;
 const CANVAS_SCALE = 0.34;
-const READ_ONLY_INTERACTION = { canSendMessages: false, canApprovePermissions: false, disableToolNavigation: true } as const;
+const READ_ONLY_INTERACTION = { canSendMessages: false, canApprovePermissions: false } as const;
+const PREVIEW_SOURCE = createReadOnlySessionTranscriptSource({ sessionId: PREVIEW_SESSION_ID, messages: [], metadata: null, agentState: null, reducerState: null });
 const NOOP = () => {};
 
 const FORK_COMMON: TranscriptForkCommon = {
@@ -135,11 +144,13 @@ function toolMessage(id: string, command: string): ToolCallMessage {
 /** A normal-width stage for real rows, shown scaled down inside the tile. */
 function PreviewStage(props: Readonly<{ children: React.ReactNode }>) {
     return (
+        <SessionTranscriptSourceProvider source={PREVIEW_SOURCE}>
         <View style={{ flex: 1, overflow: 'hidden' }} pointerEvents="none" importantForAccessibility="no-hide-descendants" accessibilityElementsHidden>
             <View style={{ width: CANVAS_WIDTH, transform: [{ scale: CANVAS_SCALE }], transformOrigin: 'top left', paddingTop: 12 }}>
                 {props.children}
             </View>
         </View>
+        </SessionTranscriptSourceProvider>
     );
 }
 
@@ -255,7 +266,7 @@ function ComposerStage(props: Readonly<{ layout: 'wrap' | 'scroll' | 'collapsed'
         : [
             createAgentSelectionActionChip({ anchorRef: anchor, agentId: 'claude', tint, showLabel: props.labels !== 'none', label: 'Claude', chipStyle: coreChipStyle, textStyle, onPress: NOOP }),
             createPermissionActionChip({ anchorRef: anchor, tint, showLabel: props.labels !== 'none', label: getPermissionModeLabelForAgentType('claude', 'default'), chipStyle: coreChipStyle, textStyle, onPress: NOOP }),
-            createPathActionChip({ anchorRef: anchor, currentPath: '~/happier', tint, showLabel: props.labels === 'all', chipStyle: extraChipStyle, textStyle, onPress: NOOP }),
+            <AgentInputFolderChip key="path" anchorRef={anchor} state={PREVIEW_FOLDER_STATE} tint={tint} chipStyle={extraChipStyle} textStyle={textStyle} onPress={NOOP} />,
             createActionMenuTriggerChip({ anchorRef: anchor, tint, showLabel: props.labels === 'all', chipStyle: extraChipStyle, textStyle, onPress: NOOP }),
         ];
     return (
@@ -285,4 +296,65 @@ export const ComposerChipDensityPreview = React.memo(function ComposerChipDensit
     density: 'auto' | 'labels' | 'icons';
 }>) {
     return <ComposerStage layout="wrap" labels={props.density === 'labels' ? 'all' : props.density === 'icons' ? 'none' : 'core'} />;
+});
+
+const EMBEDDED_CHAT_CANVAS_WIDTH = 340;
+const EMBEDDED_CHAT_HEIGHT = 168;
+
+/**
+ * The preset/corner miniature: the live bubble and composer pieces at static appearance props.
+ * The empty-state illustration uses the isolated live preview route instead.
+ */
+export const EmbeddedChatPreview = React.memo(function EmbeddedChatPreview(props: Readonly<{ appearance?: Theme }>) {
+    const { theme: currentTheme } = useUnistyles();
+    const theme = props.appearance ?? currentTheme;
+    const scale = CANVAS_SCALE;
+    const tint = theme.colors.composer.chipTint;
+    const textStyle = React.useMemo(() => resolveAgentInputActionChipTextStyle(theme), [theme]);
+    const panelStyle = React.useMemo(() => resolveAgentInputPanelStyle(theme), [theme]);
+    const anchor = React.useRef<View | null>(null);
+    return (
+        <SessionTranscriptSourceProvider source={PREVIEW_SOURCE}>
+            <View
+                testID="embedded-chat-preview"
+                style={{
+                    width: EMBEDDED_CHAT_CANVAS_WIDTH * scale,
+                    height: EMBEDDED_CHAT_HEIGHT * scale,
+                    overflow: 'hidden',
+                    justifyContent: 'flex-end',
+                    borderRadius: theme.borderRadius.lg,
+                    borderWidth: 0,
+                    borderColor: theme.colors.border.default,
+                    backgroundColor: theme.colors.background.canvas,
+                }}
+                pointerEvents="none"
+                importantForAccessibility="no-hide-descendants"
+                accessibilityElementsHidden
+            >
+                <View style={{ width: EMBEDDED_CHAT_CANVAS_WIDTH, transform: [{ scale }], transformOrigin: 'bottom left', padding: 10, gap: 10 }}>
+                    <View style={{ alignSelf: 'flex-end', maxWidth: '100%' }}>
+                        <UserMessageBubble theme={theme}>
+                            <Text style={{ color: theme.colors.message.user.foreground }}>{t('settingsSessionPages.preview.userMessage')}</Text>
+                        </UserMessageBubble>
+                    </View>
+                    <View style={panelStyle}>
+                        <Text style={{ paddingHorizontal: 8, paddingVertical: 10, color: theme.colors.input.placeholder, fontSize: MULTI_TEXT_INPUT_BASE_FONT_SIZE }}>
+                            {t('session.inputPlaceholder')}
+                        </Text>
+                        <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+                            {createAgentSelectionActionChip({ anchorRef: anchor, agentId: 'claude', tint, showLabel: true, label: 'Claude', chipStyle: () => AGENT_INPUT_ACTION_CHIP_STYLE, textStyle, onPress: NOOP })}
+                            <AgentInputSubmitButton
+                                appearance={props.appearance}
+                                testID="embedded-chat-preview-send"
+                                disabled
+                                hasSendableContent={false}
+                                dictationStatus="idle"
+                                onSend={NOOP}
+                            />
+                        </View>
+                    </View>
+                </View>
+            </View>
+        </SessionTranscriptSourceProvider>
+    );
 });

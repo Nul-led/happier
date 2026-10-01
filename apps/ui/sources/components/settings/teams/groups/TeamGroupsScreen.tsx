@@ -1,12 +1,13 @@
 import * as React from 'react';
-import { useRouter } from 'expo-router';
+import { useRouter } from '@/components/appShell/workspace/destinationRoute';
 import type { TeamGroupV1 } from '@happier-dev/protocol/teams';
 import { Platform } from 'react-native';
 import { useUnistyles } from 'react-native-unistyles';
 
-import { Icon } from '@/components/ui/icons/Icon';
+import { AttentionBanner } from '@/components/ui/lists/AttentionBanner';
 import { Item } from '@/components/ui/lists/Item';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
+import { SectionActionButton } from '@/components/ui/lists/SectionActionButton';
 import { VirtualizedList } from '@/components/ui/lists/virtualized';
 import { useTeamGroups } from '@/hooks/teams/useTeamGroups';
 import { t } from '@/text';
@@ -14,6 +15,7 @@ import { t } from '@/text';
 import { TeamSection } from '../TeamSection';
 import type { TeamSectionContext } from '../teamSectionContext';
 import { groupManagementLabel } from '../teamLabels';
+import { teamReadFailureLabel } from '../teamMutationPresentation';
 import { teamGroupCreatePath, teamGroupDetailPath } from '../teamsRoutes';
 
 const GROUP_CHUNK_SIZE = 12;
@@ -30,12 +32,15 @@ const GroupRows = React.memo(function GroupRows(props: Readonly<{
     testIdPrefix: string;
     first: boolean;
     last: boolean;
+    /** The section's trailing action (the first chunk carries it). */
+    action?: React.ReactNode;
 }>) {
     const router = useRouter();
     if (props.groups.length === 0) return null;
     return (
         <ItemGroup
             title={props.first ? props.title : undefined}
+            action={props.first ? props.action : undefined}
             virtualizedSegment={{ first: props.first, last: props.last }}
         >
             {props.groups.map((group) => {
@@ -81,17 +86,35 @@ const GroupsList = React.memo(function GroupsList(props: Readonly<{
         scope: context.scope,
         address: context.address,
         archived: 'archived',
+        // The first affordance is the explicit user's request to read the
+        // archived sequence. Once opened, its answer controls whether the
+        // affordance remains visible; there is no speculative background read.
         enabled: canRead && showArchived,
     });
+    const offerArchived = !showArchived
+        || archived.status !== 'ready'
+        || !archived.isCurrent
+        || archived.rows.length > 0
+        || archived.error !== null;
 
     const rows = React.useMemo<readonly GroupVirtualizedRow[]>(() => {
         const result: GroupVirtualizedRow[] = [];
+        // Adding happens in the collection: the Groups section carries its "+".
+        const createAction = canCreate ? (
+            <SectionActionButton
+                testID="team-groups-create"
+                icon="plus"
+                title={t('teams.groups.create')}
+                onPress={() => router.push(teamGroupCreatePath(context.address))}
+            />
+        ) : undefined;
         const add = (key: string, render: () => React.ReactElement) => result.push({ key, render });
         const addGroupChunks = (
             keyPrefix: string,
             groups: readonly TeamGroupV1[],
             title: string,
             testIdPrefix: string,
+            action?: React.ReactNode,
         ) => {
             for (let start = 0; start < groups.length; start += GROUP_CHUNK_SIZE) {
                 const chunk = groups.slice(start, start + GROUP_CHUNK_SIZE);
@@ -105,6 +128,7 @@ const GroupsList = React.memo(function GroupsList(props: Readonly<{
                         testIdPrefix={testIdPrefix}
                         first={first}
                         last={last}
+                        action={action}
                     />
                 ));
             }
@@ -112,8 +136,15 @@ const GroupsList = React.memo(function GroupsList(props: Readonly<{
 
         if (!canRead) {
             add('forbidden', () => (
-                <ItemGroup footer={t('teams.errors.forbidden')}>
-                    <Item testID="team-groups-forbidden" title={t('homeGovernance.forbiddenTitle')} showChevron={false} />
+                <ItemGroup>
+                    <Item
+                        testID="team-groups-forbidden"
+                        title={t('homeGovernance.forbiddenTitle')}
+                        subtitle={t('teams.errors.forbidden')}
+                        subtitleLines={0}
+                        mode="info"
+                        showChevron={false}
+                    />
                 </ItemGroup>
             ));
             return result;
@@ -121,33 +152,39 @@ const GroupsList = React.memo(function GroupsList(props: Readonly<{
 
         if (active.status === 'loading' && active.rows.length === 0) {
             add('loading', () => (
-                <ItemGroup>
-                    <Item testID="team-groups-loading" title={t('teams.tabs.groups')} loading showChevron={false} />
+                <ItemGroup title={t('teams.tabs.groups')} action={createAction}>
+                    <Item testID="team-groups-loading" title={t('teams.loading')} loading mode="info" showChevron={false} />
                 </ItemGroup>
             ));
         }
 
         if (active.rows.length === 0 && active.status === 'ready') {
             add('empty', () => (
-                <ItemGroup footer={t('teams.groups.emptyBody')}>
-                    <Item testID="team-groups-empty" title={t('teams.groups.emptyTitle')} showChevron={false} />
+                <ItemGroup title={t('teams.tabs.groups')} action={createAction}>
+                    <Item
+                        testID="team-groups-empty"
+                        title={t('teams.groups.emptyTitle')}
+                        subtitle={t('teams.groups.emptyBody')}
+                        mode="info"
+                        showChevron={false}
+                    />
                 </ItemGroup>
             ));
         }
 
-        addGroupChunks('active', active.rows, t('teams.tabs.groups'), 'team-groups-row');
+        addGroupChunks('active', active.rows, t('teams.tabs.groups'), 'team-groups-row', createAction);
 
         if (active.error) {
             add('retry', () => (
-                <ItemGroup footer={t('teams.unavailable.offline')}>
-                    <Item
-                        testID="team-groups-retry"
-                        title={t('teams.unavailable.retry')}
-                        icon={<Icon name="arrow-clockwise" size={29} color={theme.colors.text.secondary} />}
-                        onPress={() => void active.reload()}
-                        showChevron={false}
-                    />
-                </ItemGroup>
+                <AttentionBanner
+                    testID="team-groups-unavailable"
+                    title={teamReadFailureLabel(active.error!)}
+                    action={active.error?.retryable ? {
+                        label: t('teams.unavailable.retry'),
+                        onPress: () => void active.reload(),
+                        testID: 'team-groups-retry',
+                    } : undefined}
+                />
             ));
         } else if (active.hasMore && active.rows.length > 0) {
             add('load-more', () => (
@@ -164,29 +201,19 @@ const GroupsList = React.memo(function GroupsList(props: Readonly<{
             ));
         }
 
-        if (canCreate) {
-            add('create', () => (
+        if (offerArchived) {
+            add('toggle-archived', () => (
                 <ItemGroup>
                     <Item
-                        testID="team-groups-create"
-                        title={t('teams.groups.create')}
-                        onPress={() => router.push(teamGroupCreatePath(context.address))}
+                        testID="team-groups-toggle-archived"
+                        title={showArchived ? t('teams.directory.hideArchived') : t('teams.directory.showArchived')}
+                        accessibilityExpanded={showArchived}
+                        onPress={() => setShowArchived((current) => !current)}
+                        showChevron={false}
                     />
                 </ItemGroup>
             ));
         }
-
-        add('toggle-archived', () => (
-            <ItemGroup>
-                <Item
-                    testID="team-groups-toggle-archived"
-                    title={showArchived ? t('teams.directory.hideArchived') : t('teams.directory.showArchived')}
-                    accessibilityExpanded={showArchived}
-                    onPress={() => setShowArchived((current) => !current)}
-                    showChevron={false}
-                />
-            </ItemGroup>
-        ));
 
         if (showArchived) {
             if (archived.status === 'loading' && archived.rows.length === 0) {
@@ -198,8 +225,8 @@ const GroupsList = React.memo(function GroupsList(props: Readonly<{
             }
             if (archived.status === 'ready' && archived.rows.length === 0) {
                 add('archived-empty', () => (
-                    <ItemGroup footer={t('teams.groups.emptyBody')}>
-                        <Item testID="team-groups-archived-empty" title={t('teams.groups.emptyTitle')} showChevron={false} />
+                    <ItemGroup title={t('teams.groups.archivedSection')}>
+                        <Item testID="team-groups-archived-empty" title={t('teams.groups.emptyTitle')} mode="info" showChevron={false} />
                     </ItemGroup>
                 ));
             }
@@ -207,15 +234,15 @@ const GroupsList = React.memo(function GroupsList(props: Readonly<{
 
             if (archived.error) {
                 add('archived-retry', () => (
-                        <ItemGroup footer={t('teams.unavailable.offline')}>
-                            <Item
-                                testID="team-groups-archived-retry"
-                                title={t('teams.unavailable.retry')}
-                                icon={<Icon name="arrow-clockwise" size={29} color={theme.colors.text.secondary} />}
-                                onPress={() => void archived.reload()}
-                                showChevron={false}
-                            />
-                        </ItemGroup>
+                        <AttentionBanner
+                            testID="team-groups-archived-unavailable"
+                            title={teamReadFailureLabel(archived.error!)}
+                            action={archived.error?.retryable ? {
+                                label: t('teams.unavailable.retry'),
+                                onPress: () => void archived.reload(),
+                                testID: 'team-groups-archived-retry',
+                            } : undefined}
+                        />
                 ));
             } else if (archived.hasMore && archived.rows.length > 0) {
                 add('archived-load-more', () => (
@@ -234,7 +261,7 @@ const GroupsList = React.memo(function GroupsList(props: Readonly<{
         }
 
         return result;
-    }, [active, archived, canCreate, canRead, context, router, showArchived, theme.colors.text.secondary]);
+    }, [active, archived, canCreate, canRead, context, offerArchived, router, showArchived, theme.colors.text.secondary]);
 
     const renderRow = React.useCallback(
         ({ item }: Readonly<{ item: GroupVirtualizedRow }>) => item.render(),
@@ -250,7 +277,7 @@ const GroupsList = React.memo(function GroupsList(props: Readonly<{
             ListHeaderComponent={props.header === undefined ? null : <>{props.header}</>}
             style={{
                 flex: 1,
-                backgroundColor: theme.colors.background.canvas,
+                backgroundColor: theme.colors.surface.base,
                 ...(Platform.OS === 'web' ? { minHeight: 0 } : {}),
             }}
             contentContainerStyle={{ paddingBottom: Platform.OS === 'ios' ? 34 : 16 }}
@@ -273,6 +300,7 @@ export const TeamGroupsScreen = React.memo(function TeamGroupsScreen(props: Read
             serverId={props.serverId}
             teamId={props.teamId}
             title={t('teams.tabs.groups')}
+            description={t('teams.pages.groups')}
             presentation="virtualized-list"
         >
             {(context, header) => <GroupsList context={context} header={header} />}

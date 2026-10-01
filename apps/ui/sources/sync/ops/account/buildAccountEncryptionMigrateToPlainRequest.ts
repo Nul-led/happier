@@ -18,12 +18,7 @@ import {
 
 import { resolveAccountScopedCryptoMaterialFromCredentials } from '@/sync/domains/connectedServices/resolveAccountScopedCryptoMaterialFromCredentials';
 import { getRandomBytes } from '@/platform/cryptoRandom';
-import { decodeAutomationTemplate } from '@/sync/domains/automations/automationTemplateCodec';
-import {
-  encodeAutomationTemplateForTransport,
-  resolveAutomationTemplatePayload,
-} from '@/sync/domains/automations/automationTemplateTransport';
-import { AutomationTemplateEncryptionMaterialUnavailableError } from '@/sync/domains/automations/automationTemplateAvailability';
+import { convertAccountEncryptionMigrationTemplate } from './buildAccountEncryptionMigrationAutomations';
 
 import {
   AccountEncryptionMigrateRequestSchema,
@@ -40,6 +35,7 @@ import {
   buildAccountEncryptionSessionDraftsDirective,
   type AccountEncryptionSessionDraftMigrationCandidate,
 } from './buildAccountEncryptionSessionDraftsDirective';
+import { buildAccountEncryptionAuthoringMemoryDirective, type AccountEncryptionAuthoringMemoryMigrationCandidate } from './buildAccountEncryptionAuthoringMemoryDirective';
 
 type ConnectedServiceCredentialMetadataInput = Readonly<{
   kind: 'oauth' | 'token';
@@ -59,6 +55,7 @@ export async function buildAccountEncryptionMigrateToPlainRequest(params: Readon
   qualifiedConnectedAccounts?: readonly QualifiedConnectedAccountProfileV4[];
   automations: ReadonlyArray<Readonly<{ id: string; templateVersion: number; templateCiphertext: string }>>;
   sessionDrafts?: readonly AccountEncryptionSessionDraftMigrationCandidate[];
+  authoringMemory?: readonly AccountEncryptionAuthoringMemoryMigrationCandidate[];
   storageDirectives: AccountEncryptionMigrationStorageDirectives;
   fetchConnectedServiceCredentialSealed: (args: Readonly<{ serviceId: ConnectedServiceId; profileId: string }>) => Promise<Readonly<{
     sealed: Readonly<{ format: string; ciphertext: string }>;
@@ -169,47 +166,20 @@ export async function buildAccountEncryptionMigrateToPlainRequest(params: Readon
     };
   })();
 
-  const automations = await (async () => {
+  const automations = params.storageDirectives.automations ?? await (async () => {
     if (params.automations.length === 0) {
       return { action: 'assert_empty' as const };
     }
 
-    const templates: any[] = [];
+    const templates = [];
     for (const automation of params.automations) {
-      const payload = await resolveAutomationTemplatePayload({
-        templateCiphertext: automation.templateCiphertext,
-        decryptRaw: params.decryptAutomationTemplateRaw,
-      });
-      if (payload.kind === 'invalid') {
-        throw new Error(`Invalid automation template envelope (${automation.id})`);
-      }
-      if (payload.kind === 'locked') {
-        throw new AutomationTemplateEncryptionMaterialUnavailableError();
-      }
-      const decoded = decodeAutomationTemplate(JSON.stringify(payload.payload));
-      if (!decoded) throw new Error(`Invalid decrypted automation template payload (${automation.id})`);
-
-      const requiresSensitiveEncryption =
-        typeof (decoded as any).sessionEncryptionKeyBase64 === 'string' &&
-        String((decoded as any).sessionEncryptionKeyBase64).trim().length > 0;
-      if (requiresSensitiveEncryption) {
-        templates.push({
-          automationId: automation.id,
-          expectedTemplateVersion: automation.templateVersion,
-          templateCiphertext: automation.templateCiphertext,
-        });
-        continue;
-      }
-
-      const plainTemplateCiphertext = await encodeAutomationTemplateForTransport({
-        accountMode: 'plain',
-        template: decoded,
-      });
-
       templates.push({
         automationId: automation.id,
         expectedTemplateVersion: automation.templateVersion,
-        templateCiphertext: plainTemplateCiphertext,
+        templateCiphertext: await convertAccountEncryptionMigrationTemplate({
+          id: automation.id, templateCiphertext: automation.templateCiphertext, toMode: 'plain',
+          decryptRaw: params.decryptAutomationTemplateRaw,
+        }),
       });
     }
     return { action: 'migrate' as const, templates };
@@ -217,6 +187,9 @@ export async function buildAccountEncryptionMigrateToPlainRequest(params: Readon
   const sessionDrafts = buildAccountEncryptionSessionDraftsDirective({
     candidates: params.sessionDrafts ?? [],
     target: { mode: 'plain' },
+  });
+  const authoringMemory = buildAccountEncryptionAuthoringMemoryDirective({
+    candidates: params.authoringMemory ?? [], target: { mode: 'plain' },
   });
   return AccountEncryptionMigrateRequestSchema.parse({
     toMode: 'plain',
@@ -231,5 +204,6 @@ export async function buildAccountEncryptionMigrateToPlainRequest(params: Readon
     automations,
     ...params.storageDirectives,
     ...(sessionDrafts ? { sessionDrafts } : {}),
+    ...(authoringMemory ? { authoringMemory } : {}),
   });
 }

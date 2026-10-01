@@ -4,20 +4,17 @@ import { SettingsCatalogOverviewGroup } from '@/components/settings/SettingsCata
 type SettingsFilesAndSourceControlSectionProps = Readonly<Pick<SettingsBelowFoldSectionsProps,
     | 'onNavigate'
     | 'router'
-    | 'theme'
 >>;
 
 export function SettingsFilesAndSourceControlSection({
     onNavigate,
     router,
-    theme,
 }: SettingsFilesAndSourceControlSectionProps) {
     return (
         <SettingsCatalogOverviewGroup
             groupId="groupFilesAndSourceControl"
             onNavigate={onNavigate}
             router={router}
-            theme={theme}
         />
     );
 }

@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { Pressable, View } from 'react-native';
+import { Pressable, ScrollView, View } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 import { Item } from '@/components/ui/lists/Item';
@@ -9,12 +9,13 @@ import { Modal } from '@/modal';
 import { Icon } from '@/components/ui/icons/Icon';
 import {
     SlideTransitionSwitch,
-    type SlideTransitionPreset,
+    SoftSlideTransitionFrame,
+    type SlideTransitionRole,
 } from '@/components/ui/motion';
 
 type VariantState = Readonly<{
     blur: boolean;
-    preset: SlideTransitionPreset;
+    preset: SlideTransitionRole;
     reducedMotion: boolean;
 }>;
 
@@ -35,12 +36,12 @@ function ToggleRow(props: Readonly<{
 }
 
 function PresetRow(props: Readonly<{
-    value: SlideTransitionPreset;
-    onChange: (next: SlideTransitionPreset) => void;
+    value: SlideTransitionRole;
+    onChange: (next: SlideTransitionRole) => void;
 }>): React.ReactElement {
     return (
         <Pressable
-            onPress={() => props.onChange(props.value === 'soft' ? 'compact' : 'soft')}
+            onPress={() => props.onChange(props.value === 'signature' ? 'routine' : 'signature')}
             style={styles.toggleRow}
         >
             <Text style={styles.toggleLabel}>preset</Text>
@@ -78,7 +79,7 @@ function DiscreteSwitchVariant(): React.ReactElement {
     const previousIndexRef = React.useRef(0);
     const [variant, setVariant] = React.useState<VariantState>({
         blur: false,
-        preset: 'compact',
+        preset: 'routine',
         reducedMotion: false,
     });
 
@@ -132,7 +133,7 @@ function CarouselVariant(): React.ReactElement {
     const [activeIndex, setActiveIndex] = React.useState(0);
     const [variant, setVariant] = React.useState<VariantState>({
         blur: true,
-        preset: 'soft',
+        preset: 'signature',
         reducedMotion: false,
     });
     const itemCount = 5;
@@ -193,6 +194,69 @@ function CarouselVariant(): React.ReactElement {
     );
 }
 
+/** The wizard/onboarding step frame: signature (blurred, slower) vs routine (plain, quick). */
+function StepTransitionVariant(): React.ReactElement {
+    const [index, setIndex] = React.useState(0);
+    const [direction, setDirection] = React.useState<'forward' | 'backward'>('forward');
+    const [preset, setPreset] = React.useState<SlideTransitionRole>('signature');
+    const [reducedMotion, setReducedMotion] = React.useState(false);
+
+    return (
+        <View style={styles.variantBlock}>
+            <Text style={styles.variantTitle}>Step transition (wizard-style)</Text>
+            <View style={styles.controlsRow}>
+                <Pressable
+                    testID="dev-motion-preview-step-preset"
+                    onPress={() => setPreset((current) => (current === 'signature' ? 'routine' : 'signature'))}
+                    style={styles.toggleRow}
+                >
+                    <Text style={styles.toggleLabel}>preset</Text>
+                    <Text style={styles.toggleValue}>{preset}</Text>
+                </Pressable>
+                <ToggleRow label="reduced motion" value={reducedMotion} onChange={setReducedMotion} />
+            </View>
+            <View style={styles.frame}>
+                <SoftSlideTransitionFrame
+                    testID="dev-motion-preview-step-frame"
+                    transitionKey={index}
+                    direction={direction}
+                    preset={preset}
+                    reducedMotion={reducedMotion}
+                >
+                    <View style={styles.panel}>
+                        <Text testID="dev-motion-preview-step-title" style={styles.panelTitle}>{`Step ${index + 1}`}</Text>
+                        <Text style={styles.panelBody}>
+                            Signature is for the first moments of a flow; routine is for everyday step changes and recovery views.
+                        </Text>
+                    </View>
+                </SoftSlideTransitionFrame>
+            </View>
+            <View style={styles.controlsRow}>
+                <Pressable
+                    testID="dev-motion-preview-step-back"
+                    onPress={() => {
+                        setDirection('backward');
+                        setIndex((current) => Math.max(0, current - 1));
+                    }}
+                    style={styles.button}
+                >
+                    <Text style={styles.buttonText}>Back</Text>
+                </Pressable>
+                <Pressable
+                    testID="dev-motion-preview-step-continue"
+                    onPress={() => {
+                        setDirection('forward');
+                        setIndex((current) => Math.min(4, current + 1));
+                    }}
+                    style={styles.button}
+                >
+                    <Text style={styles.buttonText}>Continue</Text>
+                </Pressable>
+            </View>
+        </View>
+    );
+}
+
 function MotionVariantsPreviewModal(props: Readonly<{ onClose: () => void }>): React.ReactElement {
     const { theme } = useUnistyles();
     return (
@@ -203,10 +267,11 @@ function MotionVariantsPreviewModal(props: Readonly<{ onClose: () => void }>): R
                     <Icon name="x" size={20} color={theme.colors.text.primary} />
                 </Pressable>
             </View>
-            <View style={styles.body}>
+            <ScrollView style={styles.bodyScroll} contentContainerStyle={styles.body}>
                 <DiscreteSwitchVariant />
                 <CarouselVariant />
-            </View>
+                <StepTransitionVariant />
+            </ScrollView>
         </View>
     );
 }
@@ -231,7 +296,7 @@ export function MotionPreviewDevSection(): React.ReactElement {
             <Item
                 testID="dev-motion-preview-slide-variants"
                 title="Slide Transition Variants"
-                subtitle="Discrete switch + carousel drag/tap, with blur/preset/reduced-motion toggles"
+                subtitle="Discrete switch, carousel drag/tap and step signature/routine, with blur/preset/reduced-motion toggles"
                 icon={<Icon name="stack-simple" size={29} color={theme.colors.text.primary} />}
                 onPress={showMotionVariantsPreview}
             />
@@ -259,8 +324,10 @@ const styles = StyleSheet.create((theme) => ({
     closeButton: {
         padding: 8,
     },
-    body: {
+    bodyScroll: {
         flex: 1,
+    },
+    body: {
         gap: 24,
         padding: 16,
     },

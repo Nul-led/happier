@@ -1,9 +1,10 @@
 import * as React from 'react';
+import { act } from 'react-test-renderer';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { flushHookEffects, renderScreen } from '@/dev/testkit';
 import { buildBrowserAdapterCapabilities } from '@/sync/domains/browser/adapters/capabilities';
-import { createBrowserAutomationControlService } from '@/sync/domains/browser/automation';
+import { createBrowserAutomationControlService } from '@/sync/domains/browser/automation/controlService';
 import type { BrowserControlViewState } from '@/sync/domains/browser/control';
 import { EMPTY_PLUGIN_UI_PROJECTION, type PluginUiProjectionModel } from '@/sync/domains/plugins/ui/projection';
 
@@ -12,6 +13,11 @@ import type { BrowserDiagnosticsEngineBridgeConfig } from './frame/types';
 
 const simulatorTargetProps: Array<Readonly<Record<string, unknown>>> = [];
 const desktopWebViewTargetProps: Array<Readonly<Record<string, unknown>>> = [];
+
+vi.mock('@/sync/domains/state/storage', async () => {
+    const { createStorageModuleStub } = await import('@/dev/testkit/mocks/storage');
+    return createStorageModuleStub({});
+});
 
 vi.mock('@/text', async () => {
     const { createTextModuleMock } = await import('@/dev/testkit/mocks/text');
@@ -210,6 +216,7 @@ const pluginUiProjection: PluginUiProjectionModel = {
         'hostedWeb:plugin.example:surface.main': {
             id: 'hostedWeb:plugin.example:surface.main',
             pluginId: 'plugin.example',
+            occurrenceId: 'plugin-example-occurrence-1',
             contributionKind: 'hostedWeb',
             contributionId: 'surface.main',
             entry: { routeMode: 'hostOrigin', path: '/' },
@@ -256,6 +263,63 @@ function readAutomationOwnerIds(snapshot: Readonly<Record<string, unknown>>): re
     const owners = snapshot.ownersByViewId;
     if (!owners || typeof owners !== 'object' || Array.isArray(owners)) return [];
     return Object.keys(owners);
+}
+
+function createReachableCollectorFrame(origin: string) {
+    const host = new EventTarget();
+    vi.stubGlobal('window', host);
+    const events: Array<{ target: string; type: string; key?: string }> = [];
+    const focus = vi.fn();
+    const input = Object.assign(new EventTarget(), {
+        tagName: 'INPUT', type: 'file', files: [] as File[], focus,
+        getAttribute: (name: string) => name === 'id' ? 'source' : name === 'type' ? 'file' : null,
+    });
+    const destination = Object.assign(new EventTarget(), {
+        tagName: 'DIV', getAttribute: (name: string) => name === 'id' ? 'destination' : null,
+    });
+    for (const [name, node] of [['source', input], ['destination', destination]] as const) {
+        for (const type of ['keydown', 'keyup', 'mouseover', 'mousemove', 'focus', 'input', 'change', 'dragstart', 'dragend', 'dragenter', 'dragover', 'drop']) {
+            node.addEventListener(type, (event) => events.push({ target: name, type, ...('key' in event ? { key: String(event.key) } : {}) }));
+        }
+    }
+    const deliver = (target: EventTarget, data: string, source: EventTarget) => {
+        const event = new Event('message');
+        Object.defineProperties(event, { data: { value: data }, origin: { value: origin }, source: { value: source } });
+        target.dispatchEvent(event);
+    };
+    // Genuine browser boundaries: script insertion, DOM events, file transfer and postMessage.
+    // The actual injected collector executes and produces its own result envelopes.
+    class BrowserDataTransfer {
+        readonly files: File[] = [];
+        readonly items = { add: (file: File) => this.files.push(file) };
+    }
+    class BrowserActionEvent extends Event {
+        readonly key?: string;
+        readonly dataTransfer?: BrowserDataTransfer;
+        constructor(type: string, options: EventInit & { key?: string; dataTransfer?: BrowserDataTransfer } = {}) {
+            super(type, options);
+            this.key = options.key;
+            this.dataTransfer = options.dataTransfer;
+        }
+    }
+    const documentBoundary = {
+        title: 'Same-origin preview', readyState: 'complete', documentElement: { nodeType: 1 },
+        querySelectorAll: (selector: string) => selector === '#source' ? [input] : selector === '#destination' ? [destination] : [],
+        createElement: () => ({ textContent: '', remove() {} }),
+        head: { appendChild: (script: { textContent: string }) => {
+            new Function('window', 'document', 'console', 'performance', 'Event', 'KeyboardEvent', 'DragEvent', 'DataTransfer', 'File', script.textContent)(
+                frame, documentBoundary, { log() {}, info() {}, warn() {}, error() {}, debug() {} },
+                { getEntriesByType: () => [] }, Event, BrowserActionEvent, BrowserActionEvent, BrowserDataTransfer, File,
+            );
+        } },
+    };
+    const frame = Object.assign(new EventTarget(), {
+        document: documentBoundary, location: { href: `${origin}/`, origin },
+        localStorage: { length: 0 }, sessionStorage: { length: 0 },
+        parent: { postMessage: (data: string) => queueMicrotask(() => deliver(host, data, frame)) },
+        postMessage: (data: string) => queueMicrotask(() => deliver(frame, data, host)),
+    });
+    return { frame, events, input, focus };
 }
 
 describe('BrowserViewHost', () => {
@@ -319,6 +383,65 @@ describe('BrowserViewHost', () => {
         expect(screen.findByTestId('browser-view-unavailable-diagnostic-hosted_plugin_profile_mismatch')).toBeTruthy();
     });
 
+    /**
+     * H-UX F-1 / services lab R: a private preview this device has no access URL for (the server's
+     * preview access owner issued none here) is a designed state that names where the service runs and
+     * the way that works — never a generic "unavailable" or "Page failed to load".
+     */
+    it('says where a private preview runs when this device has no way to open it', async () => {
+        const view = { ...createLocalPreviewView(), currentUrl: null, securityOrigin: null };
+        const {
+            applyLocalServicePreviewSnapshot,
+            createLocalServicePreviewState,
+        } = await import('@/sync/domains/local/services/preview/store');
+        const registeredWithoutAccess = applyLocalServicePreviewSnapshot(createLocalServicePreviewState(), {
+            generatedAt: 1_000,
+            refreshState: 'idle',
+            previews: [{
+                previewId: 'preview_1',
+                // The server's preview access owner issued no URL for this viewer.
+                accessUrl: null,
+                expiresAt: null,
+                accessUnavailableReasonCode: 'preview_private_route_unavailable',
+                diagnostics: [],
+                resource: {
+                    previewId: 'preview_1',
+                    sessionId: 'session_1',
+                    machineId: 'machine_1',
+                    owner: { kind: 'session', id: 'session_1' },
+                    target: { scheme: 'http', host: '127.0.0.1', port: 5173 },
+                    initialPath: { pathname: '/', search: '' },
+                    display: { title: 'Preview', addressLabel: 'localhost:5173' },
+                    originMode: 'host',
+                    browserTarget: {
+                        kind: 'localServicePreview',
+                        targetId: 'preview_1',
+                        sessionId: 'session_1',
+                        machineId: 'machine_1',
+                        display: { title: 'Preview', addressLabel: 'localhost:5173' },
+                    },
+                },
+            }],
+            diagnostics: [],
+        });
+
+        const screen = await renderScreen(
+            <BrowserViewHost view={view} localServicePreviewState={registeredWithoutAccess} testID="browser-view" />,
+        );
+
+        expect(screen.findByTestId('browser-view-frame')).toBeNull();
+        expect(screen.findByTestId('browser-view-elsewhere')).not.toBeNull();
+        expect(screen.getTextContent()).toContain('browserShell.unavailable.previewElsewhere');
+    });
+
+    it('does not claim a preview runs elsewhere before its registration is known', async () => {
+        const view = { ...createLocalPreviewView(), currentUrl: null, securityOrigin: null };
+
+        const screen = await renderScreen(<BrowserViewHost view={view} testID="browser-view" />);
+
+        expect(screen.findByTestId('browser-view-elsewhere')).toBeNull();
+    });
+
     it('passes diagnostics bridge config into local-preview frame targets', async () => {
         const view = createLocalPreviewView();
         const collectorScripts: string[] = [];
@@ -340,15 +463,9 @@ describe('BrowserViewHost', () => {
     });
 
     it('registers injected-page automation owners for live local-preview iframe targets', async () => {
-        const view = createLocalPreviewView();
+        const view = { ...createLocalPreviewView(), currentUrl: 'https://app.happier.test/', securityOrigin: 'https://app.happier.test' };
         const controlService = createBrowserAutomationControlService({ nowMs: () => 1_000 });
-        const postMessage = vi.fn();
-        const addEventListener = vi.fn();
-        const removeEventListener = vi.fn();
-        vi.stubGlobal('window', {
-            addEventListener,
-            removeEventListener,
-        });
+        const { frame } = createReachableCollectorFrame('https://app.happier.test');
 
         try {
             const screen = await renderScreen(
@@ -364,36 +481,100 @@ describe('BrowserViewHost', () => {
                 {
                     createNodeMock: (element) => (
                         (element as { type?: string }).type === 'iframe'
-                            ? { contentWindow: { postMessage } }
+                            ? { contentWindow: frame }
                             : null
                     ),
                 },
             );
             await flushHookEffects();
 
-            expect(addEventListener).toHaveBeenCalledWith('message', expect.any(Function));
+            expect(readAutomationOwnerIds(controlService.getSnapshot())).not.toContain('view_local_1');
+            await act(async () => screen.findByType('iframe').props.onLoad());
             expect(readAutomationOwnerIds(controlService.getSnapshot())).toContain('view_local_1');
+            expect(Reflect.get(frame, '__happierBrowserRuntime')).toBeDefined();
 
             await screen.unmount();
             await flushHookEffects();
 
-            expect(removeEventListener).toHaveBeenCalledWith('message', expect.any(Function));
             expect(readAutomationOwnerIds(controlService.getSnapshot())).not.toContain('view_local_1');
+            expect(Reflect.get(frame, '__happierBrowserRuntime')).toBeUndefined();
         } finally {
             vi.unstubAllGlobals();
         }
     });
 
-    it('renders sidecar targets as unavailable with the sidecar runtime reason', async () => {
-        const screen = await renderScreen(
-            <BrowserViewHost
-                view={createSidecarView()}
-                testID="browser-view"
-            />,
+    it.each(['press', 'hover', 'focus', 'upload', 'drag'])('dispatches the implemented %s verb through the mounted engine owner', async (actionKind) => {
+        const view = { ...createLocalPreviewView(), currentUrl: 'https://app.happier.test/', securityOrigin: 'https://app.happier.test' };
+        const controlService = createBrowserAutomationControlService({ nowMs: () => 1_000 });
+        const { frame, events, input, focus } = createReachableCollectorFrame('https://app.happier.test');
+        try {
+            const screen = await renderScreen(<BrowserViewHost
+                view={view}
+                diagnosticsBridge={createDiagnosticsBridge(view, vi.fn())}
+                browserAutomation={{ controlService, enabled: true }}
+            />, { createNodeMock: (element) => element.type === 'iframe' ? { contentWindow: frame } : null });
+            await act(async () => screen.findByType('iframe').props.onLoad());
+            await expect(controlService.executeAction({
+                v: 1, automationRequestId: `request_${actionKind}`,
+                browserSessionId: view.browserSessionId, viewId: view.viewId,
+                navigationGeneration: view.navigationGeneration,
+                requestedBy: 'agent', requesterRef: { kind: 'session', id: 'session_1' },
+                actionKind, timeoutMs: 2_000,
+                payload: {
+                    locator: { kind: 'css', value: '#source' }, key: 'Enter',
+                    from: { kind: 'css', value: '#source' }, to: { kind: 'css', value: '#destination' },
+                    files: [{ name: 'hello.txt', mimeType: 'text/plain', text: 'hello' }],
+                },
+            })).resolves.toMatchObject({ status: 'succeeded' });
+            const expectedEvents = { press: ['keydown', 'keyup'], hover: ['mouseover', 'mousemove'], focus: ['focus'], upload: ['input', 'change'], drag: ['dragstart', 'dragenter', 'dragover', 'drop', 'dragend'] };
+            expect(events.map((event) => event.type)).toEqual(expectedEvents[actionKind as keyof typeof expectedEvents]);
+            if (actionKind === 'press') expect(events[0]?.key).toBe('Enter');
+            if (actionKind === 'focus') expect(focus).toHaveBeenCalled();
+            if (actionKind === 'upload') expect(input.files[0]?.name).toBe('hello.txt');
+            await screen.unmount();
+        } finally {
+            vi.unstubAllGlobals();
+        }
+    });
+
+    it('shows the agent\'s managed browser as its live stream, never as a fake page (lab browser A/ST)', async () => {
+        const base = {
+            selectedCodec: 'image.mjpeg',
+            activeRenderer: 'mjpeg',
+            decodedFrames: 0,
+            droppedFrames: 0,
+            bufferedBytes: 0,
+        } as const;
+        const render = (playerState: React.ComponentProps<typeof BrowserViewHost>['streamedBrowserRuntime']) => renderScreen(
+            <BrowserViewHost view={createSidecarView()} streamedBrowserRuntime={playerState} testID="browser-view" />,
         );
 
-        expect(screen.findByTestId('browser-view-unavailable')).toBeTruthy();
-        expect(screen.findByTestId('browser-view-unavailable-diagnostic-sidecar_runtime_unavailable')).toBeTruthy();
+        // No stream could be opened: say so, never an embedded page.
+        const none = await render(null);
+        expect(none.findByTestId('browser-view-streamed-unavailable')).toBeTruthy();
+
+        // Opening, no frame yet: connecting, not "playing".
+        const opening = await render({ machineName: 'MacBook Pro', playerState: { ...base, phase: 'playing' } });
+        expect(opening.findByTestId('browser-view-streamed-connecting')).toBeTruthy();
+        expect(opening.findByTestId('browser-view-streamed-player')).toBeNull();
+
+        // Frames arrive: the canonical player shows them.
+        const live = await render({ machineName: 'MacBook Pro', playerState: { ...base, phase: 'playing', lastFrameUrl: 'data:image/jpeg;base64,AAAA' } });
+        expect(live.findByTestId('browser-view-streamed-live')).toBeTruthy();
+        expect(live.findByTestId('browser-view-streamed-player')).toBeTruthy();
+        // A live page carries no status chip of its own: healthy is quiet (lab A).
+        expect(live.findByTestId('browser-view-streamed-player-status-playing')).toBeNull();
+
+        // The stream drops: the last frame stays, ONE status capsule says so (not a second player chip).
+        const stalled = await render({ machineName: 'MacBook Pro', playerState: { ...base, phase: 'reconnecting', lastFrameUrl: 'data:image/jpeg;base64,AAAA' } });
+        expect(stalled.findByTestId('browser-view-streamed-player')).toBeTruthy();
+        expect(stalled.findByTestId('browser-view-streamed-stalled')).toBeTruthy();
+        expect(stalled.findByTestId('browser-view-streamed-player-status-reconnecting')).toBeNull();
+
+        // The producer stopped: ended, with no fake last frame.
+        const ended = await render({ machineName: 'MacBook Pro', playerState: { ...base, phase: 'stopped', lastFrameUrl: 'data:image/jpeg;base64,AAAA' } });
+        expect(ended.findByTestId('browser-view-streamed-ended')).toBeTruthy();
+        expect(ended.findByTestId('browser-view-streamed-player')).toBeNull();
     });
 
     it('renders backed desktop external URL views through the native desktop WebView engine', async () => {

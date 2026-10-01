@@ -1,4 +1,7 @@
 import * as React from 'react';
+import { SettingAnchor, SettingSection } from '@/components/settings/shell/SettingRow';
+import { SERVERS_SETTINGS } from '@/components/settings/server/serverSettings';
+
 import { Platform, View } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 import { relayAccessProviderIds, type RelayAccessConfig, type RelayAccessProviderId } from '@happier-dev/cli-common/relayAccess/catalog';
@@ -11,10 +14,14 @@ import { readLatestSystemTaskPrompt } from '@/components/systemTasks/prompts/rea
 import type { SystemTaskRunner } from '@/components/systemTasks/types';
 import { ActionCard } from '@/components/ui/cards/ActionCard';
 import { Item } from '@/components/ui/lists/Item';
+import { SectionActionButton } from '@/components/ui/lists/SectionActionButton';
+import { SectionContentRow } from '@/components/ui/lists/SectionContentRow';
+import { RoundButton } from '@/components/ui/buttons/RoundButton';
+import { FieldTextInput } from '@/components/ui/forms/FieldTextInput';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
 import { SelectableRow } from '@/components/ui/lists/SelectableRow';
 import { createBackdropNativeStyle, createBackdropWebStyle } from '@/components/ui/overlays/createBackdropLayerStyle';
-import { Text, TextInput } from '@/components/ui/text/Text';
+import { Text } from '@/components/ui/text/Text';
 import { Modal } from '@/modal';
 import type { AccessChannel } from '@/sync/domains/accessEndpoints/channels/model';
 import type { AccessEndpointRemediationAction } from '@/sync/domains/accessEndpoints/model';
@@ -452,38 +459,60 @@ export const RelayAccessControlSection = React.memo(function RelayAccessControlS
     const providerConfigFields = (
         <>
             {selectedProviderId === 'lan' ? (
-                <View>
-                    <TextInput
-                        testID="settings.server.relayAccess.lanUrl"
-                        placeholder={t('settings.relayAccess.fields.urlLabel')}
-                        autoCapitalize="none"
-                        autoCorrect={false}
-                        value={lanUrlDraft}
-                        onChangeText={setLanUrlDraft}
+                <SettingAnchor setting={SERVERS_SETTINGS.settings.lanUrl}>
+                    <Item
+                        title={t(SERVERS_SETTINGS.settings.lanUrl.titleKey)}
+                        accessoryLayout="adaptive"
+                        showChevron={false}
+                        rightElement={(
+                            <FieldTextInput
+                                testID="settings.server.relayAccess.lanUrl"
+                                accessibilityLabel={t('settings.relayAccess.fields.urlLabel')}
+                                placeholder={t('settings.relayAccess.fields.urlLabel')}
+                                value={lanUrlDraft}
+                                onChangeText={setLanUrlDraft}
+                            />
+                        )}
                     />
-                </View>
+                </SettingAnchor>
             ) : null}
 
             {selectedProviderId === 'cloudflareNamed' ? (
-                <View>
-                    <TextInput
-                        testID="settings.server.relayAccess.cloudflareHostname"
-                        placeholder={t('settings.relayAccess.fields.hostnameLabel')}
-                        autoCapitalize="none"
-                        autoCorrect={false}
-                        value={cloudflareHostnameDraft}
-                        onChangeText={setCloudflareHostnameDraft}
-                    />
-                    <TextInput
-                        testID="settings.server.relayAccess.cloudflareToken"
-                        placeholder={t('settings.relayAccess.fields.tokenLabel')}
-                        autoCapitalize="none"
-                        autoCorrect={false}
-                        secureTextEntry={true}
-                        value={cloudflareTokenDraft}
-                        onChangeText={setCloudflareTokenDraft}
-                    />
-                </View>
+                <>
+                    <SettingAnchor setting={SERVERS_SETTINGS.settings.cloudflareHostname}>
+                        <Item
+                            title={t(SERVERS_SETTINGS.settings.cloudflareHostname.titleKey)}
+                            accessoryLayout="adaptive"
+                            showChevron={false}
+                            rightElement={(
+                                <FieldTextInput
+                                    testID="settings.server.relayAccess.cloudflareHostname"
+                                    accessibilityLabel={t('settings.relayAccess.fields.hostnameLabel')}
+                                    placeholder={t('settings.relayAccess.fields.hostnameLabel')}
+                                    value={cloudflareHostnameDraft}
+                                    onChangeText={setCloudflareHostnameDraft}
+                                />
+                            )}
+                        />
+                    </SettingAnchor>
+                    <SettingAnchor setting={SERVERS_SETTINGS.settings.cloudflareToken}>
+                        <Item
+                            title={t(SERVERS_SETTINGS.settings.cloudflareToken.titleKey)}
+                            accessoryLayout="adaptive"
+                            showChevron={false}
+                            rightElement={(
+                                <FieldTextInput
+                                    testID="settings.server.relayAccess.cloudflareToken"
+                                    accessibilityLabel={t('settings.relayAccess.fields.tokenLabel')}
+                                    placeholder={t('settings.relayAccess.fields.tokenLabel')}
+                                    value={cloudflareTokenDraft}
+                                    onChangeText={setCloudflareTokenDraft}
+                                    secureTextEntry
+                                />
+                            )}
+                        />
+                    </SettingAnchor>
+                </>
             ) : null}
         </>
     );
@@ -601,9 +630,21 @@ export const RelayAccessControlSection = React.memo(function RelayAccessControlS
                 isRefreshing={props.accessEndpointsRefreshing}
                 onRemediationActionPress={props.onAccessEndpointRemediationActionPress}
             />
+            <SettingSection section={SERVERS_SETTINGS.sectionRefs.relayAccess}>
             <ItemGroup
                 title={t('settings.relayAccess.title')}
-                footer={t('settings.relayAccess.footer')}
+                description={t('settings.relayAccess.footer')}
+                action={(
+                    <SectionActionButton
+                        testID="settings.server.relayAccess.refresh"
+                        icon="arrows-clockwise"
+                        title={t('settings.relayAccess.refreshAction')}
+                        onPress={() => {
+                            void refreshStatus();
+                        }}
+                        disabled={isBusy || isUnavailable}
+                    />
+                )}
             >
                 <Item
                     testID="settings.server.relayAccess.status"
@@ -616,7 +657,6 @@ export const RelayAccessControlSection = React.memo(function RelayAccessControlS
                                 ? t('settings.relayAccess.statusNotConfigured')
                                 : resolveStatusSubtitle(resolvedState)}
                     showChevron={false}
-                    mode="info"
                 />
                 <Item
                     testID="settings.server.relayAccess.method"
@@ -625,7 +665,6 @@ export const RelayAccessControlSection = React.memo(function RelayAccessControlS
                         ? t(relayAccessProviderUiCatalog[resolvedProviderId].titleKey)
                         : (resolvedConfigured ? '' : t('settings.relayAccess.statusNotConfigured'))}
                     showChevron={false}
-                    mode="info"
                 />
                 {resolvedShareUrl ? (
                     <Item
@@ -633,52 +672,56 @@ export const RelayAccessControlSection = React.memo(function RelayAccessControlS
                         title={t('settings.relayAccess.shareableUrlTitle')}
                         subtitle={resolvedShareUrl}
                         showChevron={false}
-                        mode="info"
                     />
                 ) : null}
 
-                <Item
-                    testID="settings.server.relayAccess.refresh"
-                    title={t('settings.relayAccess.refreshAction')}
-                    onPress={() => {
-                        void refreshStatus();
-                    }}
-                    disabled={isBusy || isUnavailable}
-                />
-
                 {showProviderChoices ? (
-                    <View>
-                        {providerChoiceRows}
-                    </View>
+                    <SettingAnchor setting={SERVERS_SETTINGS.settings.accessMethod}>
+                        <SectionContentRow>
+                            <View style={{ gap: 8 }}>
+                                {providerChoiceRows}
+                            </View>
+                        </SectionContentRow>
+                    </SettingAnchor>
                 ) : null}
 
                 {providerConfigFields}
 
-                <Item
-                    testID="settings.server.relayAccess.save"
-                    title={t('settings.relayAccess.saveAction')}
-                    onPress={() => {
-                        void save();
-                    }}
-                    disabled={isBusy || isUnavailable}
-                />
-                <Item
-                    testID="settings.server.relayAccess.disable"
-                    title={t('settings.relayAccess.disableAction')}
-                    onPress={() => {
-                        void disableAction();
-                    }}
-                    disabled={isBusy || isUnavailable}
-                />
                 {lastErrorMessage ? (
                     <Item
+                        testID="settings.server.relayAccess.error"
                         title={t('common.error')}
                         subtitle={lastErrorMessage}
+                        subtitleLines={0}
                         showChevron={false}
-                        mode="info"
                     />
                 ) : null}
+
+                <SectionContentRow>
+                    <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 12 }}>
+                        <RoundButton
+                            testID="settings.server.relayAccess.save"
+                            size="small"
+                            title={t('settings.relayAccess.saveAction')}
+                            onPress={() => {
+                                void save();
+                            }}
+                            disabled={isBusy || isUnavailable}
+                        />
+                        <RoundButton
+                            testID="settings.server.relayAccess.disable"
+                            size="small"
+                            display="secondary"
+                            title={t('settings.relayAccess.disableAction')}
+                            onPress={() => {
+                                void disableAction();
+                            }}
+                            disabled={isBusy || isUnavailable}
+                        />
+                    </View>
+                </SectionContentRow>
             </ItemGroup>
+            </SettingSection>
 
             {activeTaskSnapshot ? (
                 <SystemTaskProgressCard

@@ -1,25 +1,36 @@
 import * as React from 'react';
-import { useLocalSearchParams, useNavigation, useRouter } from 'expo-router';
+import { Redirect, useLocalSearchParams, useNavigation, useRouter } from '@/components/appShell/workspace/destinationRoute';
 import { Platform } from 'react-native';
 import { useUnistyles } from 'react-native-unistyles';
 
-import { SearchHeader } from '@/components/ui/forms/SearchHeader';
-import { Icon } from '@/components/ui/icons/Icon';
+import { EmptyState } from '@/components/ui/empty/EmptyState';
+import { CompactSearchField } from '@/components/ui/forms/CompactSearchField';
+import { PageHeader } from '@/components/ui/layout/PageHeader';
+import { AttentionBanner } from '@/components/ui/lists/AttentionBanner';
 import { Item } from '@/components/ui/lists/Item';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
+import { ItemList } from '@/components/ui/lists/ItemList';
+import { ItemLoadStateRows } from '@/components/ui/lists/ItemLoadStateRows';
+import { ListPresentationProvider } from '@/components/ui/lists/listPresentation';
 import { VirtualizedList } from '@/components/ui/lists/virtualized';
-import { useHomeGovernanceEligibilitySnapshots } from '@/hooks/home/useHomeGovernanceEligibilitySnapshots';
-import { useTeamsDirectory } from '@/hooks/teams/useTeamsDirectory';
 import { teamAddressKey } from '@/sync/domains/teams/teamAddress';
 import { t } from '@/text';
 
 import { TeamRow } from './TeamRow';
-import { firstRouteParam } from './teamRouteParams';
-import { teamCredentialCreatePath, teamDetailPath, teamsCreatePath } from './teamsRoutes';
-import type {
-    TeamsDirectoryRow,
-    TeamsDirectoryUnavailableHome,
-} from './teamsDirectoryViewState';
+import { teamCredentialCreatePath, teamDetailPath, teamsCreatePath, type TeamCredentialSourceHint } from './teamsRoutes';
+import type { TeamsDirectoryRow, TeamsDirectoryUnavailableHome } from './teamsDirectoryViewState';
+import { TeamsCollectionAddButton, teamsUnavailableHomeReason } from './collection/TeamsCollectionRail';
+import {
+    readLastVisitedTeamsCollectionTeam,
+    readTeamCredentialSourceHint,
+    resolveTeamsCollectionLanding,
+} from './collection/teamsCollection';
+import { useTeamsCollection, type TeamsCollection } from './collection/useTeamsCollection';
+import { teamsCreateRefusalText } from './collection/teamsCreateGuidanceText';
+import { buildSettingHref } from '@/components/settings/catalog/settingDeclarations';
+import { homeAdministrationPoliciesPath } from '@/components/settings/home/governance/homeAdministrationRoutes';
+import { HOME_TEAMS_POLICY_SETTINGS } from '@/components/settings/home/governance/homeTeamsPolicySettings';
+import { useHappierCollectionIndexView } from '@happier-dev/plugin-ui/presentation';
 
 const TEAM_DIRECTORY_CHUNK_SIZE = 12;
 
@@ -27,35 +38,6 @@ type TeamsDirectoryVirtualizedRow = Readonly<{
     key: string;
     render: () => React.ReactElement;
 }>;
-
-function matchesDirectorySearch(row: TeamsDirectoryRow, normalizedQuery: string): boolean {
-    if (normalizedQuery.length === 0) return true;
-    return row.team.name.toLocaleLowerCase().includes(normalizedQuery)
-        || row.homeName.toLocaleLowerCase().includes(normalizedQuery);
-}
-
-/**
- * The Teams destination.
- *
- * It is one calm list across the exact Home set, not a per-Home dashboard. A
- * Home that answered keeps its rows through every refresh and failure, and a
- * Home that could not answer is named at the bottom with its own reason instead
- * of quietly shrinking the list — so "no Teams" is only ever shown when every
- * admitted Home actually said so.
- */
-
-function unavailableHomeBody(home: TeamsDirectoryUnavailableHome): string {
-    switch (home.reason) {
-        case 'loading':
-            return t('teams.unavailable.offline');
-        case 'denied':
-            return t('teams.errors.forbidden');
-        case 'unsupported':
-            return t('teams.unavailable.updateRequired');
-        case 'offline':
-            return t('teams.unavailable.offline');
-    }
-}
 
 const UnavailableHomes = React.memo(function UnavailableHomes(props: Readonly<{
     homes: readonly TeamsDirectoryUnavailableHome[];
@@ -68,21 +50,20 @@ const UnavailableHomes = React.memo(function UnavailableHomes(props: Readonly<{
     testIDPrefix?: string;
     retryTestID?: string;
 }>) {
-    const { theme } = useUnistyles();
     if (props.homes.length === 0) return null;
 
     const prefix = props.testIDPrefix ?? 'teams-home-unavailable';
     const retryable = props.homes.some((home) => home.retryable);
     return (
-        <ItemGroup footer={t('teams.directory.partialHomes')}>
+        <ItemGroup title={t('teams.directory.unreachableHomes')} description={t('teams.directory.partialHomes')}>
             {props.homes.map((home) => (
                 <Item
                     key={home.serverId}
                     testID={`${prefix}:${home.serverId}`}
                     title={home.homeName}
-                    subtitle={unavailableHomeBody(home)}
-                    icon={<Icon name="warning" size={29} color={theme.colors.state.warning.foreground} />}
+                    subtitle={teamsUnavailableHomeReason(home)}
                     loading={home.reason === 'loading'}
+                    mode="info"
                     showChevron={false}
                 />
             ))}
@@ -90,7 +71,6 @@ const UnavailableHomes = React.memo(function UnavailableHomes(props: Readonly<{
                 <Item
                     testID={props.retryTestID ?? 'teams-directory-retry'}
                     title={t('teams.unavailable.retry')}
-                    icon={<Icon name="arrow-clockwise" size={29} color={theme.colors.text.secondary} />}
                     onPress={props.onRetry}
                     showChevron={false}
                 />
@@ -99,183 +79,218 @@ const UnavailableHomes = React.memo(function UnavailableHomes(props: Readonly<{
     );
 });
 
-export const TeamsDirectoryScreen = React.memo(function TeamsDirectoryScreen() {
-    const { theme } = useUnistyles();
-    const navigation = useNavigation();
+/**
+ * No Teams in any Home in view: what a Team is for, then the way to create one — or, when no Home
+ * lets this viewer create one, why and whom to ask. An administrator who creates Teams for others is
+ * also offered the policy that would let everyone create them.
+ */
+const TeamsEmptyState = React.memo(function TeamsEmptyState(props: Readonly<{
+    collection: TeamsCollection;
+    onCreate: () => void;
+}>) {
     const router = useRouter();
-    const params = useLocalSearchParams<{
-        credentialSourceServerId?: string | string[];
-        credentialSourceKind?: string | string[];
-        credentialSourcePluginId?: string | string[];
-        credentialSourceLocalId?: string | string[];
-        credentialSourceAccountId?: string | string[];
-        credentialSourceGroupId?: string | string[];
-        credentialSourceConnectionId?: string | string[];
-        credentialSourceSlotId?: string | string[];
-        credentialSourceMachineId?: string | string[];
-        credentialSourceConnectionSecurityFingerprint?: string | string[];
-    }>();
-    const sourceServerId = firstRouteParam(params.credentialSourceServerId).trim();
-    const sourceKind = firstRouteParam(params.credentialSourceKind).trim();
-    const sourcePluginId = firstRouteParam(params.credentialSourcePluginId).trim();
-    const sourceLocalId = firstRouteParam(params.credentialSourceLocalId).trim();
-    const sourceAccountId = firstRouteParam(params.credentialSourceAccountId).trim();
-    const sourceGroupId = firstRouteParam(params.credentialSourceGroupId).trim();
-    const sourceConnectionId = firstRouteParam(params.credentialSourceConnectionId).trim();
-    const sourceSlotId = firstRouteParam(params.credentialSourceSlotId).trim();
-    const sourceMachineId = firstRouteParam(params.credentialSourceMachineId).trim();
-    const sourceConnectionSecurityFingerprint = firstRouteParam(params.credentialSourceConnectionSecurityFingerprint).trim();
-    const sourceHint = React.useMemo(() => (
-        sourceServerId && sourceKind === 'provider_connection' && sourceConnectionId && sourceSlotId && sourceMachineId && sourceConnectionSecurityFingerprint
-            ? {
-                kind: 'provider_connection' as const,
-                serverId: sourceServerId,
-                machineId: sourceMachineId,
-                connectionId: sourceConnectionId,
-                credentialSlotId: sourceSlotId,
-                connectionSecurityFingerprint: sourceConnectionSecurityFingerprint,
-            }
-            : sourceServerId && sourcePluginId && sourceLocalId
-            ? sourceKind === 'connected_pool' && sourceGroupId
-                ? {
-                    kind: 'connected_pool' as const,
-                    serverId: sourceServerId,
-                    service: { pluginId: sourcePluginId, localId: sourceLocalId },
-                    groupId: sourceGroupId,
-                }
-                : sourceAccountId
-                    ? {
-                        kind: 'connected_account' as const,
-                        serverId: sourceServerId,
-                        account: { service: { pluginId: sourcePluginId, localId: sourceLocalId }, accountId: sourceAccountId },
-                    }
-                    : null
-            : null
-    ), [sourceAccountId, sourceConnectionId, sourceConnectionSecurityFingerprint, sourceGroupId, sourceKind, sourceLocalId, sourceMachineId, sourcePluginId, sourceServerId, sourceSlotId]);
-    const [showArchived, setShowArchived] = React.useState(false);
-    const [query, setQuery] = React.useState('');
+    const { collection } = props;
+    const { refusal, openCreationPolicyServerId } = collection.createGuidance;
+    return (
+        <EmptyState
+            testID="teams-directory-empty"
+            layout="page"
+            // An invitation to add only when this viewer can create a Team.
+            variant={collection.showCreateTeam ? 'add' : 'default'}
+            iconName="users"
+            title={t('teams.directory.emptyTitle')}
+            subtitle={t('teams.directory.emptyBody')}
+            primaryAction={collection.showCreateTeam ? {
+                label: t('teams.directory.newTeam'),
+                onPress: props.onCreate,
+                disabled: !collection.canCreateTeam,
+                testID: 'teams-directory-empty-create',
+            } : undefined}
+            secondaryAction={openCreationPolicyServerId ? {
+                label: t('teams.directory.letEveryoneCreate'),
+                onPress: () => router.push(buildSettingHref(
+                    homeAdministrationPoliciesPath(openCreationPolicyServerId),
+                    HOME_TEAMS_POLICY_SETTINGS.settings.teamCreationPolicy,
+                ) as never),
+                testID: 'teams-directory-open-creation-policy',
+            } : undefined}
+            actionUnavailableReason={refusal ? teamsCreateRefusalText(refusal) : undefined}
+        />
+    );
+});
 
-    const active = useTeamsDirectory({
-        archived: 'active',
-        ...(sourceHint ? { serverIds: [sourceHint.serverId] } : {}),
-    });
-    const createEligibility = useHomeGovernanceEligibilitySnapshots(active.scopes);
-    // The archived query is a separate page sequence with its own ordering, so
-    // it is only asked for once the viewer opens that section.
-    const archived = useTeamsDirectory({ archived: 'archived', enabled: showArchived });
+/**
+ * `/settings/teams`. Beside the Teams rail a Team is always open, so the index lands on one (or,
+ * when sharing a credential, asks which Team to share it with); where no rail shows, the index is
+ * the Teams page and each row pushes its Team.
+ */
+export const TeamsDirectoryScreen = React.memo(function TeamsDirectoryScreen() {
+    const view = useHappierCollectionIndexView();
+    const navigation = useNavigation();
+    const params = useLocalSearchParams();
+    const sourceHint = React.useMemo(() => readTeamCredentialSourceHint(params), [params]);
 
     React.useEffect(() => {
         navigation.setOptions({ title: t('teams.title') });
     }, [navigation]);
 
+    if (view === 'pending') return null;
+    if (view === 'land') return <TeamsCollectionLanding sourceHint={sourceHint} />;
+    return <TeamsDirectoryPage sourceHint={sourceHint} />;
+});
+
+/** Beside the rail: land on a Team, or explain the collection when there is none to land on. */
+const TeamsCollectionLanding = React.memo(function TeamsCollectionLanding(props: Readonly<{
+    sourceHint: TeamCredentialSourceHint | null;
+}>) {
+    const router = useRouter();
+    const collection = useTeamsCollection({ sourceHint: props.sourceHint, query: '' });
+    const { active } = collection;
+
+    if (props.sourceHint) {
+        // Sharing a credential: the rail beside this page is the choice.
+        return (
+            <ItemList presentation="page">
+                <PageHeader
+                    testID="teams-share-header"
+                    title={t('teams.credentials.create.title')}
+                    description={t('teams.directory.chooseTeamToShare')}
+                />
+            </ItemList>
+        );
+    }
+
+    // Wait for an answer so "first Team" is not a guess. The rail beside this pane shows the one
+    // loading state; the pane keeps only its header meanwhile.
+    if (active.kind === 'loading' && active.rows.length === 0) {
+        return (
+            <ItemList presentation="page">
+                <PageHeader testID="teams-directory-header" title={t('teams.title')} description={t('teams.pages.directory')} />
+            </ItemList>
+        );
+    }
+    const landing = resolveTeamsCollectionLanding(active.rows, readLastVisitedTeamsCollectionTeam());
+    if (landing) return <Redirect href={teamDetailPath(landing) as never} />;
+
+    return (
+        <ItemList presentation="page">
+            <PageHeader testID="teams-directory-header" title={t('teams.title')} description={t('teams.pages.directory')} />
+            <TeamsEmptyState collection={collection} onCreate={() => router.push(teamsCreatePath() as never)} />
+            <UnavailableHomes
+                homes={active.unavailableHomes.filter((home) => home.reason !== 'loading')}
+                onRetry={active.refresh}
+            />
+        </ItemList>
+    );
+});
+
+/** The Teams page where no rail shows (phones, narrow windows): the list is the page. */
+const TeamsDirectoryPage = React.memo(function TeamsDirectoryPage(props: Readonly<{
+    sourceHint: TeamCredentialSourceHint | null;
+}>) {
+    const { theme } = useUnistyles();
+    const router = useRouter();
+    const { sourceHint } = props;
+    const [query, setQuery] = React.useState('');
+    const collection = useTeamsCollection({ sourceHint, query });
+
     const openTeam = React.useCallback(
         (serverId: string, teamId: string) => {
             const address = { serverId, teamId };
-            router.push(sourceHint
+            router.push((sourceHint
                 ? teamCredentialCreatePath(address, sourceHint)
-                : teamDetailPath(address));
+                : teamDetailPath(address)) as never);
         },
         [router, sourceHint],
     );
 
-    const toggleArchived = React.useCallback(() => {
-        setShowArchived((current) => !current);
-    }, []);
+    const createTeam = React.useCallback(() => router.push(teamsCreatePath() as never), [router]);
+    const rows = useTeamsDirectoryRows({ collection, sourceHint, openTeam, createTeam });
 
-    // A Team archived from this device is already in the active sequence's own
-    // answer, and the archived sequence returns it again once it has been read.
-    // Both are kept — the local one so the section is never empty on arrival —
-    // but one Team is one row, in the order it was first known here.
-    const archivedRows = React.useMemo(() => {
-        if (!showArchived) return active.archivedRows;
-        const seen = new Set<string>();
-        const merged: TeamsDirectoryRow[] = [];
-        for (const row of [...active.archivedRows, ...archived.archivedRows]) {
-            const key = teamAddressKey(row.address);
-            if (seen.has(key)) continue;
-            seen.add(key);
-            merged.push(row);
-        }
-        return merged;
-    }, [showArchived, active.archivedRows, archived.archivedRows]);
-    const normalizedQuery = query.trim().toLocaleLowerCase();
-    const visibleActiveRows = React.useMemo(
-        () => active.rows.filter((row) => matchesDirectorySearch(row, normalizedQuery)),
-        [active.rows, normalizedQuery],
-    );
-    const visibleArchivedRows = React.useMemo(
-        () => archivedRows.filter((row) => matchesDirectorySearch(row, normalizedQuery)),
-        [archivedRows, normalizedQuery],
+    const renderRow = React.useCallback(
+        ({ item }: Readonly<{ item: TeamsDirectoryVirtualizedRow }>) => item.render(),
+        [],
     );
 
-    // Still being read, as opposed to read and refused: every Home that has not
-    // contributed is simply not finished. A failure must not keep a spinner on
-    // screen, so this is derived from the reasons rather than from the absence
-    // of rows.
-    const archivedPending = archived.unavailableHomes.length > 0
-        && archived.unavailableHomes.every((home) => home.reason === 'loading');
+    return (
+        <ListPresentationProvider value="page">
+            <VirtualizedList
+                testID="teams-directory-virtualized-list"
+                data={rows}
+                keyExtractor={(item) => item.key}
+                renderItem={renderRow}
+                ListHeaderComponent={(
+                    <>
+                        <PageHeader
+                            testID="teams-directory-header"
+                            title={sourceHint ? t('teams.credentials.create.title') : t('teams.title')}
+                            description={sourceHint ? t('teams.directory.chooseTeamToShare') : t('teams.pages.directory')}
+                            actions={collection.showCreateTeam && sourceHint === null ? (
+                                <TeamsCollectionAddButton
+                                    canCreate={collection.canCreateTeam}
+                                    onPress={() => router.push(teamsCreatePath() as never)}
+                                />
+                            ) : undefined}
+                        />
+                        {collection.searchable ? (
+                            <CompactSearchField
+                                testID="teams-directory-search"
+                                value={query}
+                                onChangeText={setQuery}
+                                placeholder={t('teams.directory.searchLoadedPlaceholder')}
+                                placement="page"
+                            />
+                        ) : null}
+                    </>
+                )}
+                style={{
+                    flex: 1,
+                    backgroundColor: theme.colors.surface.base,
+                    ...(Platform.OS === 'web' ? { minHeight: 0 } : {}),
+                }}
+                contentContainerStyle={{ paddingBottom: Platform.OS === 'ios' ? 34 : 16 }}
+                backendPreference="auto"
+                initialNumToRender={6}
+                maxToRenderPerBatch={4}
+                windowSize={7}
+                estimatedItemSize={120}
+                maintainVisibleContentPosition
+            />
+        </ListPresentationProvider>
+    );
+});
 
-    const showCreateTeam = active.scopes.some((scope) => {
-        const snapshot = createEligibility.snapshotsByServerId.get(scope.serverId);
-        return snapshot?.data?.teamsEnabled === true && snapshot.data.createTeam;
-    });
-    const canCreateTeam = active.scopes.some((scope) => {
-        const snapshot = createEligibility.snapshotsByServerId.get(scope.serverId);
-        return snapshot?.status === 'ready'
-            && !snapshot.stale
-            && snapshot.data?.teamsEnabled === true
-            && snapshot.data.createTeam;
-    });
+function useTeamsDirectoryRows(input: Readonly<{
+    collection: TeamsCollection;
+    sourceHint: TeamCredentialSourceHint | null;
+    openTeam: (serverId: string, teamId: string) => void;
+    createTeam: () => void;
+}>): readonly TeamsDirectoryVirtualizedRow[] {
+    const { collection, sourceHint, openTeam, createTeam } = input;
+    const {
+        active,
+        archived,
+        archivedPending,
+        normalizedQuery,
+        showArchived,
+        toggleArchived,
+        visibleActiveRows,
+        visibleArchivedRows,
+    } = collection;
 
-    const rows = React.useMemo<readonly TeamsDirectoryVirtualizedRow[]>(() => {
+    return React.useMemo<readonly TeamsDirectoryVirtualizedRow[]>(() => {
         const result: TeamsDirectoryVirtualizedRow[] = [];
         const add = (key: string, render: () => React.ReactElement) => result.push({ key, render });
-
-        if (active.kind === 'loading' && active.unavailableHomes.length === 0) {
-            add('loading', () => (
-                <ItemGroup>
-                    <Item testID="teams-directory-loading" title={t('teams.title')} loading showChevron={false} />
-                </ItemGroup>
-            ));
-            return result;
-        }
-
-        if (active.stale) {
-            add('stale', () => (
-                <ItemGroup footer={t('teams.stale.label')}>
-                    <Item
-                        testID="teams-directory-stale"
-                        title={t('teams.stale.label')}
-                        icon={<Icon name="warning" size={29} color={theme.colors.state.warning.foreground} />}
-                        detail={t('teams.unavailable.retry')}
-                        accessibilityLiveRegion="polite"
-                        onPress={active.refresh}
-                        showChevron={false}
-                    />
-                </ItemGroup>
-            ));
-        }
-
-        if (active.kind === 'empty') {
-            add('empty', () => (
-                <ItemGroup footer={t('teams.directory.emptyBody')}>
-                    <Item testID="teams-directory-empty" title={t('teams.directory.emptyTitle')} showChevron={false} />
-                </ItemGroup>
-            ));
-        } else {
-            for (let start = 0; start < visibleActiveRows.length; start += TEAM_DIRECTORY_CHUNK_SIZE) {
-                const chunk = visibleActiveRows.slice(start, start + TEAM_DIRECTORY_CHUNK_SIZE);
+        const addTeamChunks = (keyPrefix: string, title: string, list: readonly TeamsDirectoryRow[]) => {
+            for (let start = 0; start < list.length; start += TEAM_DIRECTORY_CHUNK_SIZE) {
+                const chunk = list.slice(start, start + TEAM_DIRECTORY_CHUNK_SIZE);
                 const first = start === 0;
-                const last = start + TEAM_DIRECTORY_CHUNK_SIZE >= visibleActiveRows.length;
-                const firstAddress = chunk[0]!.address;
-                add(`active:${teamAddressKey(firstAddress)}`, () => (
-                    <ItemGroup
-                        title={first ? t('teams.title') : undefined}
-                        virtualizedSegment={{ first, last }}
-                    >
+                const last = start + TEAM_DIRECTORY_CHUNK_SIZE >= list.length;
+                add(`${keyPrefix}:${teamAddressKey(chunk[0]!.address)}`, () => (
+                    <ItemGroup title={first ? title : undefined} virtualizedSegment={{ first, last }}>
                         {chunk.map((row) => (
                             <TeamRow
-                                key={teamAddressKey(row.address)}
+                                key={`${keyPrefix}:${teamAddressKey(row.address)}`}
                                 row={row}
                                 showHome={active.multiHome}
                                 onPress={() => openTeam(row.address.serverId, row.address.teamId)}
@@ -284,13 +299,46 @@ export const TeamsDirectoryScreen = React.memo(function TeamsDirectoryScreen() {
                     </ItemGroup>
                 ));
             }
+        };
+
+        // Homes still being read are covered by the loading row; only an answer that failed is named.
+        const answeredUnavailableHomes = active.unavailableHomes.filter((home) => home.reason !== 'loading');
+        if (active.kind === 'loading' && answeredUnavailableHomes.length === 0) {
+            add('loading', () => (
+                <ItemGroup>
+                    <ItemLoadStateRows
+                        testID="teams-directory-loading"
+                        state={{ kind: 'loading' }}
+                        rows={3}
+                        accessibilityLabel={t('teams.directory.loading')}
+                    />
+                </ItemGroup>
+            ));
+            return result;
+        }
+
+        if (active.stale) {
+            add('stale', () => (
+                <AttentionBanner
+                    testID="teams-directory-stale"
+                    title={t('teams.stale.label')}
+                    accessibilityLiveRegion="polite"
+                    action={{ label: t('teams.unavailable.retry'), onPress: active.refresh }}
+                />
+            ));
+        }
+
+        if (active.kind === 'empty') {
+            add('empty', () => <TeamsEmptyState collection={collection} onCreate={createTeam} />);
+        } else {
+            addTeamChunks('active', t('teams.title'), visibleActiveRows);
             if (active.rows.length > 0 && visibleActiveRows.length === 0) {
                 add('search-empty', () => (
                     <ItemGroup>
                         <Item
                             testID="teams-directory-search-empty"
-                            title={t('teams.directory.emptyTitle')}
-                            subtitle={t('teams.directory.searchPlaceholder')}
+                            title={t(collection.activeIncomplete ? 'teams.directory.noLoadedMatches' : 'teams.directory.noMatches')}
+                            mode="info"
                             showChevron={false}
                         />
                     </ItemGroup>
@@ -306,26 +354,13 @@ export const TeamsDirectoryScreen = React.memo(function TeamsDirectoryScreen() {
             ));
         }
 
-        if (active.unavailableHomes.length > 0) {
+        if (answeredUnavailableHomes.length > 0) {
             add('unavailable-homes', () => (
-                <UnavailableHomes homes={active.unavailableHomes} onRetry={active.refresh} />
+                <UnavailableHomes homes={answeredUnavailableHomes} onRetry={active.refresh} />
             ));
         }
 
-        if (showCreateTeam && sourceHint === null) {
-            add('create', () => (
-                <ItemGroup>
-                    <Item
-                        testID="teams-directory-new"
-                        title={t('teams.directory.newTeam')}
-                        disabled={!canCreateTeam}
-                        onPress={canCreateTeam ? () => router.push(teamsCreatePath()) : undefined}
-                    />
-                </ItemGroup>
-            ));
-        }
-
-        if (sourceHint === null) {
+        if (sourceHint === null && collection.offerArchived) {
             add('toggle-archived', () => (
                 <ItemGroup>
                     <Item
@@ -341,37 +376,17 @@ export const TeamsDirectoryScreen = React.memo(function TeamsDirectoryScreen() {
 
         if (showArchived && sourceHint === null) {
             if (visibleArchivedRows.length > 0) {
-                for (let start = 0; start < visibleArchivedRows.length; start += TEAM_DIRECTORY_CHUNK_SIZE) {
-                    const chunk = visibleArchivedRows.slice(start, start + TEAM_DIRECTORY_CHUNK_SIZE);
-                    const first = start === 0;
-                    const last = start + TEAM_DIRECTORY_CHUNK_SIZE >= visibleArchivedRows.length;
-                    const firstAddress = chunk[0]!.address;
-                    add(`archived:${teamAddressKey(firstAddress)}`, () => (
-                        <ItemGroup
-                            title={first ? t('teams.directory.archivedSection') : undefined}
-                            virtualizedSegment={{ first, last }}
-                        >
-                            {chunk.map((row) => (
-                                <TeamRow
-                                    key={`archived:${teamAddressKey(row.address)}`}
-                                    row={row}
-                                    showHome={active.multiHome}
-                                    onPress={() => openTeam(row.address.serverId, row.address.teamId)}
-                                />
-                            ))}
-                        </ItemGroup>
-                    ));
-                }
+                addTeamChunks('archived', t('teams.directory.archivedSection'), visibleArchivedRows);
             } else if (archivedPending) {
                 add('archived-loading', () => (
                     <ItemGroup title={t('teams.directory.archivedSection')}>
-                        <Item testID="teams-directory-archived-loading" title={t('teams.directory.archivedSection')} loading showChevron={false} />
+                        <Item testID="teams-directory-archived-loading" title={t('teams.directory.archivedSection')} loading mode="info" showChevron={false} />
                     </ItemGroup>
                 ));
             } else if (archived.unavailableHomes.length === 0 && normalizedQuery.length === 0) {
                 add('archived-empty', () => (
-                    <ItemGroup title={t('teams.directory.archivedSection')} footer={t('teams.directory.archivedEmptyBody')}>
-                        <Item testID="teams-directory-archived-empty" title={t('teams.directory.archivedEmpty')} showChevron={false} />
+                    <ItemGroup title={t('teams.directory.archivedSection')} description={t('teams.directory.archivedEmptyBody')}>
+                        <Item testID="teams-directory-archived-empty" title={t('teams.directory.archivedEmpty')} mode="info" showChevron={false} />
                     </ItemGroup>
                 ));
             }
@@ -397,39 +412,5 @@ export const TeamsDirectoryScreen = React.memo(function TeamsDirectoryScreen() {
         }
 
         return result;
-    }, [active, archived, archivedPending, canCreateTeam, normalizedQuery, openTeam, router, showArchived, showCreateTeam, sourceHint, theme.colors.state.warning.foreground, toggleArchived, visibleActiveRows, visibleArchivedRows]);
-
-    const renderRow = React.useCallback(
-        ({ item }: Readonly<{ item: TeamsDirectoryVirtualizedRow }>) => item.render(),
-        [],
-    );
-
-    return (
-        <VirtualizedList
-            testID="teams-directory-virtualized-list"
-            data={rows}
-            keyExtractor={(item) => item.key}
-            renderItem={renderRow}
-            ListHeaderComponent={(
-                <SearchHeader
-                    testID="teams-directory-search"
-                    value={query}
-                    onChangeText={setQuery}
-                    placeholder={t('teams.directory.searchPlaceholder')}
-                />
-            )}
-            style={{
-                flex: 1,
-                backgroundColor: theme.colors.background.canvas,
-                ...(Platform.OS === 'web' ? { minHeight: 0 } : {}),
-            }}
-            contentContainerStyle={{ paddingBottom: Platform.OS === 'ios' ? 34 : 16 }}
-            backendPreference="auto"
-            initialNumToRender={6}
-            maxToRenderPerBatch={4}
-            windowSize={7}
-            estimatedItemSize={120}
-            maintainVisibleContentPosition
-        />
-    );
-});
+    }, [active, archived, archivedPending, collection, createTeam, normalizedQuery, openTeam, showArchived, sourceHint, toggleArchived, visibleActiveRows, visibleArchivedRows]);
+}

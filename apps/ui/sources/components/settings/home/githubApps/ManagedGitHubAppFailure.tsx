@@ -1,11 +1,12 @@
 import * as React from 'react';
-import { useRouter } from 'expo-router';
+import { useRouter } from '@/components/appShell/workspace/destinationRoute';
 
 import { identityAdministrationFailureMessage } from '@/components/settings/identity/identityAdministrationFailure';
 import { Item } from '@/components/ui/lists/Item';
 import { t } from '@/text';
 
 import type { ManagedGitHubAppSurface } from './managedGitHubAppSurface';
+import { Icon } from '@/components/ui/icons/Icon';
 
 const ORIGIN_NOT_APPROVED = 'github_enterprise_origin_not_approved';
 
@@ -42,6 +43,7 @@ export const ManagedGitHubAppFailureRecovery = React.memo(function ManagedGitHub
     return (
         <Item
             testID="github-enterprise-origin-policy"
+            icon={<Icon name="shield-check" />}
             title={t('homeGovernance.githubEnterpriseOrigins')}
             subtitle={t('homeGovernance.policies')}
             onPress={() => router.push(path)}

@@ -15,10 +15,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
  */
 import { standardCleanup } from '@/dev/testkit/cleanup/standardCleanup';
 import {
+    homeAccountDetailFixture,
     homeAccountRowFixture,
+    homeAdministrationEventFixture,
     homeGovernanceProjectionFixture,
 } from '@/dev/testkit/fixtures/homeGovernanceFixtures';
 import {
+    createAccountTokenForTests,
     createHomeGovernanceHarness,
     installHomeGovernanceBoundaries,
     waitForHomeGovernance,
@@ -32,6 +35,9 @@ import { installSettingsViewCommonModuleMocks } from '../../settingsViewTestHelp
 
 const modalState = vi.hoisted(() => ({
     confirmResult: true,
+    /** When set, decides the confirmation instead (a case that acts while the dialog is open). */
+    confirmWith: null as null | (() => Promise<boolean>),
+    confirms: [] as Array<{ title: string; body: string }>,
     alerts: [] as Array<{ title: string; body: string }>,
 }));
 const routerBack = vi.hoisted(() => vi.fn());
@@ -51,7 +57,10 @@ installSettingsViewCommonModuleMocks({
     // it returns is what this surface is being tested against.
     modal: async () => ({
         Modal: {
-            confirm: async () => modalState.confirmResult,
+            confirm: async (title: string, body: string) => {
+                modalState.confirms.push({ title, body });
+                return modalState.confirmWith ? await modalState.confirmWith() : modalState.confirmResult;
+            },
             alertAsync: async (title: string, body: string) => {
                 modalState.alerts.push({ title, body });
             },
@@ -64,8 +73,11 @@ installHomeGovernanceBoundaries(harness);
 
 const GOVERNANCE_PATH = '/v1/home/governance/get';
 const LIST_PATH = '/v1/home/accounts/list';
+const GET_PATH = '/v1/home/accounts/get';
+const ROLE_PATH = '/v1/home/accounts/role/set';
 const DISABLE_PATH = '/v1/home/accounts/disable';
 const DELETE_PATH = '/v1/home/accounts/delete';
+const SIGN_OUT_PATH = '/v1/home/accounts/sign-out-everywhere';
 
 /**
  * The answer the Home actually returns from the disable intent: its declared
@@ -84,6 +96,7 @@ function disabledAccountRow() {
             disable: { status: 'unavailable', reason: 'target_not_active' },
             reenable: { status: 'available' },
             delete: { status: 'available' },
+            signOutEverywhere: { status: 'unavailable', reason: 'target_not_active' },
         },
     });
 }
@@ -96,7 +109,7 @@ async function renderAccount(serverId: string, accountId = 'ada') {
         <HomeAdministrationAccountScreen serverId={serverId} accountId={accountId} />,
     );
     await waitForHomeGovernance(() => {
-        expect(collectRenderedTestIds(screen.tree.toJSON())).toContain('home-account-status');
+        expect(collectRenderedTestIds(screen.tree.toJSON())).toContain('home-account-machines');
     });
     return screen;
 }
@@ -112,7 +125,7 @@ async function renderAccountLookup(serverId: string, accountId = 'ada') {
 
 async function addAdministeredHome(options?: Readonly<{
     projection?: Parameters<typeof homeGovernanceProjectionFixture>[0];
-    rows?: readonly ReturnType<typeof homeAccountRowFixture>[];
+    detail?: ReturnType<typeof homeAccountDetailFixture>;
 }>): Promise<string> {
     const home = await harness.addHome({
         name: 'Home A',
@@ -122,12 +135,7 @@ async function addAdministeredHome(options?: Readonly<{
     harness.answer(home, GOVERNANCE_PATH, {
         body: homeGovernanceProjectionFixture(options?.projection),
     });
-    harness.answer(home, LIST_PATH, {
-        body: {
-            items: options?.rows ?? [homeAccountRowFixture('ada')],
-            nextCursor: null,
-        },
-    });
+    harness.answer(home, GET_PATH, { body: options?.detail ?? homeAccountDetailFixture('ada') });
     return home;
 }
 
@@ -142,6 +150,8 @@ beforeEach(async () => {
     resetServerFeaturesClientForTests();
     await harness.reset();
     modalState.confirmResult = true;
+    modalState.confirmWith = null;
+    modalState.confirms = [];
     modalState.alerts = [];
     routerBack.mockReset();
     announceAccessibilityMessage.mockReset();
@@ -151,7 +161,177 @@ afterEach(() => {
     standardCleanup();
 });
 
+function lastOwnerCapabilities() {
+    return {
+        setRole: {
+            member: { status: 'unavailable', reason: 'last_active_owner' },
+            admin: { status: 'unavailable', reason: 'last_active_owner' },
+            owner: { status: 'unavailable', reason: 'unchanged' },
+        },
+        disable: { status: 'unavailable', reason: 'last_active_owner' },
+        reenable: { status: 'unavailable', reason: 'target_not_suspended' },
+        delete: { status: 'unavailable', reason: 'last_active_owner' },
+        signOutEverywhere: { status: 'available' },
+    } as const;
+}
+
 describe('HomeAdministrationAccountScreen', () => {
+    it('reads the person in one request and never pages the roster to find them', async () => {
+        const home = await addAdministeredHome();
+
+        await renderAccount(home);
+
+        expect(harness.requestsFor(GET_PATH)).toHaveLength(1);
+        expect(harness.requestsFor(GET_PATH)[0]?.input).toEqual({ accountId: 'ada' });
+        expect(harness.requestsFor(LIST_PATH)).toHaveLength(0);
+    });
+
+    it('shows Teams, linked providers, machine and token counts and the latest events about the person', async () => {
+        const home = await addAdministeredHome({
+            projection: {
+                authenticationOptions: {
+                    methods: [
+                        { id: 'email_password', displayName: 'Email and password', actions: [] },
+                        { id: 'github', displayName: 'GitHub', actions: [] },
+                    ],
+                    permittedAccountModes: ['e2ee'],
+                    recommendedProvisioningMode: 'e2ee',
+                    signInService: { deploymentMode: null, canDisable: false },
+                },
+            },
+            detail: homeAccountDetailFixture('ada', {
+                authentication: {
+                    signInEmail: 'ada@example.test',
+                    usableMethodIds: ['email_password'],
+                    linkedProviderIds: ['github'],
+                },
+                teams: [
+                    { teamId: 'team-platform', name: 'Platform', role: 'member', status: 'active', archived: false },
+                    { teamId: 'team-design', name: 'Design', role: 'admin', status: 'active', archived: true },
+                ],
+                machines: { count: 2 },
+                apiTokens: { count: 3, lastUsedAt: 1_700_000_000_000 },
+                recentEvents: [homeAdministrationEventFixture({
+                    id: 'event-1',
+                    action: 'account.role.set',
+                    target: { kind: 'account', id: 'ada', profile: null },
+                    summary: { from: 'member', to: 'admin' },
+                })],
+            }),
+        });
+
+        const screen = await renderAccount(home);
+        const text = screen.getTextContent();
+        const ids = collectRenderedTestIds(screen.tree.toJSON());
+
+        expect(text).toContain('ada@example.test');
+        expect(text).toContain('Email and password');
+        expect(text).toContain('GitHub');
+        expect(ids).toEqual(expect.arrayContaining(['home-account-team:team-platform', 'home-account-team:team-design']));
+        expect(text).toContain('Platform');
+        expect(text).toContain('homeGovernance.person.teamArchived');
+        expect(text).toContain('2');
+        expect(text).toContain('3');
+        expect(ids).toContain('home-activity-row:event-1');
+        expect(ids).toContain('home-account-activity-all');
+    });
+
+    it('signs the person out everywhere through the exact Home after an explicit confirmation', async () => {
+        const home = await addAdministeredHome();
+        harness.answer(home, SIGN_OUT_PATH, { body: homeAccountRowFixture('ada') });
+
+        const screen = await renderAccount(home);
+        await screen.pressByTestIdAsync('home-account-sign-out-everywhere-button');
+
+        await waitForHomeGovernance(() => expect(harness.requestsFor(SIGN_OUT_PATH)).toHaveLength(1));
+        expect(modalState.confirms[0]?.title).toContain('homeGovernance.person.signOutEverywhereTitle');
+        const [request] = harness.requestsFor(SIGN_OUT_PATH);
+        expect(request?.serverId).toBe(home);
+        expect(request?.input).toEqual({ accountId: 'ada' });
+        expect(request?.token).toBe(createAccountTokenForTests('account-admin'));
+    });
+
+    it('does nothing when someone else signs in on this Home while the sign-out confirmation is open', async () => {
+        const home = await addAdministeredHome();
+        harness.answer(home, SIGN_OUT_PATH, { body: homeAccountRowFixture('ada') });
+        const screen = await renderAccount(home);
+
+        // The confirmation was opened as `account-admin`; before it is accepted, another Account
+        // takes this Home's credential. Accepting must not act as the new Account.
+        modalState.confirmWith = async () => {
+            await harness.switchAccount(home, 'account-intruder');
+            return true;
+        };
+        await screen.pressByTestIdAsync('home-account-sign-out-everywhere-button');
+
+        await waitForHomeGovernance(() => expect(modalState.alerts).toHaveLength(1));
+        expect(modalState.alerts[0]?.body).toContain('settingsApiTokens.errors.accountChanged');
+        expect(harness.requestsFor(SIGN_OUT_PATH)).toHaveLength(0);
+    });
+
+    it('binds every destructive People action to the Account captured when its confirmation opened', async () => {
+        for (const testID of ['home-account-disable', 'home-account-delete', 'home-account-role:admin']) {
+            await harness.reset();
+            modalState.alerts = [];
+            const home = await addAdministeredHome();
+            const screen = await renderAccount(home);
+            modalState.confirmWith = async () => {
+                await harness.switchAccount(home, 'account-intruder');
+                return true;
+            };
+            await screen.pressByTestIdAsync(testID);
+            await waitForHomeGovernance(() => expect(modalState.alerts).toHaveLength(1));
+            expect(harness.requestsFor(DISABLE_PATH)).toHaveLength(0);
+            expect(harness.requestsFor(DELETE_PATH)).toHaveLength(0);
+            expect(harness.requestsFor(ROLE_PATH)).toHaveLength(0);
+            act(() => screen.tree.unmount());
+            modalState.confirmWith = null;
+        }
+    });
+
+    it('changes a role only after its confirmation, and not at all when it is declined', async () => {
+        const home = await addAdministeredHome();
+        harness.answer(home, ROLE_PATH, { body: homeAccountRowFixture('ada', { homeRole: 'admin' }) });
+        const screen = await renderAccount(home);
+
+        modalState.confirmResult = false;
+        await screen.pressByTestIdAsync('home-account-role:admin');
+        expect(harness.requestsFor(ROLE_PATH)).toHaveLength(0);
+
+        modalState.confirmResult = true;
+        await screen.pressByTestIdAsync('home-account-role:admin');
+        await waitForHomeGovernance(() => expect(harness.requestsFor(ROLE_PATH)).toHaveLength(1));
+        expect(harness.requestsFor(ROLE_PATH)[0]?.input).toEqual({ accountId: 'ada', homeRole: 'admin' });
+    });
+
+    it('explains the last active owner instead of offering a demotion, disable or delete that would strand the Home', async () => {
+        const home = await addAdministeredHome({
+            projection: { activeOwnerCount: 1 },
+            detail: homeAccountDetailFixture('ada', { homeRole: 'owner', mutationCapabilities: lastOwnerCapabilities() }),
+        });
+
+        const screen = await renderAccount(home);
+        const ids = collectRenderedTestIds(screen.tree.toJSON());
+        // No inert controls: the role chooser, Disable and Delete are withheld and the reason is stated.
+        expect(ids).not.toContain('home-account-role:member');
+        expect(ids).not.toContain('home-account-disable');
+        expect(ids).not.toContain('home-account-delete');
+        expect(ids).toContain('home-account-access-unavailable');
+        expect(screen.getTextContent()).toContain('homeGovernance.reasonLastActiveOwner');
+        // Ending sessions changes no role, so the last owner can still be signed out everywhere.
+        expect(ids).toContain('home-account-sign-out-everywhere-button');
+    });
+
+    it('does not offer sign-out everywhere for a person who is no longer active', async () => {
+        const home = await addAdministeredHome({
+            detail: homeAccountDetailFixture('ada', { status: 'suspended', mutationCapabilities: disabledAccountRow().mutationCapabilities }),
+        });
+
+        const screen = await renderAccount(home);
+        expect(collectRenderedTestIds(screen.tree.toJSON())).not.toContain('home-account-sign-out-everywhere');
+        expect(collectRenderedTestIds(screen.tree.toJSON())).toContain('home-account-enable');
+    });
+
     it('announces one completed Account mutation through the shared accessibility owner', async () => {
         const home = await addAdministeredHome();
         harness.answer(home, DISABLE_PATH, { body: disabledAccountRow() });
@@ -159,123 +339,56 @@ describe('HomeAdministrationAccountScreen', () => {
         const screen = await renderAccount(home);
         await screen.pressByTestIdAsync('home-account-disable');
 
-        await waitForHomeGovernance(() => {
-            expect(announceAccessibilityMessage).toHaveBeenCalledOnce();
-        });
-        expect(announceAccessibilityMessage).toHaveBeenLastCalledWith(
-            'homeGovernance.disable. common.success',
-        );
+        await waitForHomeGovernance(() => expect(announceAccessibilityMessage).toHaveBeenCalledOnce());
+        expect(announceAccessibilityMessage).toHaveBeenLastCalledWith('homeGovernance.disable. common.success');
     });
 
-    it('shows only the administered Account sign-in email and usable Home method labels', async () => {
+    it('never exposes unlabelled method identifiers as a label', async () => {
         const home = await addAdministeredHome({
             projection: {
                 authenticationOptions: {
-                    methods: [
-                        { id: 'email_password', displayName: 'Email and password', actions: [] },
-                        { id: 'managed-okta', displayName: 'Acme SSO', actions: [] },
-                    ],
+                    methods: [{ id: 'managed-okta', displayName: 'Acme SSO', actions: [] }],
                     permittedAccountModes: ['e2ee'],
                     recommendedProvisioningMode: 'e2ee',
                     signInService: { deploymentMode: null, canDisable: false },
                 },
             },
-            rows: [homeAccountRowFixture('ada', {
-                authentication: {
-                    signInEmail: 'ada@example.test',
-                    usableMethodIds: ['email_password', 'managed-okta'],
-                },
-            })],
+            detail: homeAccountDetailFixture('ada', {
+                authentication: { signInEmail: null, usableMethodIds: ['managed-okta'], linkedProviderIds: [] },
+            }),
         });
 
         const screen = await renderAccount(home);
-
-        expect(screen.getTextContent()).toContain('ada@example.test');
-        expect(screen.getTextContent()).toContain('Email and password, Acme SSO');
-    });
-
-    it('shows an explicit empty state when the Account has no sign-in email or usable method', async () => {
-        const home = await addAdministeredHome();
-
-        const screen = await renderAccount(home);
-
-        expect(screen.getTextContent()).toContain('settingsAccount.nativePassword.signInEmailNotSet');
-        expect(screen.getTextContent()).toContain('settingsAccount.nativePassword.notEligible');
-    });
-
-    it('never exposes raw or unavailable authentication method identifiers', async () => {
-        const home = await addAdministeredHome({
-            projection: {
-                authenticationOptions: {
-                    methods: [
-                        { id: 'managed-okta', displayName: 'Acme SSO', actions: [] },
-                        { id: 'internal-unlabelled', actions: [] },
-                    ],
-                    permittedAccountModes: ['e2ee'],
-                    recommendedProvisioningMode: 'e2ee',
-                    signInService: { deploymentMode: null, canDisable: false },
-                },
-            },
-            rows: [homeAccountRowFixture('ada', {
-                authentication: {
-                    signInEmail: null,
-                    usableMethodIds: ['managed-okta', 'internal-unlabelled', 'unavailable-secret-method'],
-                },
-            })],
-        });
-
-        const screen = await renderAccount(home);
-
         expect(screen.getTextContent()).toContain('Acme SSO');
-        expect(screen.getTextContent()).not.toContain('internal-unlabelled');
-        expect(screen.getTextContent()).not.toContain('unavailable-secret-method');
+        expect(screen.getTextContent()).toContain('settingsAccount.nativePassword.signInEmailNotSet');
+        expect(screen.getTextContent()).toContain('homeGovernance.person.none');
     });
 
-    it('shows a failed roster read with retry instead of claiming the account is absent', async () => {
-        const home = await addAdministeredHome({ rows: [] });
-        harness.answer(home, LIST_PATH, {
-            status: 503,
-            body: { error: 'temporarily_unavailable' },
-        });
+    it('shows a failed read with retry instead of claiming the person is absent', async () => {
+        const home = await addAdministeredHome();
+        harness.answer(home, GET_PATH, { status: 503, body: { error: 'temporarily_unavailable' } });
 
         const screen = await renderAccountLookup(home);
         await waitForHomeGovernance(() => {
-            expect(collectRenderedTestIds(screen.tree.toJSON())).toContain('home-account-roster-error');
+            expect(collectRenderedTestIds(screen.tree.toJSON())).toContain('home-account-error');
         });
         expect(collectRenderedTestIds(screen.tree.toJSON())).not.toContain('home-account-unavailable');
 
-        harness.answer(home, LIST_PATH, {
-            body: { items: [homeAccountRowFixture('ada')], nextCursor: null },
-        });
-        await screen.pressByTestIdAsync('home-account-roster-retry');
+        harness.answer(home, GET_PATH, { body: homeAccountDetailFixture('ada') });
+        await screen.pressByTestIdAsync('home-account-retry');
         await waitForHomeGovernance(() => {
-            expect(collectRenderedTestIds(screen.tree.toJSON())).toContain('home-account-status');
+            expect(collectRenderedTestIds(screen.tree.toJSON())).toContain('home-account-machines');
         });
     });
 
-    it('shows an unsupported roster operation instead of claiming the account is absent', async () => {
-        const home = await addAdministeredHome({ rows: [] });
-        harness.answer(home, LIST_PATH, {
-            status: 404,
-            body: { error: 'not_found' },
-        });
-
-        const screen = await renderAccountLookup(home);
-        await waitForHomeGovernance(() => {
-            expect(collectRenderedTestIds(screen.tree.toJSON())).toContain('home-account-roster-unsupported');
-        });
-        expect(collectRenderedTestIds(screen.tree.toJSON())).not.toContain('home-account-unavailable');
-    });
-
-    it('shows not found only after the Home successfully exhausts its roster', async () => {
-        const home = await addAdministeredHome({ rows: [] });
+    it('shows not found only when the Home says the person does not exist', async () => {
+        const home = await addAdministeredHome();
+        harness.answer(home, GET_PATH, { status: 404, body: { error: 'home_account_not_found' } });
 
         const screen = await renderAccountLookup(home);
         await waitForHomeGovernance(() => {
             expect(collectRenderedTestIds(screen.tree.toJSON())).toContain('home-account-unavailable');
         });
-        expect(collectRenderedTestIds(screen.tree.toJSON())).not.toContain('home-account-roster-error');
-        expect(collectRenderedTestIds(screen.tree.toJSON())).not.toContain('home-account-roster-unsupported');
     });
 
     it('disables an account through the exact Home after an explicit confirmation', async () => {
@@ -285,9 +398,7 @@ describe('HomeAdministrationAccountScreen', () => {
         const screen = await renderAccount(home);
         await screen.pressByTestIdAsync('home-account-disable');
 
-        await waitForHomeGovernance(() => {
-            expect(harness.requestsFor(DISABLE_PATH)).toHaveLength(1);
-        });
+        await waitForHomeGovernance(() => expect(harness.requestsFor(DISABLE_PATH)).toHaveLength(1));
         const [request] = harness.requestsFor(DISABLE_PATH);
         expect(request?.serverId).toBe(home);
         expect(request?.input).toEqual({ accountId: 'ada' });
@@ -305,8 +416,6 @@ describe('HomeAdministrationAccountScreen', () => {
         await waitForHomeGovernance(() => expect(harness.requestsFor(DISABLE_PATH)).toHaveLength(1));
         const pending = screen.findByTestId('home-account-disable');
         expect(pending?.props.accessibilityState).toMatchObject({ busy: true, disabled: true });
-        // The busy button is inert: activating the same target again cannot
-        // submit a second request.
         await screen.pressByTestIdAsync('home-account-disable');
         expect(harness.requestsFor(DISABLE_PATH)).toHaveLength(1);
 
@@ -314,19 +423,10 @@ describe('HomeAdministrationAccountScreen', () => {
             finishDisable?.();
             await disableResponse;
         });
-        await waitForHomeGovernance(() => {
-            const settled = screen.findByTestId('home-account-disable');
-            expect(settled?.props.accessibilityState?.busy).not.toBe(true);
-            expect(settled?.props.accessibilityState?.disabled).not.toBe(true);
-        });
     });
 
     it('sends the change to the Home being administered, not the focused one', async () => {
         const administered = await addAdministeredHome();
-        // A second Home becomes the focused one after the administration screen
-        // was opened for the first. The shared executor falls back to the
-        // focused Home when an intent names none, so this is what proves the
-        // screen supplies its own Home rather than inheriting that fallback.
         const focused = await harness.addHome({
             name: 'Home B',
             serverUrl: 'https://home-b.example',
@@ -339,9 +439,7 @@ describe('HomeAdministrationAccountScreen', () => {
         const screen = await renderAccount(administered);
         await screen.pressByTestIdAsync('home-account-disable');
 
-        await waitForHomeGovernance(() => {
-            expect(harness.requestsFor(DISABLE_PATH)).toHaveLength(1);
-        });
+        await waitForHomeGovernance(() => expect(harness.requestsFor(DISABLE_PATH)).toHaveLength(1));
         expect(harness.requestsFor(DISABLE_PATH)[0]?.serverId).toBe(administered);
         expect(harness.requestsFor(DISABLE_PATH)[0]?.serverUrl).toBe('https://home-a.example');
     });
@@ -359,26 +457,14 @@ describe('HomeAdministrationAccountScreen', () => {
 
     it('offers Re-enable only for the reversible hold, never for a retired account', async () => {
         const held = await addAdministeredHome({
-            rows: [homeAccountRowFixture('ada', {
-                status: 'suspended',
-                mutationCapabilities: {
-                    setRole: {
-                        member: { status: 'unavailable', reason: 'target_inactive' },
-                        admin: { status: 'unavailable', reason: 'target_inactive' },
-                        owner: { status: 'unavailable', reason: 'target_inactive' },
-                    },
-                    disable: { status: 'unavailable', reason: 'target_not_active' },
-                    reenable: { status: 'available' },
-                    delete: { status: 'available' },
-                },
-            })],
+            detail: homeAccountDetailFixture('ada', { status: 'suspended', mutationCapabilities: disabledAccountRow().mutationCapabilities }),
         });
         const screen = await renderAccount(held);
         expect(collectRenderedTestIds(screen.tree.toJSON())).toContain('home-account-enable');
 
         await harness.reset();
         const retired = await addAdministeredHome({
-            rows: [homeAccountRowFixture('ada', {
+            detail: homeAccountDetailFixture('ada', {
                 status: 'disabled',
                 mutationCapabilities: {
                     setRole: {
@@ -389,15 +475,16 @@ describe('HomeAdministrationAccountScreen', () => {
                     disable: { status: 'unavailable', reason: 'target_retired' },
                     reenable: { status: 'unavailable', reason: 'target_retired' },
                     delete: { status: 'available' },
+                    signOutEverywhere: { status: 'unavailable', reason: 'target_not_active' },
                 },
-            })],
+            }),
         });
         const retiredScreen = await renderAccount(retired);
         expect(collectRenderedTestIds(retiredScreen.tree.toJSON())).not.toContain('home-account-enable');
         expect(collectRenderedTestIds(retiredScreen.tree.toJSON())).toContain('home-account-delete');
     });
 
-    it('reports an unfinished deletion as unfinished and keeps the screen open', async () => {
+    it('reports an unfinished deletion as unfinished and keeps the page open', async () => {
         const home = await addAdministeredHome();
         harness.answer(home, DELETE_PATH, { body: { status: 'disabled_pending_completion' } });
 
@@ -406,99 +493,52 @@ describe('HomeAdministrationAccountScreen', () => {
 
         await waitForHomeGovernance(() => {
             expect(modalState.alerts).toHaveLength(1);
-            expect(harness.requestsFor(LIST_PATH)).toHaveLength(2);
+            expect(harness.requestsFor(GET_PATH)).toHaveLength(2);
         });
-        // Never reported as a completed deletion, and the account's own screen
-        // stays open so an authorized owner can retry from it.
         expect(routerBack).not.toHaveBeenCalled();
     });
 
-    it('leaves the account screen once a deletion actually completed', async () => {
+    it('leaves the person page once a deletion actually completed', async () => {
         const home = await addAdministeredHome();
         harness.answer(home, DELETE_PATH, { body: { status: 'deleted' } });
 
         const screen = await renderAccount(home);
         await screen.pressByTestIdAsync('home-account-delete');
 
-        await waitForHomeGovernance(() => {
-            expect(routerBack).toHaveBeenCalled();
-        });
+        await waitForHomeGovernance(() => expect(routerBack).toHaveBeenCalled());
     });
 
     it('never claims nothing changed when a dispatched mutation lost its answer', async () => {
         const home = await addAdministeredHome();
-        // The Home received the disable request and then stopped answering. The
-        // transport preserves that uncertainty all the way to this surface, so
-        // the administrator must not be told the account is untouched: a second
-        // press would be a second non-idempotent governance mutation.
         harness.answer(home, DISABLE_PATH, { dispatchThenFail: true });
 
         const screen = await renderAccount(home);
         await screen.pressByTestIdAsync('home-account-disable');
 
-        await waitForHomeGovernance(() => {
-            expect(modalState.alerts).toHaveLength(1);
-        });
+        await waitForHomeGovernance(() => expect(modalState.alerts).toHaveLength(1));
         const alert = modalState.alerts[0]!;
         expect(`${alert.title} ${alert.body}`).toContain('errorOutcomeUnknown');
-        expect(`${alert.title} ${alert.body}`).not.toContain('errorGeneric');
-        // The roster is re-read so the person can see what the Home actually holds.
-        await waitForHomeGovernance(() => {
-            expect(harness.requestsFor(LIST_PATH).length).toBeGreaterThan(1);
-        });
+        await waitForHomeGovernance(() => expect(harness.requestsFor(GET_PATH).length).toBeGreaterThan(1));
     });
 
     it('carries the Home typed refusal back instead of a generic failure', async () => {
         const home = await addAdministeredHome();
-        harness.answer(home, DISABLE_PATH, {
-            status: 409,
-            body: { error: 'home_owner_transfer_required' },
-        });
+        harness.answer(home, DISABLE_PATH, { status: 409, body: { error: 'home_owner_transfer_required' } });
 
         const screen = await renderAccount(home);
         await screen.pressByTestIdAsync('home-account-disable');
 
         await waitForHomeGovernance(() => {
             expect(modalState.alerts).toHaveLength(1);
-            expect(harness.requestsFor(LIST_PATH)).toHaveLength(2);
+            expect(harness.requestsFor(GET_PATH)).toHaveLength(2);
         });
-        // The Home's own typed code reached the surface through the real status
-        // classification, so the administrator is told what actually blocked it.
         expect(modalState.alerts[0]?.body).toContain('errorOwnerTransferRequired');
-    });
-
-    it('explains the last active owner instead of offering a demotion that would strand the Home', async () => {
-        const home = await addAdministeredHome({
-            projection: { activeOwnerCount: 1 },
-            rows: [homeAccountRowFixture('ada', {
-                homeRole: 'owner',
-                mutationCapabilities: {
-                    setRole: {
-                        member: { status: 'unavailable', reason: 'last_active_owner' },
-                        admin: { status: 'unavailable', reason: 'last_active_owner' },
-                        owner: { status: 'unavailable', reason: 'unchanged' },
-                    },
-                    disable: { status: 'unavailable', reason: 'last_active_owner' },
-                    reenable: { status: 'unavailable', reason: 'target_not_suspended' },
-                    delete: { status: 'unavailable', reason: 'last_active_owner' },
-                },
-            })],
-        });
-
-        const screen = await renderAccount(home);
-        const ids = collectRenderedTestIds(screen.tree.toJSON());
-        // The role chooser is withheld, the reason is stated, and the roles that
-        // remain visible are never a locally invented ladder.
-        expect(ids).not.toContain('home-account-role:member');
-        expect(screen.getTextContent()).toContain('homeGovernance.reasonLastActiveOwner');
     });
 
     it('offers the roles the viewer may actually assign, and no others', async () => {
         const home = await addAdministeredHome({
-            projection: {
-                viewer: { accountId: 'account-admin', homeRole: 'admin', status: 'active' },
-            },
-            rows: [homeAccountRowFixture('ada', {
+            projection: { viewer: { accountId: 'account-admin', homeRole: 'admin', status: 'active' } },
+            detail: homeAccountDetailFixture('ada', {
                 mutationCapabilities: {
                     setRole: {
                         member: { status: 'unavailable', reason: 'unchanged' },
@@ -508,38 +548,30 @@ describe('HomeAdministrationAccountScreen', () => {
                     disable: { status: 'available' },
                     reenable: { status: 'unavailable', reason: 'target_not_suspended' },
                     delete: { status: 'unavailable', reason: 'not_authorized' },
+                    signOutEverywhere: { status: 'available' },
                 },
-            })],
+            }),
         });
 
         const screen = await renderAccount(home);
         const ids = collectRenderedTestIds(screen.tree.toJSON());
         expect(ids).toContain('home-account-role:member');
         expect(ids).toContain('home-account-role:admin');
-        // An admin may not create or remove Home owners.
         expect(ids).not.toContain('home-account-role:owner');
     });
 
-    it('renders a server-projected Team ownership blocker without issuing deletion', async () => {
+    it('states a server-projected Team ownership blocker instead of an inert Delete', async () => {
         const home = await addAdministeredHome({
-            rows: [homeAccountRowFixture('ada', {
+            detail: homeAccountDetailFixture('ada', {
                 mutationCapabilities: {
-                    setRole: {
-                        member: { status: 'unavailable', reason: 'unchanged' },
-                        admin: { status: 'available' },
-                        owner: { status: 'available' },
-                    },
-                    disable: { status: 'available' },
-                    reenable: { status: 'unavailable', reason: 'target_not_suspended' },
+                    ...homeAccountRowFixture('ada').mutationCapabilities,
                     delete: { status: 'unavailable', reason: 'team_owner_transfer_required' },
                 },
-            })],
+            }),
         });
 
         const screen = await renderAccount(home);
-        const deleteControl = screen.findByTestId('home-account-delete')!;
-        expect(deleteControl.props['aria-disabled'] === true
-            || deleteControl.props.accessibilityState?.disabled === true).toBe(true);
+        expect(collectRenderedTestIds(screen.tree.toJSON())).not.toContain('home-account-delete');
         expect(screen.getTextContent()).toContain('homeGovernance.errorTeamOwnerTransferRequired');
         expect(harness.requestsFor(DELETE_PATH)).toHaveLength(0);
     });

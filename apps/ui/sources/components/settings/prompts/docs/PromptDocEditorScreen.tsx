@@ -1,27 +1,32 @@
 import * as React from 'react';
 import { View } from 'react-native';
-import { StyleSheet, useUnistyles } from 'react-native-unistyles';
-import { useNavigation, useRouter } from 'expo-router';
+import { StyleSheet } from 'react-native-unistyles';
+import { useNavigation, useRouter } from '@/components/appShell/workspace/destinationRoute';
 
 import { PromptDocBodyV1Schema } from '@happier-dev/protocol';
 
 import { t } from '@/text';
-import { useLayoutMaxWidthStyle } from '@/components/ui/layout/layout';
 import { sync } from '@/sync/sync';
 import { storage, useSetting, useSettingMutable } from '@/sync/domains/state/storage';
 import type { CodeEditorHandle } from '@/components/ui/code/editor/codeEditorTypes';
 import { MarkdownCodeEditorField } from '@/components/ui/markdown/editor/MarkdownCodeEditorField';
-import { SETTINGS_TEXT_INPUT_METRICS } from '@/components/ui/forms/settingsTextInputMetrics';
+import { FieldTextInput } from '@/components/ui/forms/FieldTextInput';
+import { Item } from '@/components/ui/lists/Item';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
 import { ItemList } from '@/components/ui/lists/ItemList';
-import { SettingsActionFooter } from '@/components/ui/settingsSurface/SettingsActionFooter';
-import { Text, TextInput } from '@/components/ui/text/Text';
+import { SectionContentRow } from '@/components/ui/lists/SectionContentRow';
+import type { PageHeaderMenuAction } from '@/components/ui/layout/PageHeaderEntityParts';
 import { Modal } from '@/modal';
 import { createPromptDoc, updatePromptDoc } from '@/sync/ops/promptLibrary/promptDocs';
-import { safeRouterBack } from '@/utils/navigation/safeRouterBack';
+import { useUnsavedDraftNavigationGuard } from '@/utils/navigation/useUnsavedDraftNavigationGuard';
 import { PromptExternalLinksGroup } from '@/components/settings/prompts/shared/PromptExternalLinksGroup';
-import { PromptOrganizationFields } from '@/components/settings/prompts/shared/PromptOrganizationFields';
+import { PromptFolderFieldRow, PromptTagsFieldRow } from '@/components/settings/prompts/shared/PromptOrganizationFields';
 import { usePromptEditorDraftField } from '@/components/settings/prompts/shared/usePromptEditorDraftField';
+import { PromptEditorHeader } from '@/components/settings/prompts/collection/PromptEditorHeader';
+import { publishPromptCollectionDraftTitle } from '@/components/settings/prompts/collection/PromptCollectionList';
+import { promptCollectionItemHref, promptCollectionRoot } from '@/components/settings/prompts/collection/promptCollectionModel';
+import { usePromptLibraryEntryActions } from '@/components/settings/prompts/collection/usePromptLibraryEntryActions';
+import { usePromptLibraryEntryMeta } from '@/components/settings/prompts/collection/usePromptLibraryEntryMeta';
 import { ensurePromptFolderByName, findPromptFolderById, formatPromptTags, normalizePromptTags } from '@/sync/ops/promptLibrary/promptFolders';
 
 function readPromptDocMarkdown(bodyText: string | null): string {
@@ -35,32 +40,8 @@ function readPromptDocMarkdown(bodyText: string | null): string {
 }
 
 const styles = StyleSheet.create((theme) => ({
-  container: {
-    flex: 1,
-    backgroundColor: theme.colors.background.canvas,
-  },
-  content: {
-    padding: 16,
-    paddingBottom: 64,
-    width: '100%',
-    alignSelf: 'center',
-  },
-  titleInput: {
-    backgroundColor: theme.colors.input.background,
-    color: theme.colors.input.text,
-    borderRadius: 10,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    ...SETTINGS_TEXT_INPUT_METRICS,
-    marginBottom: 12,
-  },
-  fieldLabel: {
-    color: theme.colors.text.secondary,
-    fontSize: 14,
-    marginBottom: 8,
-  },
   editorContainer: {
-    borderRadius: 12,
+    borderRadius: 10,
     overflow: 'hidden',
     borderWidth: 1,
     borderColor: theme.colors.border.default,
@@ -68,42 +49,50 @@ const styles = StyleSheet.create((theme) => ({
   },
 }));
 
+/**
+ * A prompt's editor in the Prompts collection: a saved prompt (`artifactId`) or the new-prompt draft
+ * (`null`). Saving a draft opens the saved prompt in its place; saving a prompt keeps it open.
+ */
 export const PromptDocEditorScreen = React.memo((props: Readonly<{ artifactId: string | null }>) => {
-  // Composed at render time: the module-scope stylesheet evaluates once, so a
-  // baked-in `layout.maxWidth` would freeze the user's content-width preference.
-  const contentMaxWidthStyle = useLayoutMaxWidthStyle();
-  const contentStyle = React.useMemo(() => [styles.content, contentMaxWidthStyle], [contentMaxWidthStyle]);
-  const { theme } = useUnistyles();
   const router = useRouter();
   const navigation = useNavigation();
+  const isNew = props.artifactId === null;
   const [promptFoldersV1, setPromptFoldersV1] = useSettingMutable('promptFoldersV1');
   const wrapLinesInDiffs = useSetting('wrapLinesInDiffs');
+  const entryActions = usePromptLibraryEntryActions('doc');
+  const meta = usePromptLibraryEntryMeta(props.artifactId);
   const [isLoading, setIsLoading] = React.useState<boolean>(Boolean(props.artifactId));
+  const titleField = usePromptEditorDraftField('');
+  const markdownField = usePromptEditorDraftField('');
+  const folderField = usePromptEditorDraftField('');
+  const tagsField = usePromptEditorDraftField('');
   const {
     value: title,
     setValue: setTitle,
     setPristineValue: setPristineTitle,
     applyExternalValue: applyExternalTitle,
-  } = usePromptEditorDraftField('');
+  } = titleField;
   const {
     value: markdown,
     setValue: setMarkdown,
     setPristineValue: setPristineMarkdown,
     applyExternalValue: applyExternalMarkdown,
-  } = usePromptEditorDraftField('');
+  } = markdownField;
   const {
     value: folderName,
     setValue: setFolderName,
     setPristineValue: setPristineFolderName,
     applyExternalValue: applyExternalFolderName,
-  } = usePromptEditorDraftField('');
+  } = folderField;
   const {
     value: tagsText,
     setValue: setTagsText,
     setPristineValue: setPristineTagsText,
     applyExternalValue: applyExternalTagsText,
-  } = usePromptEditorDraftField('');
+  } = tagsField;
   const [saving, setSaving] = React.useState(false);
+  // Where to go once the save that asked for it has rendered (so the draft is no longer dirty).
+  const [pendingHref, setPendingHref] = React.useState<string | null>(null);
   // Flushed before reading `markdown` on save so the latest rich/raw edit (which
   // may still be debounced inside the active editor surface) is captured.
   const editorRef = React.useRef<CodeEditorHandle | null>(null);
@@ -173,7 +162,8 @@ export const PromptDocEditorScreen = React.memo((props: Readonly<{ artifactId: s
         if (!cancelled) {
           applyArtifactState(props.artifactId, { preserveDirty: loadedArtifactIdRef.current === props.artifactId });
         }
-      } catch (err) {
+      } catch {
+        // The fields stay as they are; the editor remains usable once the artifact arrives.
       } finally {
         if (!cancelled) setIsLoading(false);
       }
@@ -189,10 +179,20 @@ export const PromptDocEditorScreen = React.memo((props: Readonly<{ artifactId: s
     applyArtifactState(props.artifactId, { preserveDirty: true });
   }, [applyArtifactState, promptFoldersV1, props.artifactId]);
 
-  const canSave = title.trim().length > 0 && !saving;
+  React.useEffect(() => {
+    if (!isNew) return undefined;
+    publishPromptCollectionDraftTitle('doc', title);
+    return () => publishPromptCollectionDraftTitle('doc', '');
+  }, [isNew, title]);
 
-  const save = React.useCallback(async () => {
-    if (!canSave) return;
+  const changed = titleField.changed || markdownField.changed || folderField.changed || tagsField.changed;
+  // A draft is dirty once anything was typed; saving makes its values pristine, so the saved
+  // draft can open in its place without asking.
+  const dirty = changed;
+  const canSave = title.trim().length > 0 && !saving && !isLoading && (isNew || changed);
+
+  const save = React.useCallback(async (): Promise<boolean> => {
+    if (title.trim().length === 0 || saving) return false;
 
     try {
       setSaving(true);
@@ -206,81 +206,130 @@ export const PromptDocEditorScreen = React.memo((props: Readonly<{ artifactId: s
       }
       const tags = normalizePromptTags(tagsText);
       if (!props.artifactId) {
-        await createPromptDoc({ title: title.trim(), markdown: latestMarkdown, folderId: ensuredFolder.folderId, tags });
+        const artifactId = await createPromptDoc({ title: title.trim(), markdown: latestMarkdown, folderId: ensuredFolder.folderId, tags });
+        setPristineTitle(title);
+        setPristineMarkdown(latestMarkdown);
+        setPristineFolderName(folderName);
+        setPristineTagsText(tagsText);
+        setPendingHref(promptCollectionItemHref('doc', artifactId));
       } else {
         await updatePromptDoc({ artifactId: props.artifactId, title: title.trim(), markdown: latestMarkdown, folderId: ensuredFolder.folderId, tags });
+        setPristineTitle(title);
+        setPristineMarkdown(latestMarkdown);
+        setPristineFolderName(folderName);
+        setPristineTagsText(tagsText);
       }
-      safeRouterBack({ router, navigation, fallbackHref: '/settings/prompts/docs' });
-    } catch (err) {
+      return true;
+    } catch {
       Modal.alert(t('common.error'), t('promptLibrary.saveError'));
+      return false;
     } finally {
       setSaving(false);
     }
-  }, [canSave, folderName, markdown, navigation, promptFoldersV1, props.artifactId, router, setPromptFoldersV1, tagsText, title]);
+  }, [folderName, markdown, promptFoldersV1, props.artifactId, saving, setPristineFolderName, setPristineMarkdown, setPristineTagsText, setPristineTitle, setPromptFoldersV1, tagsText, title]);
+
+  const leave = React.useCallback(() => setPendingHref(promptCollectionRoot('doc')), []);
+  React.useEffect(() => {
+    if (!pendingHref) return;
+    setPendingHref(null);
+    router.replace(pendingHref as never);
+  }, [pendingHref, router]);
+  const discard = React.useCallback(() => {
+    applyArtifactState(props.artifactId);
+  }, [applyArtifactState, props.artifactId]);
+  useUnsavedDraftNavigationGuard({
+    navigation,
+    isDirty: dirty,
+    onDiscard: discard,
+    onSave: save,
+    onLeave: leave,
+    tag: 'PromptDocEditorScreen.leave',
+  });
+
+  const menuActions = React.useMemo((): readonly PageHeaderMenuAction[] => {
+    if (!props.artifactId) {
+      return [{ id: 'discard', testID: 'promptDoc.discard', title: t('common.discard'), onSelect: () => { discard(); leave(); } }];
+    }
+    const artifactId = props.artifactId;
+    return [
+      { id: 'duplicate', testID: 'promptDoc.duplicate', title: t('common.duplicate'), onSelect: () => entryActions.duplicate(artifactId) },
+      { id: 'external', testID: 'promptDoc.externalAssets', title: t('promptLibrary.manageExternalAssets'), onSelect: () => entryActions.manageExternalAssets(artifactId) },
+      {
+        id: 'delete',
+        testID: 'promptDoc.delete',
+        title: t('common.delete'),
+        onSelect: async () => {
+          if (await entryActions.remove(artifactId)) {
+            discard();
+            leave();
+          }
+        },
+      },
+    ];
+  }, [discard, entryActions, leave, props.artifactId]);
 
   return (
-    <View style={styles.container}>
-      <ItemList containerStyle={contentStyle} keyboardShouldPersistTaps="handled">
-        <ItemGroup title={t('promptLibrary.general')}>
-          <View style={{ paddingHorizontal: 16, paddingTop: 12 }}>
-            <Text style={styles.fieldLabel}>{t('promptLibrary.promptNameLabel')}</Text>
-            <TextInput
+    <ItemList presentation="page" keyboardShouldPersistTaps="handled">
+      <PromptEditorHeader
+        testID="promptDoc.header"
+        mark="file-text"
+        title={title.trim() || (isNew ? t('promptLibrary.newPrompt') : t('promptLibrary.untitledPrompt'))}
+        description={t('promptLibrary.surface.docEditorDescription')}
+        meta={meta}
+        saveTestID="promptDoc.save"
+        saveDisabled={!canSave}
+        saving={saving}
+        onSave={() => { void save(); }}
+        menuActions={menuActions}
+      />
+
+      <ItemGroup title={t('promptLibrary.surface.promptSection')} description={t('promptLibrary.surface.promptSectionDescription')}>
+        <Item
+          title={t('promptLibrary.surface.nameTitle')}
+          accessoryLayout="adaptive"
+          showChevron={false}
+          rightElement={(
+            <FieldTextInput
               testID="promptDoc.title"
-              placeholder={t('promptLibrary.titlePlaceholder')}
-              placeholderTextColor={theme.colors.input.placeholder}
               value={title}
               onChangeText={setTitle}
-              style={styles.titleInput}
+              accessibilityLabel={t('promptLibrary.surface.nameTitle')}
+              placeholder={t('promptLibrary.titlePlaceholder')}
+              autoCapitalize="sentences"
+              autoFocus={isNew}
               editable={!isLoading}
             />
-          </View>
-          <PromptOrganizationFields
-            folderName={folderName}
-            onChangeFolderName={setFolderName}
-            tags={tagsText}
-            onChangeTags={setTagsText}
-            folderTestID="promptDoc.folderName"
-            tagsTestID="promptDoc.tags"
-            editable={!isLoading}
-          />
-        </ItemGroup>
-
-        <ItemGroup title={t('promptLibrary.promptContent')}>
-          <View style={{ padding: 12 }}>
-            <View style={styles.editorContainer}>
-              <MarkdownCodeEditorField
-                resetKey={props.artifactId ?? 'new'}
-                testID="promptDoc.editor"
-                value={markdown}
-                language="markdown"
-                onChange={setMarkdown}
-                readOnly={isLoading}
-                editorRef={editorRef}
-                wrapLines={wrapLinesInDiffs !== false}
-              />
-            </View>
-          </View>
-        </ItemGroup>
-
-        <PromptExternalLinksGroup
-          artifactId={props.artifactId}
-          libraryKind="doc"
-          manageItemTestID="promptDoc.manageExternalAssets"
-          manageItemSubtitle={t('promptLibrary.externalAssetsSubtitle')}
-          linkTestIDPrefix="promptDoc.link"
+          )}
         />
+        <PromptFolderFieldRow value={folderName} onChange={setFolderName} testID="promptDoc.folderName" editable={!isLoading} />
+        <PromptTagsFieldRow value={tagsText} onChange={setTagsText} testID="promptDoc.tags" editable={!isLoading} />
+      </ItemGroup>
 
-        <SettingsActionFooter
-          primaryLabel={t('common.save')}
-          onPrimaryPress={() => { void save(); }}
-          primaryDisabled={!canSave}
-          primaryTestID="promptDoc.save"
-          secondaryLabel={t('common.cancel')}
-          onSecondaryPress={() => safeRouterBack({ router, navigation, fallbackHref: '/settings/prompts/docs' })}
-          secondaryTestID="promptDoc.cancel"
-        />
-      </ItemList>
-    </View>
+      <ItemGroup title={t('promptLibrary.surface.contentSection')} description={t('promptLibrary.surface.docContentDescription')}>
+        <SectionContentRow>
+          <View style={styles.editorContainer}>
+            <MarkdownCodeEditorField
+              resetKey={props.artifactId ?? 'new'}
+              testID="promptDoc.editor"
+              value={markdown}
+              language="markdown"
+              onChange={setMarkdown}
+              readOnly={isLoading}
+              editorRef={editorRef}
+              wrapLines={wrapLinesInDiffs !== false}
+            />
+          </View>
+        </SectionContentRow>
+      </ItemGroup>
+
+      <PromptExternalLinksGroup
+        artifactId={props.artifactId}
+        libraryKind="doc"
+        manageItemTestID="promptDoc.manageExternalAssets"
+        manageItemSubtitle={t('promptLibrary.surface.manageExternalAssetsDescription')}
+        linkTestIDPrefix="promptDoc.link"
+      />
+    </ItemList>
   );
 });
 

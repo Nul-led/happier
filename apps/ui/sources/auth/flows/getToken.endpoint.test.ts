@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createRootLayoutFeaturesResponse } from '@/dev/testkit/fixtures/featureFixtures';
+import { encodeBase64 } from '@/encryption/base64';
+import { TokenStorage } from '@/auth/storage/tokenStorage';
 
 const runtimeFetchMock = vi.hoisted(() => vi.fn());
 const activeSnapshotMock = vi.hoisted(() => vi.fn(() => ({
@@ -14,6 +16,7 @@ vi.mock('@/utils/system/runtimeFetch', () => ({
 }));
 vi.mock('@/sync/domains/server/serverRuntime', () => ({
     getActiveServerSnapshot: activeSnapshotMock,
+    getActiveServerHomeCarrier: () => null,
 }));
 vi.mock('@/auth/storage/tokenStorage', () => ({
     TokenStorage: {
@@ -62,6 +65,58 @@ afterEach(() => {
 });
 
 describe('explicit endpoint authentication foundations', () => {
+    it('repairs retained 0.2 secret credentials during focused Account currentness without a restore action', async () => {
+        const token = 'header.eyJzdWIiOiJhY2NvdW50LTEifQ.signature';
+        const credentials = { token, secret: encodeBase64(new Uint8Array(32).fill(7)) };
+        vi.mocked(TokenStorage.getCredentialsForServerUrl).mockResolvedValue(credentials);
+        let repaired = false;
+        const request = vi.fn(async () => jsonResponse(repaired
+            ? { mode: 'e2ee', version: 1, signingKeyFingerprint: 'signing', contentKeyFingerprint: 'content', updatedAt: 1, recipientEnvelopeReadiness: { status: 'available' } }
+            : { error: 'migration-required', recipientEnvelopeReadiness: { status: 'unavailable', reason: 'encryption_setup_required' } },
+        repaired ? 200 : 400));
+        runtimeFetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+            const url = String(input);
+            if (url.endsWith('/v1/features')) return jsonResponse({ features: {}, capabilities: keyChallengeV2Capabilities('srv_home') });
+            if (url.endsWith('/v1/auth/challenge')) return jsonResponse({
+                challengeId: 'challenge-retained', nonce: 'nonce-retained',
+                issuedAt: '2026-09-10T10:00:00.000Z', expiresAt: '2026-09-10T18:00:00.000Z',
+                audience: { origin: 'https://focused.example.test', serverIdentityId: 'srv_home' },
+            });
+            if (url.endsWith('/v1/auth')) {
+                expect(JSON.parse(String(init?.body))).toMatchObject({
+                    requireExistingAccount: true,
+                    contentPublicKey: expect.any(String),
+                    contentPublicKeySig: expect.any(String),
+                });
+                repaired = true;
+                return jsonResponse({ token });
+            }
+            throw new Error(`Unexpected test request: ${url}`);
+        });
+        const { fetchAccountEncryptionCurrentness } = await import('@/sync/api/account/apiAccountEncryptionMode');
+        const result = await fetchAccountEncryptionCurrentness(credentials, { request }).catch((error: unknown) => error);
+        expect(TokenStorage.getCredentialsForServerUrl).toHaveBeenCalledWith('https://focused.example.test', { serverId: 'focused-home' });
+        expect(runtimeFetchMock.mock.calls.map((call) => String(call[0]))).toEqual([
+            'https://focused.example.test/v1/features',
+            'https://focused.example.test/v1/auth/challenge',
+            'https://focused.example.test/v1/auth',
+        ]);
+        expect(result).toMatchObject({ mode: 'e2ee' });
+        expect(request).toHaveBeenCalledTimes(2);
+    });
+
+    it('keeps the typed Secret Key restore result when only the bearer remains', async () => {
+        const request = vi.fn(async () => jsonResponse({
+            error: 'migration-required',
+            recipientEnvelopeReadiness: { status: 'unavailable', reason: 'encryption_setup_required' },
+        }, 400));
+        const { fetchAccountEncryptionCurrentness } = await import('@/sync/api/account/apiAccountEncryptionMode');
+        await expect(fetchAccountEncryptionCurrentness({ token: 'bearer-only' }, { request })).rejects.toMatchObject({
+            recipientEnvelopeReadiness: { status: 'unavailable', reason: 'encryption_setup_required' },
+        });
+        expect(runtimeFetchMock).not.toHaveBeenCalled();
+    });
+
     it('does not redeem when the captured authentication flow retires during challenge issuance', async () => {
         let current = true;
         runtimeFetchMock.mockImplementation(async (input: RequestInfo | URL) => {
@@ -250,8 +305,45 @@ describe('explicit endpoint authentication foundations', () => {
             publicKey: expect.any(String),
             signature: expect.any(String),
             requireExistingAccount: true,
+            contentPublicKey: expect.any(String),
+            contentPublicKeySig: expect.any(String),
         });
         expect(activeSnapshotMock).not.toHaveBeenCalled();
+    });
+
+    it('offers a signed content binding on ordinary v2 secret-key sign-in even without content-key sharing', async () => {
+        runtimeFetchMock.mockImplementation(async (input: RequestInfo | URL) => {
+            const url = String(input);
+            if (url.endsWith('/v1/features')) {
+                return jsonResponse({ features: {}, capabilities: keyChallengeV2Capabilities('srv_home_b') });
+            }
+            if (url.endsWith('/health')) return jsonResponse({ status: 'ok' });
+            if (url.endsWith('/v1/auth/challenge')) {
+                return jsonResponse({
+                    challengeId: 'challenge-ordinary',
+                    nonce: 'nonce-ordinary',
+                    issuedAt: '2026-08-22T12:00:00.000Z',
+                    expiresAt: '2026-08-22T12:05:00.000Z',
+                    audience: { origin: 'https://home-b.example.test', serverIdentityId: 'srv_home_b' },
+                });
+            }
+            if (url.endsWith('/v1/auth')) return jsonResponse({ token: 'home-b-token' });
+            throw new Error(`Unexpected test request: ${url}`);
+        });
+
+        const { authGetTokenAtEndpoint } = await import('./getToken');
+        await expect(authGetTokenAtEndpoint({
+            endpointUrl: 'https://home-b.example.test/api',
+            canonicalServerUrl: 'https://home-b.example.test/api',
+            serverIdentityId: 'srv_home_b',
+            secret: new Uint8Array(32).fill(7),
+            requireKeyChallengeV2: true,
+        })).resolves.toEqual({ token: 'home-b-token' });
+        const authInit = runtimeFetchMock.mock.calls.find((call) => String(call[0]).endsWith('/v1/auth'))?.[1] as RequestInit;
+        expect(JSON.parse(String(authInit.body))).toMatchObject({
+            contentPublicKey: expect.any(String),
+            contentPublicKeySig: expect.any(String),
+        });
     });
 
     it('uses the dedicated v2-only Account Directory key routes for a restricted credential target', async () => {

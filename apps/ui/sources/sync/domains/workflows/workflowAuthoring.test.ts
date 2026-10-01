@@ -17,20 +17,12 @@ import {
   resolveWorkflowReferenceScopeFacts,
   resolveWorkflowRunBlockedReason,
   resolveWorkflowSaveBlockedReason,
-  resolveWorkflowScheduleBlockedReason,
   resolveWorkflowStepFieldInheritance,
   validateWorkflowEditorDraft,
   workflowIssuesForBlock,
 } from './workflowAuthoring';
-import {
-  createWorkflowBlock,
-  createWorkflowEditorDraft,
-  setWorkflowDefaultField,
-  setWorkflowInputs,
-  setWorkflowStepExecutionField,
-  setWorkflowStepText,
-  type WorkflowEditorDraft,
-} from './workflowEditorDraft';
+import { createWorkflowEditorDraft, type WorkflowEditorDraft } from './workflowEditorDraft';
+import { collectWorkflowBlockIds, createWorkflowBlock, setWorkflowDefaultField, setWorkflowInputs, setWorkflowStepExecutionField, setWorkflowStepText } from '@happier-dev/protocol/workflows/workflowDefinitionEditV1';
 
 const CLAUDE_AGENT_TARGET = {
   kind: 'agent' as const,
@@ -312,18 +304,25 @@ describe('reference vocabulary', () => {
     if (count.kind !== 'loop') throw new Error('unreachable');
     const draft = draftWith([step('root'), itemsLoop, count]);
 
-    expect(resolveWorkflowReferenceScopeFacts(draft, 'root')).toEqual({ insideLoop: false, insideItemsLoop: false });
+    expect(resolveWorkflowReferenceScopeFacts(draft, 'root')).toEqual({ insideLoop: false, insideItemsLoop: false, insideParallel: false });
     expect(resolveWorkflowReferenceScopeFacts(draft, itemsLoop.body[0]!.id))
-      .toEqual({ insideLoop: true, insideItemsLoop: true });
+      .toEqual({ insideLoop: true, insideItemsLoop: true, insideParallel: false });
     expect(resolveWorkflowReferenceScopeFacts(draft, count.body[0]!.id))
-      .toEqual({ insideLoop: true, insideItemsLoop: false });
+      .toEqual({ insideLoop: true, insideItemsLoop: false, insideParallel: false });
     // A loop's own entry-time count/items source resolves in the enclosing
     // scope, so the loop's current item is not available to it.
-    expect(resolveWorkflowReferenceScopeFacts(draft, itemsLoop.id)).toEqual({ insideLoop: false, insideItemsLoop: false });
+    expect(resolveWorkflowReferenceScopeFacts(draft, itemsLoop.id)).toEqual({ insideLoop: false, insideItemsLoop: false, insideParallel: false });
     // Its after-each-round consumer resolves inside the body with every body
     // member complete, exactly as the validator scopes `stopWhen`.
     expect(resolveWorkflowReferenceScopeFacts(draft, itemsLoop.id, { continuation: true }))
-      .toEqual({ insideLoop: true, insideItemsLoop: true });
+      .toEqual({ insideLoop: true, insideItemsLoop: true, insideParallel: false });
+    // A parallel branch member runs beside its siblings; the group itself does not.
+    const parallel = createWorkflowBlock('parallel', collectWorkflowBlockIds(draft));
+    if (parallel.kind !== 'parallel') throw new Error('unreachable');
+    const withParallel = draftWith([step('root'), parallel]);
+    const branchMember = parallel.branches[0]!.blocks[0]!;
+    expect(resolveWorkflowReferenceScopeFacts(withParallel, branchMember.id).insideParallel).toBe(true);
+    expect(resolveWorkflowReferenceScopeFacts(withParallel, parallel.id).insideParallel).toBe(false);
     expect(listWorkflowProducerOptions(draft, itemsLoop.id, { continuation: true }))
       .toContainEqual(expect.objectContaining({ blockId: itemsLoop.body[0]!.id, scope: { kind: 'current' } }));
     expect(listWorkflowProducerOptions(draft, itemsLoop.id).map((option) => option.blockId))
@@ -332,27 +331,6 @@ describe('reference vocabulary', () => {
 });
 
 describe('command eligibility', () => {
-  /**
-   * Schedule copies the reviewed draft into an Automation. The scheduling seed
-   * refuses an invalid draft, so the page command must say so up front rather
-   * than accepting the press and silently doing nothing.
-   */
-  it('blocks Schedule on an invalid definition, not only on a missing target', () => {
-    const invalid = draftWith([step('a', '')]);
-    expect(resolveWorkflowScheduleBlockedReason({
-      validation: validateWorkflowEditorDraft(invalid),
-      targetResolved: true,
-    })).toBe('definition_invalid');
-    expect(resolveWorkflowScheduleBlockedReason({
-      validation: validateWorkflowEditorDraft(draftWith([step('a')])),
-      targetResolved: false,
-    })).toBe('target_required');
-    expect(resolveWorkflowScheduleBlockedReason({
-      validation: validateWorkflowEditorDraft(draftWith([step('a')])),
-      targetResolved: true,
-    })).toBeNull();
-  });
-
   /**
    * A numeric field whose text is not yet a number is recorded in the draft
    * as an unresolved number, so the one canonical validator — not a second
@@ -377,7 +355,6 @@ describe('command eligibility', () => {
     });
     expect(resolveWorkflowRunBlockedReason({ validation, targetResolved: true })).toBe('definition_invalid');
     expect(resolveWorkflowSaveBlockedReason({ draft, validation })).toBe('definition_invalid');
-    expect(resolveWorkflowScheduleBlockedReason({ validation, targetResolved: true })).toBe('definition_invalid');
     expect(resolveWorkflowExportBlockedReason({ validation })).toBe('definition_invalid');
   });
 });

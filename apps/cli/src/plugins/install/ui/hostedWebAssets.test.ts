@@ -3,14 +3,11 @@ import { describe, expect, it } from 'vitest';
 import { resolveHostedWebAssetRuntime } from './hostedWebAssets';
 
 const manifest = {
-  version: 1,
+  version: 2,
   entries: [
     {
-      contributionId: 'preview-web',
+      artifactId: 'preview-web',
       tier: 'hostedWeb',
-      // `defineHostedWebViteBuildArtifact` (plugin-sdk `ui/hostedWebBuild.ts`) always
-      // stamps `platform: 'web'`, and the generated-manifest resolution path binds on it.
-      platform: 'web',
       entry: 'hosted-web/preview-web/index.html',
       files: [
         {
@@ -25,9 +22,8 @@ const manifest = {
         },
       ],
       digest: 'sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff',
-      builtWith: { bundler: 'vite', version: '6.0.0' },
-      hostUiApiVersion: '1.0.0',
-      compat: {},
+      builtWith: { staging: 'staticDirectory' },
+      hostUiApiRange: '^1.0.0',
     },
   ],
 } as const;
@@ -38,13 +34,13 @@ describe('hosted web installed asset runtime resolution', () => {
       contributionId: 'preview-web',
       runtimeMode: {
         kind: 'installedStaticAssets',
-        artifactId: 'artifact-preview-web',
+        artifactId: 'preview-web',
         assetRootId: 'hosted-web/preview-web',
       },
       manifest,
     })).toEqual({
       ok: true,
-      artifactId: 'artifact-preview-web',
+      artifactId: 'preview-web',
       assetRootId: 'hosted-web/preview-web',
       entryPath: 'hosted-web/preview-web/index.html',
       files: [
@@ -91,7 +87,7 @@ describe('hosted web installed asset runtime resolution', () => {
       ...manifest,
       entries: manifest.entries.map((entry) => ({
         ...entry,
-        hostUiApiVersion: '9.9.9',
+        hostUiApiRange: '^9.9.9',
       })),
     };
     const expected = {
@@ -104,7 +100,6 @@ describe('hosted web installed asset runtime resolution', () => {
     // realistic generated-manifest call carries the identical value in each.
     expect(resolveHostedWebAssetRuntime({
       contributionId: 'preview-web-renderer',
-      manifestContributionId: 'preview-web',
       runtimeMode: {
         kind: 'installedStaticAssets',
         artifactId: 'preview-web',
@@ -114,12 +109,35 @@ describe('hosted web installed asset runtime resolution', () => {
     })).toEqual(expected);
   });
 
+  it('uses the Protocol Host API compatibility decision for the current host', () => {
+    const prereleaseOnlyManifest = {
+      ...manifest,
+      entries: manifest.entries.map((entry) => ({
+        ...entry,
+        hostUiApiRange: '>=1.0.0-beta.1 <1.0.0',
+      })),
+    };
+
+    expect(resolveHostedWebAssetRuntime({
+      contributionId: 'preview-web',
+      runtimeMode: {
+        kind: 'installedStaticAssets',
+        artifactId: 'preview-web',
+        assetRootId: 'hosted-web/preview-web',
+      },
+      manifest: prereleaseOnlyManifest,
+    })).toMatchObject({
+      ok: false,
+      code: 'hosted_web_static_artifact_host_api_mismatch',
+    });
+  });
+
   it('fails closed when the requested asset root does not contain the hosted-web manifest entry', () => {
     expect(resolveHostedWebAssetRuntime({
       contributionId: 'preview-web',
       runtimeMode: {
         kind: 'installedStaticAssets',
-        artifactId: 'artifact-preview-web',
+        artifactId: 'preview-web',
         assetRootId: 'hosted-web/other-contribution',
       },
       manifest,

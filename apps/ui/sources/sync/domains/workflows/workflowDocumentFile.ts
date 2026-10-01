@@ -80,7 +80,15 @@ export async function saveWorkflowDocument(artifact: WorkflowDocumentArtifact): 
   });
 }
 
+/**
+ * A portable document's file name: its name made file-safe, then its kind (`Release.workflow.json`,
+ * `Reviewer.role.json`). `saveWorkflowDocument` saves any such JSON document, not only workflows.
+ */
+export function documentFileName(name: string, kind: string): string {
+  const stem = name.trim().replace(/[^a-z0-9._-]+/giu, '-').replace(/^-+|-+$/gu, '') || kind;
+  return `${stem}.${kind}.json`;
+}
+
 export function workflowDocumentFileName(name: string): string {
-  const stem = name.trim().replace(/[^a-z0-9._-]+/giu, '-').replace(/^-+|-+$/gu, '') || 'workflow';
-  return `${stem}.workflow.json`;
+  return documentFileName(name, 'workflow');
 }

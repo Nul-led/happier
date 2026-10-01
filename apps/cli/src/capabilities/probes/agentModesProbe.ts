@@ -1,3 +1,5 @@
+import type { RuntimeDescriptorV1 } from '@happier-dev/protocol';
+import type { AgentCatalogEntry } from '@/agent/catalog/types';
 import type { AcpProbeBackend } from '@/agent/acp/runtime/acpRuntimeBackendContract';
 import type { CatalogAgentLookupId } from '@/agent/catalog/ids';
 import { getAgentSessionModesKind, legacyCustomAcpCompat } from '@happier-dev/agents';
@@ -58,6 +60,7 @@ function buildUnavailable(agentId: CatalogAgentLookupId): ProbedAgentModesResult
 function shouldFailClosedForMissingCli(params: {
   agentId: CatalogAgentLookupId;
   backendTarget?: BackendTargetRefV1;
+  runtimeDescriptorV1?: RuntimeDescriptorV1;
 }): boolean {
   if (params.backendTarget?.kind === 'configuredAcpBackend') return false;
   return resolveAgentCliLaunchSpec(params.agentId) === null;
@@ -169,7 +172,12 @@ export async function probeModesFromAcpBackend(params: {
 
 export async function probeAgentModesBestEffort(params: {
   agentId: CatalogAgentLookupId;
+  catalogEntry?: AgentCatalogEntry | null;
+  runtimeCacheKey?: string;
+  signal?: AbortSignal;
   backendTarget?: BackendTargetRefV1;
+  runtimeDescriptorV1?: RuntimeDescriptorV1;
+  runtimeKindOverride?: string;
   cwd: string;
   timeoutMs?: number;
   accountSettings?: Readonly<Record<string, unknown>> | null;
@@ -183,6 +191,10 @@ export async function probeAgentModesBestEffort(params: {
   const cwd = typeof params.cwd === 'string' && params.cwd.trim().length > 0 ? params.cwd.trim() : process.cwd();
   const probeVariant = await resolveAgentProbeVariant({
     agentId: params.agentId,
+    catalogEntry: params.catalogEntry,
+    runtimeCacheKey: params.runtimeCacheKey,
+    runtimeDescriptorV1: params.runtimeDescriptorV1,
+    runtimeKindOverride: params.runtimeKindOverride,
     probeKind: 'modes',
     backendTarget: params.backendTarget,
     accountSettings: params.accountSettings,
@@ -214,7 +226,7 @@ export async function probeAgentModesBestEffort(params: {
 
     const timeoutMs = typeof params.timeoutMs === 'number' ? params.timeoutMs : DEFAULT_PROBE_MODES_TIMEOUT_MS;
 
-    const preflightAdapter = await resolvePreflightSessionControlsProbeAdapter(params.agentId);
+    const preflightAdapter = await resolvePreflightSessionControlsProbeAdapter(params.agentId, params.catalogEntry);
     if (preflightAdapter?.probeModesRaw) {
       const probePreflightModesOnce = async (): Promise<ProbedAgentMode[] | null> => {
         const modesRaw = await withPreflightSessionControlsProbeEnvironment({
@@ -223,6 +235,9 @@ export async function probeAgentModesBestEffort(params: {
           materializedEnv: params.materializedEnv,
         }, async ({ env }) => await preflightAdapter.probeModesRaw!({
           backendTarget: params.backendTarget,
+          ...(params.signal ? { signal: params.signal } : {}),
+          runtimeDescriptorV1: params.runtimeDescriptorV1,
+          runtimeKindOverride: params.runtimeKindOverride,
           probeKind: 'modes',
           cwd,
           timeoutMs,

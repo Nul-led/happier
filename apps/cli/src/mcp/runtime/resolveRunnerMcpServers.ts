@@ -6,6 +6,7 @@ import type { StoredCredentials } from '@/persistence';
 import { logger } from '@/ui/logger';
 import {
   readSessionMcpSelectionV1FromMetadata,
+  isSharedSavedSecretReferenceV1,
   SESSION_RUN_PROMPT_READ_ACTION_IDS_V1,
   type AccountSettings,
   type ActionExecutorDeps,
@@ -22,8 +23,15 @@ import { materializeMcpServerConfigRecord } from '../servers/materializeMcpServe
 import { mergeWithBuiltInHappierMcpServer } from '../servers/mergeWithBuiltInHappierMcpServer';
 import {
   createSavedSecretMaterializerV1,
+  SavedSecretResolutionError,
   type SavedSecretCatalogResourceInputV1,
 } from '@/settings/secrets/savedSecretCatalog';
+import {
+  refreshSavedSecretCatalogForOperation,
+  savedSecretOperationAdmissionStatus,
+  SavedSecretOperationAdmissionError,
+} from '@/settings/secrets/hydrateSavedSecretCatalog';
+import { resolveAccountSettingsScopeKeyForToken } from '@/settings/accountSettings/accountSettingsScopeKey';
 
 import type { HappyMcpSessionClient } from '../startHappyServer';
 import type { RuntimeActionSettingsProvider } from '@/settings/actionsSettingsProvider';
@@ -39,6 +47,8 @@ import type { PluginRuntimeRegistryLease } from '@/plugins/runtime/reload/contro
  */
 export type ExecutionRunMcpBinding = Readonly<{
   runId: string;
+  /** Trusted absolute depth from this Run's canonical host manager. */
+  workDepth: number;
   /** The Run's working location; the parent Session remains the resource scope. */
   cwd: string;
   /** The Run runtime's own lifetime, not the parent Session's. */
@@ -65,15 +75,28 @@ function createRunScopedMcpSessionView(
     // admitted Session transport's immutable Home binding explicitly so a
     // Run-scoped MCP view cannot fall back to ambient Home configuration.
     getServerBinding: () => session.getServerBinding(),
+    ...(session.getBackendTarget ? { getBackendTarget: () => session.getBackendTarget!() } : {}),
+    ...(session.getMetadataSnapshot ? { getMetadataSnapshot: () => session.getMetadataSnapshot!() } : {}),
+    ...(session.getMachineAdmissionTransport
+      ? { getMachineAdmissionTransport: () => session.getMachineAdmissionTransport!() }
+      : {}),
+    ...(session.getServerFeaturesSnapshot
+      ? { getServerFeaturesSnapshot: () => session.getServerFeaturesSnapshot!() }
+      : {}),
     ...(session.getStoredContentEncryptionContext
       ? { getStoredContentEncryptionContext: () => session.getStoredContentEncryptionContext!() }
       : {}),
-    getPermissionMode: run.getPermissionMode ?? session.getPermissionMode,
+    getPermissionMode: () => run.getPermissionMode ? run.getPermissionMode() : session.getPermissionMode?.(),
+    getWorkDepth: () => run.workDepth,
+    getAgentStartRunCaller: () => run.isCurrent() && !run.signal.aborted && run.readCurrentRunOccurrence(run.runId)
+      ? { hostSessionId: session.sessionId, callingRunId: run.runId, callingRunDepth: run.workDepth }
+      : null,
     getActiveTurnPermissionWitness: () => {
       const witness = readWitness();
       return witness
         ? {
           turnId: witness.turnId,
+          workDepth: run.workDepth,
           ...(witness.causalPermissionAuthority
             ? { causalPermissionAuthority: witness.causalPermissionAuthority }
             : {}),
@@ -135,6 +158,7 @@ export async function resolveRunnerMcpServers(params: Readonly<{
    */
   executionRun?: ExecutionRunMcpBinding;
   savedSecretResources?: readonly SavedSecretCatalogResourceInputV1[];
+  savedSecretCatalogState?: import('@/settings/secrets/savedSecretCatalog').SavedSecretCatalogState;
 }>): Promise<Readonly<{
   happierMcpServer: {
     url: string;
@@ -147,12 +171,67 @@ export async function resolveRunnerMcpServers(params: Readonly<{
   const accountCredentials = Object.hasOwn(params, 'accountCredentials')
     ? params.accountCredentials ?? null
     : params.credentials;
-  const accountSettings = accountCredentials ? params.accountSettings ?? null : null;
+  let accountSettings = accountCredentials ? params.accountSettings ?? null : null;
+  let savedSecretResources = params.savedSecretResources;
+  let savedSecretCatalogState = params.savedSecretCatalogState;
 
   const run = params.executionRun;
   const scopedSession: HappyMcpSessionClient = run
     ? createRunScopedMcpSessionView(params.session, run)
     : params.session;
+  let mcpSettings = accountSettings ? readMcpServersSettingsFromAccountSettings(accountSettings) : null;
+  let resolvedSelection: ReturnType<typeof resolveManagedSessionMcpSelectionForDirectory> | null = null;
+  if (mcpSettings && accountCredentials) {
+    const selection = readSessionMcpSelectionV1FromMetadata(params.sessionMetadata ?? null);
+    const initialSelection = resolveManagedSessionMcpSelectionForDirectory({
+      settings: mcpSettings,
+      machineId: params.machineId,
+      directory: params.directory,
+      selection,
+    });
+    const sharedReferences = new Map<string, { ref: string }>();
+    for (const item of Object.values(initialSelection.selectedServersByName)) {
+      if (item.enabled !== true) continue;
+      for (const valueRef of [
+        ...Object.values(item.config.env),
+        ...Object.values(item.config.remote?.headers ?? {}),
+      ]) {
+        if (valueRef.t === 'savedSecret' && isSharedSavedSecretReferenceV1(valueRef.secretId)) {
+          sharedReferences.set(valueRef.secretId, { ref: valueRef.secretId });
+        }
+      }
+    }
+    if (sharedReferences.size > 0) {
+      let admitted: Awaited<ReturnType<typeof refreshSavedSecretCatalogForOperation>>;
+      try {
+        admitted = await refreshSavedSecretCatalogForOperation({
+          expectedScopeKey: resolveAccountSettingsScopeKeyForToken(accountCredentials.token),
+          references: [...sharedReferences.values()],
+          ...(run?.signal ? { signal: run.signal } : {}),
+        });
+      } catch (error) {
+        if (error instanceof SavedSecretOperationAdmissionError) {
+          throw new SavedSecretResolutionError({
+            status: savedSecretOperationAdmissionStatus(error.reason),
+            reference: error.reference,
+            consumer: 'mcp',
+            field: 'operation',
+          });
+        }
+        throw error;
+      }
+      accountSettings = admitted.settings;
+      savedSecretResources = admitted.savedSecretResources;
+      savedSecretCatalogState = admitted.savedSecretCatalogState;
+      mcpSettings = readMcpServersSettingsFromAccountSettings(accountSettings);
+    }
+    resolvedSelection = resolveManagedSessionMcpSelectionForDirectory({
+      settings: mcpSettings,
+      machineId: params.machineId,
+      directory: params.directory,
+      selection,
+    });
+  }
   const builtIn = await createHappierMcpBridge(scopedSession, {
     commandMode: params.commandMode,
     sessionCredentials: params.credentials,
@@ -173,13 +252,9 @@ export async function resolveRunnerMcpServers(params: Readonly<{
     return { happierMcpServer: builtIn.happierMcpServer, mcpServers: params.resolvedMcpServers ? mergeWithBuiltInHappierMcpServer({ builtIn: builtIn.mcpServers, extra: params.resolvedMcpServers }) : builtIn.mcpServers };
   }
 
-  const mcpSettings = readMcpServersSettingsFromAccountSettings(accountSettings);
-  const resolvedSelection = resolveManagedSessionMcpSelectionForDirectory({
-    settings: mcpSettings,
-    machineId: params.machineId,
-    directory: params.directory,
-    selection: readSessionMcpSelectionV1FromMetadata(params.sessionMetadata ?? null),
-  });
+  if (!mcpSettings || !resolvedSelection) {
+    return { happierMcpServer: builtIn.happierMcpServer, mcpServers: builtIn.mcpServers };
+  }
 
   const settingsSecretsKey = accountCredentials.encryption
     ? deriveSettingsSecretsKeyForCredentials(accountCredentials)
@@ -188,7 +263,8 @@ export async function resolveRunnerMcpServers(params: Readonly<{
   const savedSecretMaterializer = createSavedSecretMaterializerV1({
     accountSettings,
     settingsSecretsReadKeys,
-    resources: params.savedSecretResources,
+    resources: savedSecretResources,
+    resourceCatalogState: savedSecretCatalogState,
   });
 
   const materialized = await materializeMcpServerConfigRecord({

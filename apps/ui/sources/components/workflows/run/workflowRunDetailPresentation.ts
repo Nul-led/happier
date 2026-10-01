@@ -3,6 +3,7 @@ import type {
     WorkflowInvocationRecoveryV1,
     WorkflowProgressEnvelopeV1,
     WorkflowInvocationLifecycleV1,
+    WorkflowInvocationRecoveryAvailabilityV1,
     WorkflowRunInvocationIndexV1,
     WorkflowRunStateV1,
     WorkflowRunSummaryV1,
@@ -25,40 +26,20 @@ import {
  * the outcome sentence, which reads real child coverage.
  */
 
-const REATTACHABLE_INVOCATION_LIFECYCLES: ReadonlySet<WorkflowInvocationLifecycleV1> = new Set([
-    'admitting',
-    'running',
-    'waiting_for_approval',
-    'needs_attention',
-    'cancel_requested',
-    'outcome_uncertain',
-]);
-
 /**
  * Whether Run detail may expose the exact-input Reattach operation.
  *
- * Run-level recovery availability also covers creating a continuation attempt.
- * It is therefore insufficient by itself: a failed/cancelled/superseded input
- * is stopped and must use the canonical continue/retry path, never Reattach.
- * This mirrors the Action owner's exact-input eligibility while remaining only
- * a fail-closed presentation decision; the Action revalidates on submission.
+ * The authorized Action already opened the private row and owns this decision;
+ * presentation consumes its typed answer and never re-derives eligibility.
  */
 export function canOfferWorkflowInvocationReattach(params: Readonly<{
     run: WorkflowRunSummaryV1;
     invocation: WorkflowRunInvocationIndexV1 | null;
     progress: WorkflowProgressEnvelopeV1 | null;
+    recoveryAvailability?: WorkflowInvocationRecoveryAvailabilityV1 | null;
 }>): boolean {
-    if (params.run.state !== 'interrupted') return false;
-    if (!params.run.availability.recoverSameConversation) return false;
-    if (params.invocation === null || params.progress?.execution === undefined) return false;
-    if (params.progress.reason?.code === 'workspace_unavailable') return false;
-    return REATTACHABLE_INVOCATION_LIFECYCLES.has(params.invocation.lifecycle);
+    return params.recoveryAvailability?.reattach.kind === 'available';
 }
-
-const RETRYABLE_INVOCATION_LIFECYCLES: ReadonlySet<WorkflowInvocationLifecycleV1> = new Set([
-    'failed',
-    'cancelled',
-]);
 
 const POSSIBLY_ACTIVE_INVOCATION_LIFECYCLES: ReadonlySet<WorkflowInvocationLifecycleV1> = new Set([
     'admitting',
@@ -111,7 +92,8 @@ export function requiresUncertainPriorEffectsAcknowledgement(params: Readonly<{
     progress: WorkflowProgressEnvelopeV1 | null;
 }>): boolean {
     return params.invocation?.lifecycle === 'outcome_uncertain'
-        || params.progress?.reason?.code === 'outcome_uncertain';
+        || params.progress?.reason?.code === 'outcome_uncertain'
+        || params.progress?.uncertainPriorEffects?.activity === 'stopped';
 }
 
 export type WorkflowInvocationWorkspacePresentation = Readonly<{
@@ -130,6 +112,15 @@ export type WorkflowInvocationRecoveryPresentation = Readonly<{
     canReattach: boolean;
     canRetrySameConversation: boolean;
     canRetryFreshAgent: boolean;
+    /** Exact parent-before-child causal closure reviewed for the retry mutation. */
+    retryCausalInvocationIds: readonly string[];
+    /** Typed owner reasons retained for non-visual consumers and future copy projection. */
+    unavailableReasons: Readonly<{
+        reattach: Exclude<WorkflowInvocationRecoveryAvailabilityV1['reattach'], { kind: 'available' }>['reason'] | null;
+        retry: Exclude<WorkflowInvocationRecoveryAvailabilityV1['retry'], { kind: 'available' }>['reason'] | null;
+        continueSameConversation: Exclude<WorkflowInvocationRecoveryAvailabilityV1['continueSameConversation'], { kind: 'available' }>['reason'] | null;
+        continueFreshAgent: Exclude<WorkflowInvocationRecoveryAvailabilityV1['continueFreshAgent'], { kind: 'available' }>['reason'] | null;
+    }>;
     /** The execution owner prepared a continuation this attempt can accept. */
     canContinuePrepared: boolean;
     canRestoreWorkspace: boolean;
@@ -164,11 +155,9 @@ export function formatWorkflowWorkspaceSourceLabel(
 /**
  * Fail-closed Run-detail recovery projection for one exact selected row.
  *
- * The parent availability object says that an operation exists somewhere in
- * the Run; it does not make every visible historical row eligible. This pure
- * presentation owner intersects that broad capability with the exact public
- * row lifecycle and opened progress facts. Mutation eligibility is still
- * revalidated by the Workflow Action owner on submission.
+ * The exact Action response is the only availability decision. This projector
+ * formats its answer with workspace/custody evidence but does not override it;
+ * mutations still revalidate on submission.
  */
 export function projectWorkflowInvocationRecovery(params: Readonly<{
     run: WorkflowRunSummaryV1;
@@ -177,6 +166,7 @@ export function projectWorkflowInvocationRecovery(params: Readonly<{
     machineHomeDirectory: string | null;
     invocations?: readonly WorkflowRunInvocationIndexV1[];
     invocationHistoryComplete?: boolean;
+    recoveryAvailability?: WorkflowInvocationRecoveryAvailabilityV1 | null;
 }>): WorkflowInvocationRecoveryPresentation {
     const workspaceUnavailable = params.progress?.reason?.code !== undefined
         && WORKSPACE_UNAVAILABLE_REASON_CODES.has(params.progress.reason.code);
@@ -200,11 +190,10 @@ export function projectWorkflowInvocationRecovery(params: Readonly<{
             sourceInvocationRecordId: descriptor.sourceInvocation?.invocationRecordId ?? null,
         } satisfies WorkflowInvocationWorkspacePresentation;
     const invocation = params.invocation;
-    const retryable = params.run.state === 'interrupted'
-        && params.run.availability.retry
-        && !workspaceUnavailable
-        && invocation !== null
-        && RETRYABLE_INVOCATION_LIFECYCLES.has(invocation.lifecycle);
+    const retryable = params.recoveryAvailability?.retry.kind === 'available';
+    const retryCausalInvocationIds = params.recoveryAvailability?.retry.kind === 'available'
+        ? params.recoveryAvailability.retry.causalInvocationIds
+        : [];
     const waitingForStop = params.run.workflowCustodyState === 'pending'
         && (
             workspaceUnavailable
@@ -221,31 +210,35 @@ export function projectWorkflowInvocationRecovery(params: Readonly<{
             && (candidate.lifecycle === 'pending' || candidate.lifecycle === 'waiting_for_capacity')
         )).length;
 
-    // A prepared continuation is offered only while the Run owner still reports
-    // a recovery capability and the input is proven stopped. A possibly-active
-    // input keeps Waiting for stop; no acknowledgement can bypass that.
-    const canContinuePrepared = params.progress?.recovery !== undefined
-        && !workspaceUnavailable
-        && !waitingForStop
-        && (params.progress.recovery.conversation === 'same_conversation'
-            ? params.run.availability.recoverSameConversation
-            : params.run.availability.recoverFreshAgent);
+    const preparedConversation = params.progress?.recovery?.conversation;
+    const canContinuePrepared = preparedConversation === 'same_conversation'
+        ? params.recoveryAvailability?.continueSameConversation.kind === 'available'
+        : preparedConversation === 'fresh_agent'
+            && params.recoveryAvailability?.continueFreshAgent.kind === 'available';
 
-    const canRestoreWorkspace = params.run.state === 'interrupted'
-        && params.run.availability.restoreWorkspace
-        && params.progress?.reason?.code === 'workspace_unavailable'
-        && params.progress.workspace?.creationIntent !== undefined
-        && params.progress.workspace.descriptor?.checkout?.kind === 'git_worktree';
+    const canRestoreWorkspace = params.recoveryAvailability?.restoreWorkspace.kind === 'available';
 
     return {
         canInspectExecution: params.run.availability.inspectExecution
             && params.progress?.execution !== undefined,
-        canReattach: !workspaceUnavailable && canOfferWorkflowInvocationReattach(params),
-        // The existing retry Action supports both exact conversation requests;
-        // replacement input rides the same Action and is reviewed in the shared
-        // authoring composer before submission.
-        canRetrySameConversation: retryable,
-        canRetryFreshAgent: retryable,
+        canReattach: canOfferWorkflowInvocationReattach(params),
+        // Retry and the selected conversation must both be eligible. The
+        // authoring composer consumes these same exact choices for replacement input.
+        canRetrySameConversation: retryable
+            && params.recoveryAvailability?.continueSameConversation.kind === 'available',
+        canRetryFreshAgent: retryable
+            && params.recoveryAvailability?.continueFreshAgent.kind === 'available',
+        retryCausalInvocationIds,
+        unavailableReasons: {
+            reattach: params.recoveryAvailability?.reattach.kind === 'unavailable'
+                ? params.recoveryAvailability.reattach.reason : null,
+            retry: params.recoveryAvailability?.retry.kind === 'unavailable'
+                ? params.recoveryAvailability.retry.reason : null,
+            continueSameConversation: params.recoveryAvailability?.continueSameConversation.kind === 'unavailable'
+                ? params.recoveryAvailability.continueSameConversation.reason : null,
+            continueFreshAgent: params.recoveryAvailability?.continueFreshAgent.kind === 'unavailable'
+                ? params.recoveryAvailability.continueFreshAgent.reason : null,
+        },
         canContinuePrepared,
         canRestoreWorkspace,
         // Every workspace-unavailable cause reaches the same pair of offers, and
@@ -290,23 +283,55 @@ export function formatWorkflowRunOutcomeSentence(params: Readonly<{
     run: WorkflowRunSummaryV1;
     coverage: WorkflowRunCoverage;
     historyComplete?: boolean;
+    /**
+     * The Run's exact Machine as the machine owner currently sees it. An active
+     * Run whose Machine is known unreachable says it lost contact — no more:
+     * whether its work survived is the recovery owner's fact, not this one's.
+     */
+    machine?: Readonly<{ name: string; reachable: boolean }>;
 }>): string {
     const { run, coverage } = params;
+    if (params.machine?.reachable === false && !isTerminalWorkflowRunState(run.state)) {
+        return t('workflows.run.machineUnavailable', { machine: params.machine.name });
+    }
     if (run.state === 'succeeded') {
         // A loaded page is not necessarily complete history. Until the cursor is
         // exhausted, neither the success count nor the absence of failures is
         // authoritative, so keep terminal copy deliberately neutral.
-        if (params.historyComplete === false) return formatWorkflowRunStateLabel(run.state);
-        return coverage.failed > 0
+        if (params.historyComplete === false || coverage.coverage === 'partial') {
+            return coverage.knownFailure ? t('workflows.runState.completed_with_failures') : formatWorkflowRunStateLabel(run.state);
+        }
+        const counts = coverage.observedLeafCounts;
+        if (coverage.knownFailure && counts.failed === 0) return t('workflows.runState.completed_with_failures');
+        return counts.failed > 0
             ? t('workflows.run.completedWithFailures', {
-                completed: coverage.completed,
-                failed: coverage.failed,
+                completed: counts.completed,
+                failed: counts.failed,
             })
-            : t('workflows.run.completedCount', { count: coverage.completed });
+            : t('workflows.run.completedCount', { count: counts.completed });
     }
     if (run.state === 'pause_requested') return t('workflows.run.pausePending');
     if (run.state === 'paused') return t('workflows.run.paused');
     return formatWorkflowRunStateLabel(run.state);
+}
+
+/**
+ * Why a selected invocation is waiting or was skipped, stated from its
+ * canonical facts only — its public lifecycle and the coordinator's closed
+ * reason code. A cause those facts do not establish is not stated, so a row
+ * never reads as waiting on something the runtime did not report.
+ */
+export function describeWorkflowInvocationCause(params: Readonly<{
+    lifecycle: WorkflowInvocationLifecycleV1 | null;
+    reasonCode: string | null;
+    /** The invocation's authored block label, resolved against the frozen definition. */
+    blockLabel: string | null;
+}>): string | null {
+    if (params.lifecycle === 'waiting_for_capacity') return t('workflows.run.capacityOccupied');
+    if (params.lifecycle === 'skipped' && params.reasonCode === 'condition_false' && params.blockLabel !== null) {
+        return t('workflows.condition.skippedReason', { block: params.blockLabel });
+    }
+    return null;
 }
 
 /**
@@ -318,7 +343,7 @@ export function formatWorkflowRunOutcomeLabel(params: Readonly<{
     coverage: WorkflowRunCoverage;
     historyComplete?: boolean;
 }>): string {
-    if (params.state === 'succeeded' && params.historyComplete !== false && params.coverage.failed > 0) {
+    if (params.state === 'succeeded' && params.coverage.knownFailure) {
         return t('workflows.runState.completed_with_failures');
     }
     return formatWorkflowRunStateLabel(params.state);

@@ -60,6 +60,25 @@ const PROVIDER_BROKER_OPERATION_AUTHORITY_LOST: ReadonlySet<ProviderBrokerAdmiss
   'execution_run_terminal',
 ]);
 
+/**
+ * Map Home's retained-operation authorization result without confusing a
+ * temporary inability to observe authority with authority loss. The managed
+ * explicit-start owner treats a thrown read as unknown and retains custody;
+ * only the explicit operation-loss codes are allowed to retire it.
+ */
+export function revalidateExternalProviderBrokerAuthorization(
+  result: Readonly<{
+    ok: true;
+  } | {
+    ok: false;
+    reasonCode: ProviderBrokerAdmissionFailureCodeV1;
+  }>,
+): boolean {
+  if (result.ok) return true;
+  if (PROVIDER_BROKER_OPERATION_AUTHORITY_LOST.has(result.reasonCode)) return false;
+  throw new Error('external broker authority unavailable');
+}
+
 type VerifiedAuthority = Extract<
   ProviderBrokerRouteGrantVerificationResultV1,
   Readonly<{ valid: true }>
@@ -467,8 +486,14 @@ export async function startDaemonProviderBrokerRuntime(input: Readonly<{
   }>): Promise<boolean>;
   retireExternalApiKey?(input: Readonly<{
     externalApiKeyId: string;
+    operationId: string;
     application: ProviderBrokerApplicationBindingV1;
   }>): Promise<boolean>;
+  retireExternalOperation?(input: Readonly<{
+    externalApiKeyId: string;
+    operationId: string;
+    brokerMachineId: string;
+  }>): Promise<void>;
   recordExternalTerminalUsage?(
     request: TeamCredentialExternalProviderTerminalUsageV1,
   ): Promise<TeamCredentialExternalProviderTerminalUsageResponseV1>;
@@ -511,9 +536,10 @@ export async function startDaemonProviderBrokerRuntime(input: Readonly<{
     application: ProviderBrokerApplicationBindingV1;
   }>): Promise<void> => {
     const retire = input.retireExternalApiKey;
-    if (!retire) return;
+    if (!retire || !request.binding.operationId) return;
     await retire({
       externalApiKeyId: request.binding.externalApiKeyId,
+      operationId: request.binding.operationId,
       application: request.application,
     }).catch(() => false);
   };
@@ -529,7 +555,11 @@ export async function startDaemonProviderBrokerRuntime(input: Readonly<{
     resolveRequestPolicy: input.resolveRequestPolicy,
     authorizeModelCatalog: async (request) => {
       const authorization = await input.authorizeModelCatalog(request);
-      if (!authorization.ok && request.authorization.kind === 'external_api_key') {
+      if (
+        !authorization.ok
+        && request.authorization.kind === 'external_api_key'
+        && PROVIDER_BROKER_OPERATION_AUTHORITY_LOST.has(authorization.reasonCode)
+      ) {
         await retireExternalApiKey({
           binding: request.authorization.binding,
           application: request.authorization.application,
@@ -598,10 +628,15 @@ export async function startDaemonProviderBrokerRuntime(input: Readonly<{
       admitExternal: async (request) => {
         const admitted = await input.admitExternalRequest!(request);
         if (!admitted.ok) {
-          await retireExternalApiKey({
-            binding: request.binding,
-            application: request.application,
-          });
+          if (PROVIDER_BROKER_OPERATION_AUTHORITY_LOST.has(admitted.reasonCode)) {
+            await retireExternalApiKey({
+              binding: request.binding,
+              application: request.application,
+            });
+          }
+          // Every refusal is terminal for this request. Only the authority-loss
+          // subset retires retained custody; transient/currentness refusals keep
+          // the operation for a later, explicitly revalidated attempt.
           return admitted;
         }
         const admissionUsageEventId = admitted.usageEventId;
@@ -637,6 +672,16 @@ export async function startDaemonProviderBrokerRuntime(input: Readonly<{
           resourceRevision: request.expectedResourceRevision,
           brokerMachineId: admitted.brokerMachineId,
           operation: admitted.operation,
+          ...(input.retireExternalOperation ? {
+            retirementGroup: {
+              identity: JSON.stringify([admitted.operation.externalApiKeyId, admitted.operation.operationId]),
+              onRetired: async () => await input.retireExternalOperation!({
+                externalApiKeyId: admitted.operation.externalApiKeyId,
+                operationId: admitted.operation.operationId,
+                brokerMachineId: admitted.brokerMachineId,
+              }),
+            },
+          } : {}),
           application: request.application,
           ...(input.revalidateExternalAuthorization
             ? {

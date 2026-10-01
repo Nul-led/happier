@@ -20,6 +20,7 @@ function meterRow(overrides: Partial<ConnectedServiceQuotaGaugeMeterRow>): Conne
         usedLimitSemantics: null,
         usedLimitLabel: null,
         resetLabel: null,
+        resetsAt: null,
         tone: 'neutral',
         ...overrides,
     };
@@ -27,15 +28,15 @@ function meterRow(overrides: Partial<ConnectedServiceQuotaGaugeMeterRow>): Conne
 
 describe('accountBlockModel', () => {
     describe('resolveAccountUsageRows', () => {
-        it('maps gauge meter rows to MeterTone-driven usage rows (remaining as a 0..1 fraction)', () => {
+        it('maps gauge meter rows to quota rows: what is left (percent and 0..1 fraction), when it resets, its tone', () => {
             const rows = resolveAccountUsageRows([
-                meterRow({ meterId: 'weekly', label: 'Weekly', remainingPct: 60, detailRightLabel: '60% left' }),
-                meterRow({ meterId: 'daily', label: 'Daily', remainingPct: 8, detailRightLabel: '8% left' }),
+                meterRow({ meterId: 'weekly', label: 'Weekly', remainingPct: 60, resetsAt: 5_000 }),
+                meterRow({ meterId: 'daily', label: 'Daily', remainingPct: 8 }),
             ]);
 
             expect(rows).toEqual([
-                { meterId: 'weekly', label: 'Weekly', tone: 'success', remaining: 0.6, detailLabel: '60% left' },
-                { meterId: 'daily', label: 'Daily', tone: 'danger', remaining: 0.08, detailLabel: '8% left' },
+                { meterId: 'weekly', label: 'Weekly', tone: 'success', remaining: 0.6, remainingPct: 60, resetsAt: 5_000 },
+                { meterId: 'daily', label: 'Daily', tone: 'danger', remaining: 0.08, remainingPct: 8, resetsAt: null },
             ]);
         });
 

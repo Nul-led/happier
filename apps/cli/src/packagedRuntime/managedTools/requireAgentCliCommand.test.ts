@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { join } from 'node:path';
 
 import { createEnvKeyScope } from '@/testkit/env/envScope';
@@ -7,12 +7,18 @@ import { createTempDirSync, removeTempDirSync } from '@/testkit/fs/tempDir';
 import { buildMissingAgentCliCommandErrorMessage, requireAgentCliCommand } from './requireAgentCliCommand';
 
 describe('requireAgentCliCommand', () => {
-  let envScope = createEnvKeyScope(['PATH', 'HAPPIER_GEMINI_PATH']);
+  let envScope = createEnvKeyScope(['PATH', 'HAPPIER_GEMINI_PATH', 'HAPPIER_HOME_DIR']);
   const tempDirs: string[] = [];
+
+  beforeEach(() => {
+    const home = createTempDirSync('happier-required-agent-home-');
+    tempDirs.push(home);
+    envScope.patch({ HAPPIER_HOME_DIR: home });
+  });
 
   afterEach(() => {
     envScope.restore();
-    envScope = createEnvKeyScope(['PATH', 'HAPPIER_GEMINI_PATH']);
+    envScope = createEnvKeyScope(['PATH', 'HAPPIER_GEMINI_PATH', 'HAPPIER_HOME_DIR']);
 
     while (tempDirs.length > 0) {
       const dir = tempDirs.pop();
@@ -27,6 +33,11 @@ describe('requireAgentCliCommand', () => {
     expect(() => requireAgentCliCommand('gemini')).toThrow(
       buildMissingAgentCliCommandErrorMessage('gemini'),
     );
+    try {
+      requireAgentCliCommand('gemini');
+    } catch (error) {
+      expect(error).toMatchObject({ errorCode: 'agent_cli_missing', agentId: 'gemini' });
+    }
   });
 
   it('returns the resolved command path when the CLI is available', () => {

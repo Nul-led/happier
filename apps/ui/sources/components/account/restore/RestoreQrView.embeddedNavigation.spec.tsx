@@ -4,7 +4,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { IModal } from '@/modal';
 import type { ActiveServerSwitchResult } from '@/sync/domains/server/activeServerSwitch';
 
-import { createExpoRouterMock, renderScreen } from '@/dev/testkit';
+import { renderScreen } from '@/dev/testkit';
+// Resolve the real component graph during collection, not inside the first timed assertion.
+import './RestoreQrView';
 
 const descriptor = Object.freeze({
     v: 1 as const,
@@ -30,8 +32,10 @@ vi.mock('react-native', async () => {
     return createReactNativeWebMock({ Platform: { OS: 'web' } });
 });
 
-const routerMock = createExpoRouterMock({ params: {} });
-vi.mock('expo-router', () => routerMock.module);
+const routerSpies = vi.hoisted(() => ({ replace: vi.fn() }));
+vi.mock('expo-router', async () => (
+    await import('@/dev/testkit/mocks/router')
+).createExpoRouterMock({ params: {}, router: { replace: routerSpies.replace } }).module);
 
 vi.mock('@react-navigation/native', () => ({
     usePreventRemove: (locked: boolean) => state.preventRemove(locked),
@@ -52,11 +56,14 @@ vi.mock('@/utils/ui/clipboard', () => ({
 
 vi.mock('@/components/qr/QRCode', () => ({ QRCode: 'QRCode' }));
 vi.mock('@/components/ui/buttons/RoundButton', () => ({ RoundButton: 'RoundButton' }));
-vi.mock('@/components/ui/feedback/ActivitySpinner', () => ({ ActivitySpinner: 'ActivitySpinner' }));
 vi.mock('@/utils/platform/qrScannerSupport', () => ({ canUseCurrentDeviceQrScanner: () => true }));
 vi.mock('@/sync/api/capabilities/getReadyServerFeatures', () => ({ getReadyServerFeatures: vi.fn(async () => null) }));
 vi.mock('@/utils/system/fireAndForget', () => ({ fireAndForget: (promise: Promise<unknown>) => void promise }));
 vi.mock('@/auth/providers/registry', () => ({ getAuthProvider: () => null }));
+const authRefresh = vi.hoisted(() => vi.fn(async () => {}));
+vi.mock('@/auth/context/AuthContext', () => ({
+    useAuth: () => ({ refreshFromActiveServer: authRefresh }),
+}));
 vi.mock('@/sync/domains/server/activeServerSwitch', () => ({
     setActiveServerAndSwitch: (params: unknown) => state.switchHome(params),
 }));
@@ -83,7 +90,7 @@ describe('RestoreQrView known-target requester QR', () => {
         state.switchHome.mockResolvedValue('switched');
         state.alertAsync.mockReset();
         state.alertAsync.mockResolvedValue(undefined);
-        routerMock.spies.replace.mockClear();
+        routerSpies.replace.mockClear();
     });
 
     afterEach(() => vi.clearAllMocks());
@@ -180,6 +187,34 @@ describe('RestoreQrView known-target requester QR', () => {
         expect(onOpenScanQr).toHaveBeenCalledOnce();
     });
 
+    it('keeps pairing-link entry reachable from the requester QR surface', async () => {
+        const onOpenPairingLinkEntry = vi.fn();
+        const { RestoreQrView } = await import('./RestoreQrView');
+        const screen = await renderScreen(
+            <RestoreQrView
+                embedded
+                entryIntent="enter_home"
+                onOpenPairingLinkEntry={onOpenPairingLinkEntry}
+            />,
+        );
+
+        await screen.pressByTestIdAsync('restore-enter-pairing-link');
+        expect(onOpenPairingLinkEntry).toHaveBeenCalledOnce();
+    });
+
+    it('starts a fresh requester invite when the presentation requires a new QR', async () => {
+        state.presentation = { phase: 'expired', descriptor };
+        state.canCancel = false;
+        const { RestoreQrView } = await import('./RestoreQrView');
+        const screen = await renderScreen(<RestoreQrView embedded entryIntent="enter_home" />);
+
+        const createNewQr = screen.findByTestId('restore-requester-create-new-qr');
+        expect(createNewQr).toBeTruthy();
+        await act(async () => createNewQr?.props.action());
+        expect(state.start).toHaveBeenCalledOnce();
+        expect(screen.findByTestId('restore-requester-retry')).toBeNull();
+    });
+
     it('opens the exact adopted Home and enters the shell for enter_home', async () => {
         state.presentation = { phase: 'succeeded', descriptor, profileId: 'known-profile' };
         state.canCancel = false;
@@ -189,11 +224,13 @@ describe('RestoreQrView known-target requester QR', () => {
         await vi.waitFor(() => expect(state.switchHome).toHaveBeenCalledWith({
             serverId: 'known-profile',
             scope: 'tab',
+            refreshAuth: authRefresh,
+            requireExactProfile: true,
         }));
-        expect(routerMock.spies.replace).toHaveBeenCalledWith('/');
+        expect(routerSpies.replace).toHaveBeenCalledWith('/');
         expect(state.preventRemove).toHaveBeenLastCalledWith(false);
         expect(state.preventRemove.mock.invocationCallOrder.at(-1)!)
-            .toBeLessThan(routerMock.spies.replace.mock.invocationCallOrder[0]!);
+            .toBeLessThan(routerSpies.replace.mock.invocationCallOrder[0]!);
     });
 
     it('retries the exact retained profile when opening enter_home is initially blocked', async () => {
@@ -209,11 +246,11 @@ describe('RestoreQrView known-target requester QR', () => {
         await renderScreen(<RestoreQrView embedded entryIntent="enter_home" />);
 
         await vi.waitFor(() => expect(state.switchHome).toHaveBeenCalledTimes(2));
-        expect(state.switchHome).toHaveBeenNthCalledWith(2, {
+        expect(state.switchHome).toHaveBeenNthCalledWith(2, expect.objectContaining({
             serverId: 'known-profile',
             scope: 'tab',
-        });
-        expect(routerMock.spies.replace).toHaveBeenCalledWith('/');
+        }));
+        expect(routerSpies.replace).toHaveBeenCalledWith('/');
     });
 
     it('returns to the shell without switching focus for add_home', async () => {
@@ -223,6 +260,6 @@ describe('RestoreQrView known-target requester QR', () => {
         await renderScreen(<RestoreQrView embedded entryIntent="add_home" />);
 
         expect(state.switchHome).not.toHaveBeenCalled();
-        expect(routerMock.spies.replace).not.toHaveBeenCalled();
+        expect(routerSpies.replace).not.toHaveBeenCalled();
     });
 });

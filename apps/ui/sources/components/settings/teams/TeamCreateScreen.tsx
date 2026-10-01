@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { useRouter } from 'expo-router';
+import { useNavigation, useRouter } from '@/components/appShell/workspace/destinationRoute';
 import {
     TEAM_NAME_MAX_LENGTH_V1,
     validateTeamDescriptionV1,
@@ -10,28 +10,48 @@ import {
 
 import type { HomeAccountPickerRowV1 } from '@happier-dev/protocol/home/governance';
 
+import { View } from 'react-native';
+import { useUnistyles } from 'react-native-unistyles';
+
+import { resolveHomeDisplayLabel } from '@/components/settings/server/homeDisplayName';
+import { resolveHomeGovernanceViewState } from '@/components/settings/home/governance/homeGovernanceViewState';
 import { useActionApprovalContinuation } from '@/components/approvals/useActionApprovalContinuation';
 import { Avatar } from '@/components/ui/avatar/Avatar';
+import { RoundButton } from '@/components/ui/buttons/RoundButton';
+import { CompactSearchField } from '@/components/ui/forms/CompactSearchField';
+import { FieldTextInput } from '@/components/ui/forms/FieldTextInput';
+import { Icon } from '@/components/ui/icons/Icon';
+import { PageHeader } from '@/components/ui/layout/PageHeader';
+import { PageHeaderMarkTile, PageHeaderMenu } from '@/components/ui/layout/PageHeaderEntityParts';
+import { AttentionBanner } from '@/components/ui/lists/AttentionBanner';
 import { Item } from '@/components/ui/lists/Item';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
 import { ItemList } from '@/components/ui/lists/ItemList';
-import { TextInput } from '@/components/ui/text/Text';
+import { SectionActionButton } from '@/components/ui/lists/SectionActionButton';
+import { SectionContentRow } from '@/components/ui/lists/SectionContentRow';
+import { buildSettingHref } from '@/components/settings/catalog/settingDeclarations';
+import { homeAdministrationPoliciesPath } from '@/components/settings/home/governance/homeAdministrationRoutes';
+import { HOME_TEAMS_POLICY_SETTINGS } from '@/components/settings/home/governance/homeTeamsPolicySettings';
+import { SurfaceStateCard } from '@/components/ui/surfaces/SurfaceStateCard';
+import { Text } from '@/components/ui/text/Text';
 import { useHomeAccountSearch } from '@/hooks/home/useHomeAccountSearch';
 import { useHomeGovernanceEligibilitySnapshots } from '@/hooks/home/useHomeGovernanceEligibilitySnapshots';
 import { useHomeGovernanceSnapshot } from '@/hooks/home/useHomeGovernanceSnapshot';
 import { useServerCredentialAccountScopeResolutions } from '@/sync/domains/scope/useServerCredentialAccountScopes';
 import { useTeamsSettingsAdmission } from '@/hooks/teams/useTeamsSettingsAdmission';
 import { randomUUID } from '@/platform/randomUUID';
-import { formatAccountDisplayName } from '@/sync/domains/account/formatAccountDisplayName';
+import { resolveAccountDisplayName } from '@/sync/domains/account/formatAccountDisplayName';
 import type { ServerAccountScope } from '@/sync/domains/scope/serverAccountScope';
-import { getServerProfileById } from '@/sync/domains/server/serverProfiles';
+import { getServerProfileById, resolveServerProfileScopeIdForIdentifier } from '@/sync/domains/server/serverProfiles';
 import { refreshHomeGovernanceSnapshot } from '@/sync/engine/home/governance/homeGovernanceEngine';
 import { createTeam, setTeamLogo } from '@/sync/ops/teams/teamOperations';
 import { isTeamActionApprovalPendingError } from '@/sync/ops/teams/teamActionClient';
 import { t } from '@/text';
+import { useUnsavedDraftNavigationGuard } from '@/utils/navigation/useUnsavedDraftNavigationGuard';
 
-import { teamDetailPath } from './teamsRoutes';
+import { teamDetailPath, teamsDirectoryPath } from './teamsRoutes';
 import { TeamLogoPicker } from './TeamLogoPicker';
+import { publishTeamCreateDraftName } from './collection/teamCreateDraftName';
 
 const OWNER_AVATAR_SIZE = 32;
 
@@ -53,6 +73,8 @@ const InitialOwnerPicker = React.memo(function InitialOwnerPicker(props: Readonl
     scope: ServerAccountScope;
     selected: HomeAccountPickerRowV1 | null;
     onSelect: (account: HomeAccountPickerRowV1) => void;
+    /** The administrator can let everyone create Teams instead of naming each first owner. */
+    onOpenCreationPolicy: () => void;
 }>) {
     const [query, setQuery] = React.useState('');
     const search = useHomeAccountSearch(props.scope, query, true);
@@ -61,16 +83,51 @@ const InitialOwnerPicker = React.memo(function InitialOwnerPicker(props: Readonl
         <>
             <ItemGroup
                 title={t('teams.create.initialOwnerLabel')}
-                footer={t('teams.create.initialOwnerHelp')}
+                description={t('teams.create.initialOwnerHelp')}
+                action={(
+                    <SectionActionButton
+                        testID="teams-create-open-creation-policy"
+                        icon="lock-open"
+                        title={t('teams.directory.letEveryoneCreate')}
+                        onPress={props.onOpenCreationPolicy}
+                    />
+                )}
             >
-                <TextInput
-                    testID="teams-create-owner-search"
-                    value={query}
-                    onChangeText={setQuery}
-                    placeholder={t('teams.create.initialOwnerPlaceholder')}
-                    accessibilityLabel={t('teams.create.initialOwnerLabel')}
-                />
+                <SectionContentRow>
+                    <CompactSearchField
+                        testID="teams-create-owner-search"
+                        value={query}
+                        onChangeText={setQuery}
+                        placeholder={t('teams.create.initialOwnerPlaceholder')}
+                    />
+                </SectionContentRow>
             </ItemGroup>
+
+            {query.trim() && search.searching ? (
+                <ItemGroup>
+                    <Item testID="teams-create-owner-loading" title={t('homeGovernance.loading')} loading mode="info" showChevron={false} />
+                </ItemGroup>
+            ) : query.trim() && search.failure ? (
+                <ItemGroup>
+                    <Item
+                        testID="teams-create-owner-unavailable"
+                        title={search.failure.kind === 'unsupported'
+                            ? t('homeGovernance.searchUnsupported')
+                            : search.failure.kind === 'forbidden'
+                                ? t('teams.errors.forbidden')
+                                : t('homeGovernance.searchFailed')}
+                        mode="info"
+                        showChevron={false}
+                    />
+                    {search.failure.retryable ? (
+                        <Item testID="teams-create-owner-retry" title={t('common.retry')} onPress={search.retry} showChevron={false} />
+                    ) : null}
+                </ItemGroup>
+            ) : query.trim() && search.rows.length === 0 ? (
+                <ItemGroup>
+                    <Item testID="teams-create-owner-empty" title={t('homeGovernance.searchEmpty')} mode="info" showChevron={false} />
+                </ItemGroup>
+            ) : null}
 
             {search.rows.length > 0 ? (
                 <ItemGroup
@@ -81,7 +138,11 @@ const InitialOwnerPicker = React.memo(function InitialOwnerPicker(props: Readonl
                         <Item
                             key={candidate.accountId}
                             testID={`teams-create-owner:${candidate.accountId}`}
-                            title={formatAccountDisplayName(candidate.profile) ?? candidate.accountId}
+                            title={resolveAccountDisplayName({ profile: candidate.profile, accountId: candidate.accountId }).name}
+                            subtitle={[
+                            resolveAccountDisplayName({ profile: candidate.profile, accountId: candidate.accountId }).hint,
+                            candidate.eligible ? null : t('teams.create.initialOwnerIneligible'),
+                        ].filter((part): part is string => part !== null).join(' · ') || undefined}
                             selected={props.selected?.accountId === candidate.accountId}
                             accessibilityRole="radio"
                             webRole="radio"
@@ -90,6 +151,7 @@ const InitialOwnerPicker = React.memo(function InitialOwnerPicker(props: Readonl
                             // unselectable, so it reads as "not eligible" rather
                             // than as "not on this Home".
                             disabled={!candidate.eligible}
+                            subtitleLines={0}
                             leftElement={(
                                 <Avatar
                                     id={candidate.accountId}
@@ -120,8 +182,11 @@ export const TeamCreateScreen = React.memo(function TeamCreateScreen(props: Read
     administrationServerId?: string;
 }>) {
     const router = useRouter();
+    const navigation = useNavigation();
     const admission = useTeamsSettingsAdmission();
-    const administrationServerId = props.administrationServerId?.trim() || null;
+    // Scope resolutions are keyed by the Home's canonical scope id; an entry that
+    // names the Home by its device profile id must not wait on a key that never fills.
+    const administrationServerId = resolveServerProfileScopeIdForIdentifier(props.administrationServerId) || null;
     const requestedServerIds = React.useMemo(
         () => administrationServerId ? [administrationServerId] : admission.capableServerIds,
         [administrationServerId, admission.capableServerIds],
@@ -136,7 +201,7 @@ export const TeamCreateScreen = React.memo(function TeamCreateScreen(props: Read
             const profile = getServerProfileById(serverId);
             out.push({
                 scope: resolution.scope,
-                homeName: (profile?.name ?? '').trim() || (profile?.serverUrl ?? '') || serverId,
+                homeName: resolveHomeDisplayLabel(profile, serverId),
             });
         }
         return out;
@@ -162,7 +227,15 @@ export const TeamCreateScreen = React.memo(function TeamCreateScreen(props: Read
     const [committedTeam, setCommittedTeam] = React.useState<CommittedTeam | null>(null);
     const [submitting, setSubmitting] = React.useState(false);
     const [error, setError] = React.useState<string | null>(null);
-    const nameInputRef = React.useRef<{ focus(): void } | null>(null);
+    const nameInputRef = React.useRef<React.ComponentRef<typeof FieldTextInput> | null>(null);
+    const descriptionInputRef = React.useRef<React.ComponentRef<typeof FieldTextInput> | null>(null);
+    const { theme } = useUnistyles();
+
+    // The collection's draft row is titled as the name is typed, and cleared when the draft closes.
+    React.useEffect(() => {
+        publishTeamCreateDraftName(name);
+    }, [name]);
+    React.useEffect(() => () => publishTeamCreateDraftName(''), []);
     const submissionInFlightRef = React.useRef(false);
 
     // A single eligible Home is preselected but still displayed.
@@ -170,13 +243,23 @@ export const TeamCreateScreen = React.memo(function TeamCreateScreen(props: Read
         ? selectedServerId
         : homes[0]?.scope.serverId ?? null;
     const selected = homes.find((home) => home.scope.serverId === effectiveServerId) ?? null;
+    const { allowSavedNavigation, requestLeave } = useUnsavedDraftNavigationGuard({
+        navigation,
+        isDirty: committedTeam === null && (name.length > 0 || description.length > 0 || logoSource !== null || initialOwner !== null),
+        onLeave: () => {
+            if (router.canGoBack()) router.back();
+            else router.replace(teamsDirectoryPath() as never);
+        },
+        tag: 'TeamCreateScreen.beforeRemove',
+    });
 
     const openCreatedTeam = React.useCallback((committed: CommittedTeam) => {
+        allowSavedNavigation();
         router.replace(teamDetailPath({
             serverId: committed.scope.serverId,
             teamId: committed.team.id,
         }));
-    }, [router]);
+    }, [allowSavedNavigation, router]);
 
     /**
      * This screen's own deferred-approval host.
@@ -248,11 +331,15 @@ export const TeamCreateScreen = React.memo(function TeamCreateScreen(props: Read
     const creationRefused = administrationServerId !== null
         && governance !== null
         && (!governance.teamsEnabled || !governance.capabilities.createTeam);
+    // Managed creation names the Team's first owner. The administration entry reads it from
+    // the full projection; an ordinary entry from the Home's minimum eligibility answer, so an
+    // administrator who opens "New Team" gets the one form the Home will accept.
     const mayNameInitialOwner = administrationServerId !== null
-        && governance !== null
-        && governance.capabilities.createTeam
-        && governance.capabilities.manageAllTeams
-        && governance.policy.teamCreationPolicy === 'managed_only';
+        ? governance !== null
+            && governance.capabilities.createTeam
+            && governance.capabilities.manageAllTeams
+            && governance.policy.teamCreationPolicy === 'managed_only'
+        : selectedEligibility?.data?.createTeamForChosenAccount === true;
 
     // Clearing a stale pick matters: the picked Account exists on one Home only.
     React.useEffect(() => {
@@ -310,9 +397,10 @@ export const TeamCreateScreen = React.memo(function TeamCreateScreen(props: Read
     }, [openCreatedTeam, requestApproval]);
 
     const submit = React.useCallback(async () => {
-        if (submissionInFlightRef.current) return;
+        if (submissionInFlightRef.current || approvalPending) return;
         if (!selected || nameValidation.status !== 'ok' || descriptionValidation.status !== 'ok') {
             if (nameValidation.status !== 'ok') nameInputRef.current?.focus();
+            else if (descriptionValidation.status !== 'ok') descriptionInputRef.current?.focus();
             return;
         }
         submissionInFlightRef.current = true;
@@ -324,6 +412,7 @@ export const TeamCreateScreen = React.memo(function TeamCreateScreen(props: Read
                 if (uploaded && !committedTeam.logoSource) openCreatedTeam(committedTeam);
                 return;
             }
+            const submittedOwner = mayNameInitialOwner && initialOwner !== null;
             const submission: Omit<CommittedTeam, 'team'> = {
                 scope: selected.scope,
                 logoSource,
@@ -379,8 +468,15 @@ export const TeamCreateScreen = React.memo(function TeamCreateScreen(props: Read
             }
             // The form is preserved so a rejected submission is never retyped, and
             // the retry identity is kept so a repeat is the same submission.
+            // Name and description passed the Home's own validators above, so a Home that
+            // still calls the input invalid is refusing the first owner: none was named
+            // under managed creation, or the named Account can no longer hold the Team.
+            const ownerRefused = outcome.failure.kind === 'invalid' && outcome.failure.code === 'invalid_team_input';
+            if (ownerRefused && !submittedOwner) eligibility.refresh();
             setError(outcome.failure.kind === 'forbidden'
                 ? t('teams.errors.forbidden')
+                : ownerRefused
+                    ? (submittedOwner ? t('teams.create.initialOwnerIneligible') : t('teams.create.initialOwnerRequired'))
                 : outcome.failure.kind === 'invalid'
                     ? t('teams.errors.invalidName')
                     : outcome.failure.kind === 'outcome_unknown'
@@ -402,7 +498,7 @@ export const TeamCreateScreen = React.memo(function TeamCreateScreen(props: Read
             submissionInFlightRef.current = false;
             setSubmitting(false);
         }
-    }, [selected, nameValidation, descriptionValidation, mayNameInitialOwner, initialOwner, committedTeam, uploadLogo, logoSource, openCreatedTeam, requestApproval]);
+    }, [selected, nameValidation, descriptionValidation, mayNameInitialOwner, initialOwner, committedTeam, uploadLogo, logoSource, openCreatedTeam, requestApproval, eligibility, approvalPending]);
 
     const scopeResolutionPending = requestedServerIds.some((serverId) => {
         const resolution = scopeResolutions.get(serverId);
@@ -413,9 +509,15 @@ export const TeamCreateScreen = React.memo(function TeamCreateScreen(props: Read
             const snapshot = eligibility.snapshotsByServerId.get(home.scope.serverId);
             return !snapshot || snapshot.status === 'loading';
         });
-    const administrationLoading = administrationServerId !== null
-        && selected !== null
-        && (governanceSnapshot === null || governanceSnapshot.status === 'loading');
+    // Until one Home is eligible, a Home whose Teams admission is still being
+    // decided has said nothing yet: wait for it rather than guess a refusal.
+    const admissionPending = administrationServerId === null
+        && homes.length === 0
+        && admission.homes.some((home) => home.state === 'unresolved' && home.reason === 'loading');
+    const administrationView = administrationServerId !== null && selected !== null
+        ? resolveHomeGovernanceViewState(governanceSnapshot)
+        : null;
+    const administrationLoading = administrationView?.kind === 'unobserved' || administrationView?.kind === 'loading';
     const eligibilityUnavailable = administrationServerId === null
         && homes.length === 0
         && candidateHomes.some((home) => eligibility.snapshotsByServerId.get(home.scope.serverId)?.status === 'error');
@@ -431,35 +533,80 @@ export const TeamCreateScreen = React.memo(function TeamCreateScreen(props: Read
         : eligibilityErrors.length > 0 && eligibilityErrors.every((failure) => failure.kind === 'unsupported')
             ? t('teams.unavailable.updateRequired')
             : t('teams.unavailable.offline');
-    const administrationUnavailable = administrationServerId !== null
-        && selected !== null
-        && governanceSnapshot?.status === 'error'
-        && governance === null;
-    const administrationError = governanceSnapshot?.error ?? null;
+    const administrationUnavailable = administrationView?.kind === 'unavailable';
+    const administrationError = administrationView?.kind === 'unavailable' ? administrationView.error : null;
+    /** Only a Home that answered "Teams on, creation not yours" is described as administered. */
+    const creationAdministeredByHome = administrationServerId === null && candidateHomes.some((home) => {
+        const answer = eligibility.snapshotsByServerId.get(home.scope.serverId)?.data;
+        return answer?.teamsEnabled === true && !answer.createTeam;
+    });
+    const teamsTurnedOff = admission.homes.some((home) => home.state === 'disabled')
+        || candidateHomes.some((home) => eligibility.snapshotsByServerId.get(home.scope.serverId)?.data?.teamsEnabled === false);
 
-    if (scopeResolutionPending || eligibilityLoading || administrationLoading) {
-        return (
-            <ItemList>
-                <ItemGroup>
-                    <Item testID="teams-create-loading" title={t('teams.title')} loading showChevron={false} />
-                </ItemGroup>
-            </ItemList>
+    const discardDraft = requestLeave;
+    // One eligible Home is a fact about the draft, named on the header's meta line; a choice between
+    // several is a radio group below.
+    const singleHome = homes.length === 1 ? homes[0]! : null;
+    const draftHeader = (props: Readonly<{ actions?: React.ReactNode; details?: React.ReactNode }> = {}) => (
+        <PageHeader
+            testID="teams-create-header"
+            // The draft's own name heads the page once typed; until then the navigation title says it.
+            alwaysShowTitle={name.trim().length > 0}
+            title={name.trim() || t('teams.create.title')}
+            description={t('teams.directory.emptyBody')}
+            leading={(
+                <PageHeaderMarkTile appearance="glyph">
+                    <Icon name="users" size={22} color={theme.colors.text.secondary} />
+                </PageHeaderMarkTile>
+            )}
+            details={props.details}
+            meta={singleHome ? [{
+                key: 'home',
+                icon: 'house',
+                text: singleHome.homeName,
+                testID: `teams-create-home:${singleHome.scope.serverId}`,
+            }] : undefined}
+            actions={props.actions}
+        />
+    );
+    const conditionPage = (condition: React.ReactNode) => (
+        <ItemList presentation="page">
+            {draftHeader()}
+            {condition}
+        </ItemList>
+    );
+
+    if (scopeResolutionPending || admissionPending || eligibilityLoading || administrationLoading) {
+        return conditionPage(
+            <SurfaceStateCard testID="teams-create-loading" kind="loading" title={t('teams.create.loading')} accessibilitySemantics="status" />,
         );
     }
 
     if (eligibilityUnavailable) {
-        return (
-            <ItemList>
-                <ItemGroup footer={eligibilityUnavailableMessage}>
-                    <Item
-                        testID="teams-create-unavailable"
-                        title={t('teams.unavailable.title')}
-                        detail={eligibilityRetryable ? t('teams.unavailable.retry') : undefined}
-                        onPress={eligibilityRetryable ? eligibility.refresh : undefined}
-                        showChevron={false}
-                    />
-                </ItemGroup>
-            </ItemList>
+        return conditionPage(
+            <SurfaceStateCard
+                testID="teams-create-unavailable"
+                kind="unavailable"
+                title={t('teams.unavailable.title')}
+                reason={eligibilityUnavailableMessage}
+                action={eligibilityRetryable ? { label: t('teams.unavailable.retry'), onPress: eligibility.refresh } : undefined}
+                accessibilitySemantics="alert"
+            />,
+        );
+    }
+
+    if (administrationView?.kind === 'setup_required') {
+        // An ownerless Home is explained exactly as Home Administration explains it: nobody can
+        // create a Team there until an operator assigns the first owner.
+        return conditionPage(
+            <SurfaceStateCard
+                testID="teams-create-setup-required"
+                kind="unavailable"
+                title={t('homeGovernance.setupRequiredTitle')}
+                reason={t('homeGovernance.setupRequiredBody')}
+                action={{ label: t('common.refresh'), onPress: () => void refreshHomeGovernanceSnapshot(selected!.scope) }}
+                accessibilitySemantics="alert"
+            />,
         );
     }
 
@@ -467,107 +614,201 @@ export const TeamCreateScreen = React.memo(function TeamCreateScreen(props: Read
         const denied = administrationError?.kind === 'forbidden'
             || administrationError?.kind === 'unauthorized';
         const unsupported = administrationError?.kind === 'unsupported';
-        return (
-            <ItemList>
-                <ItemGroup footer={denied
+        return conditionPage(
+            <SurfaceStateCard
+                testID="teams-create-unavailable"
+                kind="unavailable"
+                title={denied ? t('homeGovernance.forbiddenTitle') : t('teams.unavailable.title')}
+                reason={denied
                     ? t('teams.errors.forbidden')
                     : unsupported
                         ? t('teams.unavailable.updateRequired')
-                        : t('teams.unavailable.offline')}>
-                    <Item
-                        testID="teams-create-unavailable"
-                        title={denied ? t('homeGovernance.forbiddenTitle') : t('teams.unavailable.title')}
-                        detail={administrationError?.retryable ? t('teams.unavailable.retry') : undefined}
-                        onPress={administrationError?.retryable && selected
-                            ? () => void refreshHomeGovernanceSnapshot(selected.scope)
-                            : undefined}
-                        showChevron={false}
-                    />
-                </ItemGroup>
-            </ItemList>
+                        : t('teams.unavailable.offline')}
+                action={administrationError?.retryable && selected
+                    ? { label: t('teams.unavailable.retry'), onPress: () => void refreshHomeGovernanceSnapshot(selected.scope) }
+                    : undefined}
+                accessibilitySemantics="alert"
+            />,
+        );
+    }
+
+    if (administrationServerId === null && homes.length === 0 && !creationAdministeredByHome) {
+        // No Home is eligible and none said creation is administered: say why Teams is unavailable.
+        return conditionPage(
+            <SurfaceStateCard
+                testID="teams-create-unavailable"
+                kind="unavailable"
+                title={t('teams.unavailable.title')}
+                reason={teamsTurnedOff
+                    ? t('teams.unavailable.disabled')
+                    : admission.homes.some((home) => home.state === 'unsupported')
+                        ? t('teams.unavailable.updateRequired')
+                        : t('teams.unavailable.offline')}
+                accessibilitySemantics="alert"
+            />,
         );
     }
 
     if (homes.length === 0 || creationRefused) {
         // A Home that administers Team creation explains it rather than showing
         // a mysterious disabled control.
-        return (
-            <ItemList>
-                <ItemGroup footer={t('teams.create.managedOnlyBody')}>
-                    <Item
-                        testID="teams-create-managed-only"
-                        title={t('teams.create.managedOnlyTitle')}
-                        showChevron={false}
-                    />
-                </ItemGroup>
-            </ItemList>
+        return conditionPage(
+            <SurfaceStateCard
+                testID="teams-create-managed-only"
+                kind="unavailable"
+                title={t('teams.create.managedOnlyTitle')}
+                reason={t('teams.create.managedOnlyBody')}
+            />,
         );
     }
 
+    const staleRetry = administrationServerId
+        ? governanceSnapshot?.error?.retryable === false
+            ? undefined
+            : governanceSnapshot
+                ? () => void refreshHomeGovernanceSnapshot(selected!.scope)
+                : undefined
+        : eligibility.refresh;
+
     return (
-        <ItemList keyboardAware>
+        <ItemList keyboardAware presentation="page">
+            {draftHeader({
+                details: error && committedTeam === null ? (
+                    <Text
+                        testID="teams-create-error"
+                        accessibilityRole="alert"
+                        accessibilityLiveRegion="polite"
+                        style={{ color: theme.colors.state.danger.foreground, fontSize: 13, lineHeight: 18 }}
+                    >
+                        {error}
+                    </Text>
+                ) : undefined,
+                actions: (
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                        {selectedStale && committedTeam === null ? null : <RoundButton
+                            testID="teams-create-submit"
+                            size="small"
+                            title={committedTeam
+                                ? t('teams.logo.retry')
+                                : submitting ? t('teams.create.submitting') : t('teams.create.submit')}
+                            loading={submitting}
+                            disabled={committedTeam
+                                ? submitting || approvalPending || committedTeam.logoSource === null
+                                : !canSubmit}
+                            onPress={() => void submit()}
+                        />}
+                        {committedTeam === null ? (
+                            <PageHeaderMenu
+                                testID="teams-create-menu"
+                                actions={[{ id: 'discard', title: t('teams.create.discard'), onSelect: discardDraft }]}
+                            />
+                        ) : null}
+                    </View>
+                ),
+            })}
             {/* A deferred creation is waiting on a person, not stuck. The same
-                row every other Team surface shows says so and leads to the
+                notice every other Team surface shows says so and leads to the
                 request, so the form never looks like it silently did nothing. */}
             {approvalId ? (
-                <ItemGroup>
-                    <Item
-                        testID="teams-create-approval"
-                        title={t('approvals.title')}
-                        subtitle={approvalError
-                            ? t('approvals.loadError')
-                            : approvalLoading || approvalStatus === 'open' || approvalStatus === 'approved' || approvalStatus === 'executing'
-                                ? t('approvals.status.open')
-                                : t('approvals.details')}
-                        accessibilityLiveRegion={approvalError ? 'assertive' : 'polite'}
-                        onPress={() => router.push(
+                <AttentionBanner
+                    testID="teams-create-approval"
+                    tone="neutral"
+                    title={t('approvals.title')}
+                    description={approvalError
+                        ? t('approvals.loadError')
+                        : approvalLoading || approvalStatus === 'open' || approvalStatus === 'approved' || approvalStatus === 'executing'
+                            ? t('approvals.status.open')
+                            : undefined}
+                    accessibilityLiveRegion={approvalError ? 'assertive' : 'polite'}
+                    action={{
+                        label: t('approvals.details'),
+                        onPress: () => router.push(
                             `/inbox/approvals/${encodeURIComponent(approvalId)}?serverId=${encodeURIComponent(selected?.scope.serverId ?? '')}`,
-                        )}
-                        showChevron={false}
-                    />
-                </ItemGroup>
+                        ),
+                    }}
+                />
+            ) : null}
+            {committedTeam ? (
+                // The Team exists; only its logo did not publish. Retry stays the primary action and
+                // the Team can be opened without it. A publication waiting on an approval is not a failure.
+                <AttentionBanner
+                    testID="teams-create-logo-failed"
+                    tone={approvalId ? 'neutral' : 'warning'}
+                    title={approvalId ? t('approvals.status.open') : t('teams.create.logoFailedBody')}
+                    description={error ?? undefined}
+                    action={{
+                        label: t('common.continue'),
+                        onPress: () => openCreatedTeam(committedTeam),
+                        disabled: submitting,
+                        testID: 'teams-create-continue-without-logo',
+                    }}
+                />
+            ) : committedTeam === null && selectedStale ? (
+                <AttentionBanner
+                    testID="teams-create-stale"
+                    title={t('teams.unavailable.offline')}
+                    description={t('teams.stale.label')}
+                    action={staleRetry ? { label: t('teams.unavailable.retry'), onPress: staleRetry } : null}
+                />
             ) : null}
 
-            <ItemGroup title={t('teams.create.nameLabel')} footer={t('teams.create.duplicateNameNote')}>
-                <TextInput
-                    ref={nameInputRef}
-                    testID="teams-create-name"
-                    value={name}
-                    onChangeText={setName}
-                    placeholder={t('teams.create.namePlaceholder')}
-                    accessibilityLabel={t('teams.create.nameLabel')}
-                    maxLength={TEAM_NAME_MAX_LENGTH_V1}
-                    editable={committedTeam === null}
+            <ItemGroup title={t('teams.create.detailsSection')}>
+                <Item
+                    title={t('teams.create.nameLabel')}
+                    subtitle={t('teams.create.duplicateNameNote')}
+                    subtitleLines={0}
+                    accessoryLayout="adaptive"
+                    showChevron={false}
+                    rightElement={(
+                        <FieldTextInput
+                            ref={nameInputRef}
+                            testID="teams-create-name"
+                            value={name}
+                            onChangeText={setName}
+                            placeholder={t('teams.create.namePlaceholder')}
+                            accessibilityLabel={t('teams.create.nameLabel')}
+                            autoFocus
+                            maxLength={TEAM_NAME_MAX_LENGTH_V1}
+                            editable={committedTeam === null}
+                            returnKeyType="next"
+                        />
+                    )}
+                />
+                <Item
+                    title={t('teams.create.descriptionLabel')}
+                    accessoryLayout="stacked"
+                    showChevron={false}
+                    rightElement={(
+                        <FieldTextInput
+                            testID="teams-create-description"
+                            ref={descriptionInputRef}
+                            value={description}
+                            onChangeText={setDescription}
+                            placeholder={t('teams.create.descriptionPlaceholder')}
+                            accessibilityLabel={t('teams.create.descriptionLabel')}
+                            multiline
+                            minLines={2}
+                            editable={committedTeam === null}
+                            error={descriptionValidation.status !== 'ok' ? t('teams.errors.invalidDescription') : null}
+                        />
+                    )}
+                />
+                <TeamLogoPicker
+                    identityId={committedTeam?.team.id ?? requestKey.current}
+                    testIDPrefix="teams-create"
+                    currentLogo={null}
+                    selectedSource={committedTeam?.logoSource ?? logoSource}
+                    disabled={submitting || selectedStale || committedTeam !== null}
+                    onUse={async (source) => {
+                        setLogoSource(source);
+                        return { kind: 'succeeded' };
+                    }}
                 />
             </ItemGroup>
 
-            <ItemGroup title={t('teams.create.descriptionLabel')}>
-                <TextInput
-                    testID="teams-create-description"
-                    value={description}
-                    onChangeText={setDescription}
-                    placeholder={t('teams.create.descriptionPlaceholder')}
-                    accessibilityLabel={t('teams.create.descriptionLabel')}
-                    multiline
-                    editable={committedTeam === null}
-                />
-            </ItemGroup>
-
-            <TeamLogoPicker
-                identityId={committedTeam?.team.id ?? requestKey.current}
-                testIDPrefix="teams-create"
-                currentLogo={null}
-                selectedSource={committedTeam?.logoSource ?? logoSource}
-                disabled={submitting || selectedStale || committedTeam !== null}
-                onUse={async (source) => {
-                    setLogoSource(source);
-                    return { kind: 'succeeded' };
-                }}
-            />
-
-            <ItemGroup
+            {singleHome ? null : <ItemGroup
                 title={t('teams.homeLabel')}
-                footer={t('teams.create.homeHelp')}
+                description={t('teams.create.homeHelp')}
                 accessibilityRole="radiogroup"
                 accessibilityLabel={t('teams.homeLabel')}
             >
@@ -585,7 +826,7 @@ export const TeamCreateScreen = React.memo(function TeamCreateScreen(props: Read
                         showChevron={false}
                     />
                 ))}
-            </ItemGroup>
+            </ItemGroup>}
 
             {mayNameInitialOwner && selected && committedTeam === null ? (
                 <InitialOwnerPicker
@@ -595,65 +836,12 @@ export const TeamCreateScreen = React.memo(function TeamCreateScreen(props: Read
                     scope={selected.scope}
                     selected={initialOwner}
                     onSelect={setInitialOwner}
+                    onOpenCreationPolicy={() => router.push(buildSettingHref(
+                        homeAdministrationPoliciesPath(selected.scope.serverId),
+                        HOME_TEAMS_POLICY_SETTINGS.settings.teamCreationPolicy,
+                    ) as never)}
                 />
             ) : null}
-
-            {committedTeam ? (
-                <ItemGroup footer={error ?? undefined}>
-                    <Item
-                        testID="teams-create-submit"
-                        title={submitting ? t('teams.create.submitting') : t('teams.logo.retry')}
-                        loading={submitting}
-                        disabled={submitting || committedTeam.logoSource === null}
-                        onPress={() => void submit()}
-                        showChevron={false}
-                    />
-                    <Item
-                        testID="teams-create-continue-without-logo"
-                        title={t('common.continue')}
-                        disabled={submitting}
-                        onPress={() => openCreatedTeam(committedTeam)}
-                        showChevron={false}
-                    />
-                </ItemGroup>
-            ) : selectedStale ? (
-                <ItemGroup footer={t('teams.unavailable.offline')}>
-                    <Item
-                        testID="teams-create-stale"
-                        title={t('teams.stale.label')}
-                        detail={t('teams.unavailable.retry')}
-                        onPress={administrationServerId
-                            ? governanceSnapshot?.error?.retryable === false
-                                ? undefined
-                                : governanceSnapshot
-                                    ? () => void refreshHomeGovernanceSnapshot(selected!.scope)
-                                    : undefined
-                            : eligibility.refresh}
-                        showChevron={false}
-                    />
-                </ItemGroup>
-            ) : creationRefused ? (
-                // An administered Home explains itself rather than leaving a
-                // mysterious disabled control at the end of the form.
-                <ItemGroup footer={t('teams.create.managedOnlyBody')}>
-                    <Item
-                        testID="teams-create-managed-only"
-                        title={t('teams.create.managedOnlyTitle')}
-                        showChevron={false}
-                    />
-                </ItemGroup>
-            ) : (
-                <ItemGroup footer={error ?? undefined}>
-                    <Item
-                        testID="teams-create-submit"
-                        title={submitting ? t('teams.create.submitting') : t('teams.create.submit')}
-                        loading={submitting}
-                        disabled={!canSubmit}
-                        onPress={() => void submit()}
-                        showChevron={false}
-                    />
-                </ItemGroup>
-            )}
         </ItemList>
     );
 });

@@ -104,7 +104,7 @@ describe('AgentModelsScreen provider settings safety', () => {
             mocks.projectionRequestCount += 1;
             if (mocks.projection.loading && !mocks.projection.data) return await new Promise<never>(() => undefined);
             if (mocks.projection.error) return { status: 'error', error: mocks.projection.error };
-            return mocks.projection.data ?? createProviderModelProjectionFixture({ agentTargetKey: 'backend:codex' });
+            return mocks.projection.data ?? createProviderModelProjectionFixture({ agentTargetKey: 'agent:happier.agent.codex/codex' });
         });
         providerHarness.intercept(RPC_METHODS.DAEMON_PROVIDERS_MODEL_SETTINGS_MUTATE, async (request, next) => (
             await mocks.mutate({ serverId: 'server-a', request: request.payload }) ?? await next()
@@ -132,7 +132,7 @@ describe('AgentModelsScreen provider settings safety', () => {
         providerHarness.state.settings = mocks.settings;
 
         const { AgentModelsScreen } = await import('./AgentModelsScreen');
-        const screen = await renderScreen(<AgentModelsScreen agentTargetKey="backend:codex" runtimeAgentId={null} />);
+        const screen = await renderScreen(<AgentModelsScreen agentTargetKey="agent:happier.agent.codex/codex" runtimeAgentId={null} />);
 
         expect(screen.findByType('MachineAdministrationTargetSelector' as any)).toBeTruthy();
         expect(providerHarness.state.requests.find(
@@ -151,7 +151,7 @@ describe('AgentModelsScreen provider settings safety', () => {
         mocks.projection.data = createProviderModelProjectionFixture({
                 groups: [createProviderModelProjectionGroupFixture({
                     rows: [{
-                        ref: { agentTargetKey: 'backend:codex', providerConnectionId: 'pc_a', modelId: 'boundary-model' },
+                        ref: { agentTargetKey: 'agent:happier.agent.codex/codex', providerConnectionId: 'pc_a', modelId: 'boundary-model' },
                         descriptor: { id: 'boundary-model', name: 'Boundary agent model' },
                         sources: { manual: false, static: true, probe: false },
                         confidence: 'verified_static',
@@ -167,7 +167,7 @@ describe('AgentModelsScreen provider settings safety', () => {
                     }],
                 })],
             });
-        const screen = await renderScreen(<AgentModelsScreen agentTargetKey="backend:codex" runtimeAgentId={null} />);
+        const screen = await renderScreen(<AgentModelsScreen agentTargetKey="agent:happier.agent.codex/codex" runtimeAgentId={null} />);
 
         expect(screen.findByType(ProviderModelManager).props.groups[0].rows[0].descriptor.name)
             .toBe('Boundary agent model');
@@ -177,7 +177,7 @@ describe('AgentModelsScreen provider settings safety', () => {
         mocks.settings = { schemaVersion: 7, providerSettingsV1: DEFAULT_PROVIDER_SETTINGS_V1 };
         providerHarness.state.settings = mocks.settings;
         const { ProviderModelManager } = await import('@/providers/models/ProviderModelManager');
-        const listed = await renderScreen(<AgentModelsScreen agentTargetKey="backend:codex" runtimeAgentId={null} />);
+        const listed = await renderScreen(<AgentModelsScreen agentTargetKey="agent:happier.agent.codex/codex" runtimeAgentId={null} />);
         // The model list hosts the page: its header (rendered by the list) carries the machine chip.
         const host = listed.findByType(ProviderModelManager).props.page;
         expect(host?.header.props.actions.props.presentation).toBe('chip');
@@ -186,7 +186,7 @@ describe('AgentModelsScreen provider settings safety', () => {
 
         administrationTargetState.selectedTarget = null;
         administrationTargetState.executionTarget = null;
-        const noMachine = await renderScreen(<AgentModelsScreen agentTargetKey="backend:codex" runtimeAgentId={null} />);
+        const noMachine = await renderScreen(<AgentModelsScreen agentTargetKey="agent:happier.agent.codex/codex" runtimeAgentId={null} />);
         expect(noMachine.findByTestId('settings.agents.models.header')).not.toBeNull();
         expect(noMachine.findAllByType('MachineAdministrationTargetSelector' as never).map((node) => node.props.presentation))
             .toEqual(['chip']);
@@ -195,7 +195,7 @@ describe('AgentModelsScreen provider settings safety', () => {
     it('renders a read-only diagnostic for future provider settings instead of a mutable default manager', async () => {
         const { AgentModelsScreen } = await import('./AgentModelsScreen');
         const screen = await renderScreen(
-            <AgentModelsScreen agentTargetKey="backend:codex" runtimeAgentId={null} />,
+            <AgentModelsScreen agentTargetKey="agent:happier.agent.codex/codex" runtimeAgentId={null} />,
         );
         expect(screen.findByTestId('agent-models')).toBeNull();
         expect(screen.getTextContent()).toContain('Provider needs attention');
@@ -207,7 +207,7 @@ describe('AgentModelsScreen provider settings safety', () => {
         mocks.settings = { schemaVersion: 7 };
         providerHarness.state.settings = mocks.settings;
         mocks.projection = { data: null, loading: true, error: null };
-        const loading = await renderScreen(<AgentModelsScreen agentTargetKey="backend:codex" runtimeAgentId={null} />);
+        const loading = await renderScreen(<AgentModelsScreen agentTargetKey="agent:happier.agent.codex/codex" runtimeAgentId={null} />);
         expect(loading.findByTestId('agent-models')).toBeNull();
         expect(loading.getTextContent()).toContain('Loading');
 
@@ -216,7 +216,7 @@ describe('AgentModelsScreen provider settings safety', () => {
             loading: false,
             error: createProviderErrorV1('provider_endpoint_unreachable'),
         };
-        const failed = await renderScreen(<AgentModelsScreen agentTargetKey="backend:codex" runtimeAgentId={null} />);
+        const failed = await renderScreen(<AgentModelsScreen agentTargetKey="agent:happier.agent.codex/codex" runtimeAgentId={null} />);
         expect(failed.findByTestId('agent-models')).toBeNull();
         expect(failed.getTextContent()).toContain('Provider is unreachable');
     });
@@ -231,7 +231,7 @@ describe('AgentModelsScreen provider settings safety', () => {
             mocks.projection.data = createProviderModelProjectionFixture({
                 groups: [createProviderModelProjectionGroupFixture({
                     rows: [{
-                        ref: { agentTargetKey: 'backend:codex', providerConnectionId: 'pc_a', modelId: 'provider-model' },
+                        ref: { agentTargetKey: 'agent:happier.agent.codex/codex', providerConnectionId: 'pc_a', modelId: 'provider-model' },
                         descriptor: { id: 'provider-model', name: 'Provider model' },
                         sources: { manual: false, static: true, probe: false },
                         confidence: 'verified_static',
@@ -252,7 +252,7 @@ describe('AgentModelsScreen provider settings safety', () => {
             });
             mocks.mutate.mockRejectedValueOnce(new Error('acknowledgement lost after dispatch'));
             const screen = await renderScreen(
-                <AgentModelsScreen agentTargetKey="backend:codex" runtimeAgentId="claude" />,
+                <AgentModelsScreen agentTargetKey="agent:happier.agent.codex/codex" runtimeAgentId="claude" />,
             );
             expect(mocks.projectionRequestCount).toBe(1);
             const manager = screen.findByType(ProviderModelManager);
@@ -260,7 +260,7 @@ describe('AgentModelsScreen provider settings safety', () => {
             await act(async () => {
                 if (operation === 'native visibility') {
                     manager.props.onSetVisibility?.({
-                        scope: 'agent', agentTargetKey: 'backend:codex',
+                        scope: 'agent', agentTargetKey: 'agent:happier.agent.codex/codex',
                         providerConnectionId: null, modelId: 'native-model',
                     }, true);
                 } else if (operation === 'agent reset') {
@@ -305,7 +305,7 @@ describe('AgentModelsScreen provider settings safety', () => {
             groups: [createProviderModelProjectionGroupFixture({
                 modelLoadAction: 'available',
                 rows: [{
-                    ref: { agentTargetKey: 'backend:codex', providerConnectionId: 'pc_a', modelId: 'provider-model' },
+                    ref: { agentTargetKey: 'agent:happier.agent.codex/codex', providerConnectionId: 'pc_a', modelId: 'provider-model' },
                     descriptor: { id: 'provider-model', name: 'Provider model' },
                     sources: { manual: false, static: true, probe: false },
                     confidence: 'verified_static',
@@ -328,7 +328,7 @@ describe('AgentModelsScreen provider settings safety', () => {
             throw new Error('load acknowledgement lost while daemon work continues');
         });
         const screen = await renderScreen(
-            <AgentModelsScreen agentTargetKey="backend:codex" runtimeAgentId={null} />,
+            <AgentModelsScreen agentTargetKey="agent:happier.agent.codex/codex" runtimeAgentId={null} />,
         );
 
         await act(async () => {
@@ -363,9 +363,9 @@ describe('AgentModelsScreen provider settings safety', () => {
         const { ProviderModelManager } = await import('@/providers/models/ProviderModelManager');
         mocks.settings = { schemaVersion: 7, providerSettingsV1: DEFAULT_PROVIDER_SETTINGS_V1 };
         providerHarness.state.settings = mocks.settings;
-        mocks.projection.data = createProviderModelProjectionFixture({ agentTargetKey: 'backend:codex' });
+        mocks.projection.data = createProviderModelProjectionFixture({ agentTargetKey: 'agent:happier.agent.codex/codex' });
         const screen = await renderScreen(
-            <AgentModelsScreen agentTargetKey="backend:codex" runtimeAgentId={null} />,
+            <AgentModelsScreen agentTargetKey="agent:happier.agent.codex/codex" runtimeAgentId={null} />,
         );
         mocks.projection.error = createProviderErrorV1('provider_endpoint_unavailable', {
             machineId: 'machine-a',

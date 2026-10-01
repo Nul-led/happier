@@ -14,6 +14,11 @@ vi.mock('react-native-unistyles', async () => {
     return createUnistylesMock();
 });
 
+vi.mock('@/sync/domains/state/storage', async () => {
+    const { createStorageModuleStub } = await import('@/dev/testkit/mocks/storage');
+    return createStorageModuleStub({});
+});
+
 vi.mock('@/text', async () => {
     const { createTextModuleMock } = await import('@/dev/testkit/mocks/text');
     return createTextModuleMock({ translate: (key) => key });
@@ -76,13 +81,13 @@ describe('AnnotationEditorOverlay (ANNO-1)', () => {
         expect(onSelectElement).toHaveBeenCalledTimes(1);
 
         // Region tool → marquee rect routes to onAddRegion.
-        await screen.pressByTestIdAsync('anno-tool-region');
+        await screen.pressByTestIdAsync('anno-tool:region');
         expect(surface().props.tool).toBe('region');
         surface().props.onRegion({ x: 1, y: 2, width: 30, height: 40 });
         expect(onAddRegion).toHaveBeenCalledWith({ x: 1, y: 2, width: 30, height: 40 });
 
         // Draw tool → freehand points route to onAddStroke.
-        await screen.pressByTestIdAsync('anno-tool-draw');
+        await screen.pressByTestIdAsync('anno-tool:draw');
         expect(surface().props.tool).toBe('draw');
         surface().props.onStroke([{ x: 0, y: 0 }, { x: 5, y: 5 }]);
         expect(onAddStroke).toHaveBeenCalledWith([{ x: 0, y: 0 }, { x: 5, y: 5 }]);
@@ -109,7 +114,7 @@ describe('AnnotationEditorOverlay (ANNO-1)', () => {
         const screen = await renderScreen(
             <AnnotationEditorOverlay {...buildProps({ markCount: 2, marks, onRemoveMark })} />,
         );
-        await screen.pressByTestIdAsync('anno-tool-erase');
+        await screen.pressByTestIdAsync('anno-tool:erase');
         await screen.pressByTestIdAsync('anno-erase-target_1');
         expect(onRemoveMark).toHaveBeenCalledWith('target_1');
     });

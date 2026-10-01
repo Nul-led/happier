@@ -1,7 +1,12 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import axios from 'axios';
+import * as persistence from '@/persistence';
 
 import {
   DEFAULT_PROVIDER_SETTINGS_V1,
+  AccountSettingsSchema,
+  FeaturesResponseSchema,
+  sealSavedSecretResourceStoredContentV1,
   ProviderConnectionIdSchema,
   ProviderContributionV1Schema,
   ProviderRuntimeStateFileV1Schema,
@@ -28,9 +33,14 @@ import type {
   ResolvedManagedProviderRuntime,
   ResolvedProviderContribution,
 } from '@/plugins/projection/registry/types';
-import type {
-  ActiveAccountSettingsSnapshot,
+import {
+  getActiveAccountSettingsSnapshot,
+  resetActiveAccountSettingsSnapshotForTests,
+  setActiveAccountSettingsSnapshot,
+  type ActiveAccountSettingsSnapshot,
 } from '@/settings/accountSettings/activeAccountSettingsSnapshot';
+import { resolveAccountSettingsScopeKeyForToken } from '@/settings/accountSettings/accountSettingsScopeKey';
+import { hydrateSavedSecretCatalog } from '@/settings/secrets/hydrateSavedSecretCatalog';
 import type {
   ResolveManagedProviderPurposeBindingIntent,
 } from '@/providers/managed/resolvePurposeBindingSnapshot';
@@ -82,7 +92,7 @@ const definition = ProviderContributionV1Schema.parse({
     probes: [{ endpointTemplateId: 'responses', path: '/models', parser: 'openai-models' }],
   },
   compatibilityOverrides: [{
-    agentTargetKey: 'backend:codex', protocol: 'openai-responses', status: 'verified', reason: 'integration proof',
+    agentTargetKey: 'agent:happier.agent.codex/codex', protocol: 'openai-responses', status: 'verified', reason: 'integration proof',
     evidence: { sourceUrls: ['https://docs.example/provider'], verifiedAt: '2026-07-10', testIds: ['codex-start'] },
   }],
 });
@@ -294,8 +304,12 @@ function exactManagedProviderRuntime(
         throw new Error('Managed Provider runtime is not invoked by authorization');
       },
     }),
-    activationGeneration: 'managed-provider-generation-p',
-    immutableGenerationId: 'managed-provider-generation-p',
+    activationOccurrenceId: 'managed-provider-generation-p',
+    sourceCustody: {
+      kind: 'managed' as const,
+      immutableGenerationId: 'managed-provider-generation-p',
+      installSource: 'localPath' as const,
+    },
     isCurrent,
   });
 }
@@ -416,7 +430,7 @@ function staticPreflightRegistry(
 
 function definitiveSelection(modelId = 'model-a') {
   return {
-    agentTargetKey: 'backend:codex',
+    agentTargetKey: 'agent:happier.agent.codex/codex',
     providerConnectionId: connectionId,
     modelId,
   };
@@ -429,7 +443,85 @@ describe('provider spawn authorization resolver', () => {
     await Promise.all(executableRegistries.splice(0).map(async (registry) => {
       await registry.dispose();
     }));
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+    resetActiveAccountSettingsSnapshotForTests();
   });
+
+  it.each(['no Profile', 'Provider-only shared binding'])(
+    'refuses a newly revoked shared Provider credential at launch with %s and no AccountChange', async (profileCase) => {
+      const token = 'provider-admission-account';
+      const resourceId = 'provider-admission-resource';
+      const ref = `happier:shared-secret:v1:${resourceId}`;
+      const settings = AccountSettingsSchema.parse({
+        providerSettingsV1: {
+          ...grantedSettings(),
+          secretBindingsByConnectionId: { pc_gateway: { account: { apiKey: ref } } },
+        },
+        // An unrelated Profile contributes no shared refs. Provider admission
+        // must own its credential independently of Profile selection.
+        ...(profileCase === 'Provider-only shared binding'
+          ? { secretBindingsByProfileId: { unrelated: { OTHER_KEY: 'personal-other' } } }
+          : {}),
+      });
+      setActiveAccountSettingsSnapshot({
+        source: 'network', settings, settingsVersion: 1, loadedAtMs: 1,
+        settingsSecretsReadKeys: [], scopeKey: resolveAccountSettingsScopeKeyForToken(token),
+      });
+      const features = FeaturesResponseSchema.parse({ features: { teams: { enabled: true } }, capabilities: {} });
+      vi.spyOn(persistence, 'readStoredCredentials').mockResolvedValue({ token, encryption: null });
+      vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify(features))));
+      const materialResponse = (revision: number, value: string) => ({
+        status: 200, data: { resources: [{
+          resourceId, encryptionMode: 'plain', recipientEnvelope: null,
+          storedContent: sealSavedSecretResourceStoredContentV1({
+            resourceId, mode: 'plain', content: { v: 1, name: 'Provider key', kind: 'apiKey', value },
+          }),
+          entry: {
+            ref, source: 'shared_resource', relationship: 'recipient', name: 'Provider key', kind: 'apiKey',
+            ownerAccountId: 'owner', revision, materialStatus: 'ready',
+            capabilities: { use: true, rename: false, rotate: false, manageAccess: false, delete: false },
+          },
+        }] },
+      });
+      const get = vi.spyOn(axios, 'get').mockResolvedValue(materialResponse(1, 'revoked-value'));
+      await hydrateSavedSecretCatalog({ token, serverFeatures: features });
+      expect(getActiveAccountSettingsSnapshot()?.savedSecretResources).toMatchObject([{ resourceId, revision: 1 }]);
+      get.mockClear();
+      get.mockResolvedValue({ status: 200, data: { resources: [] } });
+
+      const admit = () => createRuntimeProviderSpawnAuthorizationAttempt({
+        selection: { v: 1, updatedAt: 1, ref: { agentTargetKey: 'agent:happier.agent.codex/codex', providerConnectionId: connectionId, modelId: 'model-a' } },
+        machineId: 'machine-a', agentTargetKey: 'agent:happier.agent.codex/codex', agentId: 'codex', lease: lease(),
+        getAccountSettingsSnapshot: getActiveAccountSettingsSnapshot,
+        resolveAddresses: async () => ['1.1.1.1'], materializationBaseDir: '/unused', sessionId: 'shared-admission',
+      });
+      const result = await admit();
+      expect(result).toMatchObject({ ok: false, error: { code: 'provider_secret_missing' } });
+      expect(getActiveAccountSettingsSnapshot()?.savedSecretResources).toEqual([]);
+      expect(get).toHaveBeenCalledTimes(1);
+
+      get.mockResolvedValue(materialResponse(2, 'restored-value'));
+      const restored = await admit();
+      expect(restored.ok).toBe(true);
+      if (!restored.ok) throw new Error('Expected restored Provider admission');
+      expect(restored.attempt.authorization.ticket.selectedSecretBindingId).toBe(ref);
+      expect(get).toHaveBeenCalledTimes(2);
+      get.mockResolvedValue(materialResponse(3, 'rotated-value'));
+      const rotated = await admit();
+      expect(rotated.ok).toBe(true);
+      if (!rotated.ok) throw new Error('Expected rotated Provider admission');
+      expect(rotated.attempt.authorization.ticket.selectedSecretRecordFingerprint)
+        .not.toBe(restored.attempt.authorization.ticket.selectedSecretRecordFingerprint);
+      // Already admitted attempts keep their exact material fingerprint: the
+      // fresh admission cannot silently replace an earlier attempt's value.
+      await expect(restored.attempt.revalidateBeforeEffect()).resolves.toMatchObject({
+        ok: false, error: { code: 'provider_authorization_changed' },
+      });
+      await expect(rotated.attempt.revalidateBeforeEffect()).resolves.toEqual({ ok: true });
+      expect(get).toHaveBeenCalledTimes(3);
+    },
+  );
 
   describe('definitive pre-launch rejection', () => {
     it.each([
@@ -447,7 +539,7 @@ describe('provider spawn authorization resolver', () => {
     ] as const)('rejects a %s Provider connection before activation', (_kind, settings) => {
       const result = resolveProviderSpawnDefinitiveRejection({
         selection: definitiveSelection(),
-        agentTargetKey: 'backend:codex',
+        agentTargetKey: 'agent:happier.agent.codex/codex',
         agentId: 'codex',
         accountSettings: accountSettings(settings),
         registry: staticPreflightRegistry(),
@@ -462,7 +554,7 @@ describe('provider spawn authorization resolver', () => {
     it('rejects a malformed persisted Provider connection before activation', () => {
       const result = resolveProviderSpawnDefinitiveRejection({
         selection: definitiveSelection(),
-        agentTargetKey: 'backend:codex',
+        agentTargetKey: 'agent:happier.agent.codex/codex',
         agentId: 'codex',
         accountSettings: accountSettings({
           ...DEFAULT_PROVIDER_SETTINGS_V1,
@@ -480,7 +572,7 @@ describe('provider spawn authorization resolver', () => {
     it('rejects a catalog-invalid model without consulting grant or runtime state', () => {
       const result = resolveProviderSpawnDefinitiveRejection({
         selection: definitiveSelection('not-in-the-static-catalog'),
-        agentTargetKey: 'backend:codex',
+        agentTargetKey: 'agent:happier.agent.codex/codex',
         agentId: 'codex',
         accountSettings: accountSettings(providerSettings()),
         // The Agent refuses ids it cannot verify against a catalog, so the
@@ -503,7 +595,7 @@ describe('provider spawn authorization resolver', () => {
     it('admits an unlisted model id the two-sided freeform policy makes real', () => {
       const result = resolveProviderSpawnDefinitiveRejection({
         selection: definitiveSelection('glm-5.3-preview'),
-        agentTargetKey: 'backend:codex',
+        agentTargetKey: 'agent:happier.agent.codex/codex',
         agentId: 'codex',
         accountSettings: accountSettings(providerSettings()),
         registry: staticPreflightRegistry(
@@ -518,7 +610,7 @@ describe('provider spawn authorization resolver', () => {
     it('rejects an unlisted model id when the Provider refuses manual ids', () => {
       const result = resolveProviderSpawnDefinitiveRejection({
         selection: definitiveSelection('glm-5.3-preview'),
-        agentTargetKey: 'backend:codex',
+        agentTargetKey: 'agent:happier.agent.codex/codex',
         agentId: 'codex',
         accountSettings: accountSettings(providerSettings()),
         registry: staticPreflightRegistry(
@@ -542,7 +634,7 @@ describe('provider spawn authorization resolver', () => {
       });
       const result = resolveProviderSpawnDefinitiveRejection({
         selection: definitiveSelection('manual-only'),
-        agentTargetKey: 'backend:codex',
+        agentTargetKey: 'agent:happier.agent.codex/codex',
         agentId: 'codex',
         accountSettings: accountSettings(settings),
         registry: staticPreflightRegistry(
@@ -556,7 +648,7 @@ describe('provider spawn authorization resolver', () => {
     it('keeps an unlisted model of a probe-capable Provider eligible for the launch owner', () => {
       const result = resolveProviderSpawnDefinitiveRejection({
         selection: definitiveSelection('probe-only'),
-        agentTargetKey: 'backend:codex',
+        agentTargetKey: 'agent:happier.agent.codex/codex',
         agentId: 'codex',
         accountSettings: accountSettings(providerSettings()),
         // The Gateway declares a catalog probe, so its live catalog can report a
@@ -571,7 +663,7 @@ describe('provider spawn authorization resolver', () => {
     it('keeps a static catalog model eligible when authorization is deferred', () => {
       const result = resolveProviderSpawnDefinitiveRejection({
         selection: definitiveSelection(),
-        agentTargetKey: 'backend:codex',
+        agentTargetKey: 'agent:happier.agent.codex/codex',
         agentId: 'codex',
         accountSettings: accountSettings(providerSettings()),
         registry: staticPreflightRegistry(),
@@ -586,6 +678,12 @@ describe('provider spawn authorization resolver', () => {
     const ollamaConnectionId = ProviderConnectionIdSchema.parse('pc_ollama');
     const runtimeRegistry = await resolveExecutablePluginRuntimeRegistry({
       pluginIds: ['happier.agent.codex', 'happier.provider.ollama'],
+      resolveDevelopmentSourceAuthority: ({ pluginId, rootPath }) => ({
+        kind: 'development',
+        registeredRootId: `provider-spawn-fixture:${pluginId}`,
+        canonicalRoot: rootPath,
+        observedRevision: 1,
+      }),
     });
     executableRegistries.push(runtimeRegistry);
     const ollamaRegistry = {
@@ -710,7 +808,7 @@ describe('provider spawn authorization resolver', () => {
     const compatibility = resolveProviderModelCompatibility({
       record: resolved.record,
       providerSettings: grantedSettings,
-      agentTargetKey: 'backend:codex',
+      agentTargetKey: 'agent:happier.agent.codex/codex',
       support: codexDefinition.definition.providerRequirements,
       adapterVersion: codexBinding.adapterVersion,
       model,
@@ -722,7 +820,7 @@ describe('provider spawn authorization resolver', () => {
       grantedSettings,
       {
         connectionId: ollamaConnectionId,
-        agentTargetKey: 'backend:codex',
+        agentTargetKey: 'agent:happier.agent.codex/codex',
         modelId: compatibility.result.confirmationScope.kind === 'model'
           ? model.id
           : null,
@@ -775,13 +873,13 @@ describe('provider spawn authorization resolver', () => {
           v: 1,
           updatedAt: 1,
           ref: {
-            agentTargetKey: 'backend:codex',
+            agentTargetKey: 'agent:happier.agent.codex/codex',
             providerConnectionId: ollamaConnectionId,
             modelId: model.id,
           },
         },
         machineId: 'machine-a',
-        agentTargetKey: 'backend:codex',
+        agentTargetKey: 'agent:happier.agent.codex/codex',
         agentId: 'codex',
         lease: runtimeLease,
         getAccountSettingsSnapshot: () => snapshot,
@@ -839,7 +937,7 @@ describe('provider spawn authorization resolver', () => {
         v: 1,
         updatedAt: 1,
         ref: {
-          agentTargetKey: 'backend:codex',
+          agentTargetKey: 'agent:happier.agent.codex/codex',
           providerConnectionId: connectionId,
           modelId: 'model-a',
         },
@@ -853,7 +951,7 @@ describe('provider spawn authorization resolver', () => {
         },
       },
       machineId: 'machine-a',
-      agentTargetKey: 'backend:codex',
+      agentTargetKey: 'agent:happier.agent.codex/codex',
       agentId: 'codex',
       accountSettings: accountSettings(settings),
       providerSettings: settings,
@@ -885,14 +983,14 @@ describe('provider spawn authorization resolver', () => {
         v: 1,
         updatedAt: 1,
         ref: {
-          agentTargetKey: 'backend:codex',
+          agentTargetKey: 'agent:happier.agent.codex/codex',
           providerConnectionId: connectionId,
           modelId: 'model-a',
         },
       },
       runtimeCatalogSnapshotExists: true,
       machineId: 'machine-a',
-      agentTargetKey: 'backend:codex',
+      agentTargetKey: 'agent:happier.agent.codex/codex',
       agentId: 'codex',
       accountSettings: accountSettings(settings),
       providerSettings: settings,
@@ -916,7 +1014,7 @@ describe('provider spawn authorization resolver', () => {
         v: 1,
         updatedAt: 1,
         ref: {
-          agentTargetKey: 'backend:codex',
+          agentTargetKey: 'agent:happier.agent.codex/codex',
           providerConnectionId: connectionId,
           modelId: 'model-a',
         },
@@ -930,7 +1028,7 @@ describe('provider spawn authorization resolver', () => {
         },
       },
       machineId: 'machine-a',
-      agentTargetKey: 'backend:codex',
+      agentTargetKey: 'agent:happier.agent.codex/codex',
       agentId: 'codex',
       accountSettings: accountSettings(settings),
       providerSettings: settings,
@@ -961,7 +1059,7 @@ describe('provider spawn authorization resolver', () => {
         v: 1,
         updatedAt: 1,
         ref: {
-          agentTargetKey: 'backend:codex',
+          agentTargetKey: 'agent:happier.agent.codex/codex',
           providerConnectionId: connectionId,
           modelId: 'manual-model',
         },
@@ -975,7 +1073,7 @@ describe('provider spawn authorization resolver', () => {
         },
       },
       machineId: 'machine-a',
-      agentTargetKey: 'backend:codex',
+      agentTargetKey: 'agent:happier.agent.codex/codex',
       agentId: 'codex',
       accountSettings: accountSettings(settings),
       providerSettings: settings,
@@ -1144,13 +1242,13 @@ describe('provider spawn authorization resolver', () => {
           v: 1,
           updatedAt: 1,
           ref: {
-            agentTargetKey: 'backend:codex',
+            agentTargetKey: 'agent:happier.agent.codex/codex',
             providerConnectionId: connectionId,
             modelId: 'model-a',
           },
         },
         machineId: 'machine-a',
-        agentTargetKey: 'backend:codex',
+        agentTargetKey: 'agent:happier.agent.codex/codex',
         agentId: 'codex',
         lease: lease(
           undefined,
@@ -1191,13 +1289,13 @@ describe('provider spawn authorization resolver', () => {
         v: 1,
         updatedAt: 1,
         ref: {
-          agentTargetKey: 'backend:codex',
+          agentTargetKey: 'agent:happier.agent.codex/codex',
           providerConnectionId: connectionId,
           modelId,
         },
       },
       machineId: 'machine-a',
-      agentTargetKey: 'backend:codex',
+      agentTargetKey: 'agent:happier.agent.codex/codex',
       agentId: 'codex',
       accountSettings: accountSettings(settings),
       providerSettings: settings,
@@ -1223,13 +1321,13 @@ describe('provider spawn authorization resolver', () => {
         v: 1,
         updatedAt: 1,
         ref: {
-          agentTargetKey: 'backend:codex',
+          agentTargetKey: 'agent:happier.agent.codex/codex',
           providerConnectionId: connectionId,
           modelId: 'model-a',
         },
       },
       machineId: 'machine-a',
-      agentTargetKey: 'backend:codex',
+      agentTargetKey: 'agent:happier.agent.codex/codex',
       agentId: 'codex',
       accountSettings: { providerSettingsV1: settings },
       providerSettings: settings,
@@ -1350,13 +1448,13 @@ describe('provider spawn authorization resolver', () => {
         v: 1,
         updatedAt: 1,
         ref: {
-          agentTargetKey: 'backend:codex',
+          agentTargetKey: 'agent:happier.agent.codex/codex',
           providerConnectionId: connectionId,
           modelId: 'model-a',
         },
       },
       machineId: 'machine-a',
-      agentTargetKey: 'backend:codex',
+      agentTargetKey: 'agent:happier.agent.codex/codex',
       agentId: 'codex',
       accountSettings: { providerSettingsV1: settings },
       providerSettings: settings,
@@ -1426,13 +1524,13 @@ describe('provider spawn authorization resolver', () => {
         v: 1,
         updatedAt: 1,
         ref: {
-          agentTargetKey: 'backend:codex',
+          agentTargetKey: 'agent:happier.agent.codex/codex',
           providerConnectionId: connectionId,
           modelId: 'model-a',
         },
       },
       machineId: 'machine-a',
-      agentTargetKey: 'backend:codex',
+      agentTargetKey: 'agent:happier.agent.codex/codex',
       agentId: 'codex',
       accountSettings: { providerSettingsV1: settings },
       providerSettings: settings,
@@ -1533,13 +1631,13 @@ describe('provider spawn authorization resolver', () => {
         v: 1,
         updatedAt: 1,
         ref: {
-          agentTargetKey: 'backend:codex',
+          agentTargetKey: 'agent:happier.agent.codex/codex',
           providerConnectionId: connectionId,
           modelId: 'model-a',
         },
       },
       machineId: 'machine-a',
-      agentTargetKey: 'backend:codex',
+      agentTargetKey: 'agent:happier.agent.codex/codex',
       agentId: 'codex',
       lease: runtimeLease,
       getAccountSettingsSnapshot: () => snapshot,
@@ -1667,13 +1765,13 @@ describe('provider spawn authorization resolver', () => {
         v: 1,
         updatedAt: 1,
         ref: {
-          agentTargetKey: 'backend:codex',
+          agentTargetKey: 'agent:happier.agent.codex/codex',
           providerConnectionId: connectionId,
           modelId: 'model-a',
         },
       },
       machineId: 'machine-a',
-      agentTargetKey: 'backend:codex',
+      agentTargetKey: 'agent:happier.agent.codex/codex',
       agentId: 'codex',
       lease: lease(
         undefined,
@@ -1732,7 +1830,7 @@ describe('provider spawn authorization resolver', () => {
     const compatibility = resolveProviderModelCompatibility({
       record: resolution.record,
       providerSettings: unconfirmedSettings,
-      agentTargetKey: 'backend:codex',
+      agentTargetKey: 'agent:happier.agent.codex/codex',
       support: agentProviderSupport(),
       adapterVersion: 3,
       model,
@@ -1745,7 +1843,7 @@ describe('provider spawn authorization resolver', () => {
       unconfirmedSettings,
       {
         connectionId,
-        agentTargetKey: 'backend:codex',
+        agentTargetKey: 'agent:happier.agent.codex/codex',
         modelId: compatibility.result.confirmationScope.kind === 'model'
           ? model.id
           : null,
@@ -1782,13 +1880,13 @@ describe('provider spawn authorization resolver', () => {
         v: 1,
         updatedAt: 1,
         ref: {
-          agentTargetKey: 'backend:codex',
+          agentTargetKey: 'agent:happier.agent.codex/codex',
           providerConnectionId: connectionId,
           modelId: model.id,
         },
       },
       machineId: 'machine-a',
-      agentTargetKey: 'backend:codex',
+      agentTargetKey: 'agent:happier.agent.codex/codex',
       agentId: 'codex',
       lease: runtimeLease,
       getAccountSettingsSnapshot: () => currentSnapshot,
@@ -1820,13 +1918,13 @@ describe('provider spawn authorization resolver', () => {
         v: 1,
         updatedAt: 1,
         ref: {
-          agentTargetKey: 'backend:codex',
+          agentTargetKey: 'agent:happier.agent.codex/codex',
           providerConnectionId: connectionId,
           modelId: model.id,
         },
       },
       machineId: 'machine-a',
-      agentTargetKey: 'backend:codex',
+      agentTargetKey: 'agent:happier.agent.codex/codex',
       agentId: 'codex',
       lease: runtimeLease,
       getAccountSettingsSnapshot: () => currentSnapshot,
@@ -1872,13 +1970,13 @@ describe('provider spawn authorization resolver', () => {
         v: 1,
         updatedAt: 1,
         ref: {
-          agentTargetKey: 'backend:codex',
+          agentTargetKey: 'agent:happier.agent.codex/codex',
           providerConnectionId: connectionId,
           modelId: model.id,
         },
       },
       machineId: 'machine-a',
-      agentTargetKey: 'backend:codex',
+      agentTargetKey: 'agent:happier.agent.codex/codex',
       agentId: 'codex',
       lease: runtimeLease,
       getAccountSettingsSnapshot: () => currentSnapshot,
@@ -1900,13 +1998,13 @@ describe('provider spawn authorization resolver', () => {
         v: 1,
         updatedAt: 1,
         ref: {
-          agentTargetKey: 'backend:codex',
+          agentTargetKey: 'agent:happier.agent.codex/codex',
           providerConnectionId: connectionId,
           modelId: model.id,
         },
       },
       machineId: 'machine-a',
-      agentTargetKey: 'backend:codex',
+      agentTargetKey: 'agent:happier.agent.codex/codex',
       agentId: 'codex',
       lease: runtimeLease,
       getAccountSettingsSnapshot: () => currentSnapshot,
@@ -1979,8 +2077,8 @@ describe('provider spawn authorization resolver', () => {
     const settings = grantedSettings();
     const prepare = vi.fn(() => ({ v: 1 as const, materialization: 'engineConfig' as const, adapterBindingKey: 'gateway' }));
     const result = resolveProviderSpawnAuthorization({
-      selection: { v: 1, updatedAt: 1, ref: { agentTargetKey: 'backend:codex', providerConnectionId: connectionId, modelId: 'model-a' } },
-      machineId: 'machine-a', agentTargetKey: 'backend:codex', agentId: 'codex', accountSettings: accountSettings(settings),
+      selection: { v: 1, updatedAt: 1, ref: { agentTargetKey: 'agent:happier.agent.codex/codex', providerConnectionId: connectionId, modelId: 'model-a' } },
+      machineId: 'machine-a', agentTargetKey: 'agent:happier.agent.codex/codex', agentId: 'codex', accountSettings: accountSettings(settings),
       providerSettings: settings, registry, dnsEvidenceByEndpointUrl: dns, lease: lease(prepare),
     });
 
@@ -1988,7 +2086,7 @@ describe('provider spawn authorization resolver', () => {
       ok: true,
       authorization: {
         binding: {
-          agentTargetKey: 'backend:codex',
+          agentTargetKey: 'agent:happier.agent.codex/codex',
           selection: {
             connectionId,
             model: expect.objectContaining({ id: 'model-a', name: 'Model A' }),
@@ -2012,7 +2110,7 @@ describe('provider spawn authorization resolver', () => {
           runtimeBindingBasis: {
             v: 1,
             deployment: { kind: 'external' },
-            agentTargetKey: 'backend:codex',
+            agentTargetKey: 'agent:happier.agent.codex/codex',
             connectionId,
             endpoint: {
               endpointTemplateId: 'responses',
@@ -2046,7 +2144,7 @@ describe('provider spawn authorization resolver', () => {
         v: 1,
         updatedAt: 1,
         ref: {
-          agentTargetKey: 'backend:codex',
+          agentTargetKey: 'agent:happier.agent.codex/codex',
           providerConnectionId: connectionId,
           modelId: 'probe-non-reasoning',
         },
@@ -2060,7 +2158,7 @@ describe('provider spawn authorization resolver', () => {
         },
       },
       machineId: 'machine-a',
-      agentTargetKey: 'backend:codex',
+      agentTargetKey: 'agent:happier.agent.codex/codex',
       agentId: 'codex',
       accountSettings: accountSettings(settings),
       providerSettings: settings,
@@ -2092,7 +2190,7 @@ describe('provider spawn authorization resolver', () => {
         v: 1,
         updatedAt: 1,
         ref: {
-          agentTargetKey: 'backend:codex',
+          agentTargetKey: 'agent:happier.agent.codex/codex',
           providerConnectionId: connectionId,
           modelId: 'probe-no-tools',
         },
@@ -2106,7 +2204,7 @@ describe('provider spawn authorization resolver', () => {
         },
       },
       machineId: 'machine-a',
-      agentTargetKey: 'backend:codex',
+      agentTargetKey: 'agent:happier.agent.codex/codex',
       agentId: 'codex',
       accountSettings: accountSettings(settings),
       providerSettings: settings,
@@ -2125,8 +2223,8 @@ describe('provider spawn authorization resolver', () => {
     const prepare = vi.fn(() => ({ v: 1 as const, materialization: 'engineConfig' as const }));
     const settings = providerSettings();
     const result = resolveProviderSpawnAuthorization({
-      selection: { v: 1, updatedAt: 1, ref: { agentTargetKey: 'backend:codex', providerConnectionId: connectionId, modelId: 'model-a' } },
-      machineId: 'machine-a', agentTargetKey: 'backend:codex', agentId: 'codex', accountSettings: accountSettings(settings),
+      selection: { v: 1, updatedAt: 1, ref: { agentTargetKey: 'agent:happier.agent.codex/codex', providerConnectionId: connectionId, modelId: 'model-a' } },
+      machineId: 'machine-a', agentTargetKey: 'agent:happier.agent.codex/codex', agentId: 'codex', accountSettings: accountSettings(settings),
       providerSettings: settings, registry, dnsEvidenceByEndpointUrl: dns, lease: lease(prepare),
     });
 
@@ -2137,8 +2235,8 @@ describe('provider spawn authorization resolver', () => {
   it('uses the canonical account grant fingerprint in the ticket', () => {
     const settings = grantedSettings();
     const result = resolveProviderSpawnAuthorization({
-      selection: { v: 1, updatedAt: 1, ref: { agentTargetKey: 'backend:codex', providerConnectionId: connectionId, modelId: 'model-a' } },
-      machineId: 'machine-a', agentTargetKey: 'backend:codex', agentId: 'codex', accountSettings: accountSettings(settings),
+      selection: { v: 1, updatedAt: 1, ref: { agentTargetKey: 'agent:happier.agent.codex/codex', providerConnectionId: connectionId, modelId: 'model-a' } },
+      machineId: 'machine-a', agentTargetKey: 'agent:happier.agent.codex/codex', agentId: 'codex', accountSettings: accountSettings(settings),
       providerSettings: settings, registry, dnsEvidenceByEndpointUrl: dns, lease: lease(),
     });
     if (!result.ok) throw new Error('Expected authorization');
@@ -2161,7 +2259,7 @@ describe('provider spawn authorization resolver', () => {
     const nonFreeformLease = lease(undefined, false);
     const base = {
       machineId: 'machine-a',
-      agentTargetKey: 'backend:codex',
+      agentTargetKey: 'agent:happier.agent.codex/codex',
       agentId: 'codex',
       accountSettings: accountSettings(settings),
       providerSettings: settings,
@@ -2175,7 +2273,7 @@ describe('provider spawn authorization resolver', () => {
       selection: {
         v: 1,
         updatedAt: 1,
-        ref: { agentTargetKey: 'backend:codex', providerConnectionId: connectionId, modelId: 'probe-only' },
+        ref: { agentTargetKey: 'agent:happier.agent.codex/codex', providerConnectionId: connectionId, modelId: 'probe-only' },
       },
       runtimeModelDescriptor: {
         id: 'probe-only',
@@ -2201,7 +2299,7 @@ describe('provider spawn authorization resolver', () => {
       selection: {
         v: 1,
         updatedAt: 1,
-        ref: { agentTargetKey: 'backend:codex', providerConnectionId: connectionId, modelId: 'disappeared' },
+        ref: { agentTargetKey: 'agent:happier.agent.codex/codex', providerConnectionId: connectionId, modelId: 'disappeared' },
       },
     });
     expect(missing).toMatchObject({
@@ -2218,8 +2316,8 @@ describe('provider spawn authorization resolver', () => {
       },
     });
     const authorize = (modelId: string) => resolveProviderSpawnAuthorization({
-      selection: { v: 1, updatedAt: 1, ref: { agentTargetKey: 'backend:codex', providerConnectionId: connectionId, modelId } },
-      machineId: 'machine-a', agentTargetKey: 'backend:codex', agentId: 'codex', accountSettings: accountSettings(settings),
+      selection: { v: 1, updatedAt: 1, ref: { agentTargetKey: 'agent:happier.agent.codex/codex', providerConnectionId: connectionId, modelId } },
+      machineId: 'machine-a', agentTargetKey: 'agent:happier.agent.codex/codex', agentId: 'codex', accountSettings: accountSettings(settings),
       providerSettings: settings, registry, dnsEvidenceByEndpointUrl: dns, lease: lease(),
     });
 
@@ -2242,13 +2340,13 @@ describe('provider spawn authorization resolver', () => {
         v: 1,
         updatedAt: 1,
         ref: {
-          agentTargetKey: 'backend:codex',
+          agentTargetKey: 'agent:happier.agent.codex/codex',
           providerConnectionId: inheritedNameConnectionId,
           modelId: 'freeform-model',
         },
       },
       machineId: 'machine-a',
-      agentTargetKey: 'backend:codex',
+      agentTargetKey: 'agent:happier.agent.codex/codex',
       agentId: 'codex',
       accountSettings: accountSettings(settings),
       providerSettings: settings,

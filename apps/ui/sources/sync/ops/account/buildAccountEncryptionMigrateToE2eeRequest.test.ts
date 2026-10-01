@@ -9,6 +9,7 @@ import {
   createAccountEncryptionMigrateProofSigningInputV1,
   openAccountScopedBlobCiphertext,
   openConnectedServiceCredentialCiphertext,
+  SessionDraftDocumentV2Schema,
 } from '@happier-dev/protocol';
 
 import { resolveAccountScopedCryptoMaterialFromCredentials } from '@/sync/domains/connectedServices/resolveAccountScopedCryptoMaterialFromCredentials';
@@ -71,7 +72,7 @@ describe('buildAccountEncryptionMigrateToE2eeRequest', () => {
       kind: 'newSession' as const,
       draftId: '00000000-0000-4000-8000-000000000101',
     };
-    const document = {
+    const document = SessionDraftDocumentV2Schema.parse({
       v: epoch,
       composer: {
         text: { mutationId: '00000000-0000-4000-8000-000000000102', value: 'draft' },
@@ -84,7 +85,7 @@ describe('buildAccountEncryptionMigrateToE2eeRequest', () => {
         } },
       } },
       extensions: {},
-    };
+    });
 
     const request = await buildAccountEncryptionMigrateToE2eeRequest({
       storageDirectives: EMPTY_STORAGE_DIRECTIVES,
@@ -96,6 +97,7 @@ describe('buildAccountEncryptionMigrateToE2eeRequest', () => {
       connectedServiceProfiles: [],
       automations: [],
       sessionDrafts: [{ address, baseRevision: 7, document }],
+      authoringMemory: [{ key: 'lastUsedProfile', revision: 3, value: 'profile-a' }],
       fetchConnectedServiceCredentialPlain: async () => {
         throw new Error('unexpected fetchConnectedServiceCredentialPlain');
       },
@@ -118,6 +120,11 @@ describe('buildAccountEncryptionMigrateToE2eeRequest', () => {
         sourceMode: 'plain',
       }),
     );
+    const memory = request.authoringMemory!.items[0]!;
+    expect(memory).toMatchObject({ key: 'lastUsedProfile', expectedRevision: 3, content: { t: 'encrypted' } });
+    if (memory.content.t !== 'encrypted') throw new Error('expected encrypted authoring memory');
+    expect(openAccountScopedBlobCiphertext({ kind: 'authoring_memory', material, ciphertext: memory.content.c })?.value)
+      .toEqual({ key: 'lastUsedProfile', value: 'profile-a' });
   });
 
   it('builds assert_empty directives when no connected services or automations exist', async () => {

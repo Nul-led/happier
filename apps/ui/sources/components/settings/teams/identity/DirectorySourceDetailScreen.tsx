@@ -1,15 +1,20 @@
 import * as React from 'react';
-import { useRouter } from 'expo-router';
-import { AppState } from 'react-native';
+import { useRouter } from '@/components/appShell/workspace/destinationRoute';
+import { AppState, type Pressable } from 'react-native';
 
 import { ActivitySpinner } from '@/components/ui/feedback/ActivitySpinner';
+import { SettingAnchor, SettingSection, useSettingRevealRequested } from '@/components/settings/shell/SettingRow';
 import { SearchHeader } from '@/components/ui/forms/SearchHeader';
 import { Item } from '@/components/ui/lists/Item';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
-import { VirtualizedList } from '@/components/ui/lists/virtualized';
+import { SectionButtonRow } from '@/components/ui/lists/SectionButtonRow';
+import { RoundButton } from '@/components/ui/buttons/RoundButton';
+import { VirtualizedList, type VirtualizedListRef } from '@/components/ui/lists/virtualized';
+import { restoreFocusToBestTarget } from '@/keyboard/focusReturn';
 import { useTeamGroups } from '@/hooks/teams/useTeamGroups';
 import { useTeamPagedList } from '@/hooks/teams/useTeamPagedList';
 import { TEAMS_ACCOUNT_CHANGE_ENTITY_ID_V1 } from '@happier-dev/protocol';
+import type { TeamDirectoryGroupPageV1 } from '@happier-dev/protocol/teams';
 import { identityAdministrationFailureMessage } from '@/components/settings/identity/identityAdministrationFailure';
 import { announceAccessibilityMessage } from '@/components/ui/accessibility/announceAccessibilityMessage';
 import { getPreferredLanguage, t } from '@/text';
@@ -21,18 +26,20 @@ import type { ActionApprovalRegistration } from '@/components/approvals/actionAp
 
 import { TeamSection } from '../TeamSection';
 import { teamMemberDetailPath } from '../teamsRoutes';
-import { useDirectoryPeopleList } from './DirectoryPeopleList';
+import { DirectoryListFailure, useDirectoryPeopleList } from './DirectoryPeopleList';
 import { directorySourceStateLabel } from './DirectorySyncSettingsScreen';
 import { directorySourcePresentationState } from './directoryAdministrationPresentation';
 import { runDirectoryGroupMappingChange } from './directoryGroupMapping';
 import { runDirectorySourceRemoval } from './directorySourceRemoval';
 import {
     createIdentityAdministrationClient,
+    executeIdentityAdministrationRead,
     type TeamIdentityActionOutput,
 } from './identityAdministrationClient';
 import { useDirectorySourceAdministration } from './useDirectoryAdministration';
 import { buildVirtualizedSegments } from './directorySourceDetailVirtualization';
 import { createWorkosPortalReturnController } from './workosPortalReturn';
+import { DIRECTORY_SOURCE_SETTINGS } from './directorySettings';
 
 type DirectoryDetailVirtualRow = Readonly<{
     key: string;
@@ -59,12 +66,31 @@ const DirectoryGroupMappings = React.memo(function DirectoryGroupMappings(props:
     mutationsAvailable: boolean;
     requestApproval: (registration: ActionApprovalRegistration) => void;
     beforeRows: readonly DirectoryDetailVirtualRow[];
+    /** Rows that close the page after the mappings, such as the source's removal button row. */
+    afterRows?: readonly DirectoryDetailVirtualRow[];
     header: React.ReactElement;
 }>) {
     const [query, setQuery] = React.useState('');
     const [choosingFor, setChoosingFor] = React.useState<string | null>(null);
     const [pendingGroupId, setPendingGroupId] = React.useState<string | null>(null);
     const [failure, setFailure] = React.useState<string | null>(null);
+    const listRef = React.useRef<VirtualizedListRef>(null);
+    const revealGroupSearch = useSettingRevealRequested([DIRECTORY_SOURCE_SETTINGS.settings.searchGroups]);
+    const revealRemoval = useSettingRevealRequested([DIRECTORY_SOURCE_SETTINGS.settings.remove]);
+    const revealedSetting = React.useRef<string | null>(null);
+    const triggerRef = React.useRef<React.ComponentRef<typeof Pressable> | null>(null);
+    const focusChooser = React.useCallback((target: React.ComponentRef<typeof Pressable> | null) => {
+        if (target) restoreFocusToBestTarget({ current: target });
+    }, []);
+    const closeChooser = React.useCallback(() => {
+        restoreFocusToBestTarget(triggerRef);
+        setChoosingFor(null);
+    }, []);
+    const onChooserKeyDown = React.useCallback<NonNullable<React.ComponentProps<typeof Item>['onKeyDown']>>((event) => {
+        if ((event.key ?? event.nativeEvent?.key) !== 'Escape') return;
+        event.preventDefault?.();
+        closeChooser();
+    }, [closeChooser]);
 
     // Announced as well as shown: the outcome renders far below the control.
     const reportMappingFailure = React.useCallback((code: string) => {
@@ -78,18 +104,18 @@ const DirectoryGroupMappings = React.memo(function DirectoryGroupMappings(props:
         }),
         [props.requestApproval, props.scope.accountId, props.scope.serverId],
     );
-    const loadPage = React.useCallback(async (cursor: string | null) => {
-        const result = await client.executeDirectory('teams.directory.groups.list', {
+    const loadPage = React.useCallback(async (cursor: string | null, signal: AbortSignal) => {
+        const result = await executeIdentityAdministrationRead<TeamDirectoryGroupPageV1>((options) => client.executeDirectory('teams.directory.groups.list', {
             v: 1,
             teamId: props.address.teamId,
             sourceId: props.sourceId,
             limit: 50,
             cursor,
             ...(query.trim() ? { query: query.trim() } : {}),
-        });
+        }, options), signal);
         return result.ok
             ? { kind: 'succeeded' as const, value: result.value }
-            : { kind: 'failed' as const, failure: { kind: 'unknown' as const, retryable: result.failure.retryable, code: null } };
+            : { kind: 'failed' as const, failure: result.failure.domainFailure ?? { kind: 'unknown' as const, retryable: result.failure.retryable, code: null } };
     }, [client, props.address.teamId, props.sourceId, query]);
     const directoryGroups = useTeamPagedList({
         key: `${props.scope.serverId} ${props.scope.accountId} ${props.address.teamId} ${props.sourceId} ${query.trim()}`,
@@ -108,14 +134,14 @@ const DirectoryGroupMappings = React.memo(function DirectoryGroupMappings(props:
         () => new Map(nativeGroups.rows.map((group) => [group.id, group.name] as const)),
         [nativeGroups.rows],
     );
+    const mappingAvailable = props.mutationsAvailable && directoryGroups.status === 'ready' && !directoryGroups.error;
 
     const changeMapping = React.useCallback(async (
         group: (typeof directoryGroups.rows)[number],
         target: Parameters<typeof runDirectoryGroupMappingChange>[0]['target'],
     ) => {
-        // The directory Group's own name never said where its members were
-        // about to land. Name the Team Group this mapping resolves to and the
-        // people it moves, both already on the rows behind this confirmation.
+        // Roster binding counts describe the people behind this mapping. They
+        // are not a promise of exact grants/removals: native ownership survives.
         const teamGroupName = (teamGroupId: string) =>
             nativeGroupNames.get(teamGroupId) ?? t('teams.authentication.directory.unknown');
         const mappedTo = (name: string) => `${t('identityAdministration.mappedTo')}: ${name}`;
@@ -129,7 +155,8 @@ const DirectoryGroupMappings = React.memo(function DirectoryGroupMappings(props:
             [
                 group.displayName,
                 destination,
-                group.memberCount === null ? null : t('teams.groups.memberCount', { count: group.memberCount }),
+                t('teams.authentication.directory.people.boundAccountCount', { count: group.boundAccountCount === null ? t('teams.authentication.directory.unknown') : group.boundAccountCount }),
+                t('teams.authentication.directory.people.unboundPeopleCount', { count: group.unboundPeopleCount === null ? t('teams.authentication.directory.unknown') : group.unboundPeopleCount }),
             ].filter((line): line is string => line !== null).join('\n'),
             {
                 cancelText: t('common.cancel'),
@@ -141,7 +168,7 @@ const DirectoryGroupMappings = React.memo(function DirectoryGroupMappings(props:
         setPendingGroupId(group.id);
         setFailure(null);
         const finishMapping = async () => {
-            setChoosingFor(null);
+            closeChooser();
             await directoryGroups.reload();
         };
         try {
@@ -181,7 +208,7 @@ const DirectoryGroupMappings = React.memo(function DirectoryGroupMappings(props:
         } finally {
             setPendingGroupId(null);
         }
-    }, [client, directoryGroups, nativeGroupNames, props.address.teamId, props.sourceId, reportMappingFailure]);
+    }, [client, closeChooser, directoryGroups, nativeGroupNames, props.address.teamId, props.sourceId, reportMappingFailure]);
 
     const selectedGroup = choosingFor === null
         ? null
@@ -189,35 +216,39 @@ const DirectoryGroupMappings = React.memo(function DirectoryGroupMappings(props:
 
     const rows = React.useMemo(() => {
         const result: DirectoryDetailVirtualRow[] = [...props.beforeRows];
-        if (!props.groupMappingsAvailable) return result;
+        if (!props.groupMappingsAvailable) return [...result, ...(props.afterRows ?? [])];
         result.push({
             key: 'groups-search',
-            element: <SearchHeader testID="directory-groups-search" value={query} onChangeText={setQuery} placeholder={t('identityAdministration.searchGroups')} />,
+            element: <SettingSection section={DIRECTORY_SOURCE_SETTINGS.sectionRefs.groups}>
+                <SettingAnchor setting={DIRECTORY_SOURCE_SETTINGS.settings.searchGroups}>
+                    <SearchHeader testID="directory-groups-search" value={query} onChangeText={setQuery} placeholder={t(DIRECTORY_SOURCE_SETTINGS.settings.searchGroups.titleKey)} />
+                </SettingAnchor>
+            </SettingSection>,
         });
-        const segments = buildVirtualizedSegments(directoryGroups.rows, DIRECTORY_DETAIL_SEGMENT_SIZE);
         if (directoryGroups.status === 'loading' && directoryGroups.rows.length === 0) {
             result.push({ key: 'groups-loading', element: <ItemGroup title={t('identityAdministration.directoryGroups')}><Item title={t('common.loading')} loading showChevron={false} /></ItemGroup> });
-        } else if (directoryGroups.rows.length === 0) {
+        } else if (directoryGroups.rows.length === 0 && !directoryGroups.error) {
             result.push({ key: 'groups-empty', element: <ItemGroup title={t('identityAdministration.directoryGroups')}><Item title={t('teams.authentication.directory.empty')} showChevron={false} /></ItemGroup> });
         } else {
-            // The chooser is emitted next to the row that opened it. Appended
-            // after the whole group list it opened off-screen for any group
-            // that is not on the last page, and there is no scroll-to.
+            // Give the opened chooser its own adjacent virtual row so the list
+            // can reach it directly, even on a long directory page.
             const chooser = selectedGroup === null ? null : (
                 <ItemGroup title={t('identityAdministration.chooseGroup')}>
-                    <Item testID="directory-group-map-create" title={t('identityAdministration.mapCreate')} disabled={pendingGroupId !== null || !props.mutationsAvailable} onPress={() => void changeMapping(selectedGroup, { kind: 'directory_created' })} showChevron={false} />
-                    <Item testID="directory-group-map-existing" title={t('identityAdministration.mapExisting')} selected disabled={!props.mutationsAvailable} onPress={() => setChoosingFor(null)} showChevron={false} />
-                    {nativeGroups.rows.map((group) => <Item key={group.id} testID={`directory-group-native-target:${group.id}`} title={group.name} subtitle={t('teams.groups.memberCount', { count: group.memberCount })} disabled={pendingGroupId !== null || !props.mutationsAvailable} onPress={() => void changeMapping(selectedGroup, { kind: 'native_target', teamGroupId: group.id })} showChevron={false} />)}
-                    {nativeGroups.hasMore ? <Item title={t('identityAdministration.loadMore')} loading={nativeGroups.status === 'loading_more'} disabled={nativeGroups.status === 'loading_more'} onPress={() => void nativeGroups.loadMore()} showChevron={false} /> : null}
-                    {selectedGroup.mapping.state === 'bound' ? <Item testID="directory-group-remove-mapping" title={t('identityAdministration.removeMapping')} destructive disabled={pendingGroupId !== null || !props.mutationsAvailable} onPress={() => void changeMapping(selectedGroup, null)} showChevron={false} /> : null}
+                    <Item testID="directory-group-map-create" pressableRef={focusChooser} onKeyDown={onChooserKeyDown} title={t('identityAdministration.mapCreate')} disabled={pendingGroupId !== null || !mappingAvailable} onPress={() => void changeMapping(selectedGroup, { kind: 'directory_created' })} showChevron={false} />
+                    {nativeGroups.status === 'loading' && nativeGroups.rows.length === 0 ? <Item title={t('common.loading')} loading showChevron={false} /> : null}
+                    {nativeGroups.isCurrent && nativeGroups.rows.length === 0 ? <Item testID="directory-native-groups-empty" title={t('teams.groups.emptyTitle')} showChevron={false} /> : null}
+                    {nativeGroups.rows.map((group) => <Item key={group.id} testID={`directory-group-native-target:${group.id}`} onKeyDown={onChooserKeyDown} title={group.name} subtitle={t('teams.groups.memberCount', { count: group.memberCount })} disabled={pendingGroupId !== null || !mappingAvailable || !nativeGroups.isCurrent} onPress={() => void changeMapping(selectedGroup, { kind: 'native_target', teamGroupId: group.id })} showChevron={false} />)}
+                    {nativeGroups.error ? <DirectoryListFailure testID="directory-native-groups" failure={nativeGroups.error} retry={nativeGroups.reload} /> : null}
+                    {nativeGroups.hasMore && nativeGroups.status !== 'loading' && !nativeGroups.error ? <Item onKeyDown={onChooserKeyDown} title={t('identityAdministration.loadMore')} loading={nativeGroups.status === 'loading_more'} disabled={nativeGroups.status === 'loading_more'} onPress={() => void nativeGroups.loadMore()} showChevron={false} /> : null}
+                    {selectedGroup.mapping.state === 'bound' ? <Item testID="directory-group-remove-mapping" onKeyDown={onChooserKeyDown} title={t('identityAdministration.removeMapping')} destructive disabled={pendingGroupId !== null || !mappingAvailable} onPress={() => void changeMapping(selectedGroup, null)} showChevron={false} /> : null}
+                    <Item testID="directory-group-chooser-cancel" onKeyDown={onChooserKeyDown} title={t('common.cancel')} onPress={closeChooser} showChevron={false} />
                 </ItemGroup>
             );
-            segments.forEach((segment, index) => {
+            directoryGroups.rows.forEach((group, index) => {
                 result.push({
-                    key: `groups:${index}`,
+                    key: `groups:${group.id}`,
                     element: (
-                    <ItemGroup title={segment.first ? t('identityAdministration.directoryGroups') : undefined} virtualizedSegment={{ first: segment.first, last: segment.last }}>
-                        {segment.items.map((group) => (
+                    <ItemGroup title={index === 0 ? t('identityAdministration.directoryGroups') : undefined} virtualizedSegment={{ first: index === 0, last: index === directoryGroups.rows.length - 1 }}>
                             <Item
                                 key={group.id}
                                 testID={`directory-group:${group.id}`}
@@ -227,28 +258,49 @@ const DirectoryGroupMappings = React.memo(function DirectoryGroupMappings(props:
                                     : t('identityAdministration.unmapped')}
                                 detail={group.memberCount === null ? undefined : t('teams.groups.memberCount', { count: group.memberCount })}
                                 loading={pendingGroupId === group.id}
-                                disabled={pendingGroupId !== null || !props.mutationsAvailable}
+                                pressableRef={choosingFor === group.id ? triggerRef : undefined}
+                                accessibilityExpanded={choosingFor === group.id}
+                                disabled={pendingGroupId !== null || !mappingAvailable}
                                 onPress={() => setChoosingFor((current) => current === group.id ? null : group.id)}
                                 showChevron={false}
                             />
-                        ))}
                     </ItemGroup>
                     ),
                 });
-                if (selectedGroup !== null && chooser !== null && segment.items.some((group) => group.id === selectedGroup.id)) {
+                if (selectedGroup !== null && chooser !== null && group.id === selectedGroup.id) {
                     result.push({ key: `groups-choice:${selectedGroup.id}`, element: chooser });
                 }
             });
         }
-        if (directoryGroups.error) result.push({ key: 'groups-error', element: <ItemGroup footer={directoryGroups.error.retryable ? t('teams.unavailable.offline') : t('identityAdministration.error')}>{directoryGroups.error.retryable ? <Item testID="directory-groups-retry" title={t('common.retry')} onPress={() => void directoryGroups.reload()} showChevron={false} /> : null}</ItemGroup> });
-        if (directoryGroups.hasMore) result.push({ key: 'groups-more', element: <ItemGroup><Item testID="directory-groups-load-more" title={t('identityAdministration.loadMore')} loading={directoryGroups.status === 'loading_more'} disabled={directoryGroups.status === 'loading_more'} onPress={() => void directoryGroups.loadMore()} showChevron={false} /></ItemGroup> });
+        if (directoryGroups.error) result.push({ key: 'groups-error', element: <ItemGroup><DirectoryListFailure testID="directory-groups" failure={directoryGroups.error} retry={directoryGroups.reload} /></ItemGroup> });
+        if (directoryGroups.hasMore && directoryGroups.status !== 'loading' && !directoryGroups.error) result.push({ key: 'groups-more', element: <ItemGroup><Item testID="directory-groups-load-more" title={t('identityAdministration.loadMore')} loading={directoryGroups.status === 'loading_more'} disabled={directoryGroups.status === 'loading_more'} onPress={() => void directoryGroups.loadMore()} showChevron={false} /></ItemGroup> });
         if (failure) result.push({ key: 'groups-failure', element: <ItemGroup><Item testID="directory-group-mapping-failure" title={failure} showChevron={false} /></ItemGroup> });
-        return result;
-    }, [changeMapping, directoryGroups.error, directoryGroups.hasMore, directoryGroups.loadMore, directoryGroups.reload, directoryGroups.rows, directoryGroups.status, failure, nativeGroupNames, nativeGroups.hasMore, nativeGroups.loadMore, nativeGroups.rows, pendingGroupId, props.beforeRows, props.groupMappingsAvailable, props.mutationsAvailable, query, selectedGroup]);
+        return [...result, ...(props.afterRows ?? [])];
+    }, [props.afterRows, changeMapping, choosingFor, closeChooser, focusChooser, onChooserKeyDown, directoryGroups.error, directoryGroups.hasMore, directoryGroups.loadMore, directoryGroups.reload, directoryGroups.rows, directoryGroups.status, failure, mappingAvailable, nativeGroupNames, nativeGroups.error, nativeGroups.hasMore, nativeGroups.isCurrent, nativeGroups.loadMore, nativeGroups.reload, nativeGroups.rows, nativeGroups.status, pendingGroupId, props.beforeRows, props.groupMappingsAvailable, query, selectedGroup]);
+
+    const chooserIndex = rows.findIndex((row) => row.key === `groups-choice:${choosingFor}`);
+    React.useEffect(() => {
+        if (chooserIndex >= 0) void listRef.current?.scrollToIndex({ index: chooserIndex, animated: false });
+    }, [chooserIndex, choosingFor]);
+
+    const requestedSettingRow = revealGroupSearch ? 'groups-search' : revealRemoval ? 'source-remove' : null;
+    const requestedSettingIndex = rows.findIndex((row) => row.key === requestedSettingRow);
+    React.useEffect(() => {
+        revealedSetting.current = null;
+    }, [props.scope.serverId, props.scope.accountId, props.address.teamId, props.sourceId, requestedSettingRow]);
+    React.useEffect(() => {
+        if (requestedSettingRow === null || requestedSettingIndex < 0 || revealedSetting.current === requestedSettingRow) return;
+        // Mount the requested virtual row first; its canonical SettingAnchor
+        // then owns marking/revealing it. Later page refreshes must not pull
+        // the person back after they have moved elsewhere in the list.
+        revealedSetting.current = requestedSettingRow;
+        void listRef.current?.scrollToIndex({ index: requestedSettingIndex, animated: false });
+    }, [props.scope.serverId, props.scope.accountId, props.address.teamId, props.sourceId, requestedSettingIndex, requestedSettingRow]);
 
     const renderRow = React.useCallback(({ item }: Readonly<{ item: DirectoryDetailVirtualRow }>) => item.element, []);
 
     return <VirtualizedList
+        ref={listRef}
         testID="directory-source-detail-virtualized-list"
         data={rows}
         keyExtractor={(item) => item.key}
@@ -261,6 +313,7 @@ const DirectoryGroupMappings = React.memo(function DirectoryGroupMappings(props:
         windowSize={7}
         estimatedItemSize={180}
         maintainVisibleContentPosition
+        keyboardShouldPersistTaps="handled"
     />;
 });
 
@@ -275,6 +328,7 @@ const AuthorizedDirectorySourceDetail = React.memo(function AuthorizedDirectoryS
     shellHeader?: React.ReactNode;
 }>) {
     const router = useRouter();
+    const revealGroupSearch = useSettingRevealRequested([DIRECTORY_SOURCE_SETTINGS.settings.searchGroups]);
     const { state, refresh, pendingAction, runAction, readRemovalImpact, removeSource } = useDirectorySourceAdministration(
         props.scope,
         props.teamId,
@@ -318,6 +372,7 @@ const AuthorizedDirectorySourceDetail = React.memo(function AuthorizedDirectoryS
         address: props.address,
         sourceId: props.sourceId,
         enabled: source !== null,
+        requestApproval: props.requestApproval,
     });
     const can = React.useCallback((actionId: Parameters<typeof runAction>[0]) => (
         source?.allowedActions.includes(actionId) ?? false
@@ -403,7 +458,7 @@ const AuthorizedDirectorySourceDetail = React.memo(function AuthorizedDirectoryS
             onApprovalSucceeded: async () => router.back(),
             onApprovalFailed: reportActionFailure,
         });
-        if (outcome.kind === 'failed') {
+        if (outcome.kind === 'failed' && outcome.code !== 'aborted') {
             reportActionFailure(outcome.code);
         } else if (outcome.kind === 'removed') {
             router.back();
@@ -470,7 +525,7 @@ const AuthorizedDirectorySourceDetail = React.memo(function AuthorizedDirectoryS
     const peopleSegments = buildVirtualizedSegments(people.rows, DIRECTORY_DETAIL_SEGMENT_SIZE);
     if (people.status === 'loading' && people.rows.length === 0) {
         beforeRows.push({ key: 'people-loading', element: <ItemGroup title={t('teams.authentication.directory.people.section')}><Item title={t('common.loading')} loading showChevron={false} /></ItemGroup> });
-    } else if (people.rows.length === 0) {
+    } else if (people.rows.length === 0 && !people.error) {
         beforeRows.push({ key: 'people-empty', element: <ItemGroup title={t('teams.authentication.directory.people.section')}><Item title={t('teams.authentication.directory.people.empty')} showChevron={false} /></ItemGroup> });
     } else {
         peopleSegments.forEach((segment, index) => beforeRows.push({
@@ -493,13 +548,21 @@ const AuthorizedDirectorySourceDetail = React.memo(function AuthorizedDirectoryS
             </ItemGroup>,
         }));
     }
-    if (people.error) beforeRows.push({ key: 'people-error', element: <ItemGroup footer={people.error.retryable ? t('teams.unavailable.offline') : t('identityAdministration.error')}>{people.error.retryable ? <Item testID="directory-people-retry" title={t('common.retry')} onPress={() => void people.reload()} showChevron={false} /> : null}</ItemGroup> });
-    if (people.hasMore) beforeRows.push({ key: 'people-more', element: <ItemGroup><Item testID="directory-people-load-more" title={t('teams.authentication.directory.people.loadMore')} loading={people.status === 'loading_more'} disabled={people.status === 'loading_more'} onPress={() => void people.loadMore()} showChevron={false} /></ItemGroup> });
+    if (people.error) beforeRows.push({ key: 'people-error', element: <ItemGroup><DirectoryListFailure testID="directory-people" failure={people.error} retry={people.reload} /></ItemGroup> });
+    if (people.hasMore && people.status !== 'loading' && !people.error) beforeRows.push({ key: 'people-more', element: <ItemGroup><Item testID="directory-people-load-more" title={t('teams.authentication.directory.people.loadMore')} loading={people.status === 'loading_more'} disabled={people.status === 'loading_more'} onPress={() => void people.loadMore()} showChevron={false} /></ItemGroup> });
+    if (revealGroupSearch && !props.groupMappingsAvailable) beforeRows.push({
+        key: 'groups-search',
+        element: <SettingSection section={DIRECTORY_SOURCE_SETTINGS.sectionRefs.groups}>
+            <ItemGroup title={t('identityAdministration.directoryGroups')}>
+                <Item testID="directory-groups-forbidden" title={t('teams.errors.forbidden')} showChevron={false} />
+            </ItemGroup>
+        </SettingSection>,
+    });
     const header = (
         <>
             {props.shellHeader}
             {state.stale ? (
-                <ItemGroup footer={t('teams.stale.label')}>
+                <ItemGroup description={t('teams.stale.label')}>
                     <Item title={t('teams.unavailable.offline')} detail={t('common.retry')} onPress={refresh} showChevron={false} />
                 </ItemGroup>
             ) : null}
@@ -565,60 +628,81 @@ const AuthorizedDirectorySourceDetail = React.memo(function AuthorizedDirectoryS
                     />
                 </ItemGroup>
             ) : null}
-            <ItemGroup title={t('teams.authentication.directory.actions.section')}>
-                {source.kind === 'workos_directory' && source.workosAdminPortalConnectionId ? (
-                    <Item
-                        testID="team-directory-source-open-workos"
-                        title={t('identityAdministration.workosCheckSetup')}
-                        disabled={!projectionCurrent || pendingAction !== null || workosPortalPending || !props.mutationsAvailable}
-                        loading={workosPortalPending}
-                        onPress={() => void openWorkosSetup()}
-                        showChevron={false}
-                    />
-                ) : null}
-                {can('teams.directory.sources.sync') ? (
-                    <Item
-                        testID="team-directory-source-sync"
-                        // child 05 §14.1: a failed source offers Retry — the
-                        // same one complete-scan Sync Action.
-                        title={source.error ? t('common.retry') : t('teams.authentication.directory.actions.sync')}
-                        disabled={!projectionCurrent || pendingAction !== null || !props.mutationsAvailable}
-                        detail={pendingAction === 'teams.directory.sources.sync' ? t('common.loading') : undefined}
-                        onPress={() => void run('teams.directory.sources.sync')}
-                        showChevron={false}
-                    />
-                ) : null}
-                {can('teams.directory.sources.pause') ? (
-                    <Item
-                        testID="team-directory-source-pause"
-                        title={t('teams.authentication.directory.actions.pause')}
-                        disabled={!projectionCurrent || pendingAction !== null || !props.mutationsAvailable}
-                        onPress={() => void pause()}
-                        showChevron={false}
-                    />
-                ) : null}
-                {can('teams.directory.sources.resume') ? (
-                    <Item
-                        testID="team-directory-source-resume"
-                        title={t('teams.authentication.directory.actions.resume')}
-                        disabled={!projectionCurrent || pendingAction !== null || !props.mutationsAvailable}
-                        onPress={() => void run('teams.directory.sources.resume')}
-                        showChevron={false}
-                    />
-                ) : null}
-                {can('teams.directory.sources.remove') ? (
-                    <Item
-                        testID="team-directory-source-remove"
-                        title={t('teams.authentication.directory.actions.remove')}
-                        destructive
-                        disabled={!projectionCurrent || pendingAction !== null || !props.mutationsAvailable}
-                        onPress={() => void remove()}
-                        showChevron={false}
-                    />
-                ) : null}
-            </ItemGroup>
+            <SettingSection section={DIRECTORY_SOURCE_SETTINGS.sectionRefs.actions}>
+                <ItemGroup title={t('teams.authentication.directory.actions.section')}>
+                    {source.kind === 'workos_directory' && source.workosAdminPortalConnectionId ? (
+                        <SettingAnchor setting={DIRECTORY_SOURCE_SETTINGS.settings.workosSetup}>
+                            <Item
+                                testID="team-directory-source-open-workos"
+                                title={t(DIRECTORY_SOURCE_SETTINGS.settings.workosSetup.titleKey)}
+                                disabled={!projectionCurrent || pendingAction !== null || workosPortalPending || !props.mutationsAvailable}
+                                loading={workosPortalPending}
+                                onPress={() => void openWorkosSetup()}
+                                showChevron={false}
+                            />
+                        </SettingAnchor>
+                    ) : null}
+                    {can('teams.directory.sources.sync') ? (
+                        <SettingAnchor setting={DIRECTORY_SOURCE_SETTINGS.settings.syncNow}>
+                            <Item
+                                testID="team-directory-source-sync"
+                                // child 05 §14.1: a failed source offers Retry — the
+                                // same one complete-scan Sync Action.
+                                title={source.error ? t('common.retry') : t(DIRECTORY_SOURCE_SETTINGS.settings.syncNow.titleKey)}
+                                disabled={!projectionCurrent || pendingAction !== null || !props.mutationsAvailable}
+                                detail={pendingAction === 'teams.directory.sources.sync' ? t('common.loading') : undefined}
+                                onPress={() => void run('teams.directory.sources.sync')}
+                                showChevron={false}
+                            />
+                        </SettingAnchor>
+                    ) : null}
+                    {can('teams.directory.sources.pause') ? (
+                        <SettingAnchor setting={DIRECTORY_SOURCE_SETTINGS.settings.pause}>
+                            <Item
+                                testID="team-directory-source-pause"
+                                title={t(DIRECTORY_SOURCE_SETTINGS.settings.pause.titleKey)}
+                                disabled={!projectionCurrent || pendingAction !== null || !props.mutationsAvailable}
+                                onPress={() => void pause()}
+                                showChevron={false}
+                            />
+                        </SettingAnchor>
+                    ) : null}
+                    {can('teams.directory.sources.resume') ? (
+                        <SettingAnchor setting={DIRECTORY_SOURCE_SETTINGS.settings.resume}>
+                            <Item
+                                testID="team-directory-source-resume"
+                                title={t(DIRECTORY_SOURCE_SETTINGS.settings.resume.titleKey)}
+                                disabled={!projectionCurrent || pendingAction !== null || !props.mutationsAvailable}
+                                onPress={() => void run('teams.directory.sources.resume')}
+                                showChevron={false}
+                            />
+                        </SettingAnchor>
+                    ) : null}
+                </ItemGroup>
+            </SettingSection>
         </>
     );
+    // Removing the source closes this page, so it ends the page as a quiet button row.
+    const afterRows: DirectoryDetailVirtualRow[] = can('teams.directory.sources.remove') ? [{
+        key: 'source-remove',
+        element: (
+            <ItemGroup surface="none">
+                <SettingAnchor setting={DIRECTORY_SOURCE_SETTINGS.settings.remove}>
+                    <SectionButtonRow>
+                        <RoundButton
+                            testID="team-directory-source-remove"
+                            size="small"
+                            display="destructive"
+                            title={t(DIRECTORY_SOURCE_SETTINGS.settings.remove.titleKey)}
+                            loading={pendingAction === 'teams.directory.sources.remove'}
+                            disabled={!projectionCurrent || pendingAction !== null || !props.mutationsAvailable}
+                            onPress={() => void remove()}
+                        />
+                    </SectionButtonRow>
+                </SettingAnchor>
+            </ItemGroup>
+        ),
+    }] : [];
     return <DirectoryGroupMappings
         scope={props.scope}
         address={props.address}
@@ -627,6 +711,7 @@ const AuthorizedDirectorySourceDetail = React.memo(function AuthorizedDirectoryS
         mutationsAvailable={props.mutationsAvailable && projectionCurrent}
         requestApproval={props.requestApproval}
         beforeRows={beforeRows}
+        afterRows={afterRows}
         header={header}
     />;
 });
@@ -637,7 +722,7 @@ export const DirectorySourceDetailScreen = React.memo(function DirectorySourceDe
     sourceId: string;
 }>) {
     return (
-        <TeamSection serverId={props.serverId} teamId={props.teamId} title={t('teams.authentication.directory.title')} presentation="virtualized-list">
+        <TeamSection serverId={props.serverId} teamId={props.teamId} title={t('teams.authentication.directory.title')} description={t('teams.pages.directory')} presentation="virtualized-list">
             {({ team, scope, address, canMutate, requestApproval }, shellHeader) => team.capabilities.manageAuthentication ? (
                 <AuthorizedDirectorySourceDetail
                     scope={scope}
@@ -651,7 +736,9 @@ export const DirectorySourceDetailScreen = React.memo(function DirectorySourceDe
                 />
             ) : <>
                 {shellHeader}
-                <ItemGroup><Item testID="team-directory-source-forbidden" title={t('teams.errors.forbidden')} showChevron={false} /></ItemGroup>
+                <SettingSection section={DIRECTORY_SOURCE_SETTINGS.sectionRefs.actions} answersFor={[DIRECTORY_SOURCE_SETTINGS.sectionRefs.groups]}>
+                    <ItemGroup><Item testID="team-directory-source-forbidden" title={t('teams.errors.forbidden')} showChevron={false} /></ItemGroup>
+                </SettingSection>
             </>}
         </TeamSection>
     );

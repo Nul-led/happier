@@ -13,7 +13,7 @@ import type { RestoreRedirectReason, RestoreRedirectNotice } from '@/auth/provid
 import { Text } from '@/components/ui/text/Text';
 import { canUseCurrentDeviceQrScanner } from '@/utils/platform/qrScannerSupport';
 import { useReversePairingSession } from '@/hooks/auth/useReversePairingSession';
-import { QRCode } from '@/components/qr/QRCode';
+import { PairingQrCode } from '@/components/auth/pairing/PairingQrCode';
 import { ActivitySpinner } from '@/components/ui/feedback/ActivitySpinner';
 import {
     formatHomeEnrollmentTargetLabel,
@@ -23,6 +23,9 @@ import { usePreventRemove } from '@react-navigation/native';
 import { PairingLinkDisclosure } from '@/components/auth/pairing/PairingLinkDisclosure';
 import type { HomeQrEntryIntent } from '@/auth/pairing/homeQrEntryIntent';
 import { openEnrolledHomeOrReturnToShell } from '@/auth/pairing/openEnrolledHome';
+import { useAuth } from '@/auth/context/AuthContext';
+import { isDesktopHost } from '@/utils/platform/desktopHost';
+import { EnrolledComputerSetup } from './EnrolledComputerSetup';
 
 
 const stylesheet = StyleSheet.create((theme) => ({
@@ -154,6 +157,7 @@ export type RestoreQrViewProps = Readonly<{
     onBack?: () => void;
     onOpenSecretKeyLogin?: () => void;
     onOpenScanQr?: () => void;
+    onOpenPairingLinkEntry?: () => void;
     onNavigationLockChange?: (locked: boolean) => void;
 }>;
 
@@ -161,6 +165,7 @@ export const RestoreQrView = React.memo(function RestoreQrView(props: RestoreQrV
     useUnistyles();
     const styles = stylesheet;
     const router = useRouter();
+    const auth = useAuth();
     const params = useLocalSearchParams() as Readonly<Record<string, string | string[] | undefined>>;
     const [providerResetEnabled, setProviderResetEnabled] = useState(false);
     const embedded = props.embedded === true;
@@ -168,6 +173,9 @@ export const RestoreQrView = React.memo(function RestoreQrView(props: RestoreQrV
     const reversePairing = useReversePairingSession({ enabled: true, targetProfileId: props.targetProfileId ?? null });
     const pairing = reversePairing.presentation;
     const [shellNavigationRequested, setShellNavigationRequested] = React.useState(false);
+    const [setupCompletedProfileId, setSetupCompletedProfileId] = React.useState<string | null>(null);
+    const requiresComputerSetup = isDesktopHost() && pairing.phase === 'succeeded'
+        && setupCompletedProfileId !== pairing.profileId;
     const openGenerationRef = React.useRef(0);
     const handledProfileIdRef = React.useRef<string | null>(null);
     const presentation = resolveHomeEnrollmentPresentation({
@@ -194,7 +202,7 @@ export const RestoreQrView = React.memo(function RestoreQrView(props: RestoreQrV
     }, [claimOwnsNavigation, props.onNavigationLockChange]);
 
     React.useEffect(() => {
-        if (pairing.phase !== 'succeeded' || props.entryIntent !== 'enter_home') return;
+        if (pairing.phase !== 'succeeded' || props.entryIntent !== 'enter_home' || requiresComputerSetup) return;
         if (handledProfileIdRef.current === pairing.profileId) return;
         handledProfileIdRef.current = pairing.profileId;
         const generation = openGenerationRef.current + 1;
@@ -203,12 +211,13 @@ export const RestoreQrView = React.memo(function RestoreQrView(props: RestoreQrV
             profileId: pairing.profileId,
             targetLabel: formatHomeEnrollmentTargetLabel(pairing.descriptor),
             isCurrent: () => openGenerationRef.current === generation,
+            refreshAuth: auth.refreshFromActiveServer,
         }).then((result) => {
             if (result !== 'cancelled' && openGenerationRef.current === generation) {
                 setShellNavigationRequested(true);
             }
         });
-    }, [pairing, props.entryIntent]);
+    }, [auth.refreshFromActiveServer, pairing, props.entryIntent, requiresComputerSetup]);
 
     React.useEffect(() => {
         if (!shellNavigationRequested || claimOwnsNavigation) return;
@@ -241,6 +250,17 @@ export const RestoreQrView = React.memo(function RestoreQrView(props: RestoreQrV
         };
     }, []);
 
+    if (requiresComputerSetup && pairing.phase === 'succeeded') {
+        const frame = <View style={[styles.container, embedded ? styles.embeddedContainer : null]}>
+            <View style={[styles.contentWrapper, embedded ? styles.embeddedContentWrapper : null]}>
+                <EnrolledComputerSetup profileId={pairing.profileId}
+                    onSucceeded={() => setSetupCompletedProfileId(pairing.profileId)}
+                    onBack={() => { if (props.onBack) props.onBack(); else router.back(); }} />
+            </View>
+        </View>;
+        return embedded ? frame : <ScrollView style={scrollViewStyle} contentContainerStyle={{ flexGrow: 1 }}>{frame}</ScrollView>;
+    }
+
     const content = (
         <View style={[styles.container, embedded ? styles.embeddedContainer : null]}>
             <View style={[styles.contentWrapper, embedded ? styles.embeddedContentWrapper : null]}>
@@ -269,7 +289,7 @@ export const RestoreQrView = React.memo(function RestoreQrView(props: RestoreQrV
                         <>
                             <View testID="restore-requester-qr" style={styles.qrBlock}>
                                 {pairing.qrAvailable ? (
-                                    <QRCode data={pairing.link} size={240} />
+                                    <PairingQrCode link={pairing.link} size={264} />
                                 ) : (
                                     <Text style={styles.noticeBody}>{t('connect.pairingQrTooLargeBody')}</Text>
                                 )}
@@ -312,6 +332,20 @@ export const RestoreQrView = React.memo(function RestoreQrView(props: RestoreQrV
                             <View style={styles.footerButtonSpacer} />
                         </>
                     ) : null}
+                    {presentation.recoveryAction === 'create_new_qr' ? (
+                        <>
+                            <View style={styles.footerButton}>
+                                <RoundButton
+                                    testID="restore-requester-create-new-qr"
+                                    size="small"
+                                    title={t('connect.generateNewQrCode')}
+                                    display="inverted"
+                                    action={reversePairing.start}
+                                />
+                            </View>
+                            <View style={styles.footerButtonSpacer} />
+                        </>
+                    ) : null}
                     {canOpenScanner ? (
                         <>
                             <View style={styles.footerButton}>
@@ -321,6 +355,20 @@ export const RestoreQrView = React.memo(function RestoreQrView(props: RestoreQrV
                                     title={t('connect.scanQrCodeOnDevice')}
                                     display="inverted"
                                     onPress={props.onOpenScanQr}
+                                />
+                            </View>
+                            <View style={styles.footerButtonSpacer} />
+                        </>
+                    ) : null}
+                    {props.onOpenPairingLinkEntry ? (
+                        <>
+                            <View style={styles.footerButton}>
+                                <RoundButton
+                                    testID="restore-enter-pairing-link"
+                                    size="small"
+                                    title={t('connect.enterUrlManually')}
+                                    display="inverted"
+                                    onPress={props.onOpenPairingLinkEntry}
                                 />
                             </View>
                             <View style={styles.footerButtonSpacer} />

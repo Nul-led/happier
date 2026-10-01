@@ -5,16 +5,18 @@ import { basename, dirname, join, delimiter as PATH_DELIMITER } from 'node:path'
 import type { InstallableDependencyDescriptor } from '@happier-dev/protocol';
 import {
   installPypiWheelAsset,
+  PypiWheelAssetError,
   isPypiWheelAssetVersionSatisfied,
   normalizePypiProjectName,
   readInstalledPypiWheelAsset,
   resolvePypiWheelAssetHostCompatibility,
+  resolveHappyHomeDirFromEnvironment,
   type PypiWheelAssetHostCompatibility,
 } from '@happier-dev/cli-common/agents';
-import { resolveWindowsCommandOnPath } from '@happier-dev/cli-common/process';
+import { ExecFileTerminationError, resolveWindowsCommandOnPath } from '@happier-dev/cli-common/process';
 
 import { configuration } from '@/configuration';
-import type { RuntimeInstallableAdapter } from '../registry';
+import type { RuntimeInstallableAdapter, RuntimeInstallableInstallErrorCode, RuntimeInstallableInstallOptions, RuntimeInstallableInstallResult } from '../registry';
 
 type ManagedPypiWheelAssetDescriptor = InstallableDependencyDescriptor & Readonly<{
   source: Extract<InstallableDependencyDescriptor['source'], { kind: 'managed_pypi_wheel_asset' }>;
@@ -34,8 +36,8 @@ function primaryCommand(descriptor: InstallableDependencyDescriptor): string {
   return command;
 }
 
-function managedInstallDir(descriptor: InstallableDependencyDescriptor): string {
-  return join(configuration.happyHomeDir, 'tools', descriptor.key);
+function managedInstallDir(descriptor: InstallableDependencyDescriptor, env?: NodeJS.ProcessEnv): string {
+  return join(env ? resolveHappyHomeDirFromEnvironment(env) : configuration.happyHomeDir, 'tools', descriptor.key);
 }
 
 type SupportedHostCompatibility = Extract<PypiWheelAssetHostCompatibility, { ok: true }>;
@@ -71,8 +73,9 @@ async function resolveManagedBinPath(
   descriptor: ManagedPypiWheelAssetDescriptor,
   host: SupportedHostCompatibility,
   installOwnerId: string,
+  env?: NodeJS.ProcessEnv,
 ): Promise<string | null> {
-  const installed = await readInstalledPypiWheelAsset(managedInstallDir(descriptor));
+  const installed = await readInstalledPypiWheelAsset(managedInstallDir(descriptor, env));
   const expectedAssetPath = descriptor.source.assetPathByPlatform[host.platform];
   const expectedProbeId = descriptor.source.compatibilityProbe ?? null;
   if (
@@ -107,8 +110,9 @@ async function writeInstallLog(params: Readonly<{ logPath: string; lines: readon
 async function installManagedPypiWheelAsset(
   descriptor: ManagedPypiWheelAssetDescriptor,
   installOwnerId: string,
-): Promise<Readonly<{ ok: true; logPath: string } | { ok: false; errorMessage: string; logPath: string }>> {
-  const logPath = join(configuration.logsDir, `install-${descriptor.key}-${Date.now()}.log`);
+  options: RuntimeInstallableInstallOptions = {},
+): Promise<RuntimeInstallableInstallResult> {
+  const logPath = join(options.env ? join(resolveHappyHomeDirFromEnvironment(options.env), 'logs') : configuration.logsDir, `install-${descriptor.key}-${Date.now()}.log`);
   const host = resolvePypiWheelAssetHostCompatibility();
   if (!host.ok) {
     const errorMessage = unsupportedHostMessage(descriptor, host);
@@ -117,8 +121,11 @@ async function installManagedPypiWheelAsset(
   }
 
   try {
+    options.signal?.throwIfAborted();
     const installed = await installPypiWheelAsset({
-      installRoot: managedInstallDir(descriptor),
+      signal: options.signal,
+      onProgress: options.onProgress,
+      installRoot: managedInstallDir(descriptor, options.env),
       installOwnerId,
       distribution: descriptor.source.distribution,
       versionSpecifier: descriptor.source.versionSpecifier,
@@ -142,9 +149,26 @@ async function installManagedPypiWheelAsset(
     });
     return { ok: true, logPath };
   } catch (error) {
+    if (error instanceof ExecFileTerminationError) throw error;
+    if (!(error instanceof PypiWheelAssetError)
+      && ((options.signal?.aborted && error === options.signal.reason)
+        || (error instanceof Error && error.name === 'AbortError'))) throw error;
     const errorMessage = error instanceof Error ? error.message : 'Install failed';
     await writeInstallLog({ logPath, lines: [errorMessage] }).catch(() => undefined);
-    return { ok: false, errorMessage, logPath };
+    let errorCode: RuntimeInstallableInstallErrorCode | undefined;
+    if (error instanceof PypiWheelAssetError) {
+      if (error.code === 'wheel_download_failed') errorCode = 'download-failed';
+      else if (error.code === 'wheel_digest_mismatch' || error.code === 'wheel_size_exceeded'
+        || error.code === 'compatibility_probe_failed' || error.code.startsWith('wheel_asset_')) {
+        errorCode = 'verification-failed';
+      }
+    }
+    return {
+      ok: false,
+      errorMessage,
+      logPath,
+      ...(errorCode ? { errorCode } : {}),
+    };
   }
 }
 
@@ -170,7 +194,7 @@ export function createManagedPypiWheelAssetRuntimeInstallable(
       const systemBinPath = descriptor.binary.systemFirst === false ? null : await resolveCommandOnPath(command, env);
       const managedPath = descriptor.binary.managedFallback === false
         ? null
-        : await resolveManagedBinPath(descriptor, host, installOwnerId);
+        : await resolveManagedBinPath(descriptor, host, installOwnerId, params.env);
       const resolvedPath = systemBinPath ?? managedPath;
       if (!resolvedPath) {
         return {
@@ -200,7 +224,7 @@ export function createManagedPypiWheelAssetRuntimeInstallable(
       const systemBinPath = descriptor.binary.systemFirst === false ? null : await resolveCommandOnPath(command, env);
       const managedPath = descriptor.binary.managedFallback === false
         ? null
-        : await resolveManagedBinPath(descriptor, host, installOwnerId);
+        : await resolveManagedBinPath(descriptor, host, installOwnerId, params.env);
       const resolvedPath = preferManaged ? managedPath ?? systemBinPath : systemBinPath ?? managedPath;
       if (!resolvedPath) {
         return {
@@ -216,9 +240,10 @@ export function createManagedPypiWheelAssetRuntimeInstallable(
         source: resolvedPath === managedPath ? 'managed' : 'system',
       };
     },
-    installOrUpgrade: () => installManagedPypiWheelAsset(
+    installOrUpgrade: (options) => installManagedPypiWheelAsset(
       descriptor,
       installOwnerId,
+      options,
     ),
     removeManagedInstall: async () => {
       await rm(managedInstallDir(descriptor), { recursive: true, force: true });

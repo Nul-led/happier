@@ -1,72 +1,50 @@
 import * as React from 'react';
-import { Platform } from 'react-native';
 
 import type { IconName } from '@/components/ui/icons/Icon';
+import { useMachineAddPaths } from '@/components/machines/add/useMachineAddPaths';
 import { useMachinePoolProjections } from '@/sync/engine/machines/useMachinePoolProjections';
-import { resolveWizardCapabilities } from '@/components/onboarding/capabilities/resolveWizardCapabilities';
-import { resolveSetupSurfacePolicy } from '@/sync/domains/server/setup/setupSurfacePolicy';
 import { t } from '@/text';
-import { isDesktopHost } from '@/utils/platform/desktopHost';
-import { buildMachineSetupWizardHref } from '@/utils/routes/setupWizardHref';
 
 import type { ActiveSelectionMachineGroup } from '../hooks/useActiveSelectionMachineGroups';
+import { MACHINES_ADD_ROUTE } from './machineCollectionModel';
 
-export type MachineAddOptionId = 'thisComputer' | 'ssh' | 'pool';
+export type MachineAddOptionId = 'machine' | 'pool';
 
 export type MachineAddOption = Readonly<{
     id: MachineAddOptionId;
     title: string;
     subtitle: string;
     icon: IconName;
-    /** Opens outside the collection (the setup wizard) or inside it (a pool draft). */
+    /** The collection page it opens: the add-a-machine draft, or a pool draft. */
     href: string;
-    /** Whether the destination is a page of the Machines collection. */
+    /** Whether the destination is a page of the Machines collection (it replaces the open detail). */
     inCollection: boolean;
 }>;
 
 /**
- * The ways this device can add to the Machines collection: set up this computer (the browser opens the
- * setup wizard; the desktop app lists this computer in the collection instead), connect a machine over
- * SSH (where the setup wizard can: browser, desktop app, native builds with the SSH transport), and
- * create a machine pool on a Home that supports pools. Build policy removes paths a build does not ship.
+ * What the Machines collection's "+" offers (lab `add-flows` MS): add a machine — its draft, whose
+ * form offers only the ways this device can run (`useMachineAddPaths`) — and create a machine pool on a
+ * Home that supports pools. Nothing here decides a way to add a machine.
  */
 export function useMachineAddOptions(groups: readonly ActiveSelectionMachineGroup[]): readonly MachineAddOption[] {
-    const isDesktop = isDesktopHost();
-    const isBrowserWeb = Platform.OS === 'web' && !isDesktop;
-    const policy = React.useMemo(() => resolveSetupSurfacePolicy(), []);
-    // The setup wizard owns whether this device can set a machine up over SSH (native builds need the
-    // native SSH transport); the add options only reflect its answer.
-    const sshAvailable = React.useMemo(() => {
-        if (!policy.machine.allowRemoteSshMachineSetup) return false;
-        if (isBrowserWeb || isDesktop) return true;
-        return resolveWizardCapabilities({ platform: 'native', isDesktopShell: false }).allowNativeSshMachineSetup;
-    }, [isBrowserWeb, isDesktop, policy]);
+    const paths = useMachineAddPaths();
     const projections = useMachinePoolProjections(groups);
-    const poolServerIds = projections
+    const poolServerIdsKey = projections
         .filter((projection) => projection?.featureStatus === 'enabled')
-        .map((projection) => projection!.serverId);
-    const poolServerIdsKey = poolServerIds.join('\u0000');
+        .map((projection) => projection!.serverId)
+        .join('\u0000');
+    const canAddMachine = paths.length > 0;
 
     return React.useMemo(() => {
         const options: MachineAddOption[] = [];
-        if (isBrowserWeb && policy.machine.allowLocalMachineSetup) {
+        if (canAddMachine) {
             options.push({
-                id: 'thisComputer',
-                title: t('setupOnboarding.setupThisComputerTitle'),
-                subtitle: t('settings.machineSetupCurrentMachineSubtitle'),
-                icon: 'laptop',
-                href: buildMachineSetupWizardHref({ action: 'local', step: 'setup_this_computer' }),
-                inCollection: false,
-            });
-        }
-        if (sshAvailable) {
-            options.push({
-                id: 'ssh',
-                title: t('setupOnboarding.setupNewMachineAction'),
-                subtitle: t('settings.machineSetupSshMachineSubtitle'),
-                icon: 'terminal',
-                href: buildMachineSetupWizardHref({ action: 'remote', step: 'remote_ssh_setup' }),
-                inCollection: false,
+                id: 'machine',
+                title: t('settings.addMachine'),
+                subtitle: t('addFlows.addMachineMenuSubtitle'),
+                icon: 'plus',
+                href: MACHINES_ADD_ROUTE,
+                inCollection: true,
             });
         }
         const serverIds = poolServerIdsKey ? poolServerIdsKey.split('\u0000') : [];
@@ -84,5 +62,5 @@ export function useMachineAddOptions(groups: readonly ActiveSelectionMachineGrou
             });
         }
         return options;
-    }, [isBrowserWeb, policy, poolServerIdsKey, sshAvailable]);
+    }, [canAddMachine, poolServerIdsKey]);
 }

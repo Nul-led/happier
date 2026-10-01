@@ -35,7 +35,7 @@ import {
   packLocalPlugin,
   type PackLocalPluginResult,
 } from '@/plugins/packaging/pack';
-import type { PluginActionExecutionAttempt } from '@/plugins/projection/actions/execute';
+import type { PluginActionExecutionAttempt } from '@/plugins/runtime/invocation/actions/executeContributedAction';
 import { projectPluginFailureText } from '@/plugins/runtime/lifecycle/utils';
 import {
   PLUGIN_CATALOG_READ_PATH,
@@ -112,7 +112,7 @@ export type PackedPluginTestTargetedAdmission = Readonly<{
   target: Readonly<{
     pluginId: string;
     pointId: string;
-    immutableGenerationId: string;
+    occurrenceId: string;
   }>;
   protocol: Readonly<{
     id: string;
@@ -121,7 +121,7 @@ export type PackedPluginTestTargetedAdmission = Readonly<{
   contributor: Readonly<{
     pluginId: string;
     contributionId: string;
-    immutableGenerationId: string;
+    occurrenceId: string;
   }>;
 }>;
 
@@ -566,7 +566,6 @@ async function readPackedTargetedAdmissions(params: Readonly<{
     if (
       snapshot.target.pluginId !== params.target.plugin.id
       || snapshot.target.pointId !== request.pointId
-      || snapshot.target.immutableGenerationId !== targetAppliedGeneration
       || snapshot.protocol.id !== request.protocol.id
       || snapshot.protocol.version !== request.protocol.version
     ) {
@@ -589,15 +588,12 @@ export function projectPackedAdmittedContributors(params: Readonly<{
   prerequisites: readonly PackedPluginTestParticipant[];
   admissions: readonly PackedPluginTestTargetedAdmission[];
 }>): PackedTargetedAdmissionProjectionResult {
-  const prerequisitesByPluginAndGeneration = new Map<string, PackedPluginTestParticipant>();
+  const prerequisitesByPluginId = new Map<string, PackedPluginTestParticipant>();
   const prerequisitePluginIds = new Set<string>();
   for (const prerequisite of params.prerequisites) {
     prerequisitePluginIds.add(prerequisite.plugin.id);
     if (prerequisite.admission.appliedGeneration === null) continue;
-    prerequisitesByPluginAndGeneration.set(
-      `${prerequisite.plugin.id}\u0000${prerequisite.admission.appliedGeneration}`,
-      prerequisite,
-    );
+    prerequisitesByPluginId.set(prerequisite.plugin.id, prerequisite);
   }
 
   const admissionsByPrerequisite = new Map<
@@ -612,14 +608,12 @@ export function projectPackedAdmittedContributors(params: Readonly<{
         message: `Disposable daemon admitted '${admission.contributor.pluginId}' to the packed target without a requested --with-plugin participant`,
       });
     }
-    const prerequisite = prerequisitesByPluginAndGeneration.get(
-      `${admission.contributor.pluginId}\u0000${admission.contributor.immutableGenerationId}`,
-    );
+    const prerequisite = prerequisitesByPluginId.get(admission.contributor.pluginId);
     if (!prerequisite) {
       return Object.freeze({
         ok: false,
-        code: 'plugin_packed_targeted_admission_generation_mismatch',
-        message: `Disposable daemon admitted '${admission.contributor.pluginId}' at immutable generation '${admission.contributor.immutableGenerationId}', not its current applied prerequisite generation`,
+        code: 'plugin_packed_targeted_admission_prerequisite_not_applied',
+        message: `Disposable daemon admitted '${admission.contributor.pluginId}' without a current applied prerequisite`,
       });
     }
     const existing = admissionsByPrerequisite.get(prerequisite) ?? [];
@@ -714,7 +708,7 @@ async function installPackedPlugin(params: Readonly<{
       },
       { target: params.daemon.target },
     );
-  if (requested.kind !== 'reviewRequired') {
+  if (requested.kind !== 'reviewRequired' || requested.reviewKind !== 'installation') {
     return Object.freeze({
       ok: false,
       code: 'plugin_packed_install_review_missing',

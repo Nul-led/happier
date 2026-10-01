@@ -6,7 +6,7 @@ import type { DetachedExecutionRunSupport } from '@/sync/ops/actions/executionRu
  * Which **Run as** targets a person may actually choose right now.
  *
  * `Run as` is one page-level, Run-scoped choice frozen with the recipe at
- * admission (PLAN §3.1). The Protocol accepts three runtime kinds; whether the
+ * admission. The Protocol accepts two execution classes; whether the
  * detached one can actually carry a Run is a fact about the selected machine,
  * so it is projected from the canonical Execution Run capability owner
  * (`executionRunDetachedSupport`) — the same owner the `execution.run.*`
@@ -21,7 +21,6 @@ export type WorkflowRunAsTargetKind = WorkflowRunExecutionTargetV1['kind'];
 
 export const WORKFLOW_RUN_AS_TARGET_KINDS: readonly WorkflowRunAsTargetKind[] = [
     'session',
-    'attached_run',
     'detached_run',
 ];
 
@@ -72,11 +71,9 @@ export function resolveWorkflowRunAsTargets(params: Readonly<{
     detachedExecutionRun: DetachedExecutionRunSupport;
 }>): readonly WorkflowRunAsTarget[] {
     return [
-        // Session and attached runtimes are carried by the Session/Execution Run
-        // owners this client already reaches; the detached probe says nothing
-        // about them and must never be allowed to block them.
+        // The detached probe says nothing about Session execution and must
+        // never be allowed to block it.
         { kind: 'session', available: true },
-        { kind: 'attached_run', available: true },
         projectDetachedTarget(params.detachedExecutionRun),
     ];
 }

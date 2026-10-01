@@ -1,9 +1,7 @@
 import React from 'react';
-import renderer from 'react-test-renderer';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
-  ConnectedServiceQuotaSnapshotV1Schema,
   ConnectedServicesProviderStateSharingSettingsV1Schema,
 } from '@happier-dev/protocol';
 import {
@@ -14,7 +12,7 @@ import { AGENT_IDS, getAgentCore, type AgentId } from '@/agents/catalog/catalog'
 import type { fetchAccountEncryptionMode } from '@/sync/api/account/apiAccountEncryptionMode';
 import type { getConnectedServiceQuotaSnapshotSealed } from '@/sync/api/account/apiConnectedServicesQuotasV2';
 import type { getConnectedServiceQuotaSnapshotPlain } from '@/sync/api/account/apiConnectedServicesQuotasV3';
-import { flushHookEffects, renderScreen } from '@/dev/testkit';
+import { renderScreen } from '@/dev/testkit';
 
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -60,6 +58,7 @@ vi.mock('@/sync/domains/features/featureDecisionRuntime', () => ({
     features: {
       capabilities: {
         connectedServices: {
+          qualifiedAccounts: { protocolVersion: 4 },
           credentialDelete: { revisionGuard: true },
         },
       },
@@ -142,7 +141,10 @@ vi.mock('@/sync/store/hooks', () => ({
   useAllMachines: () => [{ id: 'machine-a', active: true }],
   useProfile: () => useProfileSpy(),
   useSettings: () => useSettingsSpy(),
-  useLocalSetting: () => 1,
+  // Device-local preferences keep their defaults (the page rows read the list density).
+  useLocalSetting: (name: string) => (name === 'uiItemDensity' ? 'comfortable' : undefined),
+  // Read by the segmented control's motion preferences; defaults apply.
+  useSetting: () => undefined,
   useSettingMutable: (name: string) => [
     name === 'connectedServicesProviderStateSharingSettingsV1'
       ? providerStateSharingSetting.current
@@ -159,18 +161,28 @@ vi.mock('@/hooks/teams/useHomeTeamCredentialModelCatalog', () => ({
 
 vi.mock('@/components/appShell/plugins/AppShellPluginUiProjection', () => ({
   useAppShellPluginUiProjection: () => ({ machineId: null, serverId: null }),
+  useProjectedPluginLocalizedTextResolver: () => (_pluginId: string, value: unknown) => (typeof value === 'string' ? value : ''),
   useProjectedConnectedServicesRegistry: () => ({
     scopeKey: 'server-a', status: 'ready', errorReason: null,
     entries: connectedServicesRegistryState.entries,
   }),
 }));
 
-vi.mock('@/sync/domains/connectedServices/connectedServiceRegistry', () => ({
-  getLegacyConnectedServiceRegistryEntry: (serviceId: string) => (
-    connectedServicesRegistryState.entries.find((entry) => entry.legacyServiceId === serviceId)
-      ?? { serviceId, connectCommand: `happier connect ${serviceId}`, executable: false }
-  ),
+// The machine projection is a daemon read; sharing uses the real bundled agent capabilities.
+vi.mock('@/agents/backendCatalog/useDaemonMergedProjectionInputs', () => ({
+  useDaemonMergedProjectionInputs: () => ({ phase: 'ready', inputs: null }),
 }));
+
+vi.mock('@/sync/domains/connectedServices/connectedServiceRegistry', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/sync/domains/connectedServices/connectedServiceRegistry')>();
+  return {
+    ...actual,
+    getLegacyConnectedServiceRegistryEntry: (serviceId: string) => (
+      connectedServicesRegistryState.entries.find((entry) => entry.legacyServiceId === serviceId)
+        ?? actual.getLegacyConnectedServiceRegistryEntry(serviceId)
+    ),
+  };
+});
 
 const {
   fetchAccountEncryptionModeSpy,
@@ -187,7 +199,8 @@ const {
     (...args: Parameters<typeof getConnectedServiceQuotaSnapshotSealed>) => ReturnType<typeof getConnectedServiceQuotaSnapshotSealed>
   >(async () => null),
 }));
-vi.mock('@/sync/api/account/apiAccountEncryptionMode', () => ({
+vi.mock('@/sync/api/account/apiAccountEncryptionMode', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
   fetchAccountEncryptionMode: fetchAccountEncryptionModeSpy,
 }));
 vi.mock('@/sync/api/account/apiConnectedServicesQuotasV2', () => ({
@@ -198,14 +211,22 @@ vi.mock('@/sync/api/account/apiConnectedServicesQuotasV3', () => ({
 }));
 
 vi.mock('./ConnectedServicesDefaultAuthRow', () => ({
-  ConnectedServicesDefaultAuthRow: (props: any) => React.createElement('ConnectedServicesDefaultAuthRow', props),
+  ConnectedServicesDefaultAuthRow: (props: Record<string, unknown>) => React.createElement('ConnectedServicesDefaultAuthRow', props),
 }));
 
-describe('ConnectedServicesSettingsView quotas', () => {
-  beforeEach(() => {
+vi.mock('@/sync/store/settingsWriters', () => ({ useApplySettings: () => vi.fn() }));
+
+describe('ConnectedServicesAgentSignInView sharing and legacy routing', () => {
+  beforeEach(async () => {
     setSettingMutableSpy.mockClear();
     modalAlertSpy.mockClear();
     modalConfirmSpy.mockClear();
+    // Bind the spies to the modal module the view actually loaded. The shared helper's factory can
+    // run before this file's options are installed (when a static import reaches `@/modal` first),
+    // which would leave the view on a default modal that declines every confirmation.
+    const { Modal } = await import('@/modal');
+    vi.mocked(Modal.confirm).mockImplementation(modalConfirmSpy);
+    vi.mocked(Modal.alert).mockImplementation(modalAlertSpy);
     connectedServicesModuleState.routerPushSpy.mockClear();
     connectedServicesRegistryState.entries = [{
       serviceId: 'anthropic',
@@ -234,52 +255,18 @@ describe('ConnectedServicesSettingsView quotas', () => {
     };
   });
 
-  it('shows quota badges on service rows when pinned meters exist', async () => {
-    useFeatureEnabledSpy.mockReturnValue(true);
-    fetchAccountEncryptionModeSpy.mockResolvedValue({ mode: 'plain', updatedAt: 0 });
-    const snapshot = ConnectedServiceQuotaSnapshotV1Schema.parse({
-      v: 1,
-      serviceId: 'anthropic',
-      profileId: 'work',
-      fetchedAt: 1,
-      staleAfterMs: 60_000,
-      planLabel: 'Pro',
-      accountLabel: null,
-      meters: [
-        {
-          meterId: 'weekly',
-          label: 'Weekly',
-          used: 82,
-          limit: 100,
-          unit: 'count',
-          utilizationPct: null,
-          resetsAt: null,
-          status: 'ok',
-          details: {},
-        },
-      ],
-    });
-    getConnectedServiceQuotaSnapshotPlainSpy.mockResolvedValue(snapshot);
-
-    const { ConnectedServicesSettingsView } = await import('./ConnectedServicesSettingsView');
-
-    let tree!: renderer.ReactTestRenderer;
-    tree = (await renderScreen(<ConnectedServicesSettingsView />)).tree;
-
-    await flushHookEffects({ cycles: 1, turns: 1 });
-
-    expect(tree.findAll((n) => n.props?.testID === 'connected-services-quota-summary-section')).not.toHaveLength(0);
-    expect(tree.findAll((n) => n.props?.children === 'Weekly 18%')).not.toHaveLength(0);
-  });
-
   it('updates global provider state sharing settings from connected services controls', async () => {
     useFeatureEnabledSpy.mockReturnValue(true);
 
-    const { ConnectedServicesSettingsView } = await import('./ConnectedServicesSettingsView');
+    const { ConnectedServicesAgentSignInView } = await import('./collection/ConnectedServicesAgentSignInView');
 
-    const { tree } = await renderScreen(<ConnectedServicesSettingsView />);
+    const screen = await renderScreen(<ConnectedServicesAgentSignInView />);
+    await screen.pressByTestIdAsync('connected-services-provider-state-sharing-toggle');
 
-    await tree.root.findByProps({ testID: 'connected-services-provider-state-sharing-state-default' }).props.onPress();
+    await screen.tree.root.findAllByProps({ testID: 'connected-services-provider-state-sharing-state-default' })[0]!.props.onPress();
+    // Sharing state asks for the privacy acknowledgement first; the write follows the answer.
+    await vi.waitFor(() => expect(modalConfirmSpy).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(setSettingMutableSpy).toHaveBeenCalled());
     expect(setSettingMutableSpy).toHaveBeenCalledWith({
       v: 1,
       defaults: { configMode: 'linked', stateMode: 'shared' },
@@ -298,12 +285,16 @@ describe('ConnectedServicesSettingsView quotas', () => {
       acknowledgedRisksByAgentId: {},
     };
 
-    const { ConnectedServicesSettingsView } = await import('./ConnectedServicesSettingsView');
+    const { ConnectedServicesAgentSignInView } = await import('./collection/ConnectedServicesAgentSignInView');
 
-    const { tree } = await renderScreen(<ConnectedServicesSettingsView />);
+    const screen = await renderScreen(<ConnectedServicesAgentSignInView />);
+    await screen.pressByTestIdAsync('connected-services-provider-state-sharing-toggle');
 
-    const configModeControl = tree.root.findByProps({ selectedId: 'copied' });
-    configModeControl.props.onSelect('isolated');
+    const configModeControl = screen.tree.root.findAllByProps({
+      testID: 'connected-services-provider-state-sharing-config-default',
+    })[0]!;
+    expect(configModeControl.props.value).toBe('copied');
+    configModeControl.props.onChange('isolated');
 
     expect(setSettingMutableSpy).toHaveBeenCalledWith({
       v: 1,
@@ -312,7 +303,7 @@ describe('ConnectedServicesSettingsView quotas', () => {
       acknowledgedRisksByAgentId: {},
     });
 
-    configModeControl.props.onSelect('linked');
+    configModeControl.props.onChange('linked');
     expect(setSettingMutableSpy).toHaveBeenCalledWith({
       v: 1,
       defaults: { configMode: 'linked', stateMode: 'isolated' },
@@ -324,11 +315,13 @@ describe('ConnectedServicesSettingsView quotas', () => {
   it('renders provider state sharing rows from agent capabilities', async () => {
     useFeatureEnabledSpy.mockReturnValue(true);
 
-    const { ConnectedServicesSettingsView } = await import('./ConnectedServicesSettingsView');
+    const { ConnectedServicesAgentSignInView } = await import('./collection/ConnectedServicesAgentSignInView');
 
-    const { tree } = await renderScreen(<ConnectedServicesSettingsView />);
+    const screen = await renderScreen(<ConnectedServicesAgentSignInView />);
+    const tree = screen.tree;
+    await screen.pressByTestIdAsync('connected-services-provider-state-sharing-toggle');
 
-    expect(tree.root.findByProps({ testID: 'connected-services-provider-state-sharing-backend-overrides' })).toBeTruthy();
+    expect(tree.root.findAllByProps({ testID: 'connected-services-provider-state-sharing-backend-overrides' })).not.toHaveLength(0);
     expect(tree.root.findAllByProps({ testID: 'connected-services-provider-state-sharing-agent-codex-state' })).toHaveLength(0);
     expect(tree.root.findAllByProps({ testID: 'connected-services-provider-state-sharing-agent-pi-state' })).toHaveLength(0);
   });
@@ -352,11 +345,11 @@ describe('ConnectedServicesSettingsView quotas', () => {
       ],
     });
 
-    const { ConnectedServicesSettingsView } = await import('./ConnectedServicesSettingsView');
-    const { tree } = await renderScreen(<ConnectedServicesSettingsView />);
+    const { ConnectedServicesAgentSignInView } = await import('./collection/ConnectedServicesAgentSignInView');
+    const { tree } = await renderScreen(<ConnectedServicesAgentSignInView />);
 
     await tree.root
-      .findAllByType('ConnectedServicesDefaultAuthRow' as any)[0]
+      .findAllByType('ConnectedServicesDefaultAuthRow' as never)[0]
       .props.onOpenConnectedServicesSettings('anthropic');
 
     expect(connectedServicesModuleState.routerPushSpy).not.toHaveBeenCalled();
@@ -387,7 +380,7 @@ describe('ConnectedServicesSettingsView quotas', () => {
       <ConnectedServicesProviderStateSharingBackendGroups
         settings={ConnectedServicesProviderStateSharingSettingsV1Schema.parse(providerStateSharingSetting.current)}
         setSettings={setSettingMutableSpy}
-        agentIds={['codex' as any]}
+        agentIds={['codex']}
       />,
     );
 
@@ -395,6 +388,8 @@ describe('ConnectedServicesSettingsView quotas', () => {
       .findByProps({ testID: 'connected-services-provider-state-sharing-agent-codex-state' })
       .props.onPress();
 
+    await vi.waitFor(() => expect(modalConfirmSpy).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(setSettingMutableSpy).toHaveBeenCalled());
     expect(setSettingMutableSpy).toHaveBeenCalledWith({
       v: 1,
       defaults: { configMode: 'linked', stateMode: 'isolated' },

@@ -25,7 +25,7 @@ export type TeamsDirectoryRow = Readonly<{
 export type TeamsDirectoryUnavailableHome = Readonly<{
     serverId: string;
     homeName: string;
-    reason: 'loading' | 'offline' | 'denied' | 'unsupported';
+    reason: 'loading' | 'offline' | 'denied' | 'unsupported' | 'credential_unreadable';
     retryable: boolean;
 }>;
 
@@ -107,8 +107,10 @@ export function resolveTeamsDirectoryViewState(
             unavailableHomes.push(Object.freeze({
                 serverId: home.serverId,
                 homeName,
-                reason: home.reason === 'loading' ? 'loading' as const : 'offline' as const,
-                retryable: home.reason === 'unreachable',
+                reason: home.reason === 'loading'
+                    ? 'loading' as const
+                    : home.reason === 'credential_unreadable' ? 'credential_unreadable' as const : 'offline' as const,
+                retryable: home.reason !== 'loading',
             }));
             continue;
         }

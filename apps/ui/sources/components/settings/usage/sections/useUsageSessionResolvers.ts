@@ -1,5 +1,5 @@
 import React from 'react';
-import { useRouter } from 'expo-router';
+import { useRouter } from '@/components/appShell/workspace/destinationRoute';
 import { useSessionListRenderablesById } from '@/sync/store/hooks';
 import { getSessionName } from '@/utils/sessions/sessionUtils';
 import type { UsageBreakdownRow } from '@/sync/api/account/usageAnalytics';

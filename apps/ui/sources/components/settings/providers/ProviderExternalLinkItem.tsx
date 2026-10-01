@@ -7,7 +7,6 @@ import { Item } from '@/components/ui/lists/Item';
 import { Modal } from '@/modal';
 import { t } from '@/text';
 import { openExternalUrl } from '@/utils/url/openExternalUrl';
-import { Icon } from '@/components/ui/icons/Icon';
 
 type ProviderExternalLinkKind = 'providerWebsite' | 'getApiKey';
 
@@ -35,7 +34,6 @@ export function ProviderExternalLinkItem(props: Readonly<{
         <Item
             title={label}
             accessibilityLabel={label}
-            icon={<Icon name="arrow-square-out" size={29} color={theme.colors.text.secondary} />}
             mode="info"
             style={{ paddingVertical: 0 }}
             rightElement={(

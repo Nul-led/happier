@@ -1,16 +1,18 @@
 import { realpath } from 'node:fs/promises';
 
 import {
-  evaluateOwnedPluginAuthorGeneration,
-  resolveOwnedPluginAuthorGenerationModule,
+  evaluatePluginAuthorStagingSource,
+  resolvePluginAuthorStagingModule,
   type EvaluatedPluginAuthorSource,
 } from './sourceModule';
 import { activateContributionModule } from '../runtime/lifecycle/activation/activateContributionModule';
 import type { ValidatedAgentSessionRunnerFactoryFactV1 } from '../runtime/activationSources';
+import { readAgentNativeHomeEnvironmentKeys } from './agentNativeHomeEnvironmentKeys';
 
 export type EvaluatedPluginAuthorRuntimeStagingSource = Readonly<{
   evaluated: EvaluatedPluginAuthorSource;
   sessionRunnerFactories: readonly ValidatedAgentSessionRunnerFactoryFactV1[];
+  agentNativeHomeEnvironmentKeys: readonly string[];
 }>;
 
 export type PluginAuthorRuntimeStagingAuthority =
@@ -53,10 +55,9 @@ async function resolveRuntimeStagingManifestAuthority(input: Readonly<{
 export async function evaluatePluginAuthorRuntimeStagingSource(params: Readonly<{
   locator: string;
   rootPath: string;
-  immutableGenerationId: string;
   authority?: PluginAuthorRuntimeStagingAuthority;
 }>): Promise<EvaluatedPluginAuthorRuntimeStagingSource> {
-  const owned = await evaluateOwnedPluginAuthorGeneration(params);
+  const owned = await evaluatePluginAuthorStagingSource(params);
   const manifestAuthority = await resolveRuntimeStagingManifestAuthority({
     authority: params.authority,
     evaluated: owned.evaluated,
@@ -65,13 +66,13 @@ export async function evaluatePluginAuthorRuntimeStagingSource(params: Readonly<
   const activation = await activateContributionModule({
     pluginId: owned.evaluated.manifest.id,
     manifestAuthority,
-    generation: params.immutableGenerationId,
+    occurrenceId: 'author-runtime-staging',
     manifest: owned.evaluated.manifest,
     moduleNamespace: owned.evaluated.module,
-    isGenerationCurrent: () => true,
+    isOccurrenceCurrent: () => true,
     forceActivation: true,
     resolveRelativeModule: async (module) => (
-      await resolveOwnedPluginAuthorGenerationModule({ graph: owned.graph, module })
+      await resolvePluginAuthorStagingModule({ graph: owned.graph, module })
     ),
   });
   try {
@@ -84,6 +85,14 @@ export async function evaluatePluginAuthorRuntimeStagingSource(params: Readonly<
     return Object.freeze({
       evaluated: owned.evaluated,
       sessionRunnerFactories: activation.validatedAgentSessionRunnerFactories,
+      agentNativeHomeEnvironmentKeys: Object.freeze([...new Set(
+        activation.registrations.flatMap((registration) => {
+          if (registration.family !== 'agents') return [];
+          return readAgentNativeHomeEnvironmentKeys(
+            registration.value.connectedAccountLaunch?.stateSharingDescriptor,
+          );
+        }),
+      )].sort()),
     });
   } finally {
     await activation.dispose();

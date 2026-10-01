@@ -1,96 +1,102 @@
 import * as React from 'react';
-import { useIsFocused } from '@react-navigation/native';
-import { Platform, ScrollView, View } from 'react-native';
+import { useIsFocused } from '@/components/appShell/workspace/destinationRoute';
+import { Platform, View } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
-import { useRouter } from 'expo-router';
+import { useLocalSearchParams, useRouter } from '@/components/appShell/workspace/destinationRoute';
+import { HappierPressable } from '@happier-dev/plugin-ui/presentation';
 
-import { Item } from '@/components/ui/lists/Item';
-import { ItemGroup } from '@/components/ui/lists/ItemGroup';
-import { ItemList } from '@/components/ui/lists/ItemList';
+import { DetailsPaneHost } from '@/components/appShell/panes/details/DetailsPaneHost';
+import { useDetailsPaneAvailable } from '@/components/appShell/panes/details/detailsPaneAvailability';
+import { useAppShellColumn } from '@/components/navigation/shell/appRail/appShellColumnContext';
+import { IconButton } from '@/components/ui/buttons/IconButton';
+import { resolveItemGroupContentHorizontalInsetPx } from '@/components/ui/lists/itemGroupSpacing';
+import { PAGE_LIST_METRICS } from '@/components/ui/lists/pageListMetrics';
 import { SegmentedTabBar } from '@/components/ui/navigation/SegmentedTabBar';
-import { Text, TextInput } from '@/components/ui/text/Text';
+import { CompactSearchField } from '@/components/ui/forms/CompactSearchField';
+import { ToolbarSelect } from '@/components/ui/forms/ToolbarSelect';
+import { Icon } from '@/components/ui/icons/Icon';
+import { useLayoutMaxWidthStyle } from '@/components/ui/layout/layout';
 import { resolveMinimumInteractiveTargetSize } from '@/components/ui/interactiveTargetSize';
+import { Text } from '@/components/ui/text/Text';
 import { Typography } from '@/constants/Typography';
 import { useFeatureEnabled } from '@/hooks/server/useFeatureEnabled';
-import { Modal } from '@/modal';
+import { useLocalSettingMutable } from '@/sync/domains/state/storage';
 import { t } from '@/text';
-import { createActionInputForm } from '@/components/plugins/actions/actionInputForm';
-import { presentActionInputForm } from '@/components/plugins/actions/presentActionInputForm';
 import { MachineAdministrationTargetSelector } from '@/components/settings/machines/MachineAdministrationTargetSelector';
 import { SETTINGS_ROUTES } from '@/components/settings/catalog/routes';
-import { seedNewSessionDraftV1 } from '@/components/sessions/new/newSessionDraftSeed';
-import { buildNewSessionLaunchRouteParams } from '@/components/sessions/new/navigation/newSessionRouteParams';
-import { useActiveServerAccountScope } from '@/sync/store/hooks';
+import { SettingsPageHeader } from '@/components/settings/shell/SettingsPageHeader';
+import { SettingAnchor } from '@/components/settings/shell/SettingRow';
 
 import {
-    DevelopmentPluginsSection,
     DiscoverListingsSection,
     DiscoverStatusSummary,
     InstalledPluginsSection,
     PendingPluginChangesSection,
-    PluginDiagnosticsSnapshotSection,
+    PluginRoutineOperationSettlementRow,
+    type PluginsCollectionPresentation,
 } from './PluginMarketplaceSections';
-import { PluginMachineMatrixSection } from './machines/PluginMachineMatrixSection';
-import { buildPluginDetailRoute } from './model/pluginDetailRoute';
-import { createPluginSettingsViews } from './model/pluginMarketplaceModel';
+import { PluginDetailView } from './detail/PluginDetailScreen';
+import { listPluginsDeveloperLinks, type PluginsDeveloperRoute } from './model/pluginsDeveloperLinks';
+import { resolvePluginMachineCoverageLabels } from './machines/pluginMachineCoverage';
+import { usePluginMachineMatrix } from './machines/usePluginMachineMatrix';
+import { PluginListingView } from './listing/PluginListingScreen';
+import { PLUGIN_CARD_MIN_WIDTH_PX } from './collection/PluginCardStatus';
+import {
+    createPluginSettingsViews,
+    filterInstalledPlugins,
+    type InstalledPluginStatusFilter,
+    type PluginSettingsViewId,
+} from './model/pluginMarketplaceModel';
+import { resolvePluginsCollectionState } from './model/pluginsCollectionState';
 import { usePluginSettingsScreenState } from './model/usePluginSettingsScreenState';
-import { PluginAccountDataEraseRecoverySection } from './PluginAccountDataEraseRecoverySection';
+import { usePluginsOpenItem } from './model/usePluginsOpenItem';
+import { setPluginsInstalledQuery, usePluginsInstalledQuery } from './model/pluginsInstalledSearch';
+import {
+    buildPluginDetailRoute,
+    buildPluginListingRoute,
+    pluginsHomeTitleKey,
+    usePluginsSurfaceHost,
+} from './model/pluginsSurfaceRoutes';
 import { PluginReadOnlySnapshotNotice } from './PluginReadOnlySnapshotNotice';
 import { NativeAppPluginPanelsSettingsEntry } from './NativeAppPluginPanelsSettingsEntry';
 import { PluginAppPagesSettingsEntry } from './PluginAppPagesSettingsEntry';
-import { Icon } from '@/components/ui/icons/Icon';
-
-const stylesheet = StyleSheet.create((theme) => ({
-    viewSelector: {
-        paddingHorizontal: 16,
-        paddingTop: 12,
-        paddingBottom: 8,
-    },
-    inputBlock: {
-        paddingHorizontal: 16,
-        paddingTop: 4,
-        paddingBottom: 12,
-    },
-    label: {
-        ...Typography.default('semiBold'),
-        color: theme.colors.text.primary,
-        fontSize: 14,
-        marginBottom: 8,
-    },
-    input: {
-        ...Typography.default(),
-        fontSize: 16,
-        color: theme.colors.text.primary,
-        borderRadius: 12,
-        borderWidth: 1,
-        minHeight: 44,
-        borderColor: theme.colors.border.default,
-        backgroundColor: theme.colors.surface.base,
-        paddingHorizontal: 12,
-        paddingVertical: 12,
-        marginBottom: 12,
-    },
-    sourceFilter: {
-        marginBottom: 12,
-    },
-}));
+import { PluginUpdateReviewSettingsEntry } from './PluginUpdateReviewSettingsEntry';
 
 /**
- * The aggregate All segment. It is a presentation id for "no source filter",
- * which the state owner models as `null`; it is deliberately not a source id so
- * it can never collide with one the machine actually has configured.
+ * The aggregate "All sources" choice. It is a presentation id for "no source filter", which the
+ * state owner models as `null`; it is deliberately not a source id so it can never collide with one
+ * the machine actually has configured.
  */
-const DISCOVER_ALL_SOURCES_TAB_ID = 'all';
+const DISCOVER_ALL_SOURCES_ID = 'all';
 
-/** Associates the visible Discover search label with its input on the web. */
-const DISCOVER_SEARCH_LABEL_ID = 'settings-plugins-discover-search-label';
+/**
+ * The page's own minimum beside an open plugin: two card columns with the page's side insets and the
+ * gap between them. Widening the details pane past it turns the pane into an overlay rather than
+ * leaving a one-column grid.
+ */
+const PLUGINS_PAGE_MIN_WIDTH_PX = PLUGIN_CARD_MIN_WIDTH_PX * 2 + 16 * 2 + 12;
 
+/**
+ * Plugins: the selected machine's plugins (Installed) and the marketplace (Browse), in the Settings
+ * shell and as the main sidebar's page (one screen, two hosts).
+ *
+ * Top to bottom: the page header with the machine chip, decisions waiting on the user, the toolbar
+ * (Installed | Browse, search, a filter, Grid | List), the collection, then the Account update
+ * preference, app surfaces, and one quiet row of developer destinations.
+ *
+ * Opening a plugin names it in the route (`usePluginsOpenItem`, shared with the Plugins column) and
+ * shows its detail in the app's details pane (`DetailsPaneHost`: full height, resizable, an overlay
+ * when the page would drop below two card columns); where there is no side pane (phones) it pushes
+ * the plugin's own page. Closing the detail returns to the same collection, filters and scroll: the
+ * collection never unmounts.
+ */
 export const PluginSettingsHomeScreen = React.memo(function PluginSettingsHomeScreen() {
     const isFocused = useIsFocused();
-    const { theme } = useUnistyles();
-    const styles = stylesheet;
     const router = useRouter();
-    const minimumInteractiveTargetSize = resolveMinimumInteractiveTargetSize(Platform.OS);
+    // Settings or the app page: a listing or a plugin's page opens within the host this page is shown in.
+    const host = usePluginsSurfaceHost();
+    const appShellColumn = useAppShellColumn();
+    const viewChoiceInColumn = host === 'app' && appShellColumn.columnVisible;
     const state = usePluginSettingsScreenState({ focused: isFocused });
     // The webhook administration screen and its account API are both behind the
     // server's public-webhook feature, so the entry only exists where it leads
@@ -101,363 +107,559 @@ export const PluginSettingsHomeScreen = React.memo(function PluginSettingsHomeSc
     const selectedDiscoverSourceTitle = state.selectedDiscoverSourceId === null
         ? null
         : state.discoverSources.find((source) => source.id === state.selectedDiscoverSourceId)?.title ?? null;
-    const views = createPluginSettingsViews((key) => t(key));
-    const activeAccountScope = useActiveServerAccountScope();
-    /**
-     * Opens the ordinary New Session composer on the exact selected
-     * administration target and the given plugin source root.
-     *
-     * There is no Agent-specific session path here: the seed goes into the one
-     * New Session draft repository and the push goes to the one `/new` route,
-     * exactly like every other in-app seeding caller. The placement names the
-     * exact selected administration target — never an inferred active or first
-     * machine — so if that target has no resolvable identity, nothing opens.
-     */
-    const openPluginAuthoringSession = React.useCallback((params: Readonly<{ sourceRootPath: string; promptText: string }>) => {
-        const serverId = state.executionServerId;
-        const machineId = state.executionMachineId;
-        if (!activeAccountScope || !serverId || !machineId) return;
-        const draftId = seedNewSessionDraftV1({
-            seed: {
-                prompt: { text: params.promptText, mode: 'replace' },
-                placement: {
-                    kind: 'exactTarget',
-                    serverId,
-                    machineId,
-                    directory: params.sourceRootPath,
-                },
-            },
-            scope: activeAccountScope,
-        });
-        if (!draftId) return;
-        router.push({ pathname: '/new', params: buildNewSessionLaunchRouteParams({ draftId }) });
-    }, [activeAccountScope, router, state.executionMachineId, state.executionServerId]);
-    // Both entry points share one transient form. All answers remain editable
-    // together, including after declining the consequential create confirmation.
-    const createDevelopmentPlugin = React.useCallback((withAgent: boolean) => {
-        if (!state.daemonOperationsAvailable || !state.developmentCreateAvailable) return;
-        const title = t(withAgent ? 'settingsPlugins.developmentCreateWithAgent' : 'settingsPlugins.developmentCreate');
-        const form = createActionInputForm({
-            presentation: {
-                title,
-                description: t('settingsPlugins.developmentCreateSubtitle'),
-                inputHints: {
-                    submitLabel: title,
-                    fields: [
-                        { path: 'targetDir', title: t('settingsPlugins.developmentCreateDirectoryTitle'), description: t('settingsPlugins.developmentCreateDirectoryBody'), widget: 'text', required: true },
-                        { path: 'displayName', title: t('settingsPlugins.developmentCreateNameTitle'), description: t('settingsPlugins.developmentCreateNameBody'), widget: 'text', required: true },
-                        { path: 'pluginId', title: t('settingsPlugins.developmentCreateIdTitle'), description: t('settingsPlugins.developmentCreateIdBody'), widget: 'text', required: true },
-                        { path: 'ui', title: t('settingsPlugins.developmentCreateSurfaceTitle'), description: t('settingsPlugins.developmentCreateSurfaceBody'), widget: 'select', required: true, options: [
-                            { value: 'reactNative', label: t('settingsPlugins.developmentCreateSurfaceReactNative') },
-                            { value: 'hostedWeb', label: t('settingsPlugins.developmentCreateSurfaceHostedWeb') },
-                            { value: 'none', label: t('settingsPlugins.developmentCreateSurfaceNone') },
-                        ] },
-                    ],
-                },
-            },
-            submit: async (input, context) => {
-                const targetDir = typeof input.targetDir === 'string' ? input.targetDir.trim() : '';
-                const displayName = typeof input.displayName === 'string' ? input.displayName.trim() : '';
-                const pluginId = typeof input.pluginId === 'string' ? input.pluginId.trim() : '';
-                const ui = input.ui;
-                if (!targetDir || !displayName || !pluginId || (ui !== 'reactNative' && ui !== 'hostedWeb' && ui !== 'none')) return { ok: false };
-                const confirmed = await Modal.confirm(
-                    t('settingsPlugins.developmentCreateConfirmTitle'),
-                    t('settingsPlugins.developmentCreateConfirmBody', { pluginId, targetDir }),
-                    { confirmText: title, cancelText: t('common.cancel') },
-                );
-                if (!confirmed || context.signal.aborted) return { ok: false };
-                state.runDevelopmentCreate({
-                    targetDir, displayName, pluginId,
-                    ...(ui === 'none' ? {} : { ui }),
-                    ...(withAgent ? { onCreated: (created: Readonly<{ pluginId: string; sourceRootPath: string }>) => {
-                        openPluginAuthoringSession({ sourceRootPath: created.sourceRootPath, promptText: t('settingsPlugins.developmentCreateWithAgentPrompt', { pluginId: created.pluginId }) });
-                    } } : {}),
-                });
-                return { ok: true };
-            },
-        });
-        presentActionInputForm({ form });
-    }, [openPluginAuthoringSession, state]);
-    /**
-     * Opens the ordinary authoring Session for an existing development source,
-     * at that entry's exact `sourceRootPath` reported by the daemon.
-     */
-    const editDevelopmentPluginWithAgent = React.useCallback((editPluginId: string) => {
-        const entry = state.developmentPlugins.find(
-            (candidate) => candidate.installed.pluginId === editPluginId,
-        ) ?? null;
-        if (!entry) return;
-        openPluginAuthoringSession({
-            sourceRootPath: entry.sourceRootPath,
-            promptText: t('settingsPlugins.developmentEditWithAgentPrompt', { pluginId: editPluginId }),
-        });
-    }, [openPluginAuthoringSession, state.developmentPlugins]);
-    // Adopting an existing folder is the step that turns a created (or cloned)
-    // plugin project into a running development source. The path the user types
-    // here is the exact thing the daemon will be asked to trust, so it is echoed
-    // back verbatim in the trust decision rather than being summarised.
-    const developPluginSourceRoot = React.useCallback(async () => {
-        if (!state.daemonOperationsAvailable || !state.developmentSourceInstallAvailable) return;
-        const sourceRootPath = (await Modal.prompt(
-            t('settingsPlugins.developmentSourceInstallTitle'),
-            t('settingsPlugins.developmentSourceInstallBody'),
-            { confirmText: t('common.continue'), cancelText: t('common.cancel') },
-        ))?.trim();
-        if (!sourceRootPath) return;
-        state.runDevelopmentSourceInstall(sourceRootPath);
-    }, [state]);
+    const noTarget = state.administrationTargetSelection.state.kind === 'unselected';
+
+    // `?view=browse` (the listing page's breadcrumb, a deep link, the Plugins column) opens the Browse
+    // view, and `?view=installed` (the Plugins column) the Installed one.
+    const { view: requestedView } = useLocalSearchParams<{ view?: string }>();
+    const { setActiveView } = state;
+    React.useEffect(() => {
+        if (requestedView === 'browse') setActiveView('discover');
+        else if (requestedView === 'installed') setActiveView('installed');
+    }, [requestedView, setActiveView]);
+
+    // Grid | List, remembered per view on this device.
+    const [presentationByView, setPresentationByView] = useLocalSettingMutable('pluginsCollectionViewV1');
+    const presentationKey = state.activeView === 'installed' ? 'installed' : 'discover';
+    const presentation: PluginsCollectionPresentation = presentationByView?.[presentationKey] ?? 'grid';
+    const setPresentation = React.useCallback((next: PluginsCollectionPresentation) => {
+        setPresentationByView({ ...(presentationByView ?? {}), [presentationKey]: next });
+    }, [presentationByView, presentationKey, setPresentationByView]);
+
+    // Installed search and status filter narrow the machine's list locally; Browse searches every source.
+    // The installed query is the one the Plugins column's search writes (one query, one control on
+    // screen): beside the column the page shows no field of its own.
+    const installedQuery = usePluginsInstalledQuery();
+    const [installedStatus, setInstalledStatus] = React.useState<InstalledPluginStatusFilter>('all');
+    const visibleInstalledPlugins = React.useMemo(
+        () => filterInstalledPlugins(state.installedPlugins, { query: installedQuery, status: installedStatus }),
+        [installedQuery, installedStatus, state.installedPlugins],
+    );
+    const installedCollectionState = resolvePluginsCollectionState({
+        noTarget,
+        noticeReason: state.readOnlySnapshotNotice?.reason ?? null,
+        listRead: state.installedPluginsRead,
+        itemCount: state.installedPlugins.length,
+        visibleCount: visibleInstalledPlugins.length,
+        filtering: installedQuery.trim().length > 0 || installedStatus !== 'all',
+    });
+    // Where each plugin runs across the Account, from the one plugin/machine matrix owner.
+    const machineMatrix = usePluginMachineMatrix();
+    const machineCoverageByPluginId = React.useMemo(
+        () => resolvePluginMachineCoverageLabels(machineMatrix),
+        [machineMatrix],
+    );
+    const clearInstalledFilters = React.useCallback(() => {
+        setPluginsInstalledQuery('');
+        setInstalledStatus('all');
+    }, []);
+
+    // The detail beside the collection, in the app's details pane; without one, its own page.
+    const besidePage = useDetailsPaneAvailable();
+    const { openItem, open: setOpenItem, close: closePane } = usePluginsOpenItem();
+    const paneOpen = openItem !== null && besidePage;
+    const openPlugin = React.useCallback((pluginId: string) => {
+        if (besidePage) {
+            setOpenItem({ kind: 'installed', pluginId });
+            return;
+        }
+        router.push(buildPluginDetailRoute(host, pluginId));
+    }, [besidePage, host, router, setOpenItem]);
+    const openListing = React.useCallback((entry: Readonly<{ id: string; sourceId: string }>) => {
+        if (besidePage) {
+            setOpenItem({ kind: 'listing', sourceId: entry.sourceId, pluginId: entry.id });
+            return;
+        }
+        router.push(buildPluginListingRoute(host, { sourceId: entry.sourceId, pluginId: entry.id }));
+    }, [besidePage, host, router, setOpenItem]);
+    const openPluginSources = React.useCallback(() => router.push(SETTINGS_ROUTES.pluginSources), [router]);
+    const openSelectionAsPage = React.useCallback(() => {
+        if (!openItem) return;
+        router.push(openItem.kind === 'installed'
+            ? buildPluginDetailRoute(host, openItem.pluginId)
+            : buildPluginListingRoute(host, { sourceId: openItem.sourceId, pluginId: openItem.pluginId }));
+    }, [host, router, openItem]);
+    // A listing belongs to Browse: switching to Installed closes it. An installed plugin stays open
+    // in either view (Browse marks it too).
+    const { activeView } = state;
+    const previousActiveViewRef = React.useRef(activeView);
+    React.useEffect(() => {
+        if (previousActiveViewRef.current === activeView) return;
+        previousActiveViewRef.current = activeView;
+        if (activeView === 'installed' && openItem?.kind === 'listing') closePane();
+    }, [activeView, closePane, openItem]);
+
+    const installedCount = state.installedPluginsRead ? state.installedPlugins.length : null;
+    const views = createPluginSettingsViews((key) => t(key)).map((view) => (
+        view.id === 'installed' && installedCount !== null ? { ...view, label: `${view.label} ${installedCount}` } : view
+    ));
+    // The read-failed state card carries its own Retry; the banner would repeat it.
+    const showSnapshotNotice = state.readOnlySnapshotNotice !== null
+        && !noTarget
+        && !(state.activeView === 'installed' && installedCollectionState === 'readFailed');
+    const styles = stylesheet;
+
+    const pageHeader = (
+        <>
+        <SettingsPageHeader
+            title={t(pluginsHomeTitleKey(host))}
+            description={t('settingsPlugins.surfaces.purpose')}
+            actions={(
+                /*
+                  * Every consequential action on this page — including the
+                  * approve/reject decisions below — routes to the exact server
+                  * and machine named here.
+                  */
+                <MachineAdministrationTargetSelector
+                    presentation="chip"
+                    selection={state.administrationTargetSelection}
+                    testIDPrefix="settings.plugins.administration.target"
+                    groupTitle={t('settingsPlugins.administrationMachineTitle')}
+                />
+            )}
+        />
+
+        {/*
+          * First after the target it acts on: a change waiting on this user
+          * is attention, not one view's content, and a change an Agent
+          * prepared has no other route into the app at all.
+          */}
+        <PendingPluginChangesSection
+            pendingChanges={state.pendingPluginChanges}
+            canRunActions={state.daemonOperationsAvailable}
+            isPluginActionInFlight={state.isPluginActionInFlight}
+            onDecide={state.decidePendingPluginChange}
+        />
+        <PluginRoutineOperationSettlementRow
+            settlement={state.routineOperationSettlement}
+            scope="pending"
+        />
+        {showSnapshotNotice && state.readOnlySnapshotNotice ? (
+            <PluginReadOnlySnapshotNotice
+                testID="settings.plugins.marketplace.readOnlySnapshot"
+                reason={state.readOnlySnapshotNotice.reason}
+                onRetry={state.refreshPluginTruth}
+            />
+        ) : null}
+
+        <PluginsToolbar
+            // Beside the app rail the Plugins column owns Installed | Browse (lab `xrail-R1p`).
+            views={viewChoiceInColumn ? null : views}
+            activeView={state.activeView}
+            onSelectView={state.setActiveView}
+            presentation={presentation}
+            onSelectPresentation={setPresentation}
+            installed={state.activeView === 'installed' ? {
+                // Beside the rail the Plugins column holds the search over this query.
+                query: viewChoiceInColumn ? null : installedQuery,
+                onChangeQuery: setPluginsInstalledQuery,
+                status: installedStatus,
+                onSelectStatus: setInstalledStatus,
+            } : null}
+            discover={state.activeView === 'discover' ? {
+                searchText: state.discoverSearchText,
+                searchable: state.daemonOperationsAvailable,
+                onChangeSearchText: state.setDiscoverSearchText,
+                onSubmitSearch: state.canRefreshDiscover ? state.refreshDiscover : undefined,
+                sources: state.discoverSources,
+                selectedSourceId: state.selectedDiscoverSourceId,
+                onSelectSource: state.setSelectedDiscoverSourceId,
+            } : null}
+        />
+        </>
+    );
+    const pageFooter = (
+        <>
+        <PluginUpdateReviewSettingsEntry />
+        <NativeAppPluginPanelsSettingsEntry />
+        <PluginAppPagesSettingsEntry />
+
+        {/* Beside the rail the Plugins column pins these at its foot. */}
+        {viewChoiceInColumn ? null : <PluginsDeveloperLinks
+            webhooksAvailable={webhooksAvailable}
+            inSettingsFromApp={host === 'app'}
+            onOpen={(route) => router.push(route)}
+        />}
+        </>
+    );
 
     return (
-        <ItemList style={{ paddingTop: 0 }}>
-            {state.readOnlySnapshotNotice ? (
-                <PluginReadOnlySnapshotNotice
-                    testID="settings.plugins.marketplace.readOnlySnapshot"
-                    reason={state.readOnlySnapshotNotice.reason}
-                    onRetry={state.refreshPluginTruth}
-                />
-            ) : null}
-
-            {/*
-              * Before everything it governs: every consequential action on this
-              * screen — including the approve/reject decisions below — routes
-              * to the exact server and machine disclosed here, so the target
-              * is the first fact the reader establishes.
-              */}
-            <MachineAdministrationTargetSelector
-                selection={state.administrationTargetSelection}
-                testIDPrefix="settings.plugins.administration.target"
-                groupTitle={t('settingsPlugins.administrationMachineTitle')}
-            />
-
-            {/*
-              * Directly under the target it acts on: a change waiting on this
-              * user is attention, not one tab's content, and a change an Agent
-              * prepared has no other route into the app at all. Its review and
-              * reject flows name the same exact machine and server disclosed
-              * above.
-              */}
-            <PendingPluginChangesSection
-                pendingChanges={state.pendingPluginChanges}
-                canRunActions={state.daemonOperationsAvailable}
-                isPluginActionInFlight={state.isPluginActionInFlight}
-                onDecide={state.decidePendingPluginChange}
-            />
-
-            <PluginAccountDataEraseRecoverySection
-                testID="settings.plugins.accountDataErase"
-            />
-
-            <View style={styles.viewSelector}>
-                <ScrollView
-                    testID="settings.plugins.management.viewScroller"
-                    horizontal
-                    showsHorizontalScrollIndicator={false}
-                >
-                    <SegmentedTabBar
-                        tabs={views.filter((view) => view.id === 'installed' || view.id === 'discover')}
-                        activeTabId={state.activeView}
-                        onSelectTab={state.setActiveView}
-                        testIDPrefix="settings.plugins.management.view"
-                        accessibilityLabel={t('settingsPlugins.viewSelectorLabel')}
-                        segmentSizing="content"
-                        // The bar owns a horizontal scroller of its own, so the
-                        // platform floor costs a wider track rather than an
-                        // overflowing row or an overlapped neighbour.
-                        targetSize="platform"
+        <DetailsPaneHost
+            testID="settings.plugins.detailPane"
+            mainMinWidthPx={PLUGINS_PAGE_MIN_WIDTH_PX}
+            onCloseDetails={closePane}
+            details={openItem && paneOpen ? {
+                header: {
+                    title: openItem.kind === 'installed'
+                        ? t('settingsPlugins.surfaces.detailInstalledLabel')
+                        : t('settingsPlugins.surfaces.detailListingLabel'),
+                    actions: (
+                        <IconButton
+                            testID="settings.plugins.detailPane.openAsPage"
+                            iconName="arrow-square-out"
+                            accessibilityLabel={t('settingsPlugins.surfaces.openAsPage')}
+                            tooltip={t('settingsPlugins.surfaces.openAsPage')}
+                            variant="plain"
+                            onPress={openSelectionAsPage}
+                        />
+                    ),
+                },
+                content: openItem.kind === 'installed' ? (
+                    <PluginDetailView
+                        key={openItem.pluginId}
+                        pluginId={openItem.pluginId}
+                        state={state}
+                        presentation="pane"
                     />
-                </ScrollView>
-            </View>
-
-            {state.activeView === 'installed' ? (
-                <>
+                ) : (
+                    <PluginListingView
+                        key={`${openItem.sourceId}:${openItem.pluginId}`}
+                        sourceId={openItem.sourceId}
+                        pluginId={openItem.pluginId}
+                        state={state}
+                        presentation="pane"
+                    />
+                ),
+            } : null}
+            main={(
+            <View testID="settings.plugins.page" style={styles.page}>
+                {/*
+                  * One page-sized Collection is the page: this header, the plugins (the one grid or
+                  * list, Installed and Browse alike) and the entries below scroll together, in one
+                  * reading and focus order.
+                  */}
+                {state.activeView === 'installed' ? (
                     <InstalledPluginsSection
-                        installedPlugins={state.installedPlugins}
-                        truthSettled={state.pluginTruthSettled}
-                        unavailable={state.readOnlySnapshotNotice !== null}
+                        header={(
+                            <>
+                                {pageHeader}
+                                <PluginRoutineOperationSettlementRow
+                                    settlement={state.routineOperationSettlement}
+                                    scope="installed"
+                                />
+                            </>
+                        )}
+                        footer={pageFooter}
+                        collectionState={installedCollectionState}
+                        installedPlugins={visibleInstalledPlugins}
+                        presentation={presentation}
+                        selectedPluginId={openItem?.kind === 'installed' && paneOpen ? openItem.pluginId : null}
+                        searchText={installedQuery.trim() || installedStatusFilterTitle(installedStatus)}
+                        filtering={installedQuery.trim().length > 0 || installedStatus !== 'all'}
+                        projectionByPluginId={state.pluginProjectionById}
+                        machineCoverageByPluginId={machineCoverageByPluginId}
+                        onClearSearch={clearInstalledFilters}
                         onDiscover={() => state.setActiveView('discover')}
+                        onRetry={state.refreshPluginTruth}
                         canRunActions={state.canRefreshInstalledPlugins}
                         isPluginActionInFlight={state.isPluginActionInFlight}
-                        onNavigateToPlugin={(pluginId) => router.push(buildPluginDetailRoute(pluginId))}
+                        onNavigateToPlugin={openPlugin}
+                        onClosePlugin={closePane}
                         onRunAction={state.runInstalledPluginAction}
                     />
-                    {/*
-                      * The list above is the selected machine's truth. This
-                      * matrix is the Account-wide one: where the plugin is
-                      * installed, and where it is missing or broken, without
-                      * walking each machine's settings screen. It is read-only
-                      * on purpose — every action still targets the machine
-                      * selected above.
-                      */}
-                    <PluginMachineMatrixSection />
-                </>
-            ) : null}
-
-            {state.activeView === 'discover' ? (
-                <>
-                    <ItemGroup title={t('settingsPlugins.discoverTitle')} footer={t('settingsPlugins.subtitle')}>
-                        <View style={styles.inputBlock}>
-                            <Text style={styles.label} nativeID={DISCOVER_SEARCH_LABEL_ID}>
-                                {t('settingsPlugins.discoverSearchLabel')}
-                            </Text>
-                            <TextInput
-                                testID="settings.plugins.marketplace.search"
-                                value={state.discoverSearchText}
-                                accessibilityLabel={t('settingsPlugins.discoverSearchLabel')}
-                                aria-labelledby={DISCOVER_SEARCH_LABEL_ID}
-                                editable={state.daemonOperationsAvailable}
-                                onChangeText={state.daemonOperationsAvailable
-                                    ? state.setDiscoverSearchText
-                                    : undefined}
-                                placeholder={t('settingsPlugins.discoverSearchPlaceholder')}
-                                placeholderTextColor={theme.colors.input.placeholder}
-                                style={[styles.input, { minHeight: minimumInteractiveTargetSize }]}
-                                autoCapitalize="none"
-                                autoCorrect={false}
-                                returnKeyType="search"
-                                onSubmitEditing={state.canRefreshDiscover
-                                    ? state.refreshDiscover
-                                    : undefined}
-                            />
-                        </View>
-                        <Item
-                            testID="settings.plugins.marketplace.refreshDiscover"
-                            title={t('settingsPlugins.discoverSearch')}
-                            subtitle={state.discoverStale
-                                ? t('settingsPlugins.discover.status.stale')
-                                : undefined}
-                            subtitleLines={0}
-                            icon={<Icon name="magnifying-glass" size={29} color={theme.colors.accent.blue} />}
-                            onPress={state.refreshDiscover}
-                            disabled={!state.canRefreshDiscover}
-                            loading={state.loadingDiscover}
-                            showChevron={false}
-                        />
-                        {/*
-                          * The source filter uses the same segmented control as
-                          * the view selector above rather than a second chip
-                          * language: All is one aggregate query over every
-                          * enabled source, and a segment narrows that same query
-                          * before acquisition. It is never a second index.
-                          */}
-                        <View style={styles.sourceFilter}>
-                            <ScrollView
-                                testID="settings.plugins.marketplace.sourceFilterScroller"
-                                horizontal
-                                showsHorizontalScrollIndicator={false}
-                            >
-                                <SegmentedTabBar
-                                    tabs={[
-                                        { id: DISCOVER_ALL_SOURCES_TAB_ID, label: t('settingsPlugins.discoverSourceAll') },
-                                        ...state.discoverSources.map((source) => ({
-                                            id: source.id,
-                                            label: source.title,
-                                        })),
-                                    ]}
-                                    activeTabId={state.selectedDiscoverSourceId ?? DISCOVER_ALL_SOURCES_TAB_ID}
-                                    onSelectTab={(tabId) => state.setSelectedDiscoverSourceId(
-                                        tabId === DISCOVER_ALL_SOURCES_TAB_ID ? null : tabId,
-                                    )}
-                                    testIDPrefix="settings.plugins.marketplace.sourceFilter"
-                                    accessibilityLabel={t('settingsPlugins.discoverSourceFilterLabel')}
-                                    segmentSizing="content"
-                                    targetSize="platform"
-                                />
-                            </ScrollView>
-                        </View>
-                    </ItemGroup>
-
-                    {/*
-                      * One status region for the whole pane. Results, source
-                      * health, index diagnostics and listings this machine
-                      * cannot install are all facts about the same search, so
-                      * they are announced once, together, in that order.
-                      */}
-                    <DiscoverStatusSummary
-                        loading={state.loadingDiscover}
-                        error={state.discoverError}
-                        stale={state.discoverStale}
-                        entryCount={state.discoverEntries.length}
-                        sourceStatuses={state.discoverSourceStatuses}
-                        diagnostics={state.discoverDiagnostics}
-                        nonInstallable={state.discoverNonInstallable}
-                        selectedSourceTitle={selectedDiscoverSourceTitle}
-                    />
-
+                ) : (
                     <DiscoverListingsSection
+                        header={(
+                            <>
+                                {pageHeader}
+                                {/*
+                                  * One status region for the whole pane. Results, source
+                                  * health, index diagnostics and listings this machine
+                                  * cannot install are all facts about the same search, so
+                                  * they are announced once, together, in that order.
+                                  */}
+                                <DiscoverStatusSummary
+                                    loading={state.loadingDiscover}
+                                    error={state.discoverError}
+                                    stale={state.discoverStale}
+                                    entryCount={state.discoverEntries.length}
+                                    sourceStatuses={state.discoverSourceStatuses}
+                                    diagnostics={state.discoverDiagnostics}
+                                    nonInstallable={state.discoverNonInstallable}
+                                    selectedSourceTitle={selectedDiscoverSourceTitle}
+                                    noTarget={noTarget}
+                                    // The query the shown results answer, not the draft typed since.
+                                    searchText={state.discoverResultsSearchText}
+                                    onClearSearch={state.clearDiscoverSearch}
+                                    onRetry={state.canRefreshDiscover ? state.refreshDiscover : undefined}
+                                    onOpenSources={openPluginSources}
+                                />
+                                <PluginRoutineOperationSettlementRow
+                                    settlement={state.routineOperationSettlement}
+                                    scope="discover"
+                                />
+                            </>
+                        )}
+                        footer={pageFooter}
                         entries={state.discoverEntries}
+                        presentation={presentation}
+                        selectedListing={openItem?.kind === 'listing' && paneOpen ? openItem : null}
                         loading={state.loadingDiscover}
                         loadingMore={state.loadingMoreDiscover}
                         canLoadMore={state.discoverNextCursor !== null}
                         installedPluginById={state.installedPluginById}
+                        projectionByPluginId={state.pluginProjectionById}
                         canRunActions={state.canRunDiscoverActions}
                         isPluginActionInFlight={state.isPluginActionInFlight}
                         onAction={state.runCatalogAction}
                         onLoadMore={state.loadMoreDiscover}
-                        onNavigateToPlugin={(pluginId) => router.push(buildPluginDetailRoute(pluginId))}
+                        onNavigateToPlugin={openPlugin}
+                        onOpenListing={openListing}
+                        onCloseListing={closePane}
                     />
-                </>
-            ) : null}
+                )}
+            </View>
+            )}
+        />
+    );
+});
 
-            {state.activeView === 'development' ? (
-                <DevelopmentPluginsSection
-                    developmentPlugins={state.developmentPlugins}
-                    createAvailable={state.developmentCreateAvailable}
-                    sourceInstallAvailable={state.developmentSourceInstallAvailable}
-                    canRunActions={state.daemonOperationsAvailable}
-                    isPluginActionInFlight={state.isPluginActionInFlight}
-                    onCreate={() => {
-                        createDevelopmentPlugin(false);
-                    }}
-                    onCreateWithAgent={() => {
-                        createDevelopmentPlugin(true);
-                    }}
-                    onDevelopSourceRoot={() => {
-                        void developPluginSourceRoot();
-                    }}
-                    onEditWithAgent={editDevelopmentPluginWithAgent}
-                    onRunAction={state.runDevelopmentAction}
-                />
-            ) : null}
+type InstalledToolbarState = Readonly<{
+    /** `null` where the Plugins column shows the search over the same query. */
+    query: string | null;
+    onChangeQuery: (text: string) => void;
+    status: InstalledPluginStatusFilter;
+    onSelectStatus: (status: InstalledPluginStatusFilter) => void;
+}>;
 
-            {state.activeView === 'diagnostics' ? (
-                <PluginDiagnosticsSnapshotSection diagnostics={state.currentDiagnostics} />
-            ) : null}
+type DiscoverToolbarState = Readonly<{
+    searchText: string;
+    searchable: boolean;
+    onChangeSearchText: (text: string) => void;
+    onSubmitSearch: (() => void) | undefined;
+    sources: ReadonlyArray<Readonly<{ id: string; title: string }>>;
+    selectedSourceId: string | null;
+    onSelectSource: (sourceId: string | null) => void;
+}>;
 
-            <View style={styles.viewSelector}>
+const INSTALLED_STATUS_FILTERS = ['all', 'enabled', 'disabled', 'attention'] as const satisfies readonly InstalledPluginStatusFilter[];
+
+function installedStatusFilterTitle(status: InstalledPluginStatusFilter): string {
+    switch (status) {
+        case 'all': return t('settingsPlugins.surfaces.statusAll');
+        case 'enabled': return t('settingsPlugins.surfaces.statusEnabled');
+        case 'disabled': return t('settingsPlugins.surfaces.statusDisabled');
+        case 'attention': return t('settingsPlugins.surfaces.statusAttention');
+    }
+}
+
+/**
+ * One line: Installed | Browse, the view's search, its filter (status on Installed, source on
+ * Browse) and Grid | List. On narrow widths the controls wrap beneath the view switch rather than
+ * squeezing the field.
+ */
+function PluginsToolbar(props: Readonly<{
+    /** Installed | Browse, or `null` where the Plugins column beside the page offers the choice. */
+    views: ReadonlyArray<Readonly<{ id: PluginSettingsViewId; label: string }>> | null;
+    activeView: PluginSettingsViewId;
+    onSelectView: (view: PluginSettingsViewId) => void;
+    presentation: PluginsCollectionPresentation;
+    onSelectPresentation: (presentation: PluginsCollectionPresentation) => void;
+    installed: InstalledToolbarState | null;
+    discover: DiscoverToolbarState | null;
+}>) {
+    const { theme } = useUnistyles();
+    const styles = stylesheet;
+    const maxWidthStyle = useLayoutMaxWidthStyle();
+    const presentationTabs = React.useMemo(() => [
+        {
+            id: 'grid' as const,
+            label: t('settingsPlugins.surfaces.viewGrid'),
+            icon: <Icon name="squares-four" size={16} color={theme.colors.text.secondary} />,
+        },
+        {
+            id: 'list' as const,
+            label: t('settingsPlugins.surfaces.viewList'),
+            icon: <Icon name="list" size={16} color={theme.colors.text.secondary} />,
+        },
+    ], [theme.colors.text.secondary]);
+    return (
+        <View style={[styles.toolbar, maxWidthStyle]}>
+            {props.views ? (
                 <SegmentedTabBar
-                    tabs={views.filter((view) => view.id === 'development' || view.id === 'diagnostics')}
-                    activeTabId={state.activeView}
-                    onSelectTab={state.setActiveView}
+                    tabs={props.views}
+                    activeTabId={props.activeView}
+                    onSelectTab={props.onSelectView}
                     testIDPrefix="settings.plugins.management.view"
                     accessibilityLabel={t('settingsPlugins.viewSelectorLabel')}
                     segmentSizing="content"
+                    slidingThumb
+                    // The page owns the toolbar's width, so the platform floor costs a
+                    // wider track rather than an undersized target.
+                    targetSize="platform"
+                />
+            ) : null}
+            <View style={styles.controls}>
+                {props.installed ? (
+                    <>
+                        {props.installed.query !== null ? (
+                            <CompactSearchField
+                                testID="settings.plugins.marketplace.installed.search"
+                                value={props.installed.query}
+                                onChangeText={props.installed.onChangeQuery}
+                                placeholder={t('settingsPlugins.surfaces.installedSearchPlaceholder')}
+                                style={styles.search}
+                            />
+                        ) : null}
+                        <ToolbarSelect
+                            testID="settings.plugins.marketplace.installed.statusFilter"
+                            label={t('settingsPlugins.surfaces.statusFilterLabel')}
+                            items={INSTALLED_STATUS_FILTERS.map((status) => ({
+                                id: status,
+                                title: installedStatusFilterTitle(status),
+                            }))}
+                            selectedId={props.installed.status}
+                            onSelect={(id) => {
+                                const status = INSTALLED_STATUS_FILTERS.find((candidate) => candidate === id);
+                                if (status && props.installed) props.installed.onSelectStatus(status);
+                            }}
+                        />
+                    </>
+                ) : null}
+                {props.discover ? (
+                    <>
+                        <CompactSearchField
+                            testID="settings.plugins.marketplace.search"
+                            value={props.discover.searchText}
+                            onChangeText={props.discover.onChangeSearchText}
+                            onSubmitEditing={props.discover.onSubmitSearch}
+                            editable={props.discover.searchable}
+                            placeholder={t('settingsPlugins.discoverSearchPlaceholder')}
+                            style={styles.search}
+                        />
+                        {/*
+                          * The source filter narrows the same one aggregate query before
+                          * acquisition; "All sources" sends no filter at all. It is never a
+                          * second index.
+                          */}
+                        <ToolbarSelect
+                            testID="settings.plugins.marketplace.sourceFilter"
+                            label={t('settingsPlugins.discoverSourceFilterLabel')}
+                            items={[
+                                { id: DISCOVER_ALL_SOURCES_ID, title: t('settingsPlugins.surfaces.allSources') },
+                                ...props.discover.sources.map((source) => ({ id: source.id, title: source.title })),
+                            ]}
+                            selectedId={props.discover.selectedSourceId ?? DISCOVER_ALL_SOURCES_ID}
+                            onSelect={(id) => props.discover?.onSelectSource(id === DISCOVER_ALL_SOURCES_ID ? null : id)}
+                        />
+                    </>
+                ) : null}
+                <SegmentedTabBar
+                    tabs={presentationTabs}
+                    activeTabId={props.presentation}
+                    onSelectTab={props.onSelectPresentation}
+                    testIDPrefix="settings.plugins.collectionView"
+                    accessibilityLabel={t('settingsPlugins.surfaces.viewLabel')}
+                    segmentSizing="content"
+                    slidingThumb
                     targetSize="platform"
                 />
             </View>
-
-            <ItemGroup>
-                <Item
-                    testID="settings.plugins.sources"
-                    title={t('settingsPlugins.sourceAdministration.title')}
-                    subtitle={t('settingsPlugins.sourceAdministration.subtitle')}
-                    icon={<Icon name="globe" size={29} color={theme.colors.accent.indigo} />}
-                    onPress={() => router.push(SETTINGS_ROUTES.pluginSources)}
-                />
-                {webhooksAvailable ? (
-                    <Item
-                        testID="settings.plugins.webhooks"
-                        title={t('settingsPlugins.webhookAdministration.title')}
-                        subtitle={t('settingsPlugins.webhookAdministration.footer')}
-                        icon={<Icon name="link" size={29} color={theme.colors.accent.indigo} />}
-                        onPress={() => router.push(SETTINGS_ROUTES.pluginWebhooks)}
-                    />
-                ) : null}
-            </ItemGroup>
-            <NativeAppPluginPanelsSettingsEntry />
-            <PluginAppPagesSettingsEntry />
-        </ItemList>
+        </View>
     );
-});
+}
+
+/**
+ * Where plugins come from, building your own, and what the machine reports: one quiet row of links
+ * at the end of the page. They are Settings pages of their own (configuration) in both hosts, never
+ * a second tab bar beside Installed and Browse. Each link keeps its setting's search anchor.
+ */
+function PluginsDeveloperLinks(props: Readonly<{
+    webhooksAvailable: boolean;
+    /** The app page: these links leave for Settings, so the row says so. */
+    inSettingsFromApp: boolean;
+    onOpen: (route: PluginsDeveloperRoute) => void;
+}>) {
+    const { theme } = useUnistyles();
+    const styles = stylesheet;
+    const maxWidthStyle = useLayoutMaxWidthStyle();
+    const links = listPluginsDeveloperLinks({ webhooksAvailable: props.webhooksAvailable });
+    return (
+        <View style={[styles.developer, maxWidthStyle]} testID="settings.plugins.developerLinks">
+            <Text style={styles.developerLabel}>{t('settingsPlugins.surfaces.forDevelopers')}</Text>
+            {links.map((link) => (
+                <SettingAnchor key={link.testID} setting={link.setting}>
+                    <HappierPressable
+                        testID={link.testID}
+                        accessibilityRole="link"
+                        accessibilityHint={props.inSettingsFromApp ? t('settingsPlugins.surfaces.moreDescriptionInSettings') : undefined}
+                        onPress={() => props.onOpen(link.route)}
+                        style={styles.developerLink}
+                    >
+                        <Text style={styles.developerLinkText}>{t(link.setting.titleKey)}</Text>
+                        <Icon name="caret-right" size={12} color={theme.colors.text.secondary} />
+                    </HappierPressable>
+                </SettingAnchor>
+            ))}
+        </View>
+    );
+}
+
+const stylesheet = StyleSheet.create((theme) => ({
+    page: {
+        flex: 1,
+        minWidth: 0,
+    },
+    toolbar: {
+        width: '100%',
+        alignSelf: 'center',
+        flexDirection: 'row',
+        flexWrap: 'wrap',
+        alignItems: 'center',
+        columnGap: 10,
+        rowGap: 10,
+        paddingHorizontal: resolveItemGroupContentHorizontalInsetPx(),
+        paddingTop: 16,
+        paddingBottom: 4,
+    },
+    controls: {
+        flexGrow: 1,
+        flexShrink: 1,
+        flexBasis: 320,
+        minWidth: 0,
+        flexDirection: 'row',
+        flexWrap: 'wrap',
+        alignItems: 'center',
+        gap: 10,
+    },
+    // On a phone the search keeps a usable width: the filter and Grid | List wrap under it
+    // rather than squeezing it to a sliver (lab P1).
+    search: {
+        flexGrow: 1,
+        flexShrink: 1,
+        flexBasis: 220,
+        minWidth: 0,
+    },
+    developer: {
+        width: '100%',
+        alignSelf: 'center',
+        flexDirection: 'row',
+        flexWrap: 'wrap',
+        alignItems: 'center',
+        columnGap: 14,
+        rowGap: 4,
+        paddingHorizontal: resolveItemGroupContentHorizontalInsetPx() + PAGE_LIST_METRICS.headingOpticalInsetPx,
+        paddingTop: 20,
+        paddingBottom: 28,
+    },
+    developerLabel: {
+        ...Typography.default(),
+        fontSize: 12.5,
+        lineHeight: 18,
+        color: theme.colors.text.tertiary,
+    },
+    developerLink: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 2,
+        minHeight: resolveMinimumInteractiveTargetSize(Platform.OS),
+    },
+    developerLinkText: {
+        ...Typography.default(),
+        fontSize: 12.5,
+        lineHeight: 18,
+        color: theme.colors.text.secondary,
+    },
+}));
 
 export default PluginSettingsHomeScreen;

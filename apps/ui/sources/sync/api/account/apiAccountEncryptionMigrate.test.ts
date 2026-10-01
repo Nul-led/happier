@@ -17,17 +17,12 @@ vi.mock('@/utils/timing/time', async (importOriginal) => {
 const mocks = vi.hoisted(() => {
   return {
     invalidateAccountEncryptionModeCache: vi.fn(),
-    getServerFeaturesSnapshot: vi.fn(),
     serverFetch: vi.fn(),
   };
 });
 
 vi.mock('@/sync/http/client', () => ({
   serverFetch: mocks.serverFetch,
-}));
-
-vi.mock('@/sync/api/capabilities/serverFeaturesClient', () => ({
-  getServerFeaturesSnapshot: mocks.getServerFeaturesSnapshot,
 }));
 
 vi.mock('./apiAccountEncryptionMode', () => ({
@@ -71,21 +66,7 @@ function jsonResponse(body: unknown, status = 200): Response {
 describe('migrateAccountEncryptionMode', () => {
   beforeEach(() => {
     mocks.invalidateAccountEncryptionModeCache.mockReset();
-    mocks.getServerFeaturesSnapshot.mockReset();
     mocks.serverFetch.mockReset();
-    mocks.getServerFeaturesSnapshot.mockResolvedValue({
-      status: 'ready',
-      features: {
-        capabilities: {
-          accountStoredContentCompatibility: {
-            v: 1,
-            minimumProtocolVersion: 2,
-            currentProtocolVersion: 3,
-            declarationTransport: 'http-header-and-socket-auth-v1',
-          },
-        },
-      },
-    });
   });
 
   it('invalidates cached account mode after a successful migration', async () => {
@@ -106,6 +87,19 @@ describe('migrateAccountEncryptionMode', () => {
     ).resolves.toMatchObject({ success: true, mode: 'plain' });
 
     expect(mocks.invalidateAccountEncryptionModeCache).toHaveBeenCalledTimes(1);
+  });
+
+  it('retains committed authoring-memory rows through the canonical migration response adapter', async () => {
+    const content = { t: 'plain' as const, v: 'profile-a' };
+    const request = AccountEncryptionMigrateRequestSchema.parse({ ...PLAIN_REQUEST,
+      authoringMemory: { items: [{ key: 'lastUsedProfile', expectedRevision: 3, content }] },
+    });
+    const result = { success: true, mode: 'plain', accountVersion: 4, settingsVersion: 1,
+      authoringMemory: { rows: [{ key: 'lastUsedProfile', revision: 4, content }] },
+    };
+    mocks.serverFetch.mockResolvedValueOnce(jsonResponse(result));
+    await expect(migrateAccountEncryptionMode({ token: 't' }, request)).resolves.toEqual(result);
+    expect(JSON.parse(mocks.serverFetch.mock.calls[0]![1].body)).toEqual(request);
   });
 
   it('retries a lost response with byte-identical migration request bytes', async () => {
@@ -195,7 +189,7 @@ describe('migrateAccountEncryptionMode', () => {
     ).not.toHaveBeenCalled();
   });
 
-  it('rejects a predecessor success response without fabricating Account currentness', async () => {
+  it('rejects an incomplete success response without fabricating Account currentness', async () => {
     mocks.serverFetch.mockResolvedValueOnce(
       jsonResponse({
         success: true,
@@ -221,63 +215,14 @@ describe('migrateAccountEncryptionMode', () => {
     expect(mocks.serverFetch).toHaveBeenCalledTimes(1);
   });
 
-  it('refuses a marker-producing migration before POST against an immutable old-server capability snapshot', async () => {
-    mocks.getServerFeaturesSnapshot.mockResolvedValue({
-      status: 'ready',
-      features: {
-        capabilities: {
-          encryption: {
-            storagePolicy: 'optional',
-          },
-        },
-      },
-    });
-
-    await expect(
-      migrateAccountEncryptionMode({ token: 't' }, PLAIN_REQUEST),
-    ).rejects.toMatchObject({
-      code: 'client-upgrade-required',
-      retryable: false,
-    });
-    expect(mocks.serverFetch).not.toHaveBeenCalled();
+  it('submits the current migration without an older-server capability probe', async () => {
+    mocks.serverFetch.mockResolvedValueOnce(jsonResponse({ success: true, mode: 'plain', accountVersion: 4, settingsVersion: 1 }));
+    await expect(migrateAccountEncryptionMode({ token: 't' }, PLAIN_REQUEST)).resolves.toMatchObject({ success: true, mode: 'plain' });
+    expect(mocks.serverFetch).toHaveBeenCalledTimes(1);
   });
 
-  it('refuses the expanded migration before POST when the server only declares protocol v1', async () => {
-    mocks.getServerFeaturesSnapshot.mockResolvedValue({
-      status: 'ready',
-      features: {
-        capabilities: {
-          accountStoredContentCompatibility: {
-            v: 1,
-            minimumProtocolVersion: 1,
-            currentProtocolVersion: 1,
-            declarationTransport: 'http-header-and-socket-auth-v1',
-          },
-        },
-      },
-    });
-
-    await expect(
-      migrateAccountEncryptionMode({ token: 't' }, PLAIN_REQUEST),
-    ).rejects.toMatchObject({
-      code: 'client-upgrade-required',
-      retryable: false,
-    });
-    expect(mocks.serverFetch).not.toHaveBeenCalled();
-  });
-
-  it('refuses an E2EE migration before POST against an immutable old-server capability snapshot', async () => {
-    mocks.getServerFeaturesSnapshot.mockResolvedValue({
-      status: 'ready',
-      features: {
-        capabilities: {
-          encryption: {
-            storagePolicy: 'optional',
-          },
-        },
-      },
-    });
-
+  it('submits an E2EE migration through the same current transport', async () => {
+    mocks.serverFetch.mockResolvedValueOnce(jsonResponse({ success: true, mode: 'e2ee', accountVersion: 4, settingsVersion: 1 }));
     await expect(
       migrateAccountEncryptionMode(
         { token: 't' },
@@ -300,11 +245,8 @@ describe('migrateAccountEncryptionMode', () => {
           ...EMPTY_STORAGE_DIRECTIVES,
         }),
       ),
-    ).rejects.toMatchObject({
-      code: 'client-upgrade-required',
-      retryable: false,
-    });
-    expect(mocks.serverFetch).not.toHaveBeenCalled();
+    ).resolves.toMatchObject({ success: true, mode: 'e2ee' });
+    expect(mocks.serverFetch).toHaveBeenCalledTimes(1);
   });
 
   it('surfaces restore_required as a typed error code', async () => {

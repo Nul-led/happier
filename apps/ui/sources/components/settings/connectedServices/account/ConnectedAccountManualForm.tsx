@@ -1,53 +1,23 @@
 import * as React from 'react';
 import { View } from 'react-native';
-import { StyleSheet, useUnistyles } from 'react-native-unistyles';
+import { StyleSheet } from 'react-native-unistyles';
 
 import type { PluginSettingFieldV2 } from '@happier-dev/protocol';
 
+import { ConnectedServiceSetupFlowActions } from '../setup/ConnectedServiceSetupFlowBody';
+import { ConnectedAccountFormSection } from './ConnectedAccountFormSection';
 import { RoundButton } from '@/components/ui/buttons/RoundButton';
-import { ItemGroup } from '@/components/ui/lists/ItemGroup';
-import { Text, TextInput } from '@/components/ui/text/Text';
-import { Typography } from '@/constants/Typography';
+import { FieldTextInput } from '@/components/ui/forms/FieldTextInput';
+import { Item } from '@/components/ui/lists/Item';
 import { t } from '@/text';
 import { resolveProjectedLocalizedText } from '@/components/plugins/surfaces/resolvePluginDisplayString';
 
-import {
-    connectedAccountFieldErrorId,
-    useConnectedAccountInvalidFieldFocus,
-} from './useConnectedAccountInvalidFieldFocus';
+import { useConnectedAccountInvalidFieldFocus } from './useConnectedAccountInvalidFieldFocus';
 import { useConnectedAccountDraftNavigationGuard } from './useConnectedAccountDraftNavigationGuard';
 
-const stylesheet = StyleSheet.create((theme) => ({
-    field: {
-        paddingHorizontal: 16,
-        paddingVertical: 12,
-    },
-    label: {
-        ...Typography.default('semiBold'),
-        color: theme.colors.text.primary,
-        fontSize: 14,
-        marginBottom: 4,
-    },
-    description: {
-        ...Typography.default(),
-        color: theme.colors.text.secondary,
-        fontSize: 13,
-        lineHeight: 18,
-        marginBottom: 8,
-    },
-    input: {
-        ...Typography.default(),
-        minHeight: 44,
-        borderRadius: 10,
-        borderCurve: 'continuous',
-        borderWidth: 1,
-        paddingHorizontal: 12,
-        paddingVertical: 10,
-        fontSize: 14,
-    },
-    multilineInput: {
-        minHeight: 88,
-        textAlignVertical: 'top',
+const stylesheet = StyleSheet.create(() => ({
+    panelActions: {
+        paddingTop: 12,
     },
     actions: {
         alignItems: 'flex-end',
@@ -86,17 +56,20 @@ function isValidFieldValue(field: ManualAuthenticationField, value: string): boo
 
 type ConnectedAccountManualFormProps = Readonly<{
     title: string;
+    /** Inside the new-account draft, whose row already names the sign-in method. */
+    embedded?: boolean;
     localize?: (value: Parameters<typeof resolveProjectedLocalizedText>[0]) => string;
     fields: readonly ManualAuthenticationField[];
     submitting: boolean;
     navigation?: unknown;
+    /** In a setup panel: a compact footer with Cancel (local) beside Continue. */
+    onCancel?: () => void;
     onSubmit(input: Readonly<{
         fields: Readonly<Record<string, string>>;
     }>): Promise<boolean | void> | boolean | void;
 }>;
 
 function ConnectedAccountManualFormBody(props: ConnectedAccountManualFormProps) {
-    const { theme } = useUnistyles();
     const styles = stylesheet;
     const initialDraft = React.useMemo(() => (
         Object.fromEntries(props.fields.map((field) => [field.id, '']))
@@ -146,77 +119,70 @@ function ConnectedAccountManualFormBody(props: ConnectedAccountManualFormProps) 
     });
 
     return (
-        <ItemGroup
-            title={props.title}
-            footer={invalidFieldIds.length > 0 ? t('common.error') : undefined}
+        <ConnectedAccountFormSection
+            embedded={props.embedded}
+            title={props.embedded ? undefined : props.title}
+            description={invalidFieldIds.length > 0 ? t('common.error') : undefined}
         >
             {fields.map((field) => {
                 const title = resolveProjectedLocalizedText(field.title, props.localize);
                 const description = resolveProjectedLocalizedText(field.description, props.localize);
                 const multiline = field.presentation?.control === 'textarea';
                 const invalid = invalidFieldIds.includes(field.id);
-                const errorId = connectedAccountFieldErrorId(
-                    'connected-account-manual',
-                    field.id,
-                );
                 return (
-                    <View key={field.id} style={styles.field}>
-                        <Text style={styles.label}>{title}</Text>
-                        {description ? <Text style={styles.description}>{description}</Text> : null}
-                        <TextInput
-                            testID={`connected-account-manual:${field.id}`}
-                            ref={registerInvalidFieldTarget(field.id)}
-                            nativeID={`connected-account-manual:${field.id}`}
-                            accessibilityLabel={invalid ? `${title}: ${t('common.error')}` : title}
-                            accessibilityHint={invalid
-                                ? t('common.error')
-                                : description || undefined}
-                            value={draft[field.id] ?? ''}
-                            onChangeText={(value) => {
-                                setDraft((current) => ({ ...current, [field.id]: value }));
-                                setInvalidFieldIds((current) => current.filter((id) => id !== field.id));
-                            }}
-                            editable={!props.submitting}
-                            secureTextEntry={field.secret === true}
-                            multiline={multiline}
-                            autoCapitalize="none"
-                            autoCorrect={false}
-                            placeholder={resolveProjectedLocalizedText(field.presentation?.placeholder, props.localize)}
-                            placeholderTextColor={theme.colors.input.placeholder}
-                            style={[
-                                styles.input,
-                                multiline ? styles.multilineInput : undefined,
-                                {
-                                    color: theme.colors.input.text,
-                                    backgroundColor: theme.colors.input.background,
-                                    borderColor: theme.colors.border.default,
-                                },
-                            ]}
-                        />
-                        {invalid ? (
-                            <Text
-                                testID={errorId}
-                                nativeID={errorId}
-                                accessibilityRole="alert"
-                                accessibilityLiveRegion="assertive"
-                                style={styles.description}
-                            >
-                                {t('common.error')}
-                            </Text>
-                        ) : null}
-                    </View>
+                    <Item
+                        key={field.id}
+                        title={title}
+                        subtitle={description || undefined}
+                        subtitleLines={0}
+                        mode="info"
+                        showChevron={false}
+                        accessoryLayout={multiline ? 'stacked' : 'adaptive'}
+                        rightElement={(
+                            <FieldTextInput
+                                testID={`connected-account-manual:${field.id}`}
+                                ref={registerInvalidFieldTarget(field.id)}
+                                accessibilityLabel={invalid ? `${title}: ${t('common.error')}` : title}
+                                error={invalid ? t('common.error') : null}
+                                value={draft[field.id] ?? ''}
+                                onChangeText={(value) => {
+                                    setDraft((current) => ({ ...current, [field.id]: value }));
+                                    setInvalidFieldIds((current) => current.filter((id) => id !== field.id));
+                                }}
+                                editable={!props.submitting}
+                                secureTextEntry={field.secret === true}
+                                multiline={multiline}
+                                placeholder={resolveProjectedLocalizedText(field.presentation?.placeholder, props.localize)}
+                            />
+                        )}
+                    />
                 );
             })}
-            <View style={styles.actions}>
-                <RoundButton
-                    testID="connected-account-manual:submit"
-                    title={t('common.continue')}
-                    disabled={props.submitting}
-                    loading={props.submitting}
-                    onPress={submit}
-                />
-            </View>
-        </ItemGroup>
+            {props.onCancel ? (
+                <View style={styles.panelActions}>
+                    <ConnectedServiceSetupFlowActions
+                        onCancel={props.onCancel}
+                        primary={{
+                            testID: 'connected-account-manual:submit',
+                            label: t('common.continue'),
+                            disabled: props.submitting,
+                            loading: props.submitting,
+                            onPress: () => void submit(),
+                        }}
+                    />
+                </View>
+            ) : (
+                <View style={styles.actions}>
+                    <RoundButton
+                        testID="connected-account-manual:submit"
+                        title={t('common.continue')}
+                        disabled={props.submitting}
+                        loading={props.submitting}
+                        onPress={submit}
+                    />
+                </View>
+            )}
+        </ConnectedAccountFormSection>
     );
 }
 

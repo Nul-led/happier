@@ -20,7 +20,11 @@ vi.mock('@/components/ui/accessibility/announceAccessibilityMessage', () => ({
 }));
 vi.mock('@/text', async () => {
     const { createTextModuleMock } = await import('@/dev/testkit/mocks/text');
-    return createTextModuleMock({ translate: (key) => key });
+    return createTextModuleMock({
+        translate: (key: string, params?: Record<string, unknown>) => (
+            params ? `${key}:${JSON.stringify(params)}` : key
+        ),
+    });
 });
 
 afterEach(async () => {
@@ -37,6 +41,8 @@ function state(overrides: Partial<WorkflowAnnouncementState> = {}): WorkflowAnno
         terminal: null,
         changedRowCount: 0,
         selectedRowChanged: false,
+        attentionHasMore: false,
+        historyIncomplete: false,
         ...overrides,
     } as WorkflowAnnouncementState;
 }
@@ -59,7 +65,7 @@ describe('useWorkflowAnnouncements', () => {
         // something that just happened while the reader was listening.
         await renderAnnouncements(state({
             blockIds: ['analyze', 'implement', 'review'],
-            terminal: 'succeeded',
+            terminal: 'completed',
             attentionCount: 2,
         }));
 
@@ -93,5 +99,58 @@ describe('useWorkflowAnnouncements', () => {
             enabled: true,
         });
         expect(announcements.messages).toEqual([]);
+    });
+
+    it('says loaded instead of a total while more attention pages remain', async () => {
+        const hook = await renderAnnouncements(state({ attentionCount: 2, attentionHasMore: true }));
+        expect(announcements.messages).toEqual([]);
+
+        await hook.rerender({
+            state: state({ attentionCount: 4, attentionHasMore: true }),
+            enabled: true,
+        });
+
+        // The same construction the visible needs-you header uses: a count of
+        // loaded rows, never a claim about every step that will need you.
+        expect(announcements.messages).toEqual(['4 workflows.a11y.needsYouLoaded']);
+    });
+
+    it('keeps a terminal summary neutral while attention pages remain', async () => {
+        const hook = await renderAnnouncements(state({ attentionCount: 2, attentionHasMore: true }));
+
+        await hook.rerender({
+            state: state({ attentionCount: 2, attentionHasMore: true, terminal: 'completed' }),
+            enabled: true,
+        });
+
+        expect(announcements.messages).toEqual([
+            'workflows.a11y.terminal:{"state":"workflows.runState.completed"}',
+        ]);
+    });
+
+    it('says the attention part of progress as loaded while attention pages remain', async () => {
+        const hook = await renderAnnouncements(
+            state({ attentionCount: 1, attentionHasMore: true, changedRowCount: 0 }),
+        );
+
+        await hook.rerender({
+            state: state({ attentionCount: 1, attentionHasMore: true, changedRowCount: 2 }),
+            enabled: true,
+        });
+
+        expect(announcements.messages).toEqual([
+            'workflows.a11y.progress:{"count":2}; 1 workflows.a11y.needsYouLoaded',
+        ]);
+    });
+
+    it('says a progress count as loaded while history pages remain', async () => {
+        const hook = await renderAnnouncements(state({ changedRowCount: 0, historyIncomplete: true }));
+
+        await hook.rerender({
+            state: state({ changedRowCount: 3, historyIncomplete: true }),
+            enabled: true,
+        });
+
+        expect(announcements.messages).toEqual(['workflows.a11y.progressLoaded:{"count":3}']);
     });
 });

@@ -1,9 +1,9 @@
 import type { z } from 'zod';
 import {
-    getActionSpec,
     homeDomainActionInputSchemaV1,
     homeDomainActionOutputSchemaV1,
     type ManagedIdentityProviderActionIdV1,
+    type ActionExecuteFailure,
     ManagedIdentityProviderCreateInputV1Schema,
     ManagedIdentityProviderLifecycleInputV1Schema,
     ManagedIdentityProviderRemovePreflightInputV1Schema,
@@ -25,10 +25,12 @@ import type { ServerAccountScope } from '@/sync/domains/scope/serverAccountScope
 import { homeDomainFailureCode } from '@/sync/api/home/homeDomainActions';
 import { scopedHomeActionExecutor } from '@/sync/ops/actions/scopedHomeActionExecutor';
 import { classifyHomeActionOutcome } from '@/sync/ops/home/homeActionOutcome';
-import { resolveIdentityAdministrationFailureRetryable } from '@/components/settings/identity/identityAdministrationFailure';
+import { resolveApprovalSettledReadFailure, resolveIdentityAdministrationFailureRetryable } from '@/components/settings/identity/identityAdministrationFailure';
 import {
+    awaitActionApprovalResult,
     createHomeActionApprovalContinuation,
     type ActionApprovalContinuation,
+    type ActionApprovalRegistration,
 } from '@/components/approvals/actionApprovalContinuation';
 
 type ManagedIdentityProviderActionInputMap = Readonly<{
@@ -59,20 +61,31 @@ type ManagedIdentityProviderActionOutputMap = Readonly<{
     'identity.providers.remove': z.infer<typeof ManagedIdentityProviderRemoveResultV1Schema>;
 }>;
 
+export type ManagedIdentityProviderActionOutput<TActionId extends ManagedIdentityProviderActionIdV1> =
+    ManagedIdentityProviderActionOutputMap[TActionId];
+
 export type ManagedIdentityProviderActionResult<TValue> =
     | Readonly<{ kind: 'succeeded'; value: TValue }>
     | Readonly<{ kind: 'approval_pending'; artifactId: string; approval: ActionApprovalContinuation }>
     | Readonly<{ kind: 'failed'; failure: Readonly<{ code: string; retryable: boolean }> }>;
 
+export type ManagedIdentityProviderExecuteOptions<TValue> = Readonly<{
+    signal?: AbortSignal;
+    onApprovalPending?: (registration: ActionApprovalRegistration) => void;
+    onApprovalSucceeded?: (value: TValue) => void | Promise<void>;
+    onApprovalFailed?: (code: string, failure?: ActionExecuteFailure) => void;
+}>;
+
+export type ManagedIdentityProviderSettledResult<TValue> = Exclude<
+    ManagedIdentityProviderActionResult<TValue>,
+    Readonly<{ kind: 'approval_pending' }>
+>;
+
 export type ManagedIdentityProviderClient = Readonly<{
     execute: <TActionId extends ManagedIdentityProviderActionIdV1>(
         actionId: TActionId,
         input: ManagedIdentityProviderActionInputMap[TActionId],
-        options?: Readonly<{
-            signal?: AbortSignal;
-            onApprovalSucceeded?: (value: ManagedIdentityProviderActionOutputMap[TActionId]) => void | Promise<void>;
-            onApprovalFailed?: (code: string) => void;
-        }>,
+        options?: ManagedIdentityProviderExecuteOptions<ManagedIdentityProviderActionOutputMap[TActionId]>,
     ) => Promise<ManagedIdentityProviderActionResult<ManagedIdentityProviderActionOutputMap[TActionId]>>;
 }>;
 
@@ -82,11 +95,7 @@ export function createManagedIdentityProviderClient(scope: ServerAccountScope): 
         execute: async <TActionId extends ManagedIdentityProviderActionIdV1>(
             actionId: TActionId,
             input: ManagedIdentityProviderActionInputMap[TActionId],
-            options?: Readonly<{
-                signal?: AbortSignal;
-                onApprovalSucceeded?: (value: ManagedIdentityProviderActionOutputMap[TActionId]) => void | Promise<void>;
-                onApprovalFailed?: (code: string) => void;
-            }>,
+            options?: ManagedIdentityProviderExecuteOptions<ManagedIdentityProviderActionOutputMap[TActionId]>,
         ): Promise<ManagedIdentityProviderActionResult<ManagedIdentityProviderActionOutputMap[TActionId]>> => {
             const parsedInput = homeDomainActionInputSchemaV1(actionId).safeParse(input);
             if (!parsedInput.success) {
@@ -110,22 +119,19 @@ export function createManagedIdentityProviderClient(scope: ServerAccountScope): 
                 };
             }
             if (outcome.kind === 'approval_pending') {
-                // Read Actions cannot legitimately enter deferred mutation
-                // approval. Fail closed rather than manufacturing a list or
-                // preflight result from the approval envelope.
-                if (getActionSpec(actionId).sideEffectClass === 'read') {
-                    return { kind: 'failed', failure: { code: 'invalid_action_output', retryable: false } };
-                }
+                const approval = createHomeActionApprovalContinuation<ManagedIdentityProviderActionOutputMap[TActionId], TActionId>({
+                    artifactId: outcome.artifactId,
+                    actionId,
+                    scope,
+                    expectedInput: parsedInput.data,
+                    ...(options?.signal ? { signal: options.signal } : {}),
+                    onSucceeded: async (value) => await options?.onApprovalSucceeded?.(value),
+                    onFailed: options?.onApprovalFailed,
+                });
+                options?.onApprovalPending?.(approval);
                 return {
                     ...outcome,
-                    approval: createHomeActionApprovalContinuation<ManagedIdentityProviderActionOutputMap[TActionId], TActionId>({
-                        artifactId: outcome.artifactId,
-                        actionId,
-                        scope,
-                        expectedInput: parsedInput.data,
-                        onSucceeded: async (value) => await options?.onApprovalSucceeded?.(value),
-                        onFailed: options?.onApprovalFailed,
-                    }),
+                    approval,
                 };
             }
             const parsedOutput = homeDomainActionOutputSchemaV1(actionId).safeParse(outcome.result);
@@ -137,5 +143,37 @@ export function createManagedIdentityProviderClient(scope: ServerAccountScope): 
                 value: parsedOutput.data as ManagedIdentityProviderActionOutputMap[TActionId],
             };
         },
+    });
+}
+
+/**
+ * Join immediate and approval-deferred reads without issuing the read again.
+ * The shared approval owner supplies once-only settlement and abort fencing;
+ * this adapter only maps the managed-provider result envelope.
+ * Callers name `TValue` (or pass an already typed reader): contextually typing
+ * the `options` lambda parameter would otherwise fix it to `unknown`.
+ */
+export function executeManagedIdentityProviderRead<TValue>(
+    execute: (options: ManagedIdentityProviderExecuteOptions<TValue>) => Promise<ManagedIdentityProviderActionResult<TValue>>,
+    options: Readonly<{
+        signal?: AbortSignal;
+        onApprovalPending?: (registration: ActionApprovalRegistration) => void;
+    }> = {},
+): Promise<ManagedIdentityProviderSettledResult<TValue>> {
+    return awaitActionApprovalResult<TValue, ManagedIdentityProviderSettledResult<TValue>>({
+        execute: async (callbacks) => {
+            const result = await execute({
+                ...callbacks,
+                ...(options.onApprovalPending ? { onApprovalPending: options.onApprovalPending } : {}),
+            });
+            return result.kind === 'approval_pending' ? { approvalPending: true } : result;
+        },
+        succeeded: (value) => ({ kind: 'succeeded', value }),
+        failed: (code, actionFailure) => {
+            const failure = resolveApprovalSettledReadFailure(code, actionFailure);
+            return { kind: 'failed', failure: { code: failure.code, retryable: failure.retryable } };
+        },
+        aborted: () => ({ kind: 'failed', failure: { code: 'aborted', retryable: false } }),
+        ...(options.signal ? { signal: options.signal } : {}),
     });
 }

@@ -1,22 +1,19 @@
 import * as React from 'react';
 
 import type { SettingsBelowFoldSectionsProps } from '@/components/settings/settingsBelowFoldSectionTypes';
-import { SafeIonicons } from '@/components/ui/icons/SafeIonicons';
 import { Item } from '@/components/ui/lists/Item';
+import { Icon } from '@/components/ui/icons/Icon';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
 import { t } from '@/text';
-import { Icon } from '@/components/ui/icons/Icon';
 
 type SettingsDeveloperSectionProps = Readonly<Pick<SettingsBelowFoldSectionsProps,
     | 'devModeEnabled'
     | 'router'
-    | 'theme'
 >>;
 
 export const SettingsDeveloperSection = React.memo(function SettingsDeveloperSection({
     devModeEnabled,
     router,
-    theme,
 }: SettingsDeveloperSectionProps) {
     if (!__DEV__ && !devModeEnabled) return null;
 
@@ -24,7 +21,7 @@ export const SettingsDeveloperSection = React.memo(function SettingsDeveloperSec
         <ItemGroup title={t('settings.developer')}>
             <Item
                 title={t('settings.developerTools')}
-                icon={<Icon name="wrench" size={29} color={theme.colors.accent.indigo} />}
+                icon={<Icon name="wrench" />}
                 onPress={() => router.push('/(app)/dev')}
             />
         </ItemGroup>

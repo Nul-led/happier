@@ -4,15 +4,22 @@ import type {
     FeatureDecision,
     LocalServiceLaunchTargetV1,
 } from '@happier-dev/protocol';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 // The OS-tab handoff is a genuine platform boundary (`window.open` / `Linking.openURL`); the
 // selection and fulfilment logic beneath it stays real.
 const openExternalUrlMock = vi.hoisted(() => vi.fn(async () => true));
 vi.mock('@/utils/url/openExternalUrl', () => ({ openExternalUrl: openExternalUrlMock }));
+const machineRpcMock = vi.hoisted(() => vi.fn());
+vi.mock('@/sync/runtime/orchestration/serverScopedRpc/serverScopedMachineRpc', () => ({ machineRpcWithServerScope: machineRpcMock }));
 
 import type { DetailsTab } from '@/components/appShell/panes/details/workspace/detailsWorkspaceTypes';
 import { resolveBrowserViewIdForTarget } from '@/sync/domains/browser/store';
+import {
+    getLocalServicePreviewState,
+    resetLocalServicePreviewStoreForTests,
+    subscribeLocalServicePreviewStore,
+} from '@/sync/domains/local/services/preview/sharedStore';
 
 import {
     bindServicesOpenInBrowser,
@@ -134,6 +141,7 @@ function readTabBrowserSessionId(tab: DetailsTab): string | undefined {
 }
 
 describe('openBrowserTargetInWorkspace', () => {
+    afterEach(() => resetLocalServicePreviewStoreForTests());
     it('resolves a target into BOTH a details-workspace tab AND a live content record (one identity)', () => {
         const resolved = resolveBrowserViewTargetOpen({
             scope: 'sessionDetails',
@@ -211,13 +219,11 @@ describe('openBrowserTargetInWorkspace', () => {
         expect(resolvedTab.tab.kind).toBe('browser-view');
     });
 
-    it('maps a service launch target to its browserTarget, with localServicePreview fallback and null', () => {
+    it('maps only an authoritative service browser target without inventing a preview identity', () => {
         expect(mapLocalServiceLaunchTargetToBrowserTarget(serviceTargetWithBrowserTarget))
             .toEqual(localServicePreviewTarget);
 
-        const fallback = mapLocalServiceLaunchTargetToBrowserTarget(serviceTargetWithoutBrowserTarget);
-        expect(fallback?.kind).toBe('localServicePreview');
-        expect(fallback?.targetId).toBe(serviceTargetWithoutBrowserTarget.id);
+        expect(mapLocalServiceLaunchTargetToBrowserTarget(serviceTargetWithoutBrowserTarget)).toBeNull();
 
         expect(mapLocalServiceLaunchTargetToBrowserTarget({
             ...serviceTargetWithoutBrowserTarget,
@@ -225,7 +231,54 @@ describe('openBrowserTargetInWorkspace', () => {
         } as LocalServiceLaunchTargetV1)).toBeNull();
     });
 
-    it('binds the Services open seam to BOTH records and no-ops on an unmappable target', () => {
+    it('registers a detected service through the server preview owner before opening its returned URL', async () => {
+        // The loaded Browser/Services surface subscribes to this canonical store key.
+        const unsubscribe = subscribeLocalServicePreviewStore({ machineId: 'machine_123' }, () => {}, {
+            snapshotClient: async () => ({ ok: true, snapshot: { generatedAt: 0, refreshState: 'idle', previews: [], diagnostics: [] } }),
+        });
+        await Promise.resolve();
+        await Promise.resolve();
+        const target: LocalServiceLaunchTargetV1 = { ...serviceTargetWithBrowserTarget, browserTarget: undefined, actions: ['register_preview'], sourceClass: { kind: 'inventory_entry', inventoryEntryId: 'svc_1' } };
+        const resource = {
+            previewId: 'preview_123', sessionId: 'session_123', machineId: 'machine_123',
+            owner: { kind: 'session', id: 'session_123' }, target: { scheme: 'http', host: '127.0.0.1', port: 5173 },
+            initialPath: { pathname: '/', search: '' }, display: { title: 'Kitchen Sink', addressLabel: 'localhost:5173' }, originMode: 'host', browserTarget: localServicePreviewTarget,
+        } as const;
+        const preview = { previewId: resource.previewId, resource, accessUrl: 'https://preview-123.preview.test/?previewToken=fresh', expiresAt: 61_000, diagnostics: [] };
+        machineRpcMock.mockResolvedValueOnce({ protocolVersion: 1, status: 'created', preview, snapshot: { v: 1, machineId: resource.machineId, generatedAt: 1_000, refreshState: 'idle', resources: [resource], previews: [preview], diagnostics: [] } });
+        const openDetailsTab = vi.fn();
+        const openInBrowser = bindServicesOpenInBrowser({ openDetailsTab, scope: 'sessionDetails', platform: 'web' });
+        expect(await openInBrowser(target)).toEqual({ status: 'succeeded' });
+        expect(machineRpcMock).toHaveBeenCalledWith(expect.objectContaining({ machineId: 'machine_123', payload: { machineId: 'machine_123', sessionId: 'session_123', inventoryEntryId: 'svc_1' } }));
+        const [tab] = openDetailsTab.mock.calls[0] as [DetailsTab];
+        expect(readTabTarget(tab)).toEqual(localServicePreviewTarget);
+        expect(getLocalServicePreviewState({ machineId: 'machine_123' }).previewsById.get('preview_123')?.accessUrl).toBe(preview.accessUrl);
+
+        // Reopening must ask the same owner for a new admission, never reuse the snapshot URL.
+        const reopenedPreview = { ...preview, accessUrl: 'https://preview-123.preview.test/?previewToken=reopened' };
+        machineRpcMock.mockResolvedValueOnce({ protocolVersion: 1, status: 'existing', preview: reopenedPreview, snapshot: { v: 1, machineId: resource.machineId, generatedAt: 62_000, refreshState: 'idle', resources: [resource], previews: [reopenedPreview], diagnostics: [] } });
+        const onOpenTarget = vi.fn();
+        const reopen = bindServicesOpenInBrowser({ onOpenTarget, platform: 'web' });
+        expect(await reopen({ ...target, browserTarget: localServicePreviewTarget, actions: ['open_preview'] })).toEqual({ status: 'succeeded' });
+        expect(onOpenTarget).toHaveBeenCalledWith(localServicePreviewTarget, { platform: 'web', currentUrl: reopenedPreview.accessUrl });
+        expect(getLocalServicePreviewState({ machineId: 'machine_123' }).previewsById.get('preview_123')?.accessUrl).toBe(reopenedPreview.accessUrl);
+
+        // The typed no-private-domain response preserves the existing Elsewhere + Share surface.
+        const elsewherePreview = { ...preview, accessUrl: null, expiresAt: null, accessUnavailableReasonCode: 'preview_private_route_unavailable' };
+        machineRpcMock.mockResolvedValueOnce({ protocolVersion: 1, status: 'existing', preview: elsewherePreview, snapshot: { v: 1, machineId: resource.machineId, generatedAt: 63_000, refreshState: 'idle', resources: [resource], previews: [elsewherePreview], diagnostics: [] } });
+        onOpenTarget.mockClear();
+        expect(await reopen(target)).toEqual({ status: 'succeeded' });
+        expect(onOpenTarget).toHaveBeenCalledWith(localServicePreviewTarget, { platform: 'web' });
+        expect(getLocalServicePreviewState({ machineId: 'machine_123' }).previewsById.get('preview_123')?.accessUnavailableReasonCode).toBe('preview_private_route_unavailable');
+
+        machineRpcMock.mockRejectedValueOnce(new Error('local_service_preview_lifecycle_refused:preview_registration_failed'));
+        onOpenTarget.mockClear();
+        expect(await reopen(target)).toEqual({ status: 'denied', reasonCode: 'preview_registration_failed' });
+        expect(onOpenTarget).not.toHaveBeenCalled();
+        unsubscribe();
+    });
+
+    it('binds an external service target to the browser opener and refuses an unmappable target', async () => {
         const openDetailsTab = vi.fn();
         const openInBrowser = bindServicesOpenInBrowser({
             openDetailsTab,
@@ -233,17 +286,40 @@ describe('openBrowserTargetInWorkspace', () => {
             platform: 'web',
         });
 
-        openInBrowser(serviceTargetWithBrowserTarget);
+        await openInBrowser({ ...serviceTargetWithBrowserTarget, source: 'terminal_url', browserTarget: externalTarget });
         expect(openDetailsTab).toHaveBeenCalledTimes(1);
         const [tab] = openDetailsTab.mock.calls[0] as [DetailsTab];
-        expect(readTabTarget(tab)).toEqual(localServicePreviewTarget);
+        expect(readTabTarget(tab)).toEqual(externalTarget);
 
         openDetailsTab.mockClear();
-        openInBrowser({
+        await openInBrowser({
             ...serviceTargetWithoutBrowserTarget,
             machineId: '',
         } as LocalServiceLaunchTargetV1);
         expect(openDetailsTab).not.toHaveBeenCalled();
+    });
+
+    it('preserves a registered preview resource scope instead of the viewing session', async () => {
+        for (const sessionId of ['session_123', undefined]) {
+            machineRpcMock.mockClear();
+            const browserTarget = { ...localServicePreviewTarget, sessionId };
+            const resource = {
+                previewId: browserTarget.targetId, machineId: browserTarget.machineId, sessionId,
+                owner: { kind: 'user', id: 'account_123' }, target: { scheme: 'http', host: '127.0.0.1', port: 5173 },
+                initialPath: { pathname: '/', search: '' }, display: { title: 'Kitchen Sink', addressLabel: 'localhost:5173' }, originMode: 'host', browserTarget,
+            };
+            const preview = { previewId: resource.previewId, resource, accessUrl: 'https://preview-123.preview.test/?previewToken=fresh', expiresAt: 61_000, diagnostics: [] };
+            machineRpcMock.mockResolvedValueOnce({ protocolVersion: 1, status: 'existing', preview, snapshot: { v: 1, machineId: resource.machineId, generatedAt: 1_000, refreshState: 'idle', resources: [resource], previews: [preview], diagnostics: [] } });
+            const onOpenTarget = vi.fn();
+            const open = bindServicesOpenInBrowser({ onOpenTarget, platform: 'web', sessionId: 'viewing_session' });
+            expect(await open({
+                ...serviceTargetWithBrowserTarget, source: 'registered_preview', browserTarget, sessionId,
+            })).toEqual({ status: 'succeeded' });
+            expect(machineRpcMock).toHaveBeenCalledWith(expect.objectContaining({
+                payload: { machineId: 'machine_123', ...(sessionId ? { sessionId } : {}), launchTargetId: 'preview_123' },
+            }));
+            expect(onOpenTarget).toHaveBeenCalledWith(browserTarget, { platform: 'web', currentUrl: preview.accessUrl });
+        }
     });
 
     it('honors a caller-resolved open: a row-provided policy + url seed the record without re-evaluating', () => {

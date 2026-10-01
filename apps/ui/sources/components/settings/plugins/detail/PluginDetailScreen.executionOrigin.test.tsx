@@ -128,6 +128,7 @@ function flushAsync(): Promise<void> {
 vi.mock('expo-router', () => ({
     Redirect: 'Redirect',
     useNavigation: () => ({ setOptions: vi.fn() }),
+    usePathname: () => '/settings/plugins/acme.tools',
 }));
 
 vi.mock('@/components/ui/lists/Item', () => ({
@@ -161,19 +162,17 @@ vi.mock('@/sync/domains/plugins/availability/projection', () => ({
 vi.mock('@/sync/domains/machines/useMachineInventorySnapshots', () => ({
     useAllProfileMachineInventorySnapshots: () => fixture.snapshots,
 }));
-vi.mock('@/sync/store/hooks', () => ({
-    useSetting: () => fixture.selections,
-    useSettingsVersion: () => 7,
-}));
-vi.mock('@/sync/domains/state/storageStore', () => ({
-    storage: {
-        getState: () => ({
-            settings: {
-                machineAdministrationSelectionsV1: fixture.selections,
-            },
-        }),
-    },
-}));
+// Persistent storage boundary: the module's whole runtime surface is
+// `storage` + `getStorage`, both backed by the canonical live store mock, so
+// the real settings hooks read the fixture's selections and version.
+vi.mock('@/sync/domains/state/storageStore', async () => {
+    const { createLiveStorageStoreMock } = await import('@/dev/testkit/mocks/storage');
+    const store = createLiveStorageStoreMock(() => ({
+        settings: { machineAdministrationSelectionsV1: fixture.selections } as never,
+        settingsVersion: 7,
+    }));
+    return { storage: store, getStorage: () => store };
+});
 vi.mock('@/sync/runtime/getSyncSingleton', () => ({
     getSyncSingleton: () => ({ mutateAccountSettingsOnce: mutateAccountSettingsOnceMock }),
 }));
@@ -211,6 +210,7 @@ vi.mock('./PluginDetailHeader', () => ({
 }));
 vi.mock('./PluginDetailSummaryGrid', () => ({ PluginDetailSummaryGrid: 'PluginDetailSummaryGrid' }));
 vi.mock('../PluginAccountDataEraseRecoverySection', () => ({ PluginAccountDataEraseRecoverySection: 'PluginAccountDataEraseRecoverySection' }));
+vi.mock('./PluginDetailLeaveActions', () => ({ PluginDetailLeaveActions: 'PluginDetailLeaveActions' }));
 vi.mock('../PluginAccountReleaseSelectionSection', () => ({ PluginAccountReleaseSelectionSection: 'PluginAccountReleaseSelectionSection' }));
 vi.mock('../PluginReadOnlySnapshotNotice', () => ({ PluginReadOnlySnapshotNotice: 'PluginReadOnlySnapshotNotice' }));
 vi.mock('../model/usePluginSettingsScreenState', () => ({
@@ -257,7 +257,6 @@ describe('PluginDetailScreen execution-origin ownership', () => {
         }]]);
         fixture.selections = {
             v: 1,
-            targetsByKey: {},
             pluginExecutionOriginsByPluginId: {},
         };
         fixture.materializationAdmission = availableAdmission(1, [materializationFor(ORIGIN_A)]);
@@ -306,8 +305,10 @@ describe('PluginDetailScreen execution-origin ownership', () => {
             screen.tree.update(<RerenderablePluginDetailScreen pluginId="acme.plugin" revision={2} />);
             await flushAsync();
         });
+        // The current-origin row names the server and, on its own line, the
+        // materialized version running there.
         expect(screen.findByTestId('settings.plugins.detail.executionOrigin.current')?.props)
-            .toMatchObject({ title: 'machine-a', subtitle: 'srv_a', selected: true });
+            .toMatchObject({ title: 'machine-a', subtitle: 'srv_a\ncommon.version 1.0.0', selected: true });
         expect(screen.findByTestId('settings.plugins.detail.acme.plugin.invocationLogs.target')?.props)
             .toMatchObject({ title: 'machine-a', subtitle: 'srv_a', selected: true });
         expect(screen.findByTestId('settings.plugins.detail.acme.plugin.accountRelease')?.props)
@@ -328,7 +329,6 @@ describe('PluginDetailScreen execution-origin ownership', () => {
 
         fixture.selections = {
             v: 1,
-            targetsByKey: {},
             pluginExecutionOriginsByPluginId: { 'acme.plugin': ORIGIN_B },
         };
         fixture.materializationAdmission = availableAdmission(2, [materializationFor(ORIGIN_B)]);
@@ -339,8 +339,10 @@ describe('PluginDetailScreen execution-origin ownership', () => {
         });
 
         expect(mutateAccountSettingsOnceMock).toHaveBeenCalledOnce();
+        // The current-origin row names the server and, on its own line, the
+        // materialized version running there.
         expect(screen.findByTestId('settings.plugins.detail.executionOrigin.current')?.props)
-            .toMatchObject({ title: 'machine-b', subtitle: 'srv_b', selected: true });
+            .toMatchObject({ title: 'machine-b', subtitle: 'srv_b\ncommon.version 1.0.0', selected: true });
         expect(screen.findByTestId('settings.plugins.detail.acme.plugin.invocationLogs.target')?.props)
             .toMatchObject({ title: 'machine-b', subtitle: 'srv_b', selected: true });
         await act(async () => {
@@ -379,18 +381,24 @@ describe('PluginDetailScreen execution-origin ownership', () => {
             await flushAsync();
         });
 
+        // The administration target is the "Manage on [machine]" context bar:
+        // its label names the fact, its chip is the canonical selector.
         expect(administrationTargetSelectorSpy).toHaveBeenCalledWith(expect.objectContaining({
             selection: administrationTargetSelection,
-            groupTitle: 'settingsPlugins.administrationMachineTitle',
+            presentation: 'chip',
             testIDPrefix: 'settings.plugins.detail.administration.target',
         }));
+        expect(screen.findAll((node) => (
+            node.props?.children === 'settingsPlugins.administrationMachineTitle'
+        )).length).toBeGreaterThan(0);
         expect(screen.findAll((node) => (
             (node.type as unknown) === 'ItemGroup'
             && node.props?.title === 'settingsPlugins.executionOriginTitle'
         ))).toHaveLength(1);
         expect(screen.findAllByProps({ title: 'settingsProviders.detail.targetMachine' })).toHaveLength(0);
 
-        // Screen-reader order: the administration target precedes the
+        // Screen-reader order: the administration context bar sits above the
+        // entity header (the entity-page pattern) and so precedes the
         // execution-origin section and every consequential control after it.
         const hostNodes = screen.findAll((node) => typeof node.type === 'string');
         const headerIndex = hostNodes.findIndex((node) => (node.type as unknown) === 'PluginDetailHeader');
@@ -398,9 +406,9 @@ describe('PluginDetailScreen execution-origin ownership', () => {
         const executionOriginIndex = hostNodes.findIndex((node) => (
             (node.type as unknown) === 'ItemGroup' && node.props?.title === 'settingsPlugins.executionOriginTitle'
         ));
-        expect(headerIndex).toBeGreaterThanOrEqual(0);
-        expect(administrationIndex).toBeGreaterThan(headerIndex);
-        expect(executionOriginIndex).toBeGreaterThan(administrationIndex);
+        expect(administrationIndex).toBeGreaterThanOrEqual(0);
+        expect(headerIndex).toBeGreaterThan(administrationIndex);
+        expect(executionOriginIndex).toBeGreaterThan(headerIndex);
     });
 
     /**
@@ -418,11 +426,10 @@ describe('PluginDetailScreen execution-origin ownership', () => {
             await flushAsync();
         });
 
-        // `findByTestId` returns null on a miss, so `toBeDefined()` would pass
-        // against the unwired screen. Assert the instance itself is truthy.
-        expect(screen.findByTestId('settings.plugins.detail.machineMatrix.acme.plugin.summary'))
-            .toBeTruthy();
-        expect(screen.findByTestId('settings.plugins.detail.machineMatrix.acme.plugin.cell')?.props)
-            .toMatchObject({ title: 'machine-a', mode: 'info' });
+        // The Machines summary answers it at once: where the plugin is current,
+        // by name, with no disclosure to open. `findByTestId` returns null on a
+        // miss, so assert the instance itself.
+        expect(screen.findByTestId('settings.plugins.detail.machineMatrix.summary')?.props)
+            .toMatchObject({ subtitle: 'machine-a', mode: 'info' });
     });
 });

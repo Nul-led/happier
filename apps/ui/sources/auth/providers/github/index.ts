@@ -3,7 +3,7 @@ import { createExternalOAuthProvider } from '@/auth/providers/externalOAuthProvi
 export const githubAuthProvider = createExternalOAuthProvider({
     id: 'github',
     displayName: 'GitHub',
-    badgeIconName: 'logo-github',
+    badgeIconName: 'github-logo',
     supportsProfileBadge: true,
     connectButtonColor: '#24292e',
 });

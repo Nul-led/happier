@@ -39,7 +39,7 @@ describe('BrowserSurfaceOpenButton', () => {
         featureState.viewTargets = 'enabled';
 
         const screen = await renderScreen(
-            <BrowserSurfaceOpenButton testID="browser-open" onPress={onPress} />,
+            <BrowserSurfaceOpenButton size={44} testID="browser-open" onPress={onPress} />,
         );
 
         expect(screen.findByTestId('browser-open')?.props.accessibilityState).toEqual({ disabled: false });
@@ -56,7 +56,7 @@ describe('BrowserSurfaceOpenButton', () => {
         featureState.viewTargets = 'disabled';
 
         const screen = await renderScreen(
-            <BrowserSurfaceOpenButton testID="browser-open" onPress={onPress} />,
+            <BrowserSurfaceOpenButton size={44} testID="browser-open" onPress={onPress} />,
         );
 
         const button = screen.findByTestId('browser-open');
@@ -75,7 +75,7 @@ describe('BrowserSurfaceOpenButton', () => {
         featureState.browser = 'disabled';
         featureState.viewTargets = 'enabled';
         const browserOffScreen = await renderScreen(
-            <BrowserSurfaceOpenButton testID="browser-open" onPress={vi.fn()} />,
+            <BrowserSurfaceOpenButton size={44} testID="browser-open" onPress={vi.fn()} />,
         );
         const browserOffHint = browserOffScreen.findByTestId('browser-open')?.props.accessibilityHint as string;
         expect(browserOffHint).not.toContain('browser_disabled');
@@ -86,7 +86,7 @@ describe('BrowserSurfaceOpenButton', () => {
         featureState.browser = 'enabled';
         featureState.viewTargets = 'disabled';
         const viewTargetsOffScreen = await renderScreen(
-            <BrowserSurfaceOpenButton testID="browser-open" onPress={vi.fn()} />,
+            <BrowserSurfaceOpenButton size={44} testID="browser-open" onPress={vi.fn()} />,
         );
         const viewTargetsOffHint = viewTargetsOffScreen.findByTestId('browser-open')?.props.accessibilityHint as string;
         expect(viewTargetsOffHint).not.toContain('view_targets_disabled');

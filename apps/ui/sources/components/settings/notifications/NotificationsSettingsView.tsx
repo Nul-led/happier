@@ -1,10 +1,12 @@
 import * as React from 'react';
 
 import { Platform } from 'react-native';
-import { useRouter } from 'expo-router';
+import { useRouter } from '@/components/appShell/workspace/destinationRoute';
 
 import { sendExpoLocalNotification } from '@/activity/notifications/channels/sendExpoLocalNotification';
 import { ItemList } from '@/components/ui/lists/ItemList';
+import { ItemGroup } from '@/components/ui/lists/ItemGroup';
+import { Item } from '@/components/ui/lists/Item';
 import { useFeatureDetails } from '@/hooks/server/useFeatureDetails';
 import {
     deriveAttentionDeviceOverridesV1FromLegacyLocalSettings,
@@ -51,6 +53,10 @@ import { useActiveServerSnapshot } from '@/hooks/server/useActiveServerSnapshot'
 import { useServerProfilesGeneration } from '@/hooks/server/useServerProfilesGeneration';
 import { getServerProfileById } from '@/sync/domains/server/serverProfiles';
 import { useFeatureEnabled } from '@/hooks/server/useFeatureEnabled';
+import { SettingsPageHeader } from '@/components/settings/shell/SettingsPageHeader';
+import { NOTIFICATIONS_SETTINGS } from '@/components/settings/notifications/notificationsSettings';
+import { settingRendersOnHost } from '@/components/settings/catalog/settingDeclarations';
+import { SettingSection } from '@/components/settings/shell/SettingRow';
 
 export const NotificationsSettingsView = React.memo(function NotificationsSettingsView() {
     const router = useRouter();
@@ -276,11 +282,91 @@ export const NotificationsSettingsView = React.memo(function NotificationsSettin
         });
     }, [attentionPolicy.sounds.defaultSoundId, localSettings.attentionDeviceOverridesV1.sounds.enabled]);
 
-    const showIosActivitySurfaceSections = Platform.OS === 'ios';
-    const showSharedDesktopActivitySurfaceSettings = !showIosActivitySurfaceSections && isDesktopHost();
+    const showIosActivitySurfaceSections = settingRendersOnHost(NOTIFICATIONS_SETTINGS.settings.liveActivitiesEnabled);
+    const showSharedDesktopActivitySurfaceSettings = !showIosActivitySurfaceSections
+        && settingRendersOnHost(NOTIFICATIONS_SETTINGS.settings.enabled);
 
     return (
-        <ItemList style={{ paddingTop: 0 }} testID="settings-notifications-screen">
+        <ItemList style={{ paddingTop: 0 }} testID="settings-notifications-screen" presentation="page">
+            <SettingsPageHeader description={t('settingsNotifications.pageDescription')} />
+            {isDesktopHost() ? (
+                <NotificationDesktopPermissionSection />
+            ) : null}
+            <NotificationPushSection
+                homeName={activeHomeName}
+                pushEnabled={pushEnabled}
+                setPushEnabled={setPushEnabled}
+                openPushTroubleshooting={openPushTroubleshooting}
+            />
+            <NotificationTypesSection
+                policy={attentionPolicy}
+                pushEnabled={pushEnabled}
+                setEventEnabled={setExpoPushEventEnabled}
+                setReadyPreviewEnabled={setExpoPushReadyPreviewEnabled}
+                setRequestPreviewEnabled={setExpoPushRequestPreviewEnabled}
+            />
+            <NotificationSoundsSection
+                policy={attentionPolicy}
+                deviceOverrides={localSettings.attentionDeviceOverridesV1}
+                previewSupported={previewSupported}
+                setAccountSoundPreset={setAccountSoundPreset}
+                setDeviceSoundsEnabled={setDeviceSoundsEnabled}
+                previewSound={previewSound}
+            />
+            <NotificationQuietHoursSection
+                policy={attentionPolicy}
+                deviceOverride={localSettings.attentionDeviceOverridesV1.quietHoursOverride}
+                setAccountQuietHours={(quietHours) => setAttentionPolicy({ quietHours })}
+                setDeviceQuietHoursOverride={(quietHoursOverride) => setLocalSetting({
+                    attentionDeviceOverridesV1: {
+                        ...localSettings.attentionDeviceOverridesV1,
+                        quietHoursOverride,
+                    },
+                })}
+            />
+            <SessionAutoFollowPreferencesSection key={activeServer.serverId} serverId={activeServer.serverId} />
+            <SettingSection section={NOTIFICATIONS_SETTINGS.sectionRefs.remoteAlerts}>
+            {followingEnabled ? <NotificationRemoteAlertsSection
+                homeName={activeHomeName}
+                accountEnabled={settings.sessionRemoteAlertsEnabled}
+                deviceEnabled={localSettings.deviceRemoteAlertsEnabled}
+                nativeDevice={settingRendersOnHost(NOTIFICATIONS_SETTINGS.settings.device)}
+                registration={remoteAlerts.registration}
+                setAccountEnabled={(enabled) => {
+                    applySettings({ sessionRemoteAlertsEnabled: enabled });
+                    schedulePushTokenReconciliation();
+                }}
+                setDeviceEnabled={(enabled) => {
+                    applyLocalSettings({ deviceRemoteAlertsEnabled: enabled });
+                    schedulePushTokenReconciliation();
+                }}
+                refresh={() => {
+                    schedulePushTokenReconciliation();
+                    remoteAlerts.refresh();
+                }}
+            /> : (
+                <ItemGroup title={t('settingsNotifications.remoteAlerts.title')}>
+                    <Item
+                        testID="settings-notifications-remote-unavailable"
+                        title={t('settingsNotifications.remoteAlerts.unavailable')}
+                        mode="info"
+                        showChevron={false}
+                    />
+                </ItemGroup>
+            )}
+            </SettingSection>
+            <NotificationLocalDeviceSection
+                localSettings={localSettings}
+                setLocalSetting={setLocalSetting}
+            />
+            <NotificationForegroundBehaviorSection
+                localSettings={localSettings}
+                setLocalSetting={setLocalSetting}
+            />
+            <NotificationBadgesSection
+                localSettings={localSettings}
+                setLocalSetting={setLocalSetting}
+            />
             {showIosActivitySurfaceSections ? (
                 <>
                     <ActivitySurfacesSettingsSection
@@ -300,77 +386,9 @@ export const NotificationsSettingsView = React.memo(function NotificationsSettin
                     renderMode="shared_only"
                 />
             ) : null}
-
-            <NotificationBadgesSection
-                localSettings={localSettings}
-                setLocalSetting={setLocalSetting}
-            />
-            <NotificationLocalDeviceSection
-                localSettings={localSettings}
-                setLocalSetting={setLocalSetting}
-            />
-            {isDesktopHost() ? (
-                <NotificationDesktopPermissionSection />
-            ) : null}
-            <NotificationQuietHoursSection
-                policy={attentionPolicy}
-                deviceOverride={localSettings.attentionDeviceOverridesV1.quietHoursOverride}
-                setAccountQuietHours={(quietHours) => setAttentionPolicy({ quietHours })}
-                setDeviceQuietHoursOverride={(quietHoursOverride) => setLocalSetting({
-                    attentionDeviceOverridesV1: {
-                        ...localSettings.attentionDeviceOverridesV1,
-                        quietHoursOverride,
-                    },
-                })}
-            />
-            <NotificationSoundsSection
-                policy={attentionPolicy}
-                deviceOverrides={localSettings.attentionDeviceOverridesV1}
-                previewSupported={previewSupported}
-                setAccountSoundPreset={setAccountSoundPreset}
-                setDeviceSoundsEnabled={setDeviceSoundsEnabled}
-                previewSound={previewSound}
-            />
-            <SessionAutoFollowPreferencesSection key={activeServer.serverId} serverId={activeServer.serverId} />
-            <NotificationPushSection
-                homeName={activeHomeName}
-                pushEnabled={pushEnabled}
-                setPushEnabled={setPushEnabled}
-                openPushTroubleshooting={openPushTroubleshooting}
-            />
-            {followingEnabled ? <NotificationRemoteAlertsSection
-                homeName={activeHomeName}
-                accountEnabled={settings.sessionRemoteAlertsEnabled}
-                deviceEnabled={localSettings.deviceRemoteAlertsEnabled}
-                nativeDevice={Platform.OS === 'ios' || Platform.OS === 'android'}
-                registration={remoteAlerts.registration}
-                setAccountEnabled={(enabled) => {
-                    applySettings({ sessionRemoteAlertsEnabled: enabled });
-                    schedulePushTokenReconciliation();
-                }}
-                setDeviceEnabled={(enabled) => {
-                    applyLocalSettings({ deviceRemoteAlertsEnabled: enabled });
-                    schedulePushTokenReconciliation();
-                }}
-                refresh={() => {
-                    schedulePushTokenReconciliation();
-                    remoteAlerts.refresh();
-                }}
-            /> : null}
             <NotificationWebhooksSection
                 webhookChannels={webhookChannels}
                 setWebhookChannels={setWebhookChannels}
-            />
-            <NotificationTypesSection
-                policy={attentionPolicy}
-                pushEnabled={pushEnabled}
-                setEventEnabled={setExpoPushEventEnabled}
-                setReadyPreviewEnabled={setExpoPushReadyPreviewEnabled}
-                setRequestPreviewEnabled={setExpoPushRequestPreviewEnabled}
-            />
-            <NotificationForegroundBehaviorSection
-                localSettings={localSettings}
-                setLocalSetting={setLocalSetting}
             />
         </ItemList>
     );

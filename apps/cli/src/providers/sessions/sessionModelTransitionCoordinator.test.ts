@@ -21,7 +21,7 @@ import {
 } from './sessionModelTransitionCoordinator';
 
 const native = (modelId: string): ProviderBoundModelRef => ({
-  agentTargetKey: 'backend:claude',
+  agentTargetKey: 'agent:happier.agent.claude/claude',
   providerConnectionId: null,
   modelId,
 });
@@ -30,7 +30,7 @@ const provider = (
   connectionId: string,
   modelId: string,
 ): ProviderBoundModelRef => ({
-  agentTargetKey: 'backend:claude',
+  agentTargetKey: 'agent:happier.agent.claude/claude',
   providerConnectionId: ProviderConnectionIdSchema.parse(connectionId),
   modelId,
 });
@@ -42,7 +42,7 @@ const runtimeBindingBasis = (
 ): ProviderRuntimeBindingBasisV1 => ({
   v: 1,
   deployment: { kind: 'external' },
-  agentTargetKey: 'backend:claude',
+  agentTargetKey: 'agent:happier.agent.claude/claude',
   connectionId,
   contributionKey: 'provider.test',
   endpoint: {
@@ -155,7 +155,7 @@ function managedRuntimeBindingBasis(
       },
       purposeBindings,
     },
-    agentTargetKey: 'backend:claude',
+    agentTargetKey: 'agent:happier.agent.claude/claude',
     connectionId,
     contributionKey: 'provider.test',
     endpoint: {
@@ -261,6 +261,7 @@ function deferred<T>() {
 }
 
 function createHarness(params?: Readonly<{
+  authorize?: Parameters<typeof createSessionModelTransitionCoordinator>[0]['authorize'];
   initial?: ProviderBoundModelRef;
   initialTarget?: AuthorizedSessionModelTransitionTarget;
   authoritativeRuntimeReadback?: boolean;
@@ -274,7 +275,7 @@ function createHarness(params?: Readonly<{
     ?? provider('pc_work', 'old');
   let currentRun = true;
   const events: string[] = [];
-  const authorize = vi.fn(async (selection: ProviderBoundModelRef) => authorized(selection));
+  const authorize = vi.fn(params?.authorize ?? (async (selection: ProviderBoundModelRef) => authorized(selection)));
   const publishIntent = vi.fn<
     (
       selection: ProviderBoundModelRef,
@@ -318,7 +319,7 @@ function createHarness(params?: Readonly<{
   );
   const coordinator = createSessionModelTransitionCoordinator({
     runId: 'run-1',
-    agentTargetKey: 'backend:claude',
+    agentTargetKey: 'agent:happier.agent.claude/claude',
     initialActiveTarget: params?.initialTarget ?? authorized(current),
     isCurrentRun: () => currentRun,
     checkCurrentPublisherAuthority:
@@ -360,6 +361,25 @@ function createHarness(params?: Readonly<{
 }
 
 describe('createSessionModelTransitionCoordinator', () => {
+  it('checks each caller before coalescing an unrestricted native transition', async () => {
+    const initial = native('A');
+    const requested = native('B');
+    const harness = createHarness({
+      initial,
+      authorize: createSessionModelTransitionAuthorizer({
+        agentId: 'claude', machineId: 'm1', sessionId: 's1', nativeModelApplyPolicy: 'live',
+        readActiveTarget: () => ({ selection: initial, sessionBindingMetadata: null, runtimeBindingBasis: null }),
+      }),
+    });
+    const unrestricted = harness.coordinator.submit(requested, { source: 'command' });
+    const restricted = harness.coordinator.submit(requested, {
+      source: 'command', callerInputConstraints: { models: [initial], permissionModes: null },
+    });
+    await expect(restricted).resolves.toMatchObject({ ok: false, reason: 'model_not_granted' });
+    await expect(unrestricted).resolves.toMatchObject({ ok: true, activeSelection: requested });
+    expect(harness.readCurrent()).toEqual(requested);
+    await harness.coordinator.dispose();
+  });
   it('does not treat a legacy void runtime outcome as authoritative transition proof', () => {
     expect(
       mapRuntimeConfigUpdateOutcomeToSessionModelTransitionApplyResult(

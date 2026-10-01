@@ -33,16 +33,12 @@ installSettingsViewCommonModuleMocks({
     },
 });
 
-vi.mock('@/hooks/server/useServerRetentionPolicies', () => ({
-    useServerRetentionPolicies: () => ({}),
-}));
-
 vi.mock('@/components/ui/lists/ItemGroup', () => ({
     ItemGroup: ({ children, title }: any) => React.createElement('ItemGroup', { title }, children),
 }));
 
 vi.mock('@/components/ui/lists/Item', () => ({
-    Item: (props: any) => React.createElement('Item', props),
+    Item: (props: any) => React.createElement('Item', props, props.rightElement),
 }));
 
 vi.mock('@/components/ui/lists/ItemRowActions', () => ({
@@ -78,7 +74,7 @@ describe('SavedServersSection web actions', () => {
         expect(row?.props?.onPress).toBeUndefined();
     });
 
-    it('exposes stable inline switch action test ids for saved server rows on web', async () => {
+    it('keeps the stable switch test id on the row action and the rarer actions in its menu on web', async () => {
         const { SavedServersSection } = await import('./SavedServersSection');
 
         const screen = await renderScreen(React.createElement(SavedServersSection, {
@@ -102,19 +98,13 @@ describe('SavedServersSection web actions', () => {
             onRemove: vi.fn(),
         }));
 
-        const row = screen.findByType('Item' as never);
-        const rowActions = row?.props?.rightElement;
-        expect(rowActions?.props?.actions).toEqual(
-            expect.arrayContaining([
-                expect.objectContaining({
-                    id: 'switch-device',
-                    inlineTestID: 'saved-server-switch-server-b',
-                    accessibilityLabel: 'server.makeDefaultOnDevice: Secondary',
-                }),
-                expect.objectContaining({ id: 'rename', accessibilityLabel: 'common.rename: Secondary' }),
-                expect.objectContaining({ id: 'remove', accessibilityLabel: 'common.remove: Secondary' }),
-            ]),
-        );
+        expect(screen.findByTestId('saved-server-switch-server-b')).not.toBeNull();
+        const rowActions = screen.findByType('ItemRowActions' as never);
+        expect(rowActions?.props?.actions).toEqual([
+            expect.objectContaining({ id: 'switch-device', accessibilityLabel: 'server.makeDefaultOnDevice: Secondary' }),
+            expect.objectContaining({ id: 'rename', accessibilityLabel: 'common.rename: Secondary' }),
+            expect.objectContaining({ id: 'remove', accessibilityLabel: 'common.remove: Secondary' }),
+        ]);
     });
 
     it('marks identity-backed saved server rows active and reads auth by server identity id', async () => {
@@ -144,7 +134,8 @@ describe('SavedServersSection web actions', () => {
 
         const row = screen.findByTestId('saved-server-row-server-host-derived');
         expect(row?.props?.selected).toBe(true);
-        expect(row?.props?.subtitle).toContain('server.signedIn');
+        expect(row?.props?.subtitle).toBe('status.unknown');
+        expect(row?.props?.accessibilityLabel).toContain('server.homes.currentPill');
     });
 
     it('shows one truthful status without URL or retention metadata in each Home row', async () => {
@@ -174,7 +165,10 @@ describe('SavedServersSection web actions', () => {
             activeServerId: 'server-a',
             deviceDefaultServerId: 'server-a',
             authStatusByServerId: { 'server-a': 'signedIn', 'server-b': 'signedIn' },
-            connectionStatusByServerId: { 'server-a': 'connected', 'server-b': 'disconnected' },
+            homeConnectionSummaryByServerId: {
+                'server-a': { kind: 'connected', statusLabelKey: 'connectionStatus.summary.connected', statusKey: 'connected', action: 'none' },
+                'server-b': { kind: 'unavailable', statusLabelKey: 'connectionStatus.summary.unavailable', statusKey: 'error', action: 'none' },
+            },
             onSwitch: vi.fn(),
             onRename: vi.fn(),
             onRemove: vi.fn(),
@@ -182,14 +176,14 @@ describe('SavedServersSection web actions', () => {
 
         const focused = screen.findByTestId('saved-server-row-server-a');
         const offline = screen.findByTestId('saved-server-row-server-b');
-        expect(focused?.props?.subtitle).toBe('status.connected');
-        expect(focused?.props?.detail).toBeUndefined();
-        expect(focused?.props?.accessibilityLabel).toBe('Focused Home With A Very Long Name, status.connected');
+        // The current Home's line is its state; "default" is said to assistive tech (below).
+        expect(focused?.props?.subtitle).toBe('connectionStatus.summary.connected');
+        expect(focused?.props?.accessibilityLabel).toBe('Focused Home With A Very Long Name, connectionStatus.summary.connected, server.homes.currentPill · homesHub.opensFirst');
         expect(focused?.props?.subtitle).not.toContain('focused.example');
         expect(focused?.props?.titleLines).toBe(1);
         expect(focused?.props?.titleEllipsizeMode).toBe('tail');
-        expect(offline?.props?.subtitle).toBe('status.disconnected');
-        expect(offline?.props?.accessibilityLabel).toBe('Offline Home, status.disconnected');
+        expect(offline?.props?.subtitle).toBe('connectionStatus.summary.unavailable');
+        expect(offline?.props?.accessibilityLabel).toBe('Offline Home, connectionStatus.summary.unavailable');
     });
 
     it('disambiguates same-named Home actions without exposing URLs in the visible row', async () => {
@@ -218,7 +212,10 @@ describe('SavedServersSection web actions', () => {
             ],
             activeServerId: 'server-a',
             authStatusByServerId: { 'server-a': 'signedIn', 'server-b': 'signedIn' },
-            connectionStatusByServerId: { 'server-a': 'connected', 'server-b': 'connected' },
+            homeConnectionSummaryByServerId: {
+                'server-a': { kind: 'connected', statusLabelKey: 'connectionStatus.summary.connected', statusKey: 'connected', action: 'none' },
+                'server-b': { kind: 'connected', statusLabelKey: 'connectionStatus.summary.connected', statusKey: 'connected', action: 'none' },
+            },
             onSwitch: vi.fn(),
             onRename: vi.fn(),
             onRemove: vi.fn(),
@@ -226,8 +223,11 @@ describe('SavedServersSection web actions', () => {
 
         const first = screen.findByTestId('saved-server-row-server-a');
         const second = screen.findByTestId('saved-server-row-server-b');
-        expect(first?.props.subtitle).toBe('status.connected');
-        expect(second?.props.subtitle).toBe('status.connected');
+        // The visible status line carries the connection and Home facts, never the URL.
+        expect(first?.props.subtitle).toMatch(/^connectionStatus\.summary\.connected( · |$)/);
+        expect(second?.props.subtitle).toMatch(/^connectionStatus\.summary\.connected( · |$)/);
+        expect(first?.props.subtitle).not.toContain('example');
+        expect(second?.props.subtitle).not.toContain('example');
         expect(first?.props.accessibilityLabel).toContain('first.example');
         expect(second?.props.accessibilityLabel).toContain('second.example');
         expect(first?.props.accessibilityLabel).not.toBe(second?.props.accessibilityLabel);

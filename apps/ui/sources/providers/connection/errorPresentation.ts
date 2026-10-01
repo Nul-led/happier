@@ -26,6 +26,14 @@ export type ProviderErrorPresentation = Readonly<{
 type ProviderErrorCopy = Pick<ProviderErrorPresentation, 'titleKey' | 'descriptionKey'>;
 
 const PRESENTATIONS = Object.freeze({
+    model_not_granted: {
+        titleKey: 'session.pendingMessages.admissionRejected.modelNotGranted',
+        descriptionKey: 'settingsProviders.errors.actions.chooseModel',
+    },
+    permission_mode_not_granted: {
+        titleKey: 'session.pendingMessages.admissionRejected.permissionModeNotGranted',
+        descriptionKey: 'settingsProviders.errors.actions.reviewAccountGrant',
+    },
     provider_secret_missing: {
         titleKey: 'settingsProviders.errors.secretMissingTitle',
         descriptionKey: 'settingsProviders.errors.secretMissingDescription',
@@ -101,6 +109,22 @@ const PRESENTATIONS = Object.freeze({
     provider_machine_unavailable: {
         titleKey: 'settingsProviders.errors.machineUnavailableTitle',
         descriptionKey: 'settingsProviders.errors.machineUnavailableDescription',
+    },
+    machine_offline: {
+        titleKey: 'newSession.machineOfflineInlineTitle',
+        descriptionKey: 'newSession.machineOfflineInlineBody',
+    },
+    agent_unavailable: {
+        titleKey: 'newSession.daemonRpcUnavailableTitle',
+        descriptionKey: 'newSession.actionMethodUnavailable',
+    },
+    agent_timeout: {
+        titleKey: 'newSession.sessionTimeout',
+        descriptionKey: 'externalSessions.browseAgentTimedOut',
+    },
+    agent_error: {
+        titleKey: 'externalSessions.operationStatusFailed',
+        descriptionKey: 'externalSessions.browseAgentFailed',
     },
     provider_probe_capacity_exhausted: {
         titleKey: 'settingsProviders.errors.probeCapacityTitle',

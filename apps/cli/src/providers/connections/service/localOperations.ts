@@ -271,6 +271,7 @@ export function createProviderLocalOperations(context: ProviderConnectionService
             registry: resolveProviderContributionRegistryView(
               runtimeRegistryLease.registry.contributes,
               registryGeneration,
+              runtimeRegistryLease.registry.readPluginOccurrenceId,
             ),
             generation: String(registryGeneration),
           })

@@ -14,6 +14,7 @@ import type { TeamCredentialRequestProtocolKindV1 } from '@happier-dev/protocol/
  * which the terminal report carries as `measurement: 'unavailable'`.
  */
 export type ExternalProviderTerminalTokenObservation = Readonly<{
+    outcome: 'succeeded' | 'failed';
     actualModelId: string | null;
     tokens: UsageObservationTokens | null;
 }>;
@@ -61,14 +62,14 @@ function anthropicTokens(usage: JsonObject): UsageObservationTokens | null {
     const output = readCount(usage.output_tokens);
     const cacheRead = readCount(usage.cache_read_input_tokens);
     const cacheWrite = readCount(usage.cache_creation_input_tokens);
-    if (input === null && output === null && cacheRead === null && cacheWrite === null) return null;
+    if (input === null || output === null) return null;
     return Object.freeze({
-        input: input ?? 0,
-        output: output ?? 0,
+        input,
+        output,
         reasoning: 0,
         cacheRead: cacheRead ?? 0,
         cacheWrite: cacheWrite ?? 0,
-        total: (input ?? 0) + (output ?? 0) + (cacheRead ?? 0) + (cacheWrite ?? 0),
+        total: input + output + (cacheRead ?? 0) + (cacheWrite ?? 0),
     });
 }
 
@@ -89,16 +90,17 @@ function openAiTokens(
 ): UsageObservationTokens | null {
     const input = readCount(usage[fields.input]);
     const output = readCount(usage[fields.output]);
-    if (input === null && output === null) return null;
+    const total = readCount(usage.total_tokens);
+    if (input === null || output === null || total === null) return null;
     const cacheRead = nestedCount(usage[fields.inputDetails], fields.cached);
     const reasoning = nestedCount(usage[fields.outputDetails], 'reasoning_tokens');
     return Object.freeze({
-        input: input ?? 0,
-        output: output ?? 0,
+        input,
+        output,
         reasoning: reasoning ?? 0,
         cacheRead: cacheRead ?? 0,
         cacheWrite: 0,
-        total: readCount(usage.total_tokens) ?? (input ?? 0) + (output ?? 0),
+        total,
     });
 }
 
@@ -124,18 +126,6 @@ function routeTokens(
         outputDetails: 'completion_tokens_details',
         cached: 'cached_tokens',
     });
-}
-
-/** The Provider payload that carries the terminal usage block for this route. */
-function terminalCarrier(
-    routeKind: TeamCredentialRequestProtocolKindV1,
-    payload: JsonObject,
-): JsonObject | null {
-    if (routeKind !== 'openai_responses') return payload;
-    // A Responses event wraps the whole response object; the completed one is
-    // the only event that carries the terminal usage.
-    const response = payload.response;
-    return isObject(response) ? response : payload;
 }
 
 function parseJsonObject(text: string): JsonObject | null {
@@ -164,32 +154,56 @@ export function createExternalProviderTerminalTokenReader(input: Readonly<{
     let pending = '';
     let modelId: string | null = null;
     let tokens: UsageObservationTokens | null = null;
+    let completed = false;
+    let failed = false;
+    let anthropicInitialTokens: UsageObservationTokens | null = null;
+    let anthropicFinalOutput: number | null = null;
 
     const observeStreamedPayload = (payload: JsonObject): void => {
-        const carrier = terminalCarrier(input.routeKind, payload);
-        if (!carrier) return;
-        modelId = readModelId(carrier.model) ?? modelId;
-        if (input.routeKind === 'anthropic_messages' && isObject(carrier.message)) {
-            modelId = readModelId(carrier.message.model) ?? modelId;
+        if (payload.type === 'error' || payload.error != null) {
+            failed = true;
+            return;
         }
-        const usage = input.routeKind === 'anthropic_messages' && isObject(carrier.message)
-            ? carrier.message.usage
-            : carrier.usage;
-        const observed = routeTokens(input.routeKind, usage);
-        if (!observed) return;
-        // Anthropic splits one request across `message_start` (prompt and cache)
-        // and `message_delta` (completion), so each half is merged into the one
-        // terminal fact instead of replacing it.
-        tokens = input.routeKind === 'anthropic_messages' && tokens
-            ? Object.freeze({
-                input: Math.max(tokens.input, observed.input),
-                output: Math.max(tokens.output, observed.output),
-                reasoning: 0,
-                cacheRead: Math.max(tokens.cacheRead, observed.cacheRead),
-                cacheWrite: Math.max(tokens.cacheWrite, observed.cacheWrite),
-                total: 0,
-            })
-            : observed;
+        if (input.routeKind === 'anthropic_messages') {
+            if (payload.type === 'message_start' && isObject(payload.message)) {
+                modelId = readModelId(payload.message.model);
+                anthropicInitialTokens = routeTokens(input.routeKind, payload.message.usage);
+            } else if (payload.type === 'message_delta' && isObject(payload.usage)) {
+                anthropicFinalOutput = readCount(payload.usage.output_tokens);
+            } else if (payload.type === 'message_stop') {
+                completed = true;
+            }
+            return;
+        }
+        if (input.routeKind === 'openai_responses') {
+            if (payload.type === 'response.failed' || payload.type === 'response.incomplete') {
+                failed = true;
+            } else if (payload.type === 'response.completed' && isObject(payload.response)) {
+                completed = true;
+                if (payload.response.error != null
+                    || (payload.response.status != null && payload.response.status !== 'completed')) {
+                    failed = true;
+                } else {
+                    modelId = readModelId(payload.response.model);
+                    tokens = routeTokens(input.routeKind, payload.response.usage);
+                }
+            }
+            return;
+        }
+        modelId = readModelId(payload.model) ?? modelId;
+        // Only the final include_usage chunk reports the whole Chat request.
+        if (Array.isArray(payload.choices) && payload.choices.length === 0) {
+            tokens = routeTokens(input.routeKind, payload.usage);
+        }
+    };
+
+    const observeStreamedData = (data: string): void => {
+        if (data === '[DONE]' && input.routeKind === 'openai_chat_completions') {
+            completed = true;
+            return;
+        }
+        const payload = parseJsonObject(data);
+        if (payload) observeStreamedPayload(payload);
     };
 
     const drainStreamedLines = (final: boolean): void => {
@@ -199,12 +213,10 @@ export function createExternalProviderTerminalTokenReader(input: Readonly<{
             const line = pending.slice(0, breakIndex).trimEnd();
             pending = pending.slice(breakIndex + 1);
             if (!line.startsWith('data:')) continue;
-            const payload = parseJsonObject(line.slice('data:'.length).trim());
-            if (payload) observeStreamedPayload(payload);
+            observeStreamedData(line.slice('data:'.length).trim());
         }
         if (!final || !pending.startsWith('data:')) return;
-        const payload = parseJsonObject(pending.slice('data:'.length).trim());
-        if (payload) observeStreamedPayload(payload);
+        observeStreamedData(pending.slice('data:'.length).trim());
         pending = '';
     };
 
@@ -221,26 +233,45 @@ export function createExternalProviderTerminalTokenReader(input: Readonly<{
             }
         },
         read(): ExternalProviderTerminalTokenObservation {
-            if (overflowed) return Object.freeze({ actualModelId: null, tokens: null });
+            if (overflowed) {
+                return Object.freeze({ outcome: failed || !completed ? 'failed' : 'succeeded', actualModelId: null, tokens: null });
+            }
             pending += decoder.decode();
             if (streamed) {
                 drainStreamedLines(true);
+                failed ||= !completed;
+                if (input.routeKind === 'anthropic_messages' && anthropicInitialTokens && anthropicFinalOutput !== null) {
+                    tokens = Object.freeze({
+                        ...anthropicInitialTokens,
+                        output: anthropicFinalOutput,
+                        total: anthropicInitialTokens.input + anthropicFinalOutput
+                            + anthropicInitialTokens.cacheRead + anthropicInitialTokens.cacheWrite,
+                    });
+                }
             } else {
                 const payload = parseJsonObject(pending);
                 if (payload) {
-                    const carrier = terminalCarrier(input.routeKind, payload);
-                    modelId = readModelId(carrier?.model) ?? modelId;
-                    tokens = routeTokens(input.routeKind, carrier?.usage) ?? tokens;
+                    failed = payload.type === 'error' || payload.error != null
+                        || (input.routeKind === 'openai_responses'
+                            && ['failed', 'incomplete', 'cancelled'].includes(String(payload.status)));
+                    completed = input.routeKind === 'openai_responses'
+                        ? payload.status === 'completed'
+                        : input.routeKind === 'anthropic_messages'
+                            ? payload.type === 'message' && typeof payload.stop_reason === 'string' && payload.stop_reason.length > 0
+                            : Array.isArray(payload.choices) && payload.choices.length > 0
+                                && payload.choices.every((choice) => isObject(choice)
+                                    && typeof choice.finish_reason === 'string' && choice.finish_reason.length > 0);
+                    modelId = readModelId(payload.model);
+                    if (completed) {
+                        tokens = routeTokens(input.routeKind, payload.usage);
+                    }
                 }
+                failed ||= !completed;
                 pending = '';
             }
-            const merged = tokens && input.routeKind === 'anthropic_messages'
-                ? Object.freeze({
-                    ...tokens,
-                    total: tokens.input + tokens.output + tokens.cacheRead + tokens.cacheWrite,
-                })
-                : tokens;
-            return Object.freeze({ actualModelId: modelId, tokens: merged });
+            return failed
+                ? Object.freeze({ outcome: 'failed', actualModelId: null, tokens: null })
+                : Object.freeze({ outcome: 'succeeded', actualModelId: modelId, tokens });
         },
     });
 }

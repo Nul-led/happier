@@ -34,15 +34,17 @@ import {
   KeyChallengeV2IssueResponseSchema,
   canonicalizeKeyChallengeV2AudienceOrigin,
   createKeyChallengeV2SigningInput,
+  deriveAccountMachineKeyFromRecoverySecret,
   encodeBase64,
   encodePasswordCredentialFieldV1,
   formatRecoveryKey,
+  signAccountContentKeyBindingV1,
 } from '@happier-dev/protocol';
 
 import { createHttpStatusError, isAuthenticationStatus } from '@/api/client/httpStatusError';
 import { resolveServerHttpBaseUrl } from '@/api/client/serverHttpBaseUrl';
 import { configuration } from '@/configuration';
-import { decodeJwtPayload } from '@/cloud/decodeJwtPayload';
+import { readAccountIdFromToken } from '@/cloud/decodeJwtPayload';
 import { fetchServerFeaturesSnapshot } from '@/features/serverFeaturesClient';
 import { hasStoredSessionCredentialProvenance, readStoredCredentials, writeCredentialsLegacy, writeCredentialsTokenOnly } from '@/persistence';
 import {
@@ -222,15 +224,25 @@ async function redeemNativePasswordChallenge(input: Readonly<{
     throw new NativeEmailCommandError('authentication_failed');
   }
   const keyPair = tweetnacl.sign.keyPair.fromSeed(input.secret);
+  const contentPrivateKey = deriveAccountMachineKeyFromRecoverySecret(input.secret);
+  const contentPublicKey = tweetnacl.box.keyPair.fromSecretKey(contentPrivateKey).publicKey;
+  contentPrivateKey.fill(0);
+  const contentPublicKeySig = signAccountContentKeyBindingV1({
+    accountSigningSecretKey: keyPair.secretKey,
+    contentPublicKey,
+  });
   const signingInput = createKeyChallengeV2SigningInput({
     ...input.challenge,
     ...(input.expectedAccountId ? { expectedAccountId: input.expectedAccountId } : {}),
     ...(input.requireExistingAccount ? { requireExistingAccount: true } : {}),
   });
   const request = KeyChallengeV2AuthRequestSchema.parse({
+    credentialKind: 'terminal',
     challengeId: input.challenge.challengeId,
     publicKey: encodeBase64(keyPair.publicKey),
     signature: encodeBase64(tweetnacl.sign.detached(signingInput, keyPair.secretKey)),
+    contentPublicKey: encodeBase64(contentPublicKey),
+    contentPublicKeySig: encodeBase64(contentPublicKeySig),
     ...(input.expectedAccountId ? { expectedAccountId: input.expectedAccountId } : {}),
     ...(input.requireExistingAccount ? { requireExistingAccount: true } : {}),
   });
@@ -243,7 +255,43 @@ async function redeemNativePasswordChallenge(input: Readonly<{
   if (response.status < 200 || response.status >= 300) {
     throwNativeResponseFailure(response.data);
   }
-  return NativeEmailPasswordLoginResponseV1Schema.parse(response.data).token;
+  // /v1/auth includes `success: true`; the native-email finalizer's response
+  // schema is strict and only describes its own { token } endpoint.
+  return NativeEmailPasswordLoginResponseV1Schema.passthrough().parse(response.data).token;
+}
+
+/** Verified existing-Account sign-in shared by explicit recovery and retained-secret repair. */
+export async function authenticateExistingAccountWithLegacySecret(input: Readonly<{
+  secret: Uint8Array;
+  serverApiUrl: string;
+  serverIdentityId: string;
+  signal?: AbortSignal;
+}>): Promise<string> {
+  const captured: CapturedNativeAttempt = {
+    serverId: configuration.activeServerId,
+    serverApiUrl: input.serverApiUrl,
+    serverIdentityId: input.serverIdentityId,
+    normalizedEmail: '',
+    invitationToken: null,
+  };
+  const issued = await postNative({
+    path: '/v1/auth/challenge',
+    body: {},
+    serverApiUrl: input.serverApiUrl,
+    ...(input.signal ? { signal: input.signal } : {}),
+  });
+  if (issued.status < 200 || issued.status >= 300) throw new NativeEmailCommandError('authentication_failed');
+  const challenge = KeyChallengeV2IssueResponseSchema.parse(issued.data);
+  assertStillCaptured(captured);
+  const token = await redeemNativePasswordChallenge({
+    captured,
+    challenge,
+    secret: input.secret,
+    requireExistingAccount: true,
+    ...(input.signal ? { signal: input.signal } : {}),
+  });
+  assertStillCaptured(captured);
+  return token;
 }
 
 export async function handleAuthEmailNativeCommand(args: string[], signal?: AbortSignal): Promise<void> {
@@ -379,7 +427,7 @@ async function handleNativeLogin(args: string[], signal?: AbortSignal): Promise<
       }
     }
     if (routing.kind !== 'plain_password') throw new NativeEmailCommandError('unsupported');
-    const loginRequest = NativeEmailPasswordLoginRequestV1Schema.parse({ v: 1, email: emailFlag, password });
+    const loginRequest = NativeEmailPasswordLoginRequestV1Schema.parse({ v: 1, email: emailFlag, password, credentialKind: 'terminal' });
     const login = await postNative({
       path: NATIVE_AUTH_EMAIL_LOGIN_PATH_V1,
       body: loginRequest,
@@ -392,14 +440,7 @@ async function handleNativeLogin(args: string[], signal?: AbortSignal): Promise<
     assertStillCaptured(captured);
     // Plain login issues the existing token-only credential; no recovery
     // secret or content key is fabricated for a keyless Account.
-    const accountId = (() => {
-      try {
-        const sub = decodeJwtPayload(token)?.sub;
-        return typeof sub === 'string' && sub.trim() ? sub.trim() : null;
-      } catch {
-        return null;
-      }
-    })();
+    const accountId = readAccountIdFromToken(token);
     // Captured continuation: exact Home identity plus the optional bounded
     // invitation reference survive into the stored result. Invitation
     // consumption stays with the Lane 01 owner; login never mints membership.
@@ -502,6 +543,7 @@ async function handleNativeProvision(args: string[], signal?: AbortSignal): Prom
     if (mode === 'plain') {
       provisionRequest = NativeEmailPasswordProvisionRequestV1Schema.parse({
         v: 1,
+        credentialKind: 'terminal',
         email: emailFlag,
         admission,
         account: { mode: 'plain', password },
@@ -533,6 +575,7 @@ async function handleNativeProvision(args: string[], signal?: AbortSignal): Prom
       try {
         provisionRequest = NativeEmailPasswordProvisionRequestV1Schema.parse({
           v: 1,
+          credentialKind: 'terminal',
           email: emailFlag,
           admission,
           account: {
@@ -843,23 +886,12 @@ async function handleRecoveryKey(args: string[], signal?: AbortSignal): Promise<
           normalizedEmail: '',
           invitationToken: null,
         };
-        const issued = await postNative({
-          path: '/v1/auth/challenge',
-          body: {},
-          serverApiUrl,
-          ...(signal ? { signal } : {}),
-        });
-        if (issued.status < 200 || issued.status >= 300) throw new NativeEmailCommandError('authentication_failed');
-        const challenge = KeyChallengeV2IssueResponseSchema.parse(issued.data);
-        assertStillCaptured(captured);
-        const token = await redeemNativePasswordChallenge({
-          captured,
-          challenge,
+        const token = await authenticateExistingAccountWithLegacySecret({
           secret: parsed.bytes,
-          requireExistingAccount: true,
+          serverApiUrl,
+          serverIdentityId,
           ...(signal ? { signal } : {}),
         });
-        assertStillCaptured(captured);
         const credentials = { token, encryption: { type: 'legacy' as const, secret: parsed.bytes } };
         const { registerMachineWithAuthenticatedHomeRuntime } = await import('@/ui/auth');
         const registration = await registerMachineWithAuthenticatedHomeRuntime({
@@ -870,14 +902,7 @@ async function handleRecoveryKey(args: string[], signal?: AbortSignal): Promise<
         signal?.throwIfAborted();
         assertStillCaptured(captured);
         await writeCredentialsLegacy({ token, secret: parsed.bytes });
-        const accountId = (() => {
-          try {
-            const sub = decodeJwtPayload(token)?.sub;
-            return typeof sub === 'string' && sub.trim() ? sub.trim() : null;
-          } catch {
-            return null;
-          }
-        })();
+        const accountId = readAccountIdFromToken(token);
         const data = { accountId, serverId, machineId: registration.machineId };
         if (wantsJson(args)) await printJsonEnvelope({ ok: true, kind, data });
         else console.log('Recovery-key authentication successful.');

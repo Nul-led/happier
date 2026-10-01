@@ -33,7 +33,7 @@ describe('readPersistedProviderResumeState', () => {
         v: 1,
         updatedAt: 123,
         selection: {
-          agentTargetKey: 'backend:codex',
+          agentTargetKey: 'agent:happier.agent.codex/codex',
           providerConnectionId: 'pc_gateway',
           modelId: 'vendor/model',
         },
@@ -43,7 +43,7 @@ describe('readPersistedProviderResumeState', () => {
       v: 1,
       updatedAt: 123,
       ref: {
-        agentTargetKey: 'backend:codex',
+        agentTargetKey: 'agent:happier.agent.codex/codex',
         providerConnectionId: 'pc_gateway',
         modelId: 'vendor/model',
       },
@@ -61,7 +61,7 @@ describe('readPersistedProviderResumeState', () => {
         v: 1,
         updatedAt: 123,
         selection: {
-          agentTargetKey: 'backend:codex',
+          agentTargetKey: 'agent:happier.agent.codex/codex',
           providerConnectionId: 'pc_gateway',
           modelId: 'vendor/model',
         },
@@ -71,7 +71,7 @@ describe('readPersistedProviderResumeState', () => {
         v: 1,
         updatedAt: 123,
         ref: {
-          agentTargetKey: 'backend:codex',
+          agentTargetKey: 'agent:happier.agent.codex/codex',
           providerConnectionId: 'pc_gateway',
           modelId: 'vendor/model',
         },
@@ -91,7 +91,7 @@ describe('readPersistedProviderResumeState', () => {
         v: 1,
         updatedAt: 123,
         selection: {
-          agentTargetKey: 'backend:codex',
+          agentTargetKey: 'agent:happier.agent.codex/codex',
           providerConnectionId: 'pc_other',
           modelId: 'vendor/model',
         },
@@ -101,7 +101,7 @@ describe('readPersistedProviderResumeState', () => {
         v: 1,
         updatedAt: 123,
         ref: {
-          agentTargetKey: 'backend:codex',
+          agentTargetKey: 'agent:happier.agent.codex/codex',
           providerConnectionId: 'pc_other',
           modelId: 'vendor/model',
         },
@@ -126,7 +126,7 @@ describe('readPersistedProviderResumeState', () => {
         v: 1,
         updatedAt: 123,
         selection: {
-          agentTargetKey: 'backend:codex',
+          agentTargetKey: 'agent:happier.agent.codex/codex',
           providerConnectionId: 'pc_gateway',
           modelId: 'vendor/model',
         },
@@ -136,7 +136,7 @@ describe('readPersistedProviderResumeState', () => {
         v: 1,
         updatedAt: 123,
         ref: {
-          agentTargetKey: 'backend:codex',
+          agentTargetKey: 'agent:happier.agent.codex/codex',
           providerConnectionId: 'pc_gateway',
           modelId: 'vendor/model',
         },
@@ -153,7 +153,7 @@ describe('readPersistedProviderResumeState', () => {
         v: 1,
         updatedAt: 123,
         selection: {
-          agentTargetKey: 'backend:codex',
+          agentTargetKey: 'agent:happier.agent.codex/codex',
           providerConnectionId: 'pc_gateway',
           modelId: 'vendor/model',
         },
@@ -163,7 +163,7 @@ describe('readPersistedProviderResumeState', () => {
         v: 1,
         updatedAt: 123,
         ref: {
-          agentTargetKey: 'backend:codex',
+          agentTargetKey: 'agent:happier.agent.codex/codex',
           providerConnectionId: 'pc_gateway',
           modelId: 'vendor/model',
         },
@@ -198,7 +198,7 @@ describe('readPersistedProviderResumeState', () => {
       v: 1,
       updatedAt: 123,
       selection: {
-        agentTargetKey: 'backend:codex',
+        agentTargetKey: 'agent:happier.agent.codex/codex',
         providerConnectionId: 'pc_gateway',
       },
     };
@@ -227,7 +227,7 @@ describe('readPersistedProviderResumeState', () => {
         v: 1,
         updatedAt: 123,
         selection: {
-          agentTargetKey: 'backend:codex',
+          agentTargetKey: 'agent:happier.agent.codex/codex',
           providerConnectionId: ' invalid-connection-id ',
           modelId: 'vendor/model',
         },
@@ -244,7 +244,7 @@ describe('readPersistedProviderResumeState', () => {
         v: 1,
         updatedAt: 123,
         selection: {
-          agentTargetKey: 'backend:codex',
+          agentTargetKey: 'agent:happier.agent.codex/codex',
           providerConnectionId: null,
           modelId: 'native-model',
         },
@@ -254,7 +254,7 @@ describe('readPersistedProviderResumeState', () => {
         v: 1,
         updatedAt: 123,
         ref: {
-          agentTargetKey: 'backend:codex',
+          agentTargetKey: 'agent:happier.agent.codex/codex',
           providerConnectionId: null,
           modelId: 'native-model',
         },
@@ -274,7 +274,7 @@ describe('readPersistedProviderResumeState', () => {
         v: 1,
         updatedAt: 123,
         selection: {
-          agentTargetKey: 'backend:codex',
+          agentTargetKey: 'agent:happier.agent.codex/codex',
           modelId: 'vendor/model',
         },
       },

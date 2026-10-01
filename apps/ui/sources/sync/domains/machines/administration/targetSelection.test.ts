@@ -201,11 +201,35 @@ describe('resolveMachineAdministrationTargetState', () => {
         })).toEqual({ kind: 'offline', target: machineA.target, snapshot: machineA });
     });
 
+    it('does not call a saved target missing when no caller says its Home\'s list was read', () => {
+        const storedTarget = { serverIdentityId: 'srv_one', machineId: 'machine-a' };
+        expect(resolveMachineAdministrationTargetState({ storedTarget, candidates: [] }))
+            .toEqual({ kind: 'missing', target: storedTarget, snapshot: null, inventoryKnown: false });
+    });
+
+    it('does not call a saved target missing while its Home\'s machine list is unread', () => {
+        const storedTarget = { serverIdentityId: 'srv_one', machineId: 'machine-a' };
+        const other = candidate({ serverIdentityId: 'srv_two', machineId: 'machine-b' });
+
+        expect(resolveMachineAdministrationTargetState({
+            storedTarget,
+            candidates: [other],
+            isInventoryKnown: (serverIdentityId) => serverIdentityId === 'srv_two',
+        })).toEqual({ kind: 'missing', target: storedTarget, snapshot: null, inventoryKnown: false });
+        // Once that Home's list is read and the machine is still absent, it is really gone.
+        expect(resolveMachineAdministrationTargetState({
+            storedTarget,
+            candidates: [other],
+            isInventoryKnown: () => true,
+        })).toEqual({ kind: 'missing', target: storedTarget, snapshot: null });
+    });
+
     it('keeps missing and replaced targets as tombstones instead of roaming', () => {
         const storedTarget = { serverIdentityId: 'srv_one', machineId: 'machine-a' };
         const replacement = candidate({ serverIdentityId: 'srv_one', machineId: 'machine-b' });
 
         expect(resolveMachineAdministrationTargetState({
+            isInventoryKnown: () => true,
             storedTarget,
             candidates: [replacement],
         })).toEqual({ kind: 'missing', target: storedTarget, snapshot: null });

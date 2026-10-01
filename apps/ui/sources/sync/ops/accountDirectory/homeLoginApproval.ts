@@ -23,8 +23,8 @@ import {
 } from '@/auth/enrollment/homeEnrollmentTransport';
 import {
     adoptHomeProfileWithCredentials,
-    HomeProfileAdoptionPartialCommitError,
-    type HomeProfileCredentialRollbackOutcome,
+    isHomeProfileAdoptionPartialCommitFailure,
+    type HomeProfileAdoptionPartialCommitFailure,
 } from '@/sync/domains/server/adoptHomeProfile';
 import {
     observeAuthenticatedServerFeaturesFresh,
@@ -68,8 +68,7 @@ export type HomeLoginContinuationResult =
         kind: 'partial_commit';
         homeServerIdentityId: string;
         canonicalServerUrl: string;
-        adoptionError: unknown;
-        rollbackOutcome: Exclude<HomeProfileCredentialRollbackOutcome, { kind: 'succeeded' }>;
+        error: HomeProfileAdoptionPartialCommitFailure;
     }>
     | Readonly<{ kind: 'failed'; error?: unknown }>;
 
@@ -394,13 +393,14 @@ export async function continueHomeLoginEnrollment(input: Readonly<{
                             shouldCancel: () => isCancelled(cancellationState),
                         });
                     } catch (error) {
-                        if (error instanceof HomeProfileAdoptionPartialCommitError) {
+                        if (isHomeProfileAdoptionPartialCommitFailure(error)) {
                             throw new HomeEnrollmentBoundaryError({
                                 kind: 'partial_commit',
                                 homeServerIdentityId: error.serverIdentityId,
-                                canonicalServerUrl: error.canonicalServerUrl,
-                                adoptionError: error.adoptionError,
-                                rollbackOutcome: error.rollbackOutcome,
+                                canonicalServerUrl: 'canonicalServerUrl' in error
+                                    ? error.canonicalServerUrl
+                                    : error.toCanonicalServerUrl,
+                                error,
                             });
                         }
                         if (error instanceof HomeEnrollmentBoundaryError) throw error;
@@ -442,6 +442,15 @@ export async function continueHomeLoginEnrollment(input: Readonly<{
         );
     }
     if (result.kind === 'verification_failed') {
+        if ('stage' in result && result.stage === 'post_redemption') {
+            return createExplicitResumeContinuation(
+                continuationInput,
+                'home_observation_unavailable',
+                input.approvalId && input.approvalExpiresAtMs !== undefined
+                    ? { approvalId: input.approvalId, expiresAtMs: input.approvalExpiresAtMs }
+                    : undefined,
+            );
+        }
         return result.reason === 'redemption_expired' ? { kind: 'expired' } : { kind: 'failed' };
     }
     if (result.error instanceof HomeEnrollmentBoundaryError) return result.error.result;

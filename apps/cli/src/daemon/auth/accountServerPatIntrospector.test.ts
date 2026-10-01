@@ -1,12 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { API_TOKEN_FULL_GRANT_V1 } from '@happier-dev/protocol';
 
 const post = vi.hoisted(() => vi.fn());
 
 vi.mock("axios", () => ({ default: { post } }));
-vi.mock("@/api/client/serverHttpBaseUrl", () => ({
-    resolveServerHttpBaseUrl: () => "https://account.example.test/",
-    normalizeServerHttpBaseUrl: (url: string) => url.replace(/\/+$/, ""),
-}));
 
 import { createAccountServerPatIntrospector } from "./accountServerPatIntrospector";
 
@@ -35,6 +32,9 @@ describe("createAccountServerPatIntrospector", () => {
                 credentialId: CREDENTIAL_ID,
                 expiresAt: "2030-08-22T12:01:00.000Z",
                 authority: "account_automation",
+                grant: { ...API_TOKEN_FULL_GRANT_V1, permissionModes: ['default'] },
+                parentTokenId: null,
+                embedConfig: null,
             },
         });
         const introspect = createAccountServerPatIntrospector({ daemonConnectionToken: "daemon-connection-token", serverBaseUrl: SERVER_BASE_URL });
@@ -46,6 +46,7 @@ describe("createAccountServerPatIntrospector", () => {
             credentialId: CREDENTIAL_ID,
             expiresAt: new Date("2030-08-22T12:01:00.000Z"),
             authority: "account_automation",
+            grant: { ...API_TOKEN_FULL_GRANT_V1, permissionModes: ['default'] },
         });
 
         expect(post).toHaveBeenCalledWith(

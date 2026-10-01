@@ -9,14 +9,19 @@ const identityExecuteMock = vi.hoisted(() => vi.fn());
 const routerReplaceMock = vi.hoisted(() => vi.fn());
 const canMutateMock = vi.hoisted(() => ({ current: true }));
 
-vi.mock('expo-router', () => ({
-    useRouter: () => ({ replace: routerReplaceMock }),
-    useNavigation: () => ({ addListener: () => () => {}, dispatch: vi.fn(), setOptions: vi.fn() }),
-}));
+vi.mock('expo-router', async () => {
+    const { createExpoRouterMock } = await import('@/dev/testkit/mocks/router');
+    return createExpoRouterMock({ router: { replace: routerReplaceMock } }).module;
+});
 vi.mock('@/components/ui/forms/FieldItem', () => ({ FieldItem: 'FieldItem' }));
-vi.mock('@/components/ui/lists/Item', () => ({ Item: 'Item' }));
+// Rows render their right-hand control, as the real row does; page fields are text inputs.
+vi.mock('@/components/ui/lists/Item', async () => {
+    const React = await import('react');
+    return { Item: (props: { rightElement?: unknown }) => React.createElement('Item', props, props.rightElement as never) };
+});
+vi.mock('@/components/ui/forms/FieldTextInput', () => ({ FieldTextInput: 'TextInput' }));
 vi.mock('@/components/ui/lists/ItemGroup', () => ({ ItemGroup: 'ItemGroup' }));
-vi.mock('@/components/ui/text/Text', () => ({ TextInput: 'TextInput' }));
+vi.mock('@/components/ui/text/Text', () => ({ Text: 'Text', TextInput: 'TextInput' }));
 vi.mock('@/text', () => ({ t: (key: string) => key }));
 // The generated bundled-plugin inventory is an unrelated build boundary and
 // is intentionally absent from synchronized source-only test targets.
@@ -26,11 +31,11 @@ vi.mock('@/sync/domains/plugins/availability/generatedBundledPluginUiArtifacts',
 vi.mock('@/sync/domains/plugins/availability/bundledAppExactArtifactSource', () => ({
     createBundledPluginUiAppExactArtifactSource: () => Object.freeze({
         kind: 'appExact' as const,
-        readFile: async () => null,
+        fetch: async () => null,
     }),
     createBundledPluginUiAppExactArtifactSourceFromInventory: () => Object.freeze({
         kind: 'appExact' as const,
-        readFile: async () => null,
+        fetch: async () => null,
     }),
 }));
 vi.mock('@/sync/domains/plugins/availability/reader', () => ({
@@ -175,12 +180,14 @@ describe('TeamIdentityProviderSetupScreen', () => {
     it('finishes Team attachment when the approved connection Action returns its result', async () => {
         providerExecuteMock.mockResolvedValue({ kind: 'succeeded', value: provider() });
         let complete: ((value: Readonly<{ connection: Readonly<{ id: string }> }>) => void | Promise<void>) | undefined;
+        let fail: ((code: string) => void) | undefined;
         identityExecuteMock.mockImplementationOnce(async (
             _actionId: string,
             _input: unknown,
-            options?: Readonly<{ onApprovalSucceeded?: typeof complete }>,
+            options?: Readonly<{ onApprovalSucceeded?: typeof complete; onApprovalFailed?: typeof fail }>,
         ) => {
             complete = options?.onApprovalSucceeded;
+            fail = options?.onApprovalFailed;
             return {
                 ok: false,
                 approvalPending: true,
@@ -196,8 +203,13 @@ describe('TeamIdentityProviderSetupScreen', () => {
         await screen.pressByTestIdAsync('team-oidc-create');
         expect(routerReplaceMock).not.toHaveBeenCalled();
         expect(complete).toBeTypeOf('function');
-        expect(screen.findByTestId('team-oidc-create')?.parent?.props.footer)
+        expect(screen.findByTestId('team-oidc-create')?.parent?.props.description)
             .not.toBe('identityAdministration.error');
+
+        await act(async () => fail?.('approval_rejected'));
+        await vi.waitFor(() => expect(screen.findByTestId('team-oidc-create')?.props.disabled).toBe(false));
+        expect(screen.findByTestId('team-oidc-create')?.parent?.props.description)
+            .toBe('identityAdministration.error');
 
         await complete?.({ connection: { id: 'connection-approved' } });
         expect(routerReplaceMock).toHaveBeenCalledWith(

@@ -9,7 +9,8 @@ const serverFetchMock = vi.hoisted(() => vi.fn());
 const accountAuthorityMock = vi.hoisted(() => vi.fn());
 const getCredentialsForServerUrlMock = vi.hoisted(() => vi.fn());
 
-vi.mock('@/sync/http/client', () => ({
+vi.mock('@/sync/http/client', async (importOriginal) => ({
+    ...await importOriginal<typeof import('@/sync/http/client')>(),
     serverFetch: serverFetchMock,
     createServerFetchAtEndpoint: vi.fn(() => runtimeFetchMock),
 }));
@@ -184,6 +185,62 @@ afterEach(async () => {
     vi.clearAllMocks();
 });
 
+describe('the exact Home contextual entry refusal', () => {
+    it.each(['disabled', 'endpoint_missing', 'invalid_payload', 'network'] as const)(
+        'keeps %s unavailable without offering authentication or admission', async (state) => {
+            await addCapableHome('Acme', 'https://feature-home.example');
+            await setServerProfileIdentityForUrl('https://feature-home.example', 'srv_feature_home');
+            // Child 02 TA-R4/TA-R18: contextual entry, not a cached features
+            // document, owns Team choices. The capable cache above cannot turn
+            // a current refusal or unreadable response into an offered action.
+            serverFetchMock.mockImplementation(async () => {
+                if (state === 'network') throw new Error('Home unreachable');
+                if (state === 'endpoint_missing') return new Response('', { status: 404 });
+                return new Response(JSON.stringify(state === 'disabled'
+                    ? { v: 1, state: 'unavailable', scope: { kind: 'invitation' }, reason: 'entry_not_available', autoRedirect: null }
+                    : { v: 99, state: 'admission_required', team: { name: 'Untrusted Team' }, actions: [] }));
+            });
+            runtimeFetchMock.mockResolvedValue(new Response(JSON.stringify({ error: 'feature-disabled' }), { status: 403 }));
+            const screen = await renderScreen(<TeamJoinScreen token={TOKEN} homeTarget="srv_feature_home" />);
+            await waitForTestId(screen, `team-auth-entry-${state === 'disabled' ? 'unavailable' : state === 'network' ? 'offline' : 'incompatible'}`);
+            expect(accountAuthorityMock).toHaveBeenCalledWith(expect.objectContaining({
+                scope: { serverId: 'srv_feature_home', accountId: 'account' },
+            }), expect.any(Function));
+            expect(screen.findByTestId('team-auth-entry-join')).toBeNull();
+            expect(screen.findByTestId('team-join-account-authentication')).toBeNull();
+            expect(screen.getTextContent()).not.toContain('Untrusted Team');
+            expect(runtimeFetchMock.mock.calls.some(([path]) => String(path).includes('/accept'))).toBe(false);
+            expect(screen.getTextContent()).not.toContain(t('teams.join.updateRequiredTitle'));
+        },
+    );
+
+    it.each(['disabled', 'endpoint_missing', 'invalid_payload', 'network'] as const)(
+        'uses the exact Home feature decision to explain an unreadable entry (%s)', async (state) => {
+            await addCapableHome('Acme', 'https://feature-home.example');
+            await setServerProfileIdentityForUrl('https://feature-home.example', 'srv_feature_home');
+            const features = createRootLayoutFeaturesResponse();
+            tryWriteServerEnabledBitInPlace(features, 'teams', false);
+            primeServerFeaturesSnapshot({ serverId: 'srv_feature_home', snapshot: state === 'disabled'
+                ? { status: 'ready', features }
+                : state === 'network'
+                    ? { status: 'error', reason: 'network' }
+                    : { status: 'unsupported', reason: state } });
+            serverFetchMock.mockResolvedValue(new Response(JSON.stringify({ v: 99 })));
+            runtimeFetchMock.mockResolvedValue(new Response('', { status: 503 }));
+            const screen = await renderScreen(<TeamJoinScreen token={TOKEN} homeTarget="srv_feature_home" />);
+            await waitForTestId(screen, 'team-auth-entry-incompatible');
+            expect(screen.findByTestId('team-auth-entry-join')).toBeNull();
+            expect(screen.findByTestId('team-join-account-authentication')).toBeNull();
+            if (state === 'endpoint_missing') {
+                expect(screen.getTextContent()).toContain(t('teams.join.updateRequiredTitle'));
+            } else {
+                expect(screen.getTextContent()).not.toContain(t('teams.join.updateRequiredTitle'));
+            }
+            if (state === 'disabled') expect(screen.getTextContent()).toContain(t('teams.unavailable.disabled'));
+        },
+    );
+});
+
 /**
  * Expo Router updates a mounted dynamic route's params in place, so opening a
  * second invitation reuses the same mounted screen. Every state that screen
@@ -297,6 +354,8 @@ describe('TeamJoinScreen', () => {
     });
 
     it('addresses the Home the carrier names even though its profile id differs', async () => {
+        runtimeFetchMock.mockResolvedValue(new Response('', { status: 503 }));
+        serverFetchMock.mockResolvedValue(new Response('', { status: 503 }));
         const other = await addCapableHome('Other', 'https://other-home.example');
         await setServerProfileIdentityForUrl('https://other-home.example', 'srv_other_home');
         await addCapableHome('Acme', 'https://acme-home.example');
@@ -353,8 +412,11 @@ describe('TeamJoinScreen', () => {
         expect(runtimeFetchMock).not.toHaveBeenCalled();
         expect(rendered.findByTestId('team-join-invalid')).not.toBeNull();
         expect(rendered.findByTestId('team-join-back')).not.toBeNull();
+        expect(rendered.findByTestId('team-join-shell')).not.toBeNull();
         expect(rendered.findAll((node) => node.props.role === 'status'
-            && node.props['aria-live'] === 'polite')).not.toHaveLength(0);
+            && node.props['aria-live'] === 'polite'
+            && node.props.accessibilityRole === 'text'
+            && node.props.accessibilityLiveRegion === 'polite')).not.toHaveLength(0);
     });
 
     it('switches Account before acceptance without consuming the invitation or changing Homes', async () => {
@@ -422,6 +484,7 @@ describe('TeamJoinScreen', () => {
             teamId: 'team-1',
             invitationToken: TOKEN,
             origin: 'home',
+            accountSelection: 'another',
         });
         expect(authentication?.props.nativeAdmission).toEqual({
             kind: 'team_invitation',

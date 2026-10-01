@@ -3,11 +3,13 @@ import { describe, expect, it, vi } from 'vitest';
 import type { CliServerFeaturesSnapshot } from '@/features/serverFeaturesClient';
 import { FeaturesResponseSchema, HomeConnectionDescriptorV1Schema } from '@happier-dev/protocol';
 import type { ResolvedHomeTarget } from '@happier-dev/cli-common/homeTarget';
+import { fetchServerFeaturesSnapshot } from '@/features/serverFeaturesClient';
 
 import {
   claimTerminalAuthRequest,
   createTerminalAuthRequest,
   readTerminalAuthRequestStatus,
+  resolveAuthenticatedExactHomeConnectionDescriptorObservation,
   verifyTerminalAuthEnrollmentRuntime,
 } from './terminalAuthEnrollmentClient';
 
@@ -62,6 +64,29 @@ function readyFeatures(params: Readonly<{
 }
 
 describe('terminal auth enrollment client', () => {
+  it('distinguishes an unreadable feature response from an absent Home identity', async () => {
+    const snapshot = await fetchServerFeaturesSnapshot({
+      serverUrl: 'https://home.example.test',
+      fetchImpl: async () => new Response(JSON.stringify({
+        features: 'unreadable',
+      })),
+    });
+    expect(snapshot).toEqual({ status: 'unsupported', reason: 'invalid_payload' });
+    const verify = (snapshot: CliServerFeaturesSnapshot) => verifyTerminalAuthEnrollmentRuntime({
+      target: STRICT_TARGET,
+      runtime: {
+        runtimeOrigin: 'http://127.0.0.1:48123',
+        carrier: 'iroh',
+        authenticatedCredentialDestination: { kind: 'iroh', endpointId: 'a'.repeat(64) },
+      },
+      snapshot,
+    });
+    let unreadableError: unknown;
+    try { verify(snapshot); } catch (error) { unreadableError = error; }
+    expect(unreadableError).toMatchObject({ code: 'HOME_FEATURES_UNREADABLE' });
+    expect(verify.bind(null, readyFeatures({ identity: '' }))).toThrow('Unable to verify the selected Home identity');
+  });
+
   it('sends request, status, and claim only through the explicit acquired runtime origin', async () => {
     const post = vi.fn(async (url: string) => ({ data: { url } }));
     const get = vi.fn(async (url: string) => ({ data: { url } }));
@@ -156,6 +181,18 @@ describe('terminal auth enrollment client', () => {
         applicationUrl: 'https://legacy.example.test',
       },
     });
+  });
+
+  it('distinguishes authenticated exact descriptor authority from public fallback', () => {
+    expect(resolveAuthenticatedExactHomeConnectionDescriptorObservation({
+      snapshot: readyFeatures({ provenance: 'authenticated' }),
+      expectedHomeServerIdentityId: DESCRIPTOR.homeServerIdentityId,
+    })).toEqual({ kind: 'available', descriptor: DESCRIPTOR });
+
+    expect(resolveAuthenticatedExactHomeConnectionDescriptorObservation({
+      snapshot: readyFeatures({ provenance: 'public' }),
+      expectedHomeServerIdentityId: DESCRIPTOR.homeServerIdentityId,
+    })).toEqual({ kind: 'unavailable' });
   });
 
   it('rejects URL-only admission over Iroh or a different HTTPS origin', () => {

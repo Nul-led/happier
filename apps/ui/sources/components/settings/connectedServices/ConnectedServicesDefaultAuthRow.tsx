@@ -1,6 +1,6 @@
 import * as React from 'react';
 import { Pressable, View } from 'react-native';
-import { StyleSheet, useUnistyles } from 'react-native-unistyles';
+import { StyleSheet } from 'react-native-unistyles';
 
 import {
     parseQualifiedPluginContributionKey,
@@ -21,12 +21,15 @@ import type {
     ConnectedServicesSelectionOptionAvailability,
 } from '@/components/sessions/new/components/buildNewSessionConnectedServicesSelectionListModel';
 
+import type { SettingRef } from '@/components/settings/catalog/settingDeclarations';
+import { SettingAnchor } from '@/components/settings/shell/SettingRow';
 import { Item } from '@/components/ui/lists/Item';
 import { Text } from '@/components/ui/text/Text';
 import { Modal } from '@/modal';
 import { NewSessionConnectedServicesSelectionContent } from '@/components/sessions/new/components/NewSessionConnectedServicesSelectionContent';
 import { useActionSettingsNarrowLayout } from '@/components/settings/actions/useActionSettingsNarrowLayout';
-import { t } from '@/text';
+import { getPreferredLanguage, t } from '@/text';
+import { useConnectedAccountIdentityPrivacy } from '@/hooks/ui/useConnectedAccountIdentityPrivacy';
 import {
     applyProjectedCredentialKindRestrictions,
     buildQualifiedConnectedAccountGroupOptionsByServiceId,
@@ -45,7 +48,6 @@ import {
     resolveConnectedServiceDisplayName,
     resolveQualifiedConnectedServiceRegistryDisplayName,
 } from './model/resolveConnectedServiceDisplayName';
-import { Icon } from '@/components/ui/icons/Icon';
 import {
     resolveConnectedServicesAuthLabel,
     type ConnectedServicesAuthWarningCode,
@@ -59,6 +61,8 @@ export type ConnectedServicesAgentDefaultAuthWrite = Readonly<{
 }>;
 
 export type ConnectedServicesDefaultAuthRowProps = Readonly<{
+    /** The search declaration this row answers for (the first agent row carries it). */
+    setting?: SettingRef;
     /** Canonical Agent routing id; it keys only the released service-keyed defaults. */
     agentId: string;
     /** The Agent's contribution identity: the consumer that keys its purpose defaults. */
@@ -134,8 +138,9 @@ function resolveReadyAutoSwitchPoolForProfile(params: Readonly<{
 }
 
 export function ConnectedServicesDefaultAuthRow(props: ConnectedServicesDefaultAuthRowProps) {
-    const { theme } = useUnistyles();
     const styles = stylesheet;
+    const { present } = useConnectedAccountIdentityPrivacy();
+    const locale = getPreferredLanguage();
     const connectedServicesRegistry = useProjectedConnectedServicesRegistry();
     const narrowLayout = useActionSettingsNarrowLayout();
     const [locallyDismissedKeys, setLocallyDismissedKeys] = React.useState<Readonly<Record<string, boolean>>>({});
@@ -154,6 +159,7 @@ export function ConnectedServicesDefaultAuthRow(props: ConnectedServicesDefaultA
             accounts: props.connectedAccountsV4 ?? [],
             supportedServiceIds: supportedServiceIds,
             labelsByKey: props.settings.connectedServicesProfileLabelByKey,
+            presentIdentity: present,
         }),
         connectedAccounts: props.connectedAccountPurposes,
     }), [
@@ -161,6 +167,7 @@ export function ConnectedServicesDefaultAuthRow(props: ConnectedServicesDefaultA
         props.connectedAccountPurposes,
         props.settings.connectedServicesProfileLabelByKey,
         supportedServiceIds,
+        present,
     ]);
 
     const accountGroupOptionsByServiceId = React.useMemo(() => buildQualifiedConnectedAccountGroupOptionsByServiceId({
@@ -274,25 +281,9 @@ export function ConnectedServicesDefaultAuthRow(props: ConnectedServicesDefaultA
         binding: ConnectedServicesServiceBinding;
     }>): ConnectedServicesSelectionOptionAvailability => {
         const state = authLabelModel.serviceStatesById[availabilityParams.serviceId];
-        const requestedBinding = availabilityParams.binding;
-        if (requestedBinding.source === 'team_resource') {
-            const resource = (props.teamCredentialResources ?? []).find((candidate) => (
-                candidate.id === requestedBinding.resourceId
-                && candidate.connectedServiceSelections.some((selection) => (
-                    areTeamResourceConnectedServiceSelectionsEqual(selection, requestedBinding)
-                ))
-            ));
-            if (resource && resource.readiness.kind !== 'available') {
-                return { subtitle: t('common.unavailable') };
-            }
-            // A default is a reference, not an entitlement (lane 10 child 02
-            // §11.6): it is current while this Home still offers the exact
-            // selection; it never pins a resource revision.
-            const current = resource !== undefined
-                && props.currentTeamCredentialResourceKeys?.has(`${resource.teamId}:${resource.id}`) === true
-                && resource.id === requestedBinding.resourceId;
-            if (!current) return { disabled: true, subtitle: t('common.unavailable') };
-        }
+        // The shared selection builder owns Team resource currentness and
+        // recovery. Keeping a second decision here would disable the repair
+        // action that the Settings parent already supplies.
         if (
             state?.warningCode
             && availabilityParams.optionId === `connected-service:${encodeURIComponent(availabilityParams.serviceId)}:native`
@@ -304,8 +295,7 @@ export function ConnectedServicesDefaultAuthRow(props: ConnectedServicesDefaultA
         return {};
     }, [
         authLabelModel.serviceStatesById,
-        props.currentTeamCredentialResourceKeys,
-        props.teamCredentialResources,
+        locale,
     ]);
 
     const openPicker = React.useCallback(() => {
@@ -317,6 +307,7 @@ export function ConnectedServicesDefaultAuthRow(props: ConnectedServicesDefaultA
                 groupOptionsByServiceId: accountGroupOptionsByServiceId,
                 bindingsByServiceId,
                 teamCredentialResources: props.teamCredentialResources,
+                teamCredentialResourceCurrentKeys: props.currentTeamCredentialResourceKeys,
                 teamNameById: props.teamNameById,
                 onRecoverTeamCredentialResource: props.onRecoverTeamCredentialResource,
                 setBindingForService,
@@ -341,6 +332,7 @@ export function ConnectedServicesDefaultAuthRow(props: ConnectedServicesDefaultA
         props.agentTitle,
         props.onOpenConnectedServicesSettings,
         props.onRecoverTeamCredentialResource,
+        props.currentTeamCredentialResourceKeys,
         props.settings.connectedServicesDefaultProfileByServiceId,
         props.teamCredentialResources,
         props.teamNameById,
@@ -388,22 +380,25 @@ export function ConnectedServicesDefaultAuthRow(props: ConnectedServicesDefaultA
 
     if (supportedServiceIds.length === 0) return null;
 
+    const row = (
+        <Item
+            testID={`settings-connected-services-default-auth-${props.agentId}`}
+            title={props.agentTitle}
+            // On a compact (mobile) layout the selected auth value is too long to sit in
+            // the row's right detail next to the title, so surface it in the subtitle and
+            // drop the detail. The wide layout keeps it on the right.
+            subtitle={narrowLayout
+                ? (warningLabel ?? authLabelModel.label)
+                : (warningLabel ?? t('connectedServices.defaultAuth.rowDetail'))}
+            detail={narrowLayout ? undefined : authLabelModel.label}
+            showChevron={true}
+            onPress={openPicker}
+        />
+    );
+
     return (
         <>
-            <Item
-                testID={`settings-connected-services-default-auth-${props.agentId}`}
-                title={props.agentTitle}
-                icon={<Icon name="key" size={20} color={theme.colors.accent.blue} />}
-                // On a compact (mobile) layout the selected auth value is too long to sit in
-                // the row's right detail next to the title, so surface it in the subtitle and
-                // drop the detail. The wide layout keeps it on the right.
-                subtitle={narrowLayout
-                    ? (warningLabel ?? authLabelModel.label)
-                    : (warningLabel ?? t('connectedServices.defaultAuth.rowDetail'))}
-                detail={narrowLayout ? undefined : authLabelModel.label}
-                showChevron={true}
-                onPress={openPicker}
-            />
+            {props.setting ? <SettingAnchor setting={props.setting}>{row}</SettingAnchor> : row}
             {poolAdoptionSuggestions.map((suggestion) => (
                 <View
                     key={suggestion.key}

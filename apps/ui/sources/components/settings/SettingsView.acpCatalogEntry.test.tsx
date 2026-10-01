@@ -91,12 +91,6 @@ vi.mock('expo-constants', () => ({
     default: { expoConfig: { version: '0.0.0-test' } },
 }));
 
-vi.mock('@/constants/Typography', () => ({
-    Typography: {
-        default: () => ({}),
-        mono: () => ({}),
-    },
-}));
 
 vi.mock('@/components/ui/lists/ItemList', () => ({
     ItemList: ({ children }: any) => React.createElement('ItemList', null, children),
@@ -149,7 +143,8 @@ vi.mock('@/hooks/ui/useHappyAction', () => ({
     useHappyAction: (fn: any) => [false, fn],
 }));
 
-vi.mock('@/sync/domains/profiles/profile', () => ({
+vi.mock('@/sync/domains/profiles/profile', async (importOriginal) => ({
+    ...await importOriginal<typeof import('@/sync/domains/profiles/profile')>(),
     getDisplayName: () => 'Test User',
     getAvatarUrl: () => null,
     getBio: () => '',
@@ -161,15 +156,6 @@ vi.mock('@/components/ui/avatar/Avatar', () => ({
 
 vi.mock('@/components/sessions/new/components/MachineCliGlyphs', () => ({
     MachineCliGlyphs: 'MachineCliGlyphs',
-}));
-
-vi.mock('@/agents/catalog/catalog', () => ({
-    AGENT_IDS: ['codex', 'claude', 'kiro', 'customAcp'],
-    DEFAULT_AGENT_ID: 'codex',
-    getAgentCore: () => ({ uiConnectedService: { serviceId: 'anthropic', labelKey: 'agentInput.agent.claude', connectRoute: null } }),
-    getAgentIconSource: () => null,
-    getAgentIconTintColor: () => null,
-    resolveAgentIdFromConnectedServiceId: () => null,
 }));
 
 vi.mock('@/components/settings/supportUsBehavior', () => ({
@@ -192,7 +178,8 @@ vi.mock('@/hooks/server/useFeatureDecision', () => ({
     useFeatureDecision: () => null,
 }));
 
-vi.mock('@/sync/domains/server/serverProfiles', () => ({
+vi.mock('@/sync/domains/server/serverProfiles', async (importOriginal) => ({
+    ...await importOriginal<typeof import('@/sync/domains/server/serverProfiles')>(),
     getActiveServerSnapshot: () => ({ serverId: 'server-1', serverUrl: 'https://local.example.test', generation: 0 }),
     listServerProfiles: () => [],
     subscribeActiveServer: (listener: any) => {
@@ -204,6 +191,11 @@ vi.mock('@/sync/domains/server/serverProfiles', () => ({
 vi.mock('@/utils/system/requestReview', () => ({
     requestReview: vi.fn(),
     canRequestReview: vi.fn(async () => true),
+}));
+
+// Covered by its own suite against the Agents machine and connected-account boundaries.
+vi.mock('@/components/hub/HubAttentionSection', () => ({
+    HubAttentionSection: () => null,
 }));
 
 afterEach(() => {

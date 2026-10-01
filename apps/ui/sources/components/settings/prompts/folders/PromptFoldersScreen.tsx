@@ -1,6 +1,4 @@
 import * as React from 'react';
-import { View } from 'react-native';
-import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 import { PromptBundleBodyV1Schema, PromptDocBodyV1Schema } from '@happier-dev/protocol';
 
@@ -8,7 +6,8 @@ import { Item } from '@/components/ui/lists/Item';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
 import { ItemList } from '@/components/ui/lists/ItemList';
 import { ItemRowActions } from '@/components/ui/lists/ItemRowActions';
-import { useLayoutMaxWidthStyle } from '@/components/ui/layout/layout';
+import { SectionActionButton } from '@/components/ui/lists/SectionActionButton';
+import { SettingsPageHeader } from '@/components/settings/shell/SettingsPageHeader';
 import { Modal } from '@/modal';
 import { randomUUID } from '@/platform/randomUUID';
 import { sync } from '@/sync/sync';
@@ -17,26 +16,12 @@ import { updateSkillPromptBundle, readSkillMarkdownFromPromptBundleBody } from '
 import { updatePromptDoc } from '@/sync/ops/promptLibrary/promptDocs';
 import { normalizePromptFolderName, removePromptFolder, renamePromptFolder } from '@/sync/ops/promptLibrary/promptFolders';
 import { t } from '@/text';
-import { Icon } from '@/components/ui/icons/Icon';
 
-const styles = StyleSheet.create((theme) => ({
-  container: {
-    flex: 1,
-    backgroundColor: theme.colors.background.canvas,
-  },
-  content: {
-    paddingVertical: 12,
-    width: '100%',
-    alignSelf: 'center',
-  },
-}));
-
+/**
+ * `/settings/prompts/folders`: the folders prompts and skills are filed in, each with how many items
+ * it holds. Folders are named in place (add, rename); deleting one leaves its items unfiled.
+ */
 export const PromptFoldersScreen = React.memo(function PromptFoldersScreen() {
-  // Composed at render time: the module-scope stylesheet evaluates once, so a
-  // baked-in `layout.maxWidth` would freeze the user's content-width preference.
-  const contentMaxWidthStyle = useLayoutMaxWidthStyle();
-  const contentStyle = React.useMemo(() => [styles.content, contentMaxWidthStyle], [contentMaxWidthStyle]);
-  const { theme } = useUnistyles();
   const artifacts = useArtifacts();
   const [promptFoldersV1, setPromptFoldersV1] = useSettingMutable('promptFoldersV1');
 
@@ -140,58 +125,59 @@ export const PromptFoldersScreen = React.memo(function PromptFoldersScreen() {
   }, [artifacts, promptFoldersV1, setPromptFoldersV1]);
 
   return (
-    <View style={styles.container}>
-      <ItemList containerStyle={contentStyle}>
-        <ItemGroup title={t('promptLibrary.folders')}>
-          {folders.length > 0 ? folders.map((folder) => (
-            <Item
-              key={folder.id}
-              testID={`promptFolders.entry.${folder.id}`}
-              title={folder.name}
-              subtitle={t('promptLibrary.folderUsageCount', { count: usageCountByFolderId.get(folder.id) ?? 0 })}
-              icon={<Icon name="folder" size={29} color={theme.colors.accent.blue} />}
-              rightElement={(
-                <ItemRowActions
-                  title={folder.name}
-                  compactActionIds={['rename', 'delete']}
-                  actions={[
-                    {
-                      id: 'rename',
-                      title: t('common.edit'),
-                      icon: 'pencil',
-                      onPress: () => { void renameFolderAction(folder.id, folder.name); },
-                    },
-                    {
-                      id: 'delete',
-                      title: t('common.delete'),
-                      icon: 'trash',
-                      destructive: true,
-                      onPress: () => { void deleteFolderAction(folder.id); },
-                    },
-                  ]}
-                />
-              )}
-            />
-          )) : (
-            <Item
-              testID="promptFolders.empty"
-              title={t('promptLibrary.foldersEmptyTitle')}
-              subtitle={t('promptLibrary.foldersEmptySubtitle')}
-              showChevron={false}
-            />
-          )}
-        </ItemGroup>
-
-        <ItemGroup>
-          <Item
+    <ItemList presentation="page">
+      <SettingsPageHeader description={t('promptLibrary.surface.foldersPageDescription')} />
+      <ItemGroup
+        title={t('promptLibrary.folders')}
+        description={t('promptLibrary.surface.foldersSectionDescription')}
+        action={(
+          <SectionActionButton
             testID="promptFolders.add"
             title={t('promptLibrary.addFolder')}
-            subtitle={t('promptLibrary.addFolderSubtitle')}
-            icon={<Icon name="plus-circle" size={29} color={theme.colors.accent.indigo} />}
+            icon="plus"
             onPress={() => { void addFolder(); }}
           />
-        </ItemGroup>
-      </ItemList>
-    </View>
+        )}
+      >
+        {folders.length > 0 ? folders.map((folder) => (
+          <Item
+            key={folder.id}
+            testID={`promptFolders.entry.${folder.id}`}
+            title={folder.name}
+            subtitle={t('promptLibrary.folderUsageCount', { count: usageCountByFolderId.get(folder.id) ?? 0 })}
+            showChevron={false}
+            rightElement={(
+              <ItemRowActions
+                title={folder.name}
+                compactActionIds={['rename', 'delete']}
+                actions={[
+                  {
+                    id: 'rename',
+                    title: t('promptLibrary.renameFolder'),
+                    icon: 'pencil',
+                    onPress: () => { void renameFolderAction(folder.id, folder.name); },
+                  },
+                  {
+                    id: 'delete',
+                    title: t('common.delete'),
+                    icon: 'trash',
+                    destructive: true,
+                    onPress: () => { void deleteFolderAction(folder.id); },
+                  },
+                ]}
+              />
+            )}
+          />
+        )) : (
+          <Item
+            testID="promptFolders.empty"
+            title={t('promptLibrary.foldersEmptyTitle')}
+            subtitle={t('promptLibrary.foldersEmptySubtitle')}
+            mode="info"
+            showChevron={false}
+          />
+        )}
+      </ItemGroup>
+    </ItemList>
   );
 });

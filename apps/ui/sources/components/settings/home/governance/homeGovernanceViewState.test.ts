@@ -15,6 +15,7 @@ const PROJECTION: HomeGovernanceProjectionV1 = {
         manageHomeRoles: true,
         manageTeamCreationPolicy: true,
         manageAuthentication: true,
+        manageHomeSettings: true,
         eraseAccounts: true,
         createTeam: true,
         manageAllTeams: true,
@@ -186,11 +187,40 @@ describe('resolveHomeGovernanceViewState', () => {
         expect(state.mutationsAvailable).toBe(false);
     });
 
-    it('withholds mutations after an Account-change wake until the Home re-answers', () => {
-        const state = resolveHomeGovernanceViewState(snapshot({ stale: true }));
+    it('treats a refresh over a good answer as quiet updating, not a warning, and keeps writes open', () => {
+        // An Account-change wake or a refetch after a success is routine: every write is still decided
+        // by the Home (revision CAS, capability and target guards), so nothing is unsafe to offer.
+        for (const refreshing of [
+            snapshot({ stale: true }),
+            snapshot({ status: 'refreshing' }),
+            snapshot({ status: 'refreshing', stale: true }),
+        ]) {
+            const state = resolveHomeGovernanceViewState(refreshing);
+            if (state.kind !== 'ready') throw new Error('unreachable');
+            expect(state.readFailed).toBe(false);
+            expect(state.updating).toBe(true);
+            expect(state.mutationsAvailable).toBe(true);
+        }
+    });
+
+    it('warns only once a read has failed or the Home is unreachable, and closes writes then', () => {
+        for (const failed of [
+            snapshot({ status: 'error', stale: true, reachability: 'unreachable', error: { kind: 'unreachable', retryable: true } }),
+            snapshot({ status: 'error', stale: true, error: { kind: 'invalid', retryable: false } }),
+        ]) {
+            const state = resolveHomeGovernanceViewState(failed);
+            if (state.kind !== 'ready') throw new Error('unreachable');
+            expect(state.readFailed).toBe(true);
+            expect(state.updating).toBe(false);
+            expect(state.mutationsAvailable).toBe(false);
+        }
+    });
+
+    it('is neither updating nor failed on a settled, current answer', () => {
+        const state = resolveHomeGovernanceViewState(snapshot());
         if (state.kind !== 'ready') throw new Error('unreachable');
-        expect(state.stale).toBe(true);
-        expect(state.mutationsAvailable).toBe(false);
+        expect(state.readFailed).toBe(false);
+        expect(state.updating).toBe(false);
     });
 
     it('reports the exact Home the projection belongs to so a focus change cannot retarget it', () => {

@@ -160,6 +160,8 @@ export function useSimulatorPreviewLiveSurface(
         simulatorId: identity?.simulatorId ?? '',
         streamId: identity?.streamId ?? '',
         streamFamily: identity?.streamFamily ?? '',
+        // Simulator registration uses its physical source id as the stream family too.
+        sourceId: identity?.streamFamily,
         caps: identity?.caps ?? DEFAULT_SIMULATOR_LIVE_STREAM_CAPS,
         sourceCodecs: identity?.sourceCodecs ?? [],
     });

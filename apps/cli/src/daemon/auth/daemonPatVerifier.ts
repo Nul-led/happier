@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { performance } from "node:perf_hooks";
+import type { ApiTokenGrantV1 } from '@happier-dev/protocol';
 
 export const DAEMON_PAT_CACHE_MAX_AGE_MS = 60_000;
 // This caps untrusted distinct bearer inputs to fixed daemon memory. An LRU
@@ -13,6 +14,7 @@ export type VerifiedDaemonPat = Readonly<{
     credentialId: string;
     expiresAt: Date | null;
     authority: "account_automation";
+    grant: ApiTokenGrantV1;
 }>;
 
 export type DaemonPatVerificationFailure = Readonly<{
@@ -33,6 +35,7 @@ type CacheEntry = Readonly<{
     principalId: string;
     credentialId: string;
     patExpiresAtMs: number | null;
+    grant: ApiTokenGrantV1;
     cacheExpiresAtMonotonicMs: number;
 }>;
 
@@ -63,6 +66,7 @@ function verificationFromEntry(entry: CacheEntry): VerifiedDaemonPat {
         credentialId: entry.credentialId,
         expiresAt: entry.patExpiresAtMs === null ? null : new Date(entry.patExpiresAtMs),
         authority: "account_automation",
+        grant: entry.grant,
     };
 }
 
@@ -74,6 +78,7 @@ function verificationFromServer(result: VerifiedDaemonPat): VerifiedDaemonPat {
         credentialId: result.credentialId,
         expiresAt: result.expiresAt === null ? null : new Date(result.expiresAt.getTime()),
         authority: "account_automation",
+        grant: result.grant,
     };
 }
 
@@ -162,6 +167,7 @@ export function createDaemonPatVerifier(options: DaemonPatVerifierOptions): Daem
             accountId: verified.accountId,
             principalId: verified.principalId,
             credentialId: verified.credentialId,
+            grant: verified.grant,
             patExpiresAtMs,
             cacheExpiresAtMonotonicMs,
         });

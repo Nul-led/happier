@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { useRouter } from 'expo-router';
+import { useRouter } from '@/components/appShell/workspace/destinationRoute';
 import { useUnistyles } from 'react-native-unistyles';
 
 import { useResolvedSettingsPageCatalog } from '@/components/settings/catalog/runtime/useResolvedSettingsPageCatalog';
@@ -12,7 +12,6 @@ type SettingsCatalogOverviewGroupProps = Readonly<{
     /** Stable group identity from the one resolved Settings catalog. */
     groupId: string;
     router: ReturnType<typeof useRouter>;
-    theme: ReturnType<typeof useUnistyles>['theme'];
     /** Preserves host-owned navigation details such as blur-on-web behavior. */
     onNavigate?: (route: string) => void | Promise<void>;
     /** Non-page controls may share the group presentation without becoming catalog entries. */
@@ -27,8 +26,9 @@ type SettingsCatalogOverviewGroupProps = Readonly<{
 type SettingsCatalogPageChildrenProps = Readonly<{
     /** The catalog page whose admitted direct children become destination rows. */
     parentPageId: SettingsPageId;
+    /** The section title on the parent page; a page section is never left untitled. */
+    title?: string;
     router: ReturnType<typeof useRouter>;
-    theme: ReturnType<typeof useUnistyles>['theme'];
     /** Preserves host-owned navigation details such as blur-on-web behavior. */
     onNavigate?: (route: string) => void | Promise<void>;
 }>;
@@ -91,7 +91,6 @@ function SettingsCatalogDestinationRows({
     pages,
     resolveSubtitle,
     router,
-    theme,
 }: Readonly<{
     onNavigate?: (route: string) => void | Promise<void>;
     pages: readonly ResolvedSettingsPageNode[];
@@ -100,8 +99,10 @@ function SettingsCatalogDestinationRows({
         defaultSubtitle: React.ReactNode | undefined,
     ) => React.ReactNode | undefined;
     router: ReturnType<typeof useRouter>;
-    theme: ReturnType<typeof useUnistyles>['theme'];
 }>) {
+    // Destinations carry their catalog glyph (navigation rows are landmarks; the row owner sizes and
+    // colours it and keeps the section's leading column).
+    const { theme } = useUnistyles();
     return (
         <>
             {pages.map((page) => {
@@ -142,7 +143,6 @@ export const SettingsCatalogOverviewGroup = React.memo(function SettingsCatalogO
     onNavigate,
     resolveSubtitle,
     router,
-    theme,
 }: SettingsCatalogOverviewGroupProps) {
     const catalog = useResolvedSettingsPageCatalog();
     const group = React.useMemo(
@@ -163,7 +163,6 @@ export const SettingsCatalogOverviewGroup = React.memo(function SettingsCatalogO
                 pages={pages}
                 resolveSubtitle={resolveSubtitle}
                 router={router}
-                theme={theme}
             />
             {append}
         </ItemGroup>
@@ -177,8 +176,8 @@ export const SettingsCatalogOverviewGroup = React.memo(function SettingsCatalogO
 export const SettingsCatalogPageChildren = React.memo(function SettingsCatalogPageChildren({
     onNavigate,
     parentPageId,
+    title,
     router,
-    theme,
 }: SettingsCatalogPageChildrenProps) {
     const catalog = useResolvedSettingsPageCatalog();
     const pages = React.useMemo(
@@ -190,12 +189,11 @@ export const SettingsCatalogPageChildren = React.memo(function SettingsCatalogPa
     if (pages.length === 0) return null;
 
     return (
-        <ItemGroup>
+        <ItemGroup title={title}>
             <SettingsCatalogDestinationRows
                 onNavigate={onNavigate}
                 pages={pages}
                 router={router}
-                theme={theme}
             />
         </ItemGroup>
     );

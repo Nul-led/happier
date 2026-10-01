@@ -53,6 +53,11 @@ export type PluginMachineMatrixCellV1 = Readonly<{
     observedAt: number | null;
     /** Whether the machine row itself is a live or a last-known observation. */
     observation: 'live' | 'stale';
+    /**
+     * A retained installation on a machine that is no longer in the Account's inventory: its name
+     * and server are unknown, so `machineName`/`serverLabel` carry only its raw identity.
+     */
+    retained: boolean;
 }>;
 
 export type PluginMachineMatrixRowV1 = Readonly<{
@@ -61,6 +66,12 @@ export type PluginMachineMatrixRowV1 = Readonly<{
     accountAvailability: PluginAccountAvailabilityIntentReadResponseV1 | null;
     cells: readonly PluginMachineMatrixCellV1[];
     installedCurrentCount: number;
+    /**
+     * The plugin ships inside Happier (bundled first-party) and no machine reports it: it is on every
+     * machine running Happier, so "current on 0 of N" would be false. Machines that do report it keep
+     * their per-machine truth.
+     */
+    includedWithHappier: boolean;
 }>;
 
 export type PluginMachineMatrixV1 =
@@ -154,6 +165,8 @@ export function buildPluginMachineMatrix(params: Readonly<{
     classifyRelease: (materialization: PluginMachineMaterializationV1) => PluginMachineReleaseClassificationV1;
     /** Restricts the matrix to one plugin for the plugin detail route. */
     pluginId?: string;
+    /** Plugins that ship inside Happier (bundled first-party), by id. */
+    includedWithHappierPluginIds?: ReadonlySet<string>;
 }>): PluginMachineMatrixV1 {
     if (params.admission.kind !== 'available') {
         return Object.freeze({ kind: 'unavailable', code: params.admission.code });
@@ -243,6 +256,7 @@ export function buildPluginMachineMatrix(params: Readonly<{
                         version: candidate?.materialization.version ?? null,
                         observedAt: candidate?.materialization.observedAt ?? machine.observedAt,
                         observation: machine.observation,
+                        retained: false,
                     });
                 }),
                 ...orphanCandidates.map((candidate) => {
@@ -268,6 +282,7 @@ export function buildPluginMachineMatrix(params: Readonly<{
                         version: materialization.version,
                         observedAt: materialization.observedAt,
                         observation: 'stale' as const,
+                        retained: true,
                     });
                 }),
             ];
@@ -276,6 +291,8 @@ export function buildPluginMachineMatrix(params: Readonly<{
                 accountAvailability: accountAvailabilityByPluginId.get(pluginId) ?? null,
                 cells: Object.freeze(cells),
                 installedCurrentCount,
+                includedWithHappier: pluginMaterializations.length === 0
+                    && params.includedWithHappierPluginIds?.has(pluginId) === true,
             });
         });
 
@@ -285,5 +302,51 @@ export function buildPluginMachineMatrix(params: Readonly<{
         machineCount: machines.length,
         unresolvedServerCount,
         rows: Object.freeze(rows),
+    });
+}
+
+/** A machine where the plugin needs a look: offline with a last-known version, disabled, not trusted… */
+export type PluginMachineSummaryExceptionV1 = Readonly<{
+    machineKey: string;
+    /** `null` for a machine that left the Account: it is named generically, never by its raw id. */
+    name: string | null;
+    /** `null` when the machine's server is not known either. */
+    serverLabel: string | null;
+    state: PluginMachineMatrixCellStateV1;
+    version: string | null;
+    observedAt: number | null;
+}>;
+
+export type PluginMachineSummaryV1 = Readonly<{
+    /** Machines running the Account's release of the plugin. */
+    currentCount: number;
+    /** Machines in the Account's inventory. */
+    total: number;
+    currentNames: readonly string[];
+    /** Only the machines that need a look; a healthy, empty or unreported machine is not one. */
+    exceptions: readonly PluginMachineSummaryExceptionV1[];
+}>;
+
+/** One plugin's row of the matrix as "current on N of M machines" plus its exceptions. */
+export function summarizePluginMachines(row: PluginMachineMatrixRowV1, machineCount: number): PluginMachineSummaryV1 {
+    const current = row.cells.filter((cell) => cell.state === 'installedCurrent');
+    const exceptions = row.cells
+        // Nothing to look at on a machine that is current, doesn't have the plugin, or hasn't
+        // reported its plugins at all; the "N of M" line already counts those as not current.
+        .filter((cell) => cell.state !== 'installedCurrent' && cell.state !== 'absent' && cell.state !== 'unknown')
+        .map((cell) => Object.freeze({
+            machineKey: cell.machineKey,
+            name: cell.retained ? null : cell.machineName,
+            // A retained cell's server label may be the raw server identity; say nothing rather than that.
+            serverLabel: cell.retained ? null : cell.serverLabel,
+            state: cell.state,
+            version: cell.version,
+            observedAt: cell.observedAt,
+        }));
+    return Object.freeze({
+        currentCount: current.length,
+        total: machineCount,
+        currentNames: Object.freeze(current.map((cell) => cell.machineName)),
+        exceptions: Object.freeze(exceptions),
     });
 }

@@ -21,6 +21,9 @@ import {
 } from '@happier-dev/protocol';
 
 import { logger } from '@/ui/logger';
+import { readAccountIdFromToken } from '@/cloud/decodeJwtPayload';
+import { fetchServerFeaturesSnapshot } from '@/features/serverFeaturesClient';
+import { readStoredCredentials } from '@/persistence';
 
 import { resolveConnectedServicesServerApiTimeoutMs } from './connectedServicesServerApiTimeout';
 import { createHttpStatusError } from './httpStatusError';
@@ -154,20 +157,71 @@ export async function fetchAccountEncryptionCurrentness(params: Readonly<{
 }>): Promise<AccountEncryptionCurrentnessResponse> {
   const serverBaseUrl = (params.serverBaseUrl ?? resolveServerHttpBaseUrl())
     .replace(/\/+$/, '');
+  const readCurrentness = async () => await axios.get(
+    `${serverBaseUrl}/v1/account/encryption/currentness`,
+    {
+      headers: params.authorizationHeaders ?? createHeaders(params.token),
+      timeout: params.timeoutMs ?? resolveConnectedServicesServerApiTimeoutMs(),
+      validateStatus: () => true,
+      ...(params.signal ? { signal: params.signal } : {}),
+    },
+  );
   let response;
   try {
-    response = await axios.get(
-      `${serverBaseUrl}/v1/account/encryption/currentness`,
-      {
-        headers: params.authorizationHeaders ?? createHeaders(params.token),
-        timeout: params.timeoutMs ?? resolveConnectedServicesServerApiTimeoutMs(),
-        validateStatus: () => true,
-        ...(params.signal ? { signal: params.signal } : {}),
-      },
-    );
+    response = await readCurrentness();
   } catch (error) {
     if (params.signal?.aborted) throw error;
     throw new AccountEncryptionCurrentnessUnavailableError(undefined, undefined, { cause: error });
+  }
+  const legacyReadiness = response.status === 400
+    ? AccountEncryptionCurrentnessErrorResponseSchema.safeParse(response.data)
+    : null;
+  const suppliedAuthorization = params.authorizationHeaders
+    ? Object.entries(params.authorizationHeaders).find(([key]) => key.toLowerCase() === 'authorization')?.[1]
+    : null;
+  if (
+    legacyReadiness?.success
+    && legacyReadiness.data.recipientEnvelopeReadiness.reason === 'encryption_setup_required'
+    && (!params.authorizationHeaders || suppliedAuthorization === `Bearer ${params.token}`)
+  ) {
+    const stored = await readStoredCredentials().catch(() => null);
+    const expectedAccountId = readAccountIdFromToken(params.token);
+    if (
+      stored?.token === params.token
+      && stored.credentialProvenance === 'stored_session'
+      && stored.encryption?.type === 'legacy'
+      && expectedAccountId
+    ) {
+      try {
+        const snapshot = await fetchServerFeaturesSnapshot({
+          serverUrl: serverBaseUrl,
+          token: params.token,
+          ...(params.signal ? { signal: params.signal } : {}),
+        });
+        const serverIdentityId = snapshot.status === 'ready'
+          ? snapshot.features.capabilities.serverIdentity.serverIdentityId?.trim()
+          : null;
+        if (serverIdentityId) {
+          const { authenticateExistingAccountWithLegacySecret } = await import('@/cli/commands/auth/nativeEmail');
+          // The Home's expectedAccountId branch requires an already-bound key;
+          // this existing-Account proof repairs the missing binding, then we
+          // compare its issued Account with the stored bearer's subject.
+          const repairedToken = await authenticateExistingAccountWithLegacySecret({
+            secret: stored.encryption.secret,
+            serverApiUrl: serverBaseUrl,
+            serverIdentityId,
+            ...(params.signal ? { signal: params.signal } : {}),
+          });
+          if (readAccountIdFromToken(repairedToken) !== expectedAccountId) {
+            throw new Error('Recovered Account does not match the stored bearer');
+          }
+          response = await readCurrentness();
+        }
+      } catch (error) {
+        params.signal?.throwIfAborted();
+        // Preserve the original typed recovery result when proof cannot be completed.
+      }
+    }
   }
   if (response.status !== 200) {
     const parsedError = response.status === 400

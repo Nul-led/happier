@@ -31,6 +31,11 @@ const routerBack = vi.hoisted(() => vi.fn());
 const routerPush = vi.hoisted(() => vi.fn());
 const pickImages = vi.hoisted(() => vi.fn());
 
+vi.mock('@react-navigation/native', async () => {
+    const { createReactNavigationNativeMock } = await import('@/dev/testkit/mocks/reactNavigation');
+    return createReactNavigationNativeMock();
+});
+
 vi.mock('@/utils/files/nativePickImages', () => ({
     nativePickImages: pickImages,
 }));
@@ -208,6 +213,28 @@ afterEach(() => {
 });
 
 describe('TeamSettingsScreen', () => {
+    it('UX keeps an unsaved invalid identity draft when navigation is canceled', async () => {
+        const serverId = await addHomeWithTeam(teamSummaryFixture({ capabilities: teamCapabilitiesFixture({ manageSettings: true }) }));
+        const screen = await renderSettings(serverId);
+        await waitForTestId(screen, 'team-settings-name');
+        act(() => screen.changeTextByTestId('team-settings-name', ''));
+        expect(screen.findByTestId('team-settings-name.error')).toMatchObject({
+            props: { accessibilityRole: 'alert' },
+        });
+        const { Modal } = await import('@/modal');
+        vi.mocked(Modal.alert).mockImplementation((_title, _message, buttons) => {
+            buttons?.find((button) => button.style === 'cancel')?.onPress?.();
+        });
+        const { runGuardedNavigation } = await import('@/utils/navigation/runGuardedNavigation');
+        const leave = vi.fn();
+        let departed: boolean | undefined;
+        await act(async () => { departed = await runGuardedNavigation(leave); });
+        expect(departed).toBe(false);
+        expect(leave).not.toHaveBeenCalled();
+        expect(screen.findByTestId('team-settings-name')?.props.value).toBe('');
+        expect(harness.requestsFor(TEAM_UPDATE_PATH)).toHaveLength(0);
+    });
+
     it('renames the Team through its own Home and keeps the edit until it lands', async () => {
         const team = teamSummaryFixture({
             capabilities: teamCapabilitiesFixture({ manageSettings: true }),
@@ -229,6 +256,49 @@ describe('TeamSettingsScreen', () => {
         const update = harness.requestsFor(TEAM_UPDATE_PATH)[0];
         expect(update?.serverId).toBe(serverId);
         expect(update?.input).toMatchObject({ teamId: 'team-1', name: 'Platform Core' });
+    });
+
+    it('UX clears the dirty guard after the Home commits normalized metadata', async () => {
+        const team = teamSummaryFixture({ capabilities: teamCapabilitiesFixture({ manageSettings: true }) });
+        const serverId = await addHomeWithTeam(team);
+        harness.answer(serverId, TEAM_UPDATE_PATH, { body: { ...team, name: 'Platform Core' } });
+        const screen = await renderSettings(serverId);
+        await waitForTestId(screen, 'team-settings-name');
+        act(() => screen.changeTextByTestId('team-settings-name', '  Platform Core  '));
+        await screen.pressByTestIdAsync('team-settings-save');
+        await vi.waitFor(() => expect(harness.requestsFor(TEAM_UPDATE_PATH)).toHaveLength(1));
+        const { runGuardedNavigation } = await import('@/utils/navigation/runGuardedNavigation');
+        const { Modal } = await import('@/modal');
+        vi.mocked(Modal.alert).mockClear();
+        const leave = vi.fn();
+        await act(async () => { await runGuardedNavigation(leave); });
+        expect(leave).toHaveBeenCalledOnce();
+        expect(Modal.alert).not.toHaveBeenCalled();
+    });
+
+    it('UX retains newer edits made while normalized metadata is being saved', async () => {
+        const team = teamSummaryFixture({ capabilities: teamCapabilitiesFixture({ manageSettings: true }) });
+        const serverId = await addHomeWithTeam(team);
+        let releaseSave = (): void => {};
+        const respondAfter = new Promise<void>((resolve) => { releaseSave = resolve; });
+        harness.answer(serverId, TEAM_UPDATE_PATH, { body: { ...team, name: 'Submitted' }, respondAfter });
+        const screen = await renderSettings(serverId);
+        await waitForTestId(screen, 'team-settings-name');
+        act(() => screen.changeTextByTestId('team-settings-name', '  Submitted  '));
+        screen.pressByTestId('team-settings-save');
+        await vi.waitFor(() => expect(harness.requestsFor(TEAM_UPDATE_PATH)).toHaveLength(1));
+        act(() => screen.changeTextByTestId('team-settings-name', 'Newer draft'));
+        await act(async () => { releaseSave(); });
+        await vi.waitFor(() => expect(screen.findByTestId('team-settings-cancel')?.props.disabled).toBe(false));
+        expect(screen.findByTestId('team-settings-name')?.props.value).toBe('Newer draft');
+        const { Modal } = await import('@/modal');
+        vi.mocked(Modal.alert).mockImplementation((_title, _message, buttons) => {
+            buttons?.find((button) => button.style === 'cancel')?.onPress?.();
+        });
+        const { runGuardedNavigation } = await import('@/utils/navigation/runGuardedNavigation');
+        const leave = vi.fn();
+        await act(async () => { await runGuardedNavigation(leave); });
+        expect(leave).not.toHaveBeenCalled();
     });
 
     it('preserves a dirty identity draft across refresh and requires deliberate conflict acceptance', async () => {
@@ -410,6 +480,19 @@ describe('TeamSettingsScreen', () => {
             expect(ancestor).not.toBeNull();
             expect(ancestor?.props.accessibilityLabel ?? ancestor?.props['aria-label']).toBe(groupLabel);
         }
+    });
+
+    it('offers the Team logo once, in the Team section', async () => {
+        const team = teamSummaryFixture({
+            capabilities: teamCapabilitiesFixture({ manageSettings: true }),
+        });
+        const serverId = await addHomeWithTeam(team);
+
+        const screen = await renderSettings(serverId);
+        await waitForTestId(screen, 'team-settings-logo-set');
+        const logoControls = collectRenderedTestIds(screen.tree.toJSON())
+            .filter((id) => id === 'team-settings-logo-set');
+        expect(logoControls).toHaveLength(1);
     });
 
     it('previews a picked logo and uploads only after explicit confirmation', async () => {
@@ -841,7 +924,7 @@ describe('TeamSettingsScreen', () => {
         expect(collectRenderedTestIds(screen.tree.toJSON())).not.toContain('team-unavailable');
 
         routerPush.mockClear();
-        await screen.pressByTestIdAsync('team-sign-in');
+        await screen.pressByTestIdAsync('team-authentication-required-action');
         // The canonical explicit-Home Team entry, addressed by this route's own
         // Home rather than by whichever Home is focused.
         expect(routerPush).toHaveBeenCalledWith(`/teams/team-1/sign-in?serverId=${encodeURIComponent(serverId)}`);
@@ -859,7 +942,7 @@ describe('TeamSettingsScreen', () => {
 
         const screen = await renderSettings(serverId);
         await waitForTestId(screen, 'team-unavailable');
-        expect(collectRenderedTestIds(screen.tree.toJSON())).not.toContain('team-sign-in');
+        expect(collectRenderedTestIds(screen.tree.toJSON())).not.toContain('team-authentication-required-action');
     });
 
     it('explains an unreachable Home instead of showing an empty Team', async () => {

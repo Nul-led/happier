@@ -2,7 +2,7 @@ import { KNOWN_CANONICAL_TOOL_NAMES_V2 } from '@happier-dev/protocol/tools/v2';
 
 import { normalizeToolNameForView } from '@/components/tools/normalization/policy/normalizeToolNameForView';
 import { resolveToolHeaderTextPresentation } from '@/components/tools/shell/presentation/resolveToolHeaderTextPresentation';
-import type { ToolCall } from '@/sync/domains/messages/messageTypes';
+import type { ToolCall } from "@happier-dev/session-core/messages";
 
 export type ToolRenderingOverrideEntry = Readonly<{
     toolName: string;

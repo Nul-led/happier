@@ -1,20 +1,21 @@
 import * as React from 'react';
-import { useRouter } from 'expo-router';
+import { useRouter } from '@/components/appShell/workspace/destinationRoute';
 import { File } from 'expo-file-system';
-import { Pressable, View } from 'react-native';
 import { useUnistyles } from 'react-native-unistyles';
-import { StyleSheet } from 'react-native-unistyles';
 
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
 import { ItemList } from '@/components/ui/lists/ItemList';
-import { SettingsActionFooter } from '@/components/ui/settingsSurface/SettingsActionFooter';
-import { Text, TextInput } from '@/components/ui/text/Text';
+import { Item } from '@/components/ui/lists/Item';
+import { SectionContentRow } from '@/components/ui/lists/SectionContentRow';
+import { FieldTextInput } from '@/components/ui/forms/FieldTextInput';
+import { RoundButton } from '@/components/ui/buttons/RoundButton';
 import { useLocalSettingMutable } from '@/sync/domains/state/storage';
 import { t } from '@/text';
 import { getSupportedThemeProfileImportFormats, importThemeProfileFromJson } from '@/theme/profiles/themeProfileImportExport';
 import { nativePickFiles, type NativePickedFile } from '@/utils/files/nativePickFiles';
 import { nowThemeProfileTimestamp, upsertThemeProfile } from './themeProfileScreenUtils';
-import { Icon } from '@/components/ui/icons/Icon';
+import { Icon, ICON_SIZE } from '@/components/ui/icons/Icon';
+import { SettingsPageHeader } from '@/components/settings/shell/SettingsPageHeader';
 
 async function readPickedThemeFile(entry: NativePickedFile): Promise<string> {
     if (entry.kind === 'web') {
@@ -26,7 +27,6 @@ async function readPickedThemeFile(entry: NativePickedFile): Promise<string> {
 
 export const ThemeProfileImportScreen = React.memo(function ThemeProfileImportScreen() {
     const { theme } = useUnistyles();
-    const styles = stylesheet;
     const router = useRouter();
     const [themeProfiles, setThemeProfiles] = useLocalSettingMutable('themeProfiles');
     const [json, setJson] = React.useState('');
@@ -69,112 +69,66 @@ export const ThemeProfileImportScreen = React.memo(function ThemeProfileImportSc
     }, []);
 
     return (
-        <ItemList testID="settings-theme-profile-import-screen" style={{ paddingTop: 0 }}>
+        <ItemList testID="settings-theme-profile-import-screen" style={{ paddingTop: 0 }} presentation="page" keyboardShouldPersistTaps="handled">
+            <SettingsPageHeader
+                description={t('settingsAppearance.themeProfiles.importPageDescription')}
+                actions={(
+                    <RoundButton
+                        testID="settings-theme-profile-import-submit"
+                        size="small"
+                        title={t('settingsAppearance.themeProfiles.importAction')}
+                        disabled={json.trim().length === 0}
+                        onPress={submit}
+                    />
+                )}
+            />
             <ItemGroup
-                title={t('settingsAppearance.themeProfiles.importProfile')}
-                footer={t('settingsAppearance.themeProfiles.importFooter', { formats: supportedImportFormats })}
+                title={t('settingsAppearance.themeProfiles.importJson')}
+                description={t('settingsAppearance.themeProfiles.importFooter', { formats: supportedImportFormats })}
+                action={(
+                    <RoundButton
+                        testID="settings-theme-profile-import-file"
+                        size="small"
+                        display="inverted"
+                        title={t('settingsAppearance.themeProfiles.importFile')}
+                        leading={<Icon name="file-arrow-up" size={ICON_SIZE.sm} color={theme.colors.text.secondary} />}
+                        textStyle={{ color: theme.colors.text.secondary }}
+                        onPress={() => { void pickFile(); }}
+                    />
+                )}
             >
-                <View style={styles.jsonEditorRow}>
-                    <View style={styles.jsonEditorHeader}>
-                        <View style={styles.jsonEditorTitle}>
-                            <Icon name="code" size={29} color={theme.colors.accent.green} />
-                            <Text style={styles.jsonEditorTitleText}>{t('settingsAppearance.themeProfiles.importJson')}</Text>
-                        </View>
-                        <Pressable
-                            testID="settings-theme-profile-import-file"
-                            accessibilityRole="button"
-                            accessibilityLabel={t('settingsAppearance.themeProfiles.importFile')}
-                            onPress={() => { void pickFile(); }}
-                            style={({ pressed }) => [styles.fileButton, pressed ? styles.fileButtonPressed : null]}
-                        >
-                            <Icon name="file-arrow-up" size={16} color={theme.colors.text.primary} />
-                            <Text style={styles.fileButtonText}>{t('settingsAppearance.themeProfiles.importFile')}</Text>
-                        </Pressable>
-                    </View>
-                    <TextInput
+                <SectionContentRow>
+                    <FieldTextInput
                         testID="settings-theme-profile-import-json"
                         value={json}
                         onChangeText={setJson}
-                        multiline
-                        autoCapitalize="none"
-                        autoCorrect={false}
+                        accessibilityLabel={t('settingsAppearance.themeProfiles.importJson')}
                         placeholder={t('settingsAppearance.themeProfiles.importJsonPlaceholder')}
-                        style={styles.jsonTextArea}
+                        multiline
+                        minLines={10}
+                        monospace
+                        error={error}
                     />
-                </View>
-                {error ? (
-                    <Text testID="settings-theme-profile-import-error" style={{ color: theme.colors.state.danger.foreground, padding: 16 }}>
-                        {error}
-                    </Text>
-                ) : null}
+                </SectionContentRow>
                 {warnings > 0 ? (
-                    <Text testID="settings-theme-profile-import-warnings" style={{ color: theme.colors.state.warning.foreground, padding: 16 }}>
-                        {t('settingsAppearance.themeProfiles.importWarnings', { count: warnings })}
-                    </Text>
+                    <Item
+                        testID="settings-theme-profile-import-warnings"
+                        title={t('settingsAppearance.themeProfiles.importedWithWarnings')}
+                        subtitle={t('settingsAppearance.themeProfiles.importWarnings', { count: warnings })}
+                        subtitleLines={0}
+                        showChevron={false}
+                        rightElement={(
+                            <RoundButton
+                                testID="settings-theme-profile-import-done"
+                                size="small"
+                                display="inverted"
+                                title={t('common.done')}
+                                onPress={() => router.back()}
+                            />
+                        )}
+                    />
                 ) : null}
             </ItemGroup>
-            <SettingsActionFooter
-                primaryLabel={t('settingsAppearance.themeProfiles.importProfile')}
-                primaryTestID="settings-theme-profile-import-submit"
-                primaryDisabled={json.trim().length === 0}
-                onPrimaryPress={submit}
-            />
         </ItemList>
     );
 });
-
-const stylesheet = StyleSheet.create((theme) => ({
-    jsonEditorRow: {
-        gap: 12,
-        paddingHorizontal: 16,
-        paddingVertical: 16,
-    },
-    jsonEditorHeader: {
-        alignItems: 'center',
-        flexDirection: 'row',
-        justifyContent: 'space-between',
-        gap: 12,
-    },
-    jsonEditorTitle: {
-        alignItems: 'center',
-        flexDirection: 'row',
-        gap: 12,
-        minWidth: 0,
-    },
-    jsonEditorTitleText: {
-        color: theme.colors.text.primary,
-        fontSize: 16,
-        fontWeight: '700',
-    },
-    fileButton: {
-        alignItems: 'center',
-        backgroundColor: theme.colors.surface.inset,
-        borderColor: theme.colors.border.surface,
-        borderRadius: 12,
-        borderWidth: 1,
-        flexDirection: 'row',
-        gap: 8,
-        minHeight: 40,
-        paddingHorizontal: 12,
-    },
-    fileButtonPressed: {
-        backgroundColor: theme.colors.surface.pressed,
-    },
-    fileButtonText: {
-        color: theme.colors.text.primary,
-        fontSize: 13,
-        fontWeight: '700',
-    },
-    jsonTextArea: {
-        backgroundColor: theme.colors.surface.inset,
-        borderColor: theme.colors.border.surface,
-        borderRadius: 14,
-        borderWidth: 1,
-        color: theme.colors.input.text,
-        minHeight: 180,
-        paddingHorizontal: 14,
-        paddingVertical: 12,
-        textAlignVertical: 'top',
-        width: '100%',
-    },
-}));

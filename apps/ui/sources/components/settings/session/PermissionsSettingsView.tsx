@@ -2,7 +2,6 @@ import * as React from 'react';
 import { View } from 'react-native';
 import { useUnistyles } from 'react-native-unistyles';
 
-import { Item } from '@/components/ui/lists/Item';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
 import { ItemList } from '@/components/ui/lists/ItemList';
 import { DropdownMenu } from '@/components/ui/forms/dropdown/DropdownMenu';
@@ -13,15 +12,24 @@ import { getAgentCore, type AgentId } from '@/agents/catalog/catalog';
 import { getPermissionModeOptionsForAgentType } from '@/sync/domains/permissions/permissionModeOptions';
 import type { PermissionMode } from '@/sync/domains/permissions/permissionTypes';
 import { resolvePermissionPromptSurface } from '@/utils/sessions/permissions/permissionPromptPolicy';
-import { getPermissionApplyTimingSubtitleKey } from '@/components/settings/session/sessionI18n';
 import { useFeatureEnabled } from '@/hooks/server/useFeatureEnabled';
 import { supportsDirectTranscriptStorageForNewSession } from '@/components/sessions/new/modules/newSessionTranscriptStorage';
 import { readAccountTranscriptStorageDefaults, type SessionTranscriptStorageMode } from '@/sync/domains/session/transcriptStorageDefaults';
 import { resolveBackendTargetKeyV2 } from '@/agents/backendCatalog/backendTargetKeyV2';
 import { Icon } from '@/components/ui/icons/Icon';
+import { AgentIcon } from '@/agents/registry/AgentIcon';
+import { SegmentedChoiceItem } from '@/components/ui/lists/SegmentedChoiceItem';
+import { SettingsPageHeader } from '@/components/settings/shell/SettingsPageHeader';
+import { SettingAnchor, SettingSection } from '@/components/settings/shell/SettingRow';
+import { Item } from '@/components/ui/lists/Item';
+import { PERMISSIONS_SETTINGS } from '@/components/settings/session/permissionsSettings';
 
 type PermissionApplyTiming = 'immediate' | 'next_prompt';
 type PermissionPromptSurfaceMenuOption = 'composer' | 'transcript';
+
+const USE_GLOBAL_STORAGE = 'global';
+const TRANSCRIPT_STORAGE_MODES = ['persisted', 'direct'] as const satisfies readonly SessionTranscriptStorageMode[];
+type AgentStorageChoice = SessionTranscriptStorageMode | typeof USE_GLOBAL_STORAGE;
 
 export const PermissionsSettingsView = React.memo(function PermissionsSettingsView() {
     const { theme } = useUnistyles();
@@ -86,228 +94,36 @@ export const PermissionsSettingsView = React.memo(function PermissionsSettingsVi
     }, [defaultTranscriptStorageModeByTargetKey, setDefaultTranscriptStorageModeByTargetKey]);
 
     const [openProvider, setOpenProvider] = React.useState<null | AgentId>(null);
-    const [openApplyTimingMenu, setOpenApplyTimingMenu] = React.useState<boolean>(false);
-    const [openPromptSurfaceMenu, setOpenPromptSurfaceMenu] = React.useState<boolean>(false);
-    const [openStorageProvider, setOpenStorageProvider] = React.useState<null | AgentId>(null);
-    const [openStorageGlobalMenu, setOpenStorageGlobalMenu] = React.useState<boolean>(false);
-
-    const applyTimingOptions: Array<{ key: PermissionApplyTiming; title: string; subtitle: string }> = [
-        {
-            key: 'immediate',
-            title: t('settingsSession.permissions.applyTiming.immediateTitle'),
-            subtitle: t('settingsSession.defaultPermissions.applyPermissionChangesImmediateSubtitle'),
-        },
-        {
-            key: 'next_prompt',
-            title: t('settingsSession.permissions.applyTiming.nextPromptTitle'),
-            subtitle: t('settingsSession.defaultPermissions.applyPermissionChangesNextPromptSubtitle'),
-        },
-    ];
 
     const normalizedApplyTiming: PermissionApplyTiming = permissionModeApplyTiming === 'immediate' ? 'immediate' : 'next_prompt';
-    const applyTimingLabel = applyTimingOptions.find((opt) => opt.key === normalizedApplyTiming)?.title
-        ?? t(getPermissionApplyTimingSubtitleKey(normalizedApplyTiming));
-
     const normalizedPromptSurface: PermissionPromptSurfaceMenuOption =
         resolvePermissionPromptSurface(permissionPromptSurface);
 
-    const promptSurfaceOptions: Array<{ key: PermissionPromptSurfaceMenuOption; title: string; subtitle: string }> = [
-        {
-            key: 'composer',
-            title: t('settingsSession.permissions.promptSurface.composerTitle'),
-            subtitle: t('settingsSession.permissions.promptSurface.composerSubtitle'),
-        },
-        {
-            key: 'transcript',
-            title: t('settingsSession.permissions.promptSurface.transcriptTitle'),
-            subtitle: t('settingsSession.permissions.promptSurface.transcriptSubtitle'),
-        },
-    ];
-
-    const transcriptStorageOptions: Array<{ key: SessionTranscriptStorageMode; title: string; subtitle: string }> = [
-        {
-            key: 'persisted',
-            title: t('sessionsList.storagePersistedTab'),
-            subtitle: t('settingsSession.defaultStorage.persistedSubtitle'),
-        },
-        {
-            key: 'direct',
-            title: t('sessionsList.storageDirectTab'),
-            subtitle: t('settingsSession.defaultStorage.directSubtitle'),
-        },
-    ];
+    const storageLabel = (mode: SessionTranscriptStorageMode) => mode === 'direct'
+        ? t('sessionsList.storageDirectTab')
+        : t('sessionsList.storagePersistedTab');
+    const storageDescription = (mode: SessionTranscriptStorageMode) => mode === 'direct'
+        ? t('settingsSession.defaultStorage.directSubtitle')
+        : t('settingsSession.defaultStorage.persistedSubtitle');
+    const globalStorageLabel = storageLabel(accountTranscriptStorageDefaults.globalDefault);
 
     return (
-        <ItemList ref={popoverBoundaryRef} style={{ paddingTop: 0 }}>
-            <ItemGroup
-                title={t('settingsSession.defaultPermissions.applyPermissionChangesTitle')}
-                footer={t('settingsSession.permissions.applyChangesFooter')}
-            >
-                <DropdownMenu
-                    open={openApplyTimingMenu}
-                    onOpenChange={setOpenApplyTimingMenu}
-                    variant="selectable"
-                    search={false}
-                    selectedId={normalizedApplyTiming as any}
-                    showCategoryTitles={false}
-                    matchTriggerWidth={true}
-                    connectToTrigger={true}
-                    rowKind="item"
-                    popoverBoundaryRef={popoverBoundaryRef}
-                    itemTrigger={{
-                        title: t('settingsSession.defaultPermissions.applyPermissionChangesTitle'),
-                        icon: <Icon name="shield-check" size={29} color={theme.colors.state.success.foreground} />,
-                        // Keep the compact label as a fallback; selected option subtitle will override by default.
-                        subtitle: applyTimingLabel,
-                    }}
-                    items={applyTimingOptions.map((opt) => ({
-                        id: opt.key,
-                        title: opt.title,
-                        subtitle: opt.subtitle,
-                        icon: (
-                            <View style={{ width: 32, height: 32, alignItems: 'center', justifyContent: 'center' }}>
-                                <Icon name="sliders-horizontal" size={20} color={theme.colors.text.secondary} />
-                            </View>
-                        ),
-                    }))}
-                    onSelect={(id) => {
-                        setPermissionModeApplyTiming(id as any);
-                        setOpenApplyTimingMenu(false);
-                    }}
-                />
-            </ItemGroup>
-
-            <ItemGroup
-                title={t('settingsSession.permissions.promptSurfaceTitle')}
-                footer={t('settingsSession.permissions.promptSurfaceFooter')}
-            >
-                <DropdownMenu
-                    open={openPromptSurfaceMenu}
-                    onOpenChange={setOpenPromptSurfaceMenu}
-                    variant="selectable"
-                    search={false}
-                    selectedId={normalizedPromptSurface as any}
-                    showCategoryTitles={false}
-                    matchTriggerWidth={true}
-                    connectToTrigger={true}
-                    rowKind="item"
-                    popoverBoundaryRef={popoverBoundaryRef}
-                    itemTrigger={{
-                        title: t('settingsSession.permissions.promptSurfaceTitle'),
-                        icon: <Icon name="chat-dots" size={29} color={theme.colors.text.secondary} />,
-                        subtitle: promptSurfaceOptions.find((opt) => opt.key === normalizedPromptSurface)?.title ?? normalizedPromptSurface,
-                    }}
-                    items={promptSurfaceOptions.map((opt) => ({
-                        id: opt.key,
-                        title: opt.title,
-                        subtitle: opt.subtitle,
-                        icon: (
-                            <View style={{ width: 32, height: 32, alignItems: 'center', justifyContent: 'center' }}>
-                                <Icon name="chat-dots" size={20} color={theme.colors.text.secondary} />
-                            </View>
-                        ),
-                    }))}
-                    onSelect={(id) => {
-                        setPermissionPromptSurface(id as any);
-                        setOpenPromptSurfaceMenu(false);
-                    }}
-                />
-            </ItemGroup>
-
-            <ItemGroup title={t('settingsSession.defaultPermissions.title')} footer={t('settingsSession.defaultPermissions.footer')}>
-                {enabledAgentIds.map((agentId, index) => {
-                    const core = getAgentCore(agentId);
-                    if (!core) return null;
-                    const mode = getDefaultPermission(agentId);
-                    const showDivider = index < enabledAgentIds.length - 1;
-                    return (
-                        <DropdownMenu
-                            key={agentId}
-                            open={openProvider === agentId}
-                            onOpenChange={(next) => setOpenProvider(next ? agentId : null)}
-                            variant="selectable"
-                            search={false}
-                            selectedId={mode as any}
-                            showCategoryTitles={false}
-                            matchTriggerWidth={true}
-                            connectToTrigger={true}
-                            rowKind="item"
-                            popoverBoundaryRef={popoverBoundaryRef}
-                            itemTrigger={{
-                                title: t(core.displayNameKey),
-                                icon: <Icon name={core.ui.agentPickerIconName as any} size={29} color={theme.colors.text.secondary} />,
-                                itemProps: { showDivider },
-                            }}
-                            items={getPermissionModeOptionsForAgentType(agentId as any).map((opt) => ({
-                                id: opt.value,
-                                title: opt.label,
-                                subtitle: opt.description,
-                                icon: (
-                                    <View style={{ width: 32, height: 32, alignItems: 'center', justifyContent: 'center' }}>
-                                        <Icon name={opt.icon as any} size={20} color={theme.colors.text.secondary} />
-                                    </View>
-                                ),
-                            }))}
-                            onSelect={(id) => {
-                                setDefaultPermission(agentId, id as any);
-                                setOpenProvider(null);
-                            }}
-                        />
-                    );
-                })}
-            </ItemGroup>
-
-            {externalSessionsEnabled && supportedDirectAgentIds.length > 0 ? (
-                <ItemGroup title={t('settingsSession.defaultStorage.title')} footer={t('settingsSession.defaultStorage.footer')}>
-                    <DropdownMenu
-                        open={openStorageGlobalMenu}
-                        onOpenChange={setOpenStorageGlobalMenu}
-                        variant="selectable"
-                        search={false}
-                        selectedId={accountTranscriptStorageDefaults.globalDefault as any}
-                        showCategoryTitles={false}
-                        matchTriggerWidth={true}
-                        connectToTrigger={true}
-                        rowKind="item"
-                        popoverBoundaryRef={popoverBoundaryRef}
-                        itemTrigger={{
-                            title: t('settingsSession.defaultStorage.globalTitle'),
-                            icon: <Icon name="stack-simple" size={29} color={theme.colors.text.secondary} />,
-                            subtitle: transcriptStorageOptions.find((opt) => opt.key === accountTranscriptStorageDefaults.globalDefault)?.title
-                                ?? t('sessionsList.storagePersistedTab'),
-                        }}
-                        items={transcriptStorageOptions.map((opt) => ({
-                            id: opt.key,
-                            title: opt.title,
-                            subtitle: opt.subtitle,
-                            icon: (
-                                <View style={{ width: 32, height: 32, alignItems: 'center', justifyContent: 'center' }}>
-                                    <Icon name={opt.key === 'direct' ? 'radio' : 'floppy-disk'} size={20} color={theme.colors.text.secondary} />
-                                </View>
-                            ),
-                        }))}
-                        onSelect={(id) => {
-                            setDefaultTranscriptStorageMode(id as SessionTranscriptStorageMode);
-                            setOpenStorageGlobalMenu(false);
-                        }}
-                    />
-
-                    {supportedDirectAgentIds.map((agentId, index) => {
+        <ItemList ref={popoverBoundaryRef} style={{ paddingTop: 0 }} presentation="page">
+            <SettingsPageHeader description={t('settings.permissionsSubtitle')} />
+            <SettingAnchor setting={PERMISSIONS_SETTINGS.settings.defaultPermissions}>
+                <ItemGroup title={t('settingsSession.defaultPermissions.title')} description={t('settingsSession.defaultPermissions.footer')}>
+                    {enabledAgentIds.map((agentId) => {
                         const core = getAgentCore(agentId);
                         if (!core) return null;
-                        const override = accountTranscriptStorageDefaults.byTargetKey[
-                            resolveBackendTargetKeyV2({ kind: 'backend', backendId: agentId })
-                        ] ?? null;
-                        const selectedMode = override ?? accountTranscriptStorageDefaults.globalDefault;
-                        const showDivider = index < supportedDirectAgentIds.length - 1;
+                        const mode = getDefaultPermission(agentId);
                         return (
                             <DropdownMenu
-                                key={`storage-${agentId}`}
-                                open={openStorageProvider === agentId}
-                                onOpenChange={(next) => setOpenStorageProvider(next ? agentId : null)}
+                                key={agentId}
+                                open={openProvider === agentId}
+                                onOpenChange={(next) => setOpenProvider(next ? agentId : null)}
                                 variant="selectable"
                                 search={false}
-                                selectedId={(override ?? '__global__') as any}
+                                selectedId={mode as any}
                                 showCategoryTitles={false}
                                 matchTriggerWidth={true}
                                 connectToTrigger={true}
@@ -315,48 +131,121 @@ export const PermissionsSettingsView = React.memo(function PermissionsSettingsVi
                                 popoverBoundaryRef={popoverBoundaryRef}
                                 itemTrigger={{
                                     title: t(core.displayNameKey),
-                                    icon: <Icon name={core.ui.agentPickerIconName as any} size={29} color={theme.colors.text.secondary} />,
-                                    subtitle: override
-                                        ? (transcriptStorageOptions.find((opt) => opt.key === override)?.title ?? t('sessionsList.storagePersistedTab'))
-                                        : t('settingsSession.defaultStorage.globalSubtitle', {
-                                            label: transcriptStorageOptions.find((opt) => opt.key === accountTranscriptStorageDefaults.globalDefault)?.title
-                                                ?? t('sessionsList.storagePersistedTab'),
-                                        }),
-                                    itemProps: { showDivider },
+                                    icon: <AgentIcon agentId={agentId} size={22} />,
+                                    // The field shows the mode; a subtitle repeating it adds nothing.
+                                    showSelectedSubtitle: false,
+                                    itemProps: { testID: `settings-permissions-default-${agentId}` },
                                 }}
-                                items={[
-                                    {
-                                        id: '__global__',
-                                        title: t('settingsSession.defaultStorage.useGlobalDefault'),
-                                        subtitle: t('settingsSession.defaultStorage.currently', {
-                                            label: transcriptStorageOptions.find((opt) => opt.key === accountTranscriptStorageDefaults.globalDefault)?.title
-                                                ?? t('sessionsList.storagePersistedTab'),
-                                        }),
-                                        icon: (
-                                            <View style={{ width: 32, height: 32, alignItems: 'center', justifyContent: 'center' }}>
-                                                <Icon name="stack-simple" size={20} color={theme.colors.text.secondary} />
-                                            </View>
-                                        ),
-                                    },
-                                    ...transcriptStorageOptions.map((opt) => ({
-                                        id: opt.key,
-                                        title: opt.title,
-                                        subtitle: opt.subtitle,
-                                        icon: (
-                                            <View style={{ width: 32, height: 32, alignItems: 'center', justifyContent: 'center' }}>
-                                                <Icon name={opt.key === 'direct' ? 'radio' : 'floppy-disk'} size={20} color={theme.colors.text.secondary} />
-                                            </View>
-                                        ),
-                                    })),
-                                ]}
+                                items={getPermissionModeOptionsForAgentType(agentId as any).map((opt) => ({
+                                    id: opt.value,
+                                    title: opt.label,
+                                    subtitle: opt.description,
+                                    icon: (
+                                        <View style={{ width: 32, height: 32, alignItems: 'center', justifyContent: 'center' }}>
+                                            <Icon name={opt.icon as any} size={20} color={theme.colors.text.secondary} />
+                                        </View>
+                                    ),
+                                }))}
                                 onSelect={(id) => {
-                                    setAgentDefaultTranscriptStorage(agentId, id === '__global__' ? null : id as SessionTranscriptStorageMode);
-                                    setOpenStorageProvider(null);
+                                    setDefaultPermission(agentId, id as any);
+                                    setOpenProvider(null);
                                 }}
                             />
                         );
                     })}
                 </ItemGroup>
+            </SettingAnchor>
+
+            <ItemGroup
+                title={t('settingsSessionPages.permissions.duringSessionSection')}
+                description={t('settingsSessionPages.permissions.duringSessionDescription')}
+            >
+                <SettingAnchor setting={PERMISSIONS_SETTINGS.settings.promptSurface}>
+                    <SegmentedChoiceItem<PermissionPromptSurfaceMenuOption>
+                        subtitleLines={0}
+                        testID="settings-permissions-prompt-surface"
+                        testIDPrefix="settings-permissions-prompt-surface"
+                        title={t(PERMISSIONS_SETTINGS.settings.promptSurface.titleKey)}
+                        options={[
+                            { id: 'composer', label: t('settingsSessionPages.permissions.promptSurfaceComposer'), description: t('settingsSession.permissions.promptSurface.composerSubtitle') },
+                            { id: 'transcript', label: t('settingsSession.permissions.promptSurface.transcriptTitle'), description: t('settingsSession.permissions.promptSurface.transcriptSubtitle') },
+                        ]}
+                        value={normalizedPromptSurface}
+                        onChange={setPermissionPromptSurface}
+                    />
+                </SettingAnchor>
+                <SettingAnchor setting={PERMISSIONS_SETTINGS.settings.applyPermissionChanges}>
+                    <SegmentedChoiceItem<PermissionApplyTiming>
+                        subtitleLines={0}
+                        testID="settings-permissions-apply-timing"
+                        testIDPrefix="settings-permissions-apply-timing"
+                        title={t(PERMISSIONS_SETTINGS.settings.applyPermissionChanges.titleKey)}
+                        options={[
+                            { id: 'immediate', label: t('settingsSessionPages.permissions.applyImmediately'), description: t('settingsSession.defaultPermissions.applyPermissionChangesImmediateSubtitle') },
+                            { id: 'next_prompt', label: t('settingsSessionPages.permissions.applyNextMessage'), description: t('settingsSession.defaultPermissions.applyPermissionChangesNextPromptSubtitle') },
+                        ]}
+                        value={normalizedApplyTiming}
+                        onChange={setPermissionModeApplyTiming}
+                    />
+                </SettingAnchor>
+            </ItemGroup>
+
+            {externalSessionsEnabled ? (
+                <SettingSection section={PERMISSIONS_SETTINGS.sectionRefs.defaultStorage}>
+                    <ItemGroup title={t('settingsSession.defaultStorage.title')} description={t('settingsSession.defaultStorage.footer')}>
+                        {supportedDirectAgentIds.length > 0 ? (
+                            <>
+                                <SettingAnchor setting={PERMISSIONS_SETTINGS.settings.global}>
+                                    <SegmentedChoiceItem<SessionTranscriptStorageMode>
+                                        subtitleLines={0}
+                                        testID="settings-permissions-storage-global"
+                                        testIDPrefix="settings-permissions-storage-global"
+                                        title={t(PERMISSIONS_SETTINGS.settings.global.titleKey)}
+                                        options={TRANSCRIPT_STORAGE_MODES.map((mode) => ({ id: mode, label: storageLabel(mode), description: storageDescription(mode) }))}
+                                        value={accountTranscriptStorageDefaults.globalDefault}
+                                        onChange={setDefaultTranscriptStorageMode}
+                                    />
+                                </SettingAnchor>
+
+                                {supportedDirectAgentIds.map((agentId) => {
+                                    const core = getAgentCore(agentId);
+                                    if (!core) return null;
+                                    const override = accountTranscriptStorageDefaults.byTargetKey[
+                                        resolveBackendTargetKeyV2({ kind: 'backend', backendId: agentId })
+                                    ] ?? null;
+                                    return (
+                                        <SegmentedChoiceItem<AgentStorageChoice>
+                                            subtitleLines={0}
+                                            key={`storage-${agentId}`}
+                                            testID={`settings-permissions-storage-${agentId}`}
+                                            testIDPrefix={`settings-permissions-storage-${agentId}`}
+                                            title={t(core.displayNameKey)}
+                                            icon={<AgentIcon agentId={agentId} size={22} />}
+                                            options={[
+                                                {
+                                                    id: USE_GLOBAL_STORAGE,
+                                                    label: t('settingsSessionPages.permissions.storageUseDefault'),
+                                                    description: t('settingsSession.defaultStorage.globalSubtitle', { label: globalStorageLabel }),
+                                                },
+                                                ...TRANSCRIPT_STORAGE_MODES.map((mode) => ({ id: mode, label: storageLabel(mode), description: storageDescription(mode) })),
+                                            ]}
+                                            value={override ?? USE_GLOBAL_STORAGE}
+                                            onChange={(next) => setAgentDefaultTranscriptStorage(agentId, next === USE_GLOBAL_STORAGE ? null : next)}
+                                        />
+                                    );
+                                })}
+                            </>
+                        ) : (
+                            <Item
+                                testID="settings-permissions-storage-unavailable"
+                                title={t('settingsSession.defaultStorage.noDirectAgents')}
+                                titleLines={0}
+                                mode="info"
+                                showChevron={false}
+                            />
+                        )}
+                    </ItemGroup>
+                </SettingSection>
             ) : null}
         </ItemList>
     );

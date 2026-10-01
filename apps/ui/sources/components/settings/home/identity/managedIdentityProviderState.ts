@@ -1,6 +1,6 @@
 import type { ManagedIdentityProviderV1 } from '@happier-dev/protocol';
 
-import type { ManagedIdentityProviderActionResult } from './managedIdentityProviderClient';
+import type { ManagedIdentityProviderSettledResult } from './managedIdentityProviderClient';
 
 export type ManagedIdentityProviderState =
     | Readonly<{ kind: 'loading' }>
@@ -28,15 +28,13 @@ export function beginManagedIdentityProviderRefresh(
 
 export function settleManagedIdentityProviderRefresh(
     state: ManagedIdentityProviderState,
-    result: ManagedIdentityProviderActionResult<Readonly<{
+    result: ManagedIdentityProviderSettledResult<Readonly<{
         items: readonly ManagedIdentityProviderV1[];
         unreadableCount: number;
     }>>,
 ): ManagedIdentityProviderState {
     if (result.kind !== 'succeeded') {
-        const failure = result.kind === 'failed'
-            ? result.failure
-            : { code: 'invalid_action_output', retryable: false };
+        const failure = result.failure;
         return state.kind === 'ready'
             ? Object.freeze({ ...state, refreshing: false, stale: true, failure })
             : Object.freeze({ kind: 'unavailable' as const, failure });

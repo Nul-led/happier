@@ -1,10 +1,9 @@
 import * as React from 'react';
-import { ScrollView, View } from 'react-native';
-import { useRouter } from 'expo-router';
+import { View } from 'react-native';
+import { useRouter } from '@/components/appShell/workspace/destinationRoute';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 import type {
-  MachineAdministrationTargetV1,
   PromptAssetInstallModeV1,
   PromptAssetScopeV1,
   PromptAssetTypeDescriptorV1,
@@ -21,9 +20,11 @@ import { DropdownMenu, type DropdownMenuItem } from '@/components/ui/forms/dropd
 import { Item } from '@/components/ui/lists/Item';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
 import { ItemList } from '@/components/ui/lists/ItemList';
-import { useLayoutMaxWidthStyle } from '@/components/ui/layout/layout';
-import { SettingsActionFooter } from '@/components/ui/settingsSurface/SettingsActionFooter';
-import { Text, TextInput } from '@/components/ui/text/Text';
+import { SectionContentRow } from '@/components/ui/lists/SectionContentRow';
+import { RoundButton } from '@/components/ui/buttons/RoundButton';
+import { FieldTextInput } from '@/components/ui/forms/FieldTextInput';
+import { PageHeader } from '@/components/ui/layout/PageHeader';
+import { Text } from '@/components/ui/text/Text';
 import { useHappyAction } from '@/hooks/ui/useHappyAction';
 import { Modal } from '@/modal';
 import { useSettingMutable } from '@/sync/domains/state/storage';
@@ -33,13 +34,9 @@ import { installPromptRegistryItem } from '@/sync/ops/promptLibrary/installPromp
 import { createPromptRegistrySkillArtifactFromFetchedItem } from '@/sync/ops/promptLibrary/promptRegistrySkillImports';
 import { translatePromptLibraryMessage } from '@/sync/ops/promptLibrary/translatePromptLibraryMessage';
 import { MACHINE_ADMINISTRATION_SELECTION_KEYS_V1 } from '@/sync/domains/machines/administration/selectionPreferences';
-import { machineAdministrationTargetsEqual } from '@/sync/domains/machines/administration/targetSelection';
-import {
-  useMachineAdministrationTargetSelection,
-  type FreshMachineAdministrationExecutionTargetV1,
-} from '@/sync/domains/machines/administration/useTargetSelection';
-import { isMachineAdministrationExecutionTargetCurrent } from '@/sync/domains/machines/administration/operationCurrentness';
-import { t, type TranslationKey } from '@/text';
+import { useMachineAdministrationTargetSelection } from '@/sync/domains/machines/administration/useTargetSelection';
+import { useMachineAdministrationExecutionTargetBinding } from '@/sync/domains/machines/administration/useExecutionTargetBinding';
+import { t } from '@/text';
 import { Icon } from '@/components/ui/icons/Icon';
 import {
   listPromptAssetTypesForScope,
@@ -49,21 +46,9 @@ import {
   listPromptAssetInstallModesForType,
   resolvePromptAssetInstallModeSelection,
 } from '@/components/settings/prompts/shared/promptAssetInstallModeSelection';
+import { SegmentedChoiceItem } from '@/components/ui/lists/SegmentedChoiceItem';
 
 const styles = StyleSheet.create((theme) => ({
-  container: {
-    flex: 1,
-    backgroundColor: theme.colors.background.canvas,
-  },
-  content: {
-    paddingVertical: 12,
-    width: '100%',
-    alignSelf: 'center',
-  },
-  previewGroup: {
-    paddingHorizontal: 16,
-    paddingVertical: 14,
-  },
   previewText: {
     color: theme.colors.text.primary,
     fontFamily: 'monospace',
@@ -74,15 +59,14 @@ const styles = StyleSheet.create((theme) => ({
     color: theme.colors.text.secondary,
     fontSize: 14,
   },
-  input: {
-    backgroundColor: theme.colors.input.background,
-    color: theme.colors.input.text,
-    borderRadius: 10,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    marginTop: 12,
+  headerActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    flexWrap: 'wrap',
   },
 }));
+
 
 function decodeUtf8BundleEntry(item: PromptRegistryFetchedItemV1 | null, path: string): string | null {
   const entry = item?.bundleBody.entries.find((candidate) => candidate.path === path && candidate.contentKind === 'utf8') ?? null;
@@ -103,53 +87,24 @@ export const PromptRegistryItemDetailsScreen = React.memo(function PromptRegistr
   displayPath?: string | null;
   workspacePath?: string | null;
 }>) {
-  // Composed at render time: the module-scope stylesheet evaluates once, so a
-  // baked-in `layout.maxWidth` would freeze the user's content-width preference.
-  const contentMaxWidthStyle = useLayoutMaxWidthStyle();
-  const contentStyle = React.useMemo(() => [styles.content, contentMaxWidthStyle], [contentMaxWidthStyle]);
   const { theme } = useUnistyles();
   const router = useRouter();
   const administrationTargetSelection = useMachineAdministrationTargetSelection(
     MACHINE_ADMINISTRATION_SELECTION_KEYS_V1.promptRegistries,
   );
   const selectedTarget = administrationTargetSelection.selectedTarget;
-  const selectionKey = selectedTarget
-    ? `${selectedTarget.serverIdentityId}\0${selectedTarget.machineId}`
-    : '';
-  const selectionKeyRef = React.useRef(selectionKey);
-  selectionKeyRef.current = selectionKey;
-  const resolveExecutionTargetRef = React.useRef(administrationTargetSelection.resolveExecutionTarget);
-  resolveExecutionTargetRef.current = administrationTargetSelection.resolveExecutionTarget;
-  const resolveExactExecutionTarget = React.useCallback((
-    expectedTarget: MachineAdministrationTargetV1 | null,
-  ): FreshMachineAdministrationExecutionTargetV1 | null => {
-    const resolved = resolveExecutionTargetRef.current();
-    return expectedTarget !== null
-      && resolved !== null
-      && machineAdministrationTargetsEqual(expectedTarget, resolved.target)
-      ? resolved
-      : null;
-  }, []);
-  const isExecutionTargetCurrent = React.useCallback((
-    requestedSelection: string,
-    executionTarget: FreshMachineAdministrationExecutionTargetV1,
-  ): boolean => {
-    return isMachineAdministrationExecutionTargetCurrent({
-      expectedTarget: executionTarget,
-      resolveCurrentTarget: resolveExecutionTargetRef.current,
-      expectedSelectionKey: requestedSelection,
-      currentSelectionKey: selectionKeyRef.current,
-    });
-  }, []);
+  const {
+    selectionKey,
+    resolveExactExecutionTarget,
+    isExecutionTargetCurrent,
+  } = useMachineAdministrationExecutionTargetBinding(administrationTargetSelection);
   const [promptExternalLinksV1, setPromptExternalLinksV1] = useSettingMutable('promptExternalLinksV1');
   const [item, setItem] = React.useState<PromptRegistryFetchedItemV1 | null>(null);
   const [installTypes, setInstallTypes] = React.useState<PromptAssetTypeDescriptorV1[]>([]);
   const [installScope, setInstallScope] = React.useState<PromptAssetScopeV1>('project');
-  const [scopeMenuOpen, setScopeMenuOpen] = React.useState(false);
   const [typeMenuOpen, setTypeMenuOpen] = React.useState(false);
   const [selectedInstallTypeId, setSelectedInstallTypeId] = React.useState<string | null>(null);
   const [installMode, setInstallMode] = React.useState<PromptAssetInstallModeV1 | null>(null);
-  const [installModeMenuOpen, setInstallModeMenuOpen] = React.useState(false);
   const [targetInput, setTargetInput] = React.useState('');
   const {
     workspacePath,
@@ -265,18 +220,13 @@ export const PromptRegistryItemDetailsScreen = React.memo(function PromptRegistr
       }));
   }, [scopeCompatibleInstallTypes, theme.colors.text.secondary]);
 
-  const installModeItems = React.useMemo((): DropdownMenuItem[] => {
-    return availableInstallModes.map((entry) => ({
-      id: entry,
-      title: entry === 'symlink'
-        ? t('promptLibrary.externalAssetsInstallMethodSymlink')
-        : t('promptLibrary.externalAssetsInstallMethodCopy'),
-      subtitle: entry === 'symlink'
-        ? t('promptLibrary.externalAssetsInstallMethodSymlinkSubtitle')
-        : t('promptLibrary.externalAssetsInstallMethodCopySubtitle'),
-      icon: <Icon name={entry === 'symlink' ? 'git-branch' : 'copy'} size={20} color={theme.colors.text.secondary} />,
-    }));
-  }, [availableInstallModes, theme.colors.text.secondary]);
+  const installModeOptions = React.useMemo(() => availableInstallModes.map((entry) => ({
+    id: entry,
+    label: entry === 'symlink' ? t('promptLibrary.surface.installMethodLink') : t('promptLibrary.surface.installMethodCopy'),
+    description: entry === 'symlink'
+      ? t('promptLibrary.surface.installMethodLinkDescription')
+      : t('promptLibrary.externalAssetsInstallMethodCopySubtitle'),
+  })), [availableInstallModes]);
 
   const selectedInstallMode = React.useMemo(
     () => resolvePromptAssetInstallModeSelection({
@@ -379,158 +329,146 @@ export const PromptRegistryItemDetailsScreen = React.memo(function PromptRegistr
   const sourceLabel = props.displayPath?.split('/').slice(0, -1).join('/') || item?.description || props.sourceId;
   const executionTarget = resolveExactExecutionTarget(selectedTarget);
 
-  return (
-    <View style={styles.container}>
-      <ScrollView contentContainerStyle={contentStyle} keyboardShouldPersistTaps="handled">
-        <ItemList>
-          <MachineAdministrationTargetSelector
-            selection={administrationTargetSelection}
-            testIDPrefix="settings.promptRegistries.administration.target"
-          />
-          <ItemGroup title={t('common.details')}>
-            <ContextBar
-              mode="workspace_only"
-              workspace={installScope === 'project' ? {
-                value: workspacePath,
-                onChange: setWorkspacePath,
-                placeholder: t('promptLibrary.externalAssetsProjectDirectoryPlaceholder' as TranslationKey),
-                testID: 'promptRegistries.details.directoryInput',
-                browse: {
-                  machineId: executionTarget?.machine.id ?? null,
-                  serverId: executionTarget?.serverId ?? null,
-                  enabled: executionTarget !== null,
-                },
-              } : undefined}
-            />
-            <Item
-              testID="promptRegistries.details.source"
-              title={t('promptLibrary.registriesItemSource')}
-              subtitle={sourceLabel}
-              icon={<Icon name="git-branch" size={29} color={theme.colors.text.secondary} />}
-              showChevron={false}
-            />
-            <Item
-              testID="promptRegistries.details.path"
-              title={t('promptLibrary.registriesItemPath')}
-              subtitle={props.displayPath ?? item?.description ?? props.itemId}
-              icon={<Icon name="sparkle" size={29} color={theme.colors.accent.indigo} />}
-              showChevron={false}
-            />
-            <Item
-              testID="promptRegistries.details.files"
-              title={t('promptLibrary.registriesItemFiles')}
-              subtitle={String(additionalFilesCount)}
-              icon={<Icon name="file-text" size={29} color={theme.colors.text.secondary} />}
-              showChevron={false}
-            />
-            <Item
-              testID="promptRegistries.details.import"
-              title={t('promptLibrary.externalAssetsImportAction')}
-              subtitle={importing ? t('common.loading') : t('promptLibrary.registriesItemImportSubtitle')}
-              icon={<Icon name="download" size={29} color={theme.colors.accent.purple} />}
-              disabled={!item || importing}
-              onPress={runImport}
-            />
-            <DropdownMenu
-              open={scopeMenuOpen}
-              onOpenChange={setScopeMenuOpen}
-              items={[
-                {
-                  id: 'project',
-                  title: t('promptLibrary.externalAssetsProjectScope'),
-                  subtitle: t('promptLibrary.externalAssetsProjectScopeSubtitle'),
-                  icon: <Icon name="folder" size={20} color={theme.colors.accent.indigo} />,
-                },
-                {
-                  id: 'user',
-                  title: t('promptLibrary.externalAssetsUserScope'),
-                  subtitle: t('promptLibrary.externalAssetsUserScopeSubtitle'),
-                  icon: <Icon name="person" size={20} color={theme.colors.accent.blue} />,
-                },
-              ]}
-              selectedId={installScope}
-              onSelect={(nextScope) => setInstallScope(nextScope as PromptAssetScopeV1)}
-              itemTrigger={{
-                title: t('promptLibrary.externalAssetsScope'),
-                subtitle: installScope === 'project' ? t('promptLibrary.externalAssetsProjectScope') : t('promptLibrary.externalAssetsUserScope'),
-                icon: <Icon name="stack" size={29} color={theme.colors.accent.indigo} />,
-              }}
-              rowKind="item"
-              connectToTrigger
-              variant="default"
-            />
-            <DropdownMenu
-              open={typeMenuOpen}
-              onOpenChange={setTypeMenuOpen}
-              items={installTypeItems}
-              selectedId={selectedInstallTypeId}
-              onSelect={(nextTypeId) => setSelectedInstallTypeId(nextTypeId)}
-              itemTrigger={{
-                title: t('promptLibrary.externalAssetsExportType'),
-                subtitle: installType?.title ?? t('promptLibrary.externalAssetsNoTypes'),
-                icon: <Icon name="stack-simple" size={29} color={theme.colors.text.secondary} />,
-              }}
-              rowKind="item"
-              connectToTrigger
-              variant="default"
-            />
-            <DropdownMenu
-              open={installModeMenuOpen}
-              onOpenChange={setInstallModeMenuOpen}
-              items={installModeItems}
-              selectedId={selectedInstallMode}
-              onSelect={(nextInstallMode) => setInstallMode(nextInstallMode as PromptAssetInstallModeV1)}
-              itemTrigger={{
-                title: t('promptLibrary.externalAssetsInstallMethod'),
-                subtitle: selectedInstallMode === 'symlink'
-                  ? t('promptLibrary.externalAssetsInstallMethodSymlink')
-                  : t('promptLibrary.externalAssetsInstallMethodCopy'),
-                icon: <Icon name={selectedInstallMode === 'symlink' ? 'git-branch' : 'copy'} size={29} color={theme.colors.text.secondary} />,
-              }}
-              rowKind="item"
-              connectToTrigger
-              variant="default"
-            />
-            <Item
-              title={t('promptLibrary.externalAssetsExportTarget')}
-              subtitle={(
-                <TextInput
-                  testID="promptRegistries.details.targetInput"
-                  placeholder={t('promptLibrary.externalAssetsExportTargetNamePlaceholder')}
-                  placeholderTextColor={theme.colors.input.placeholder}
-                  value={targetInput}
-                  onChangeText={setTargetInput}
-                  style={styles.input}
-                />
-              )}
-              subtitleLines={0}
-              icon={<Icon name="sparkle" size={29} color={theme.colors.text.secondary} />}
-              mode="info"
-              showChevron={false}
-            />
-          </ItemGroup>
+  const installDisabled = executionTarget === null || installing || !installType || targetInput.trim().length === 0 || (installScope === 'project' && workspacePath.trim().length === 0);
 
-          <ItemGroup title={t('promptLibrary.registriesItemPreview')}>
-            <View style={styles.previewGroup}>
-              {loading && !item ? (
-                <Text style={styles.previewEmpty}>{t('common.loading')}</Text>
-              ) : skillMarkdown ? (
-                <Text style={styles.previewText}>{skillMarkdown}</Text>
-              ) : (
-                <Text style={styles.previewEmpty}>{t('promptLibrary.registriesItemPreviewUnavailable')}</Text>
-              )}
-            </View>
-          </ItemGroup>
-        </ItemList>
-        {installType ? (
-          <SettingsActionFooter
-            primaryLabel={t('common.install' as TranslationKey)}
-            onPrimaryPress={runInstall}
-            primaryDisabled={executionTarget === null || installing || targetInput.trim().length === 0 || (installScope === 'project' && workspacePath.trim().length === 0)}
-            primaryTestID="promptRegistries.details.install"
+  return (
+    <ItemList presentation="page" keyboardShouldPersistTaps="handled">
+      <PageHeader
+        testID="promptRegistries.details.header"
+        alwaysShowTitle
+        title={screenTitle}
+        description={t('promptLibrary.surface.registryItemDescription')}
+        actions={(
+          <View style={styles.headerActions}>
+            <MachineAdministrationTargetSelector
+              selection={administrationTargetSelection}
+              presentation="chip"
+              testIDPrefix="settings.promptRegistries.administration.target"
+            />
+            {installType ? (
+              <RoundButton
+                testID="promptRegistries.details.install"
+                size="small"
+                title={t('promptLibrary.surface.installAction')}
+                disabled={installDisabled}
+                loading={installing}
+                onPress={runInstall}
+              />
+            ) : null}
+          </View>
+        )}
+      />
+
+      <ItemGroup title={t('promptLibrary.surface.registryItemSection')}>
+        <Item
+          testID="promptRegistries.details.source"
+          title={t('promptLibrary.registriesItemSource')}
+          subtitle={sourceLabel}
+          mode="info"
+          showChevron={false}
+        />
+        <Item
+          testID="promptRegistries.details.path"
+          title={t('promptLibrary.registriesItemPath')}
+          subtitle={props.displayPath ?? item?.description ?? props.itemId}
+          mode="info"
+          showChevron={false}
+        />
+        <Item
+          testID="promptRegistries.details.files"
+          title={t('promptLibrary.registriesItemFiles')}
+          detail={String(additionalFilesCount)}
+          mode="info"
+          showChevron={false}
+        />
+        <Item
+          testID="promptRegistries.details.import"
+          title={t('promptLibrary.surface.importToLibrary')}
+          subtitle={importing ? t('common.loading') : t('promptLibrary.registriesItemImportSubtitle')}
+          disabled={!item || importing}
+          onPress={runImport}
+        />
+      </ItemGroup>
+
+      <ItemGroup title={t('promptLibrary.registriesItemInstallAction')} description={t('promptLibrary.surface.registryInstallDescription')}>
+        <SegmentedChoiceItem
+          title={t('promptLibrary.externalAssetsScope')}
+          options={[
+            { id: 'project', label: t('promptLibrary.externalAssetsProjectScope'), description: t('promptLibrary.surface.installProjectScopeDescription') },
+            { id: 'user', label: t('promptLibrary.externalAssetsUserScope'), description: t('promptLibrary.surface.installUserScopeDescription') },
+          ]}
+          value={installScope}
+          onChange={(nextScope) => setInstallScope(nextScope as PromptAssetScopeV1)}
+        />
+        {installScope === 'project' ? (
+          <ContextBar
+            mode="workspace_only"
+            workspace={{
+              value: workspacePath,
+              onChange: setWorkspacePath,
+              placeholder: t('promptLibrary.surface.projectDirectoryPlaceholder'),
+              testID: 'promptRegistries.details.directoryInput',
+              browse: {
+                machineId: executionTarget?.machine.id ?? null,
+                serverId: executionTarget?.serverId ?? null,
+                enabled: executionTarget !== null,
+              },
+            }}
           />
         ) : null}
-      </ScrollView>
-    </View>
+        <DropdownMenu
+          open={typeMenuOpen}
+          onOpenChange={setTypeMenuOpen}
+          items={installTypeItems}
+          selectedId={selectedInstallTypeId}
+          onSelect={(nextTypeId) => setSelectedInstallTypeId(nextTypeId)}
+          itemTrigger={{
+            title: t('promptLibrary.externalAssetsExportType'),
+            subtitle: installType?.title ?? t('promptLibrary.externalAssetsNoTypes'),
+          }}
+          rowKind="item"
+          connectToTrigger
+          variant="default"
+        />
+        {installModeOptions.length > 0 && selectedInstallMode ? (
+          <SegmentedChoiceItem<PromptAssetInstallModeV1>
+            title={t('promptLibrary.externalAssetsInstallMethod')}
+            options={installModeOptions}
+            value={selectedInstallMode}
+            onChange={setInstallMode}
+            testIDPrefix="promptRegistries.details.installMode"
+          />
+        ) : null}
+        <Item
+          title={t('promptLibrary.externalAssetsExportTarget')}
+          subtitle={t('promptLibrary.surface.installTargetDescription')}
+          accessoryLayout="adaptive"
+          showChevron={false}
+          rightElement={(
+            <FieldTextInput
+              testID="promptRegistries.details.targetInput"
+              accessibilityLabel={t('promptLibrary.externalAssetsExportTarget')}
+              placeholder={t('promptLibrary.externalAssetsExportTargetNamePlaceholder')}
+              value={targetInput}
+              onChangeText={setTargetInput}
+              autoCapitalize="none"
+              monospace
+            />
+          )}
+        />
+      </ItemGroup>
+
+      <ItemGroup title={t('promptLibrary.registriesItemPreview')}>
+        <SectionContentRow>
+          {loading && !item ? (
+            <Text style={styles.previewEmpty}>{t('common.loading')}</Text>
+          ) : skillMarkdown ? (
+            <Text style={styles.previewText}>{skillMarkdown}</Text>
+          ) : (
+            <Text style={styles.previewEmpty}>{t('promptLibrary.registriesItemPreviewUnavailable')}</Text>
+          )}
+        </SectionContentRow>
+      </ItemGroup>
+    </ItemList>
   );
 });

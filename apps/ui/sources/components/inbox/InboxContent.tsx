@@ -1,90 +1,68 @@
 import * as React from 'react';
+import { happierPageTextMetrics } from '@happier-dev/plugin-ui/presentation';
 import { Platform, Pressable, View } from 'react-native';
 import { useRouter } from 'expo-router';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
-import type { InboxSessionAttentionEntry } from '@/activity/presentation/buildInboxSessionPresentation';
 import { ApprovalInboxCard } from '@/components/inbox/cards/ApprovalInboxCard';
 import { InboxReadySessionRow } from '@/components/inbox/InboxReadySessionRow';
-import { InboxSessionAttentionGroupCard } from '@/components/inbox/sessionAttention/InboxSessionAttentionGroupCard';
-import { Item } from '@/components/ui/lists/Item';
 import { ActivitySpinner } from '@/components/ui/feedback/ActivitySpinner';
-import { Icon } from '@/components/ui/icons/Icon';
+import { EmptyState } from '@/components/ui/empty/EmptyState';
+import { ItemGroup } from '@/components/ui/lists/ItemGroup';
+import { SectionActionButton } from '@/components/ui/lists/SectionActionButton';
+import { SurfaceFreshnessLine } from '@/components/ui/surfaces/SurfaceFreshnessLine';
 import { Text } from '@/components/ui/text/Text';
 import { UserCard } from '@/components/ui/cards/UserCard';
-import { RecoveryKeyReminderBanner } from '@/components/account/RecoveryKeyReminderBanner';
 import { Typography } from '@/constants/Typography';
 import type { InboxModel } from '@/hooks/inbox/useInboxModel';
+import type { InboxItemFocus } from './inboxItemFocus';
 import { t } from '@/text';
 import { trackFriendsProfileView } from '@/track';
-import { sessionAddressKey } from '@/sync/domains/session/sessionAddress';
 import { buildServerScopedSessionKey } from '@/sync/domains/session/navigation/sessionNavigationOrder';
-import {
-    SessionListIdentity,
-    useSessionListIdentityDisplay,
-} from '@/components/sessions/shell/SessionListIdentity';
-import { SESSION_LIST_ROW_IDENTITY_METRICS } from '@/components/sessions/shell/resolveSessionListDensityViewState';
+import { useSessionListIdentityDisplay } from '@/components/sessions/shell/SessionListIdentity';
+import type { InboxWorkGroup } from '@/activity/presentation/buildInboxWorkGroups';
 
 import { ActionOperationRows } from './actionOperations/ActionOperationLedger';
 import { openActionOperation } from './actionOperations/actionOperationPresentationRuntime';
 import { InboxSection } from './InboxSection';
+import { countInboxNeedsYou, countInboxUpdates } from './inboxCounts';
+import { buildInboxSessionContextLine, presentInboxSessionStatus } from './workGroups/InboxWorkItemRow';
+import { InboxWorkGroupSection } from './workGroups/InboxWorkGroupSection';
 import { getSessionStatus } from '@/utils/sessions/sessionUtils';
+import { motionTokens } from '@/components/ui/motion/motionTokens';
 
-function requiresPromptCard(entry: InboxSessionAttentionEntry): boolean {
-    return entry.candidate.personalAttention.reasons.some(
-        (reason) => reason === 'permission_required' || reason === 'user_action_required',
-    );
-}
+export type InboxView = 'needs_you' | 'updates';
 
-function buildSessionContextLine(candidate: InboxSessionAttentionEntry['candidate']): string | undefined {
-    const status = candidate.personalAttention.reasons.includes('failed')
-        ? t('status.error')
-        : candidate.attentionState === 'ready'
-            ? t('status.readyForReview')
-            : getSessionStatus(candidate.session, Date.now(), { workingTextMode: 'static' }).statusText;
-    const context = (candidate.context?.contextLine ?? candidate.subtitle).trim();
-    return Array.from(new Set([status.trim(), context].filter(Boolean))).join(' · ') || undefined;
-}
+const OTHER_GROUP = Object.freeze<InboxWorkGroup>({ key: 'other', root: { kind: 'other' }, items: [] });
 
 /**
  * The one non-scrolling Inbox body used by both screen and anchored popover.
  * Each host owns exactly one scroll container and supplies a callback that
  * closes transient chrome before any navigation begins.
+ *
+ * "Needs you" is grouped by the work each item belongs to (ORC R-10, lab `inbox-I1`); "Updates"
+ * holds what finished and people. The popover shows the grouped needs-you rows and says how many
+ * more wait in the Inbox (lab `inbox-I2`).
  */
 export const InboxContent = React.memo(function InboxContent(props: Readonly<{
     model: InboxModel;
     onBeforeNavigate?: () => void;
+    /** Popover only: opens the full Inbox from the "N more" lines. */
+    onOpenInbox?: () => void;
     presentation?: 'screen' | 'popover';
+    view?: InboxView;
+    /** The item the person came to see (`/inbox?item=`): its row is drawn selected. */
+    focusedItem?: InboxItemFocus | null;
 }>) {
     const router = useRouter();
     const { theme } = useUnistyles();
     const { model } = props;
-    const sectionSurface = (props.presentation ?? 'screen') === 'screen' ? 'grouped' : 'flat';
+    const presentation = props.presentation ?? 'screen';
+    const page = presentation === 'screen';
+    const view: InboxView = page ? (props.view ?? 'needs_you') : 'needs_you';
+    const sectionSurface = page ? 'page' : 'flat';
     const identityDisplay = useSessionListIdentityDisplay();
     const nowMs = Date.now();
-    const failedSessions = model.sessionPresentation.sessionsNeedingAttention.filter(
-        (entry) => entry.candidate.personalAttention.reasons.includes('failed'),
-    );
-    const actionableSessions = model.sessionPresentation.sessionsNeedingAttention.filter(
-        (entry) => !entry.candidate.personalAttention.reasons.includes('failed'),
-    );
-    const operationGroups = React.useMemo(() => {
-        type OperationEntry = InboxModel['actionOperationEntries'][number];
-        const failed: OperationEntry[] = [];
-        const actionable: OperationEntry[] = [];
-        const entryByProjection = new Map<OperationEntry['operation'], OperationEntry>();
-        for (const entry of model.actionOperationEntries) {
-            (entry.reason === 'failed' ? failed : actionable).push(entry);
-            entryByProjection.set(entry.operation, entry);
-        }
-        return {
-            failed,
-            actionable,
-            failedOperations: failed.map((entry) => entry.operation),
-            actionableOperations: actionable.map((entry) => entry.operation),
-            entryByProjection,
-        };
-    }, [model.actionOperationEntries]);
 
     const navigate = React.useCallback((route: string) => {
         props.onBeforeNavigate?.();
@@ -94,243 +72,258 @@ export const InboxContent = React.memo(function InboxContent(props: Readonly<{
         props.onBeforeNavigate?.();
         openActionOperation(operation);
     }, [props.onBeforeNavigate]);
-    const resolveOperation = React.useCallback((operation: Parameters<typeof openActionOperation>[0]) => {
-        const entry = operationGroups.entryByProjection.get(operation);
+    const operationsByProjection = React.useMemo(() => {
+        type OperationEntry = InboxModel['actionOperationEntries'][number];
+        const entryByProjection = new Map<OperationEntry['operation'], OperationEntry>();
+        for (const entry of model.actionOperationEntries) entryByProjection.set(entry.operation, entry);
+        return entryByProjection;
+    }, [model.actionOperationEntries]);
+    const operations = React.useMemo(
+        () => model.actionOperationEntries.map((entry) => entry.operation),
+        [model.actionOperationEntries],
+    );
+    const resolveOperation = React.useCallback((operation: InboxModel['actionOperationEntries'][number]['operation']) => {
+        const entry = operationsByProjection.get(operation);
         if (entry) model.resolveActionOperation(entry);
-    }, [model, operationGroups.entryByProjection]);
+    }, [model, operationsByProjection]);
+
+    const rootGroups = model.workGroups.filter((group) => group.root.kind !== 'other');
+    const otherGroup = model.workGroups.find((group) => group.root.kind === 'other') ?? OTHER_GROUP;
+    const otherExtraCount = model.openApprovals.length + model.actionOperationEntries.length;
+    const hasOther = otherGroup.items.length > 0 || otherExtraCount > 0;
+    // The popover keeps "Other sessions" to one line when work roots are shown (lab `inbox-I2`);
+    // with no roots, the other rows are the popover's content.
+    const otherInline = page || rootGroups.length === 0;
+    const needsYouCount = countInboxNeedsYou(model);
+    const updatesCount = countInboxUpdates(model);
+    const workflowStale = model.workflowAttention.refreshFailed && model.workflowAttention.phase === 'loaded';
+
+    const otherExtra = (
+        <>
+            {model.openApprovals.map((artifact) => {
+                const approvalServerId = typeof artifact.header?.serverIdentityId === 'string'
+                    ? artifact.header.serverIdentityId.trim()
+                    : typeof artifact.header?.serverId === 'string'
+                        ? artifact.header.serverId.trim()
+                        : '';
+                const approvalHref = `/inbox/approvals/${encodeURIComponent(artifact.id)}${approvalServerId
+                    ? `?serverId=${encodeURIComponent(approvalServerId)}`
+                    : ''}`;
+                return (
+                    <ApprovalInboxCard
+                        key={artifact.id}
+                        artifact={artifact}
+                        onPress={() => navigate(approvalHref)}
+                        audienceScope={typeof artifact.header?.serverId === 'string'
+                            ? model.source.audienceScopes?.get(artifact.header.serverId.trim())
+                            : undefined}
+                        workspaceRefs={model.source.workspaceRefsV1 ?? []}
+                        workspacePathDisplayModeV1={model.source.workspacePathDisplayModeV1}
+                        density="compact"
+                    />
+                );
+            })}
+            {operations.length > 0 ? (
+                <ActionOperationRows
+                    operations={operations}
+                    presentation="inbox"
+                    onOpenOperation={openOperation}
+                    onDismissOperation={resolveOperation}
+                />
+            ) : null}
+        </>
+    );
+
+    const markAllRead = () => { void model.markRead(model.sessionPresentation.markAllReadTargets); };
+    const markAllReadAction = page ? (
+        <SectionActionButton
+            testID="inbox.ready.mark_all_read"
+            title={t('inbox.markAllRead')}
+            icon="checks"
+            disabled={model.markAllPending}
+            onPress={markAllRead}
+        />
+    ) : (
+        <Pressable
+            testID="inbox.ready.mark_all_read"
+            accessibilityRole="button"
+            accessibilityLabel={t('inbox.markAllRead')}
+            accessibilityState={{ disabled: model.markAllPending }}
+            disabled={model.markAllPending}
+            hitSlop={Platform.select({ ios: 15, default: 17 })}
+            onPress={markAllRead}
+            style={({ pressed }) => [
+                styles.sectionAction,
+                pressed ? styles.sectionActionPressed : null,
+                model.markAllPending ? styles.sectionActionDisabled : null,
+            ]}
+        >
+            <Text style={styles.sectionActionLabel}>{t('inbox.markAllRead')}</Text>
+        </Pressable>
+    );
+
+    const renderEmpty = (title: string, subtitle: string) => (page ? (
+        // A sheetless page section, so the state sits in the page's content column.
+        <ItemGroup surface="none">
+            <EmptyState testID="inbox.empty" layout="page" iconName="check-circle" title={title} subtitle={subtitle} />
+        </ItemGroup>
+    ) : (
+        <View style={styles.emptyContainer}>
+            <EmptyState testID="inbox.empty" iconName="check" title={title} subtitle={subtitle} />
+        </View>
+    ));
+
+    const loading = model.isLoading && !model.hasPrimaryAttention;
 
     return (
         <View testID="inbox.content" style={styles.container}>
-            <RecoveryKeyReminderBanner />
-
-            {failedSessions.length > 0 || operationGroups.failed.length > 0 ? (
-                <InboxSection testID="inbox.section.errors" title={t('inbox.errors')} surface={sectionSurface}>
-                    {failedSessions.map((entry) => {
-                        const candidate = entry.candidate;
-                        if (requiresPromptCard(entry)) {
-                            return (
-                                <InboxSessionAttentionGroupCard
-                                    key={candidate.address ? sessionAddressKey(candidate.address) : candidate.sessionId}
-                                    session={candidate.session}
-                                    serverId={candidate.address?.serverId ?? candidate.serverId ?? null}
-                                    identityDisplay={identityDisplay}
-                                    connected={getSessionStatus(candidate.session, nowMs, { workingTextMode: 'static' }).isConnected}
-                                    contextLine={candidate.context?.contextLine ?? null}
-                                    permissionRequests={entry.pendingPermissions}
-                                    userActionRequests={entry.pendingUserActions}
-                                    onBeforeNavigate={props.onBeforeNavigate}
-                                />
-                            );
-                        }
-                        return (
-                            <Item
-                                key={candidate.address ? sessionAddressKey(candidate.address) : candidate.sessionId}
-                                testID={`inbox.session.${candidate.sessionId}`}
-                                title={candidate.title}
-                                subtitle={buildSessionContextLine(candidate)}
-                                density="compact"
-                                leftElement={identityDisplay !== 'none' ? (
-                                    <SessionListIdentity
-                                        session={candidate.session}
-                                        display={identityDisplay}
-                                        serverId={candidate.address?.serverId ?? candidate.serverId ?? null}
-                                        color={theme.colors.text.primary}
-                                        avatarSize={SESSION_LIST_ROW_IDENTITY_METRICS.compact.slotSize}
-                                        agentLogoSize={SESSION_LIST_ROW_IDENTITY_METRICS.compact.agentLogoSize}
-                                        connected={getSessionStatus(candidate.session, nowMs, { workingTextMode: 'static' }).isConnected}
-                                        testID={`inbox.session.${candidate.sessionId}.identity`}
-                                    />
-                                ) : undefined}
-                                iconBoxSize={identityDisplay !== 'none'
-                                    ? SESSION_LIST_ROW_IDENTITY_METRICS.compact.slotSize
-                                    : undefined}
-                                onPress={() => {
-                                    if (candidate.route) navigate(candidate.route);
-                                }}
+            {view === 'needs_you' ? (
+                <>
+                    {workflowStale ? (
+                        <View style={page ? styles.freshnessPage : styles.freshnessFlat}>
+                            <SurfaceFreshnessLine
+                                testID="inbox.workflow_stale"
+                                asOf={model.workflowAttention.knownAt}
+                                reason={t('inbox.work.stale.reason')}
+                                action={{ label: t('inbox.work.stale.retry'), onPress: model.workflowAttention.retry }}
                             />
-                        );
-                    })}
-                    {operationGroups.failedOperations.length > 0 ? (
-                        <ActionOperationRows
-                            operations={operationGroups.failedOperations}
-                            presentation="inbox"
-                            onOpenOperation={openOperation}
-                            onDismissOperation={resolveOperation}
-                        />
+                        </View>
                     ) : null}
-                </InboxSection>
-            ) : null}
 
-            {model.sessionPresentation.readySessions.length > 0 ? (
-                <InboxSection
-                    testID="inbox.section.ready"
-                    title={t('inbox.readySessions')}
-                    spacingBefore="following"
-                    surface={sectionSurface}
-                    rightAccessory={model.sessionPresentation.markAllReadTargets.length > 0 ? (
-                        <Pressable
-                            testID="inbox.ready.mark_all_read"
-                            accessibilityRole="button"
-                            accessibilityLabel={t('inbox.markAllRead')}
-                            accessibilityState={{ disabled: model.markAllPending }}
-                            disabled={model.markAllPending}
-                            hitSlop={Platform.select({ ios: 15, default: 17 })}
-                            onPress={() => { void model.markRead(model.sessionPresentation.markAllReadTargets); }}
-                            style={({ pressed }) => [
-                                styles.sectionAction,
-                                pressed ? styles.sectionActionPressed : null,
-                                model.markAllPending ? styles.sectionActionDisabled : null,
-                            ]}
-                        >
-                            <Text style={styles.sectionActionLabel}>{t('inbox.markAllRead')}</Text>
-                        </Pressable>
-                    ) : undefined}
-                >
-                    {model.sessionPresentation.readySessions.map((candidate) => {
-                        const serverId = candidate.address?.serverId ?? candidate.serverId ?? null;
-                        const target = model.targetBySessionAddress.get(
-                            buildServerScopedSessionKey(candidate.sessionId, serverId),
-                        );
-                        if (!target) return null;
-                        return (
-                            <InboxReadySessionRow
-                                key={target.key}
-                                session={candidate.session}
-                                identityDisplay={identityDisplay}
-                                connected={getSessionStatus(candidate.session, nowMs, { workingTextMode: 'static' }).isConnected}
-                                sessionId={candidate.sessionId}
-                                serverId={serverId}
-                                title={candidate.title}
-                                subtitle={buildSessionContextLine(candidate)}
-                                pending={model.pendingReadKeys.has(target.key)}
-                                onOpen={() => {
-                                    if (candidate.route) navigate(candidate.route);
-                                }}
-                                onMarkRead={() => model.markRead([target])}
-                            />
-                        );
-                    })}
-                </InboxSection>
-            ) : null}
-
-            {model.openApprovals.length > 0 || actionableSessions.length > 0 || operationGroups.actionable.length > 0 ? (
-                <InboxSection
-                    testID="inbox.section.needs_attention"
-                    title={t('inbox.actionOperations.sections.needsAttention')}
-                    spacingBefore="separated"
-                    surface={sectionSurface}
-                >
-                    {model.openApprovals.map((artifact) => {
-                        const approvalServerId = typeof artifact.header?.serverIdentityId === 'string'
-                            ? artifact.header.serverIdentityId.trim()
-                            : typeof artifact.header?.serverId === 'string'
-                                ? artifact.header.serverId.trim()
-                            : '';
-                        const approvalHref = `/inbox/approvals/${encodeURIComponent(artifact.id)}${approvalServerId
-                            ? `?serverId=${encodeURIComponent(approvalServerId)}`
-                            : ''}`;
-                        return (
-                            <ApprovalInboxCard
-                                key={artifact.id}
-                                artifact={artifact}
-                                onPress={() => navigate(approvalHref)}
-                                audienceScope={typeof artifact.header?.serverId === 'string'
-                                    ? model.source.audienceScopes?.get(artifact.header.serverId.trim())
-                                    : undefined}
-                                workspaceRefs={model.source.workspaceRefsV1 ?? []}
-                                workspacePathDisplayModeV1={model.source.workspacePathDisplayModeV1}
-                                density="compact"
-                            />
-                        );
-                    })}
-                    {actionableSessions.map((entry) => {
-                        const candidate = entry.candidate;
-                        if (requiresPromptCard(entry)) {
-                            return (
-                                <InboxSessionAttentionGroupCard
-                                    key={candidate.address ? sessionAddressKey(candidate.address) : candidate.sessionId}
-                                    session={candidate.session}
-                                    serverId={candidate.address?.serverId ?? candidate.serverId ?? null}
-                                    identityDisplay={identityDisplay}
-                                    connected={getSessionStatus(candidate.session, nowMs, { workingTextMode: 'static' }).isConnected}
-                                    contextLine={candidate.context?.contextLine ?? null}
-                                    permissionRequests={entry.pendingPermissions}
-                                    userActionRequests={entry.pendingUserActions}
-                                    onBeforeNavigate={props.onBeforeNavigate}
-                                />
-                            );
-                        }
-                        return (
-                            <Item
-                                key={candidate.address ? sessionAddressKey(candidate.address) : candidate.sessionId}
-                                testID={`inbox.session.${candidate.sessionId}`}
-                                title={candidate.title}
-                                subtitle={buildSessionContextLine(candidate)}
-                                density="compact"
-                                leftElement={identityDisplay !== 'none' ? (
-                                    <SessionListIdentity
-                                        session={candidate.session}
-                                        display={identityDisplay}
-                                        serverId={candidate.address?.serverId ?? candidate.serverId ?? null}
-                                        color={theme.colors.text.primary}
-                                        avatarSize={SESSION_LIST_ROW_IDENTITY_METRICS.compact.slotSize}
-                                        agentLogoSize={SESSION_LIST_ROW_IDENTITY_METRICS.compact.agentLogoSize}
-                                        connected={getSessionStatus(candidate.session, nowMs, { workingTextMode: 'static' }).isConnected}
-                                        testID={`inbox.session.${candidate.sessionId}.identity`}
-                                    />
-                                ) : undefined}
-                                iconBoxSize={identityDisplay !== 'none'
-                                    ? SESSION_LIST_ROW_IDENTITY_METRICS.compact.slotSize
-                                    : undefined}
-                                onPress={() => {
-                                    if (candidate.route) navigate(candidate.route);
-                                }}
-                            />
-                        );
-                    })}
-                    {operationGroups.actionableOperations.length > 0 ? (
-                        <ActionOperationRows
-                            operations={operationGroups.actionableOperations}
-                            presentation="inbox"
-                            onOpenOperation={openOperation}
-                            onDismissOperation={resolveOperation}
-                        />
-                    ) : null}
-                </InboxSection>
-            ) : null}
-
-            {model.friendRequests.length > 0 ? (
-                <InboxSection testID="inbox.section.friends" title={t('friends.pendingRequests')} spacingBefore="separated" surface={sectionSurface}>
-                    {model.friendRequests.map((friend) => (
-                        <UserCard
-                            key={friend.id}
-                            user={friend}
-                            density="compact"
-                            onPress={() => {
-                                trackFriendsProfileView();
-                                navigate(`/user/${friend.id}`);
-                            }}
+                    {rootGroups.map((group, index) => (
+                        <InboxWorkGroupSection
+                            key={group.key}
+                            group={group}
+                            model={model}
+                            identityDisplay={identityDisplay}
+                            nowMs={nowMs}
+                            presentation={presentation}
+                            spacingBefore={index > 0 ? 'separated' : undefined}
+                            navigate={navigate}
+                            onBeforeNavigate={props.onBeforeNavigate}
+                            focusedItem={props.focusedItem}
                         />
                     ))}
-                </InboxSection>
-            ) : null}
 
-            {model.isLoading && !model.hasPrimaryAttention ? (
-                <View style={styles.loadingContainer}>
-                    <ActivitySpinner size="large" color={theme.colors.text.secondary} />
-                </View>
-            ) : null}
+                    {hasOther && otherInline ? (
+                        <InboxWorkGroupSection
+                            group={otherGroup}
+                            model={model}
+                            identityDisplay={identityDisplay}
+                            nowMs={nowMs}
+                            presentation={presentation}
+                            navigate={navigate}
+                            onBeforeNavigate={props.onBeforeNavigate}
+                            focusedItem={props.focusedItem}
+                            extra={otherExtra}
+                        />
+                    ) : null}
 
-            {model.showCaughtUp ? (
-                <View style={styles.emptyContainer}>
-                    <View style={styles.emptyIconSurface}>
-                        <Icon name="check-circle" size={25} color={theme.colors.state.success.foreground} />
-                    </View>
-                    <Text style={styles.emptyTitle}>{t('inbox.emptyTitle')}</Text>
-                    <Text style={styles.emptyDescription}>{t('inbox.emptyDescription')}</Text>
-                </View>
-            ) : null}
+                    {!page && ((hasOther && !otherInline) || updatesCount > 0) ? (
+                        <View style={rootGroups.length > 0 ? styles.moreLines : undefined}>
+                            {hasOther && !otherInline ? (
+                                <Pressable
+                                    testID="inbox.popover.more_other"
+                                    accessibilityRole="button"
+                                    onPress={props.onOpenInbox}
+                                    style={({ pressed }) => [styles.moreLine, pressed ? styles.sectionActionPressed : null]}
+                                >
+                                    <Text style={styles.moreLabel}>
+                                        {t('inbox.work.popover.moreInOther', { count: otherGroup.items.length + otherExtraCount })}
+                                    </Text>
+                                </Pressable>
+                            ) : null}
+                            {updatesCount > 0 ? (
+                                <Pressable
+                                    testID="inbox.popover.updates"
+                                    accessibilityRole="button"
+                                    onPress={props.onOpenInbox}
+                                    style={({ pressed }) => [styles.moreLine, pressed ? styles.sectionActionPressed : null]}
+                                >
+                                    <Text style={styles.moreLabel}>{t('inbox.work.popover.updates', { count: updatesCount })}</Text>
+                                </Pressable>
+                            ) : null}
+                        </View>
+                    ) : null}
 
+                    {loading ? (
+                        <View style={styles.loadingContainer}>
+                            <ActivitySpinner size="large" color={theme.colors.text.secondary} />
+                        </View>
+                    ) : null}
+
+                    {!loading && needsYouCount === 0 && page && updatesCount === 0
+                        // Nothing anywhere: the page's calm caught-up state.
+                        ? renderEmpty(t('inbox.emptyTitle'), t('inbox.emptyDescription'))
+                        : !loading && needsYouCount === 0 && (page || updatesCount === 0)
+                            ? renderEmpty(t('inbox.work.empty.title'), t('inbox.work.empty.description'))
+                            : null}
+                </>
+            ) : (
+                <>
+                    {model.sessionPresentation.readySessions.length > 0 ? (
+                        <InboxSection
+                            testID="inbox.section.ready"
+                            title={t('inbox.readySessions')}
+                            surface={sectionSurface}
+                            rightAccessory={model.sessionPresentation.markAllReadTargets.length > 0 ? markAllReadAction : undefined}
+                        >
+                            {model.sessionPresentation.readySessions.map((candidate) => {
+                                const serverId = candidate.address?.serverId ?? candidate.serverId ?? null;
+                                const target = model.targetBySessionAddress.get(
+                                    buildServerScopedSessionKey(candidate.sessionId, serverId),
+                                );
+                                if (!target) return null;
+                                const status = presentInboxSessionStatus(candidate.session, nowMs);
+                                return (
+                                    <InboxReadySessionRow
+                                        key={target.key}
+                                        session={candidate.session}
+                                        identityDisplay={identityDisplay}
+                                        connected={getSessionStatus(candidate.session, nowMs, { workingTextMode: 'static' }).isConnected}
+                                        sessionId={candidate.sessionId}
+                                        serverId={serverId}
+                                        title={candidate.title}
+                                        subtitle={buildInboxSessionContextLine(candidate)}
+                                        statusWord={status.word}
+                                        statusTone={status.tone}
+                                        pending={model.pendingReadKeys.has(target.key)}
+                                        onOpen={() => {
+                                            if (candidate.route) navigate(candidate.route);
+                                        }}
+                                        onMarkRead={() => model.markRead([target])}
+                                    />
+                                );
+                            })}
+                        </InboxSection>
+                    ) : null}
+
+                    {model.friendRequests.length > 0 ? (
+                        <InboxSection
+                            testID="inbox.section.friends"
+                            title={t('inbox.friendRequests')}
+                            spacingBefore={model.sessionPresentation.readySessions.length > 0 ? 'separated' : undefined}
+                            surface={sectionSurface}
+                        >
+                            {model.friendRequests.map((friend) => (
+                                <UserCard
+                                    key={friend.id}
+                                    user={friend}
+                                    density="compact"
+                                    onPress={() => {
+                                        trackFriendsProfileView();
+                                        navigate(`/user/${friend.id}`);
+                                    }}
+                                />
+                            ))}
+                        </InboxSection>
+                    ) : null}
+
+                    {!loading && updatesCount === 0
+                        ? renderEmpty(t('inbox.work.updatesEmpty.title'), t('inbox.work.updatesEmpty.description'))
+                        : null}
+                </>
+            )}
         </View>
     );
 });
@@ -343,38 +336,11 @@ const styles = StyleSheet.create((theme) => ({
     },
     emptyContainer: {
         flexGrow: 1,
-        minHeight: 320,
+        minHeight: 240,
         justifyContent: 'center',
         alignItems: 'center',
-        paddingHorizontal: 32,
-        paddingVertical: 48,
-    },
-    emptyIconSurface: {
-        width: 52,
-        height: 52,
-        borderRadius: 18,
-        alignItems: 'center',
-        justifyContent: 'center',
-        marginBottom: 18,
-        backgroundColor: theme.colors.state.success.background,
-        borderWidth: 1,
-        borderColor: theme.colors.state.success.border,
-    },
-    emptyTitle: {
-        fontSize: 20,
-        lineHeight: 26,
-        ...Typography.default('semiBold'),
-        color: theme.colors.text.primary,
-        marginBottom: 7,
-        textAlign: 'center',
-    },
-    emptyDescription: {
-        maxWidth: 360,
-        fontSize: 15,
-        lineHeight: 21,
-        ...Typography.default(),
-        color: theme.colors.text.secondary,
-        textAlign: 'center',
+        paddingHorizontal: 16,
+        paddingVertical: 40,
     },
     loadingContainer: {
         flexGrow: 1,
@@ -382,13 +348,35 @@ const styles = StyleSheet.create((theme) => ({
         alignItems: 'center',
         justifyContent: 'center',
     },
+    freshnessPage: {
+        paddingTop: 8,
+    },
+    freshnessFlat: {
+        paddingHorizontal: 12,
+        paddingTop: 6,
+    },
+    moreLines: {
+        marginTop: 6,
+        borderTopWidth: StyleSheet.hairlineWidth,
+        borderTopColor: theme.colors.border.surface,
+    },
+    moreLine: {
+        minHeight: 40,
+        justifyContent: 'center',
+        paddingHorizontal: 16,
+    },
+    moreLabel: {
+        ...Typography.default('regular'),
+        ...happierPageTextMetrics('sectionDescription'),
+        color: theme.colors.text.secondary,
+    },
     sectionAction: {
         height: 14,
         justifyContent: 'center',
         paddingLeft: 10,
     },
     sectionActionPressed: {
-        opacity: 0.62,
+        opacity: motionTokens.press.opacity,
     },
     sectionActionDisabled: {
         opacity: 0.42,

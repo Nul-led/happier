@@ -70,7 +70,7 @@ describe('createExternalMcpServer plugin tools', () => {
         promptGuidelines: ['Choose the narrowest applicable scope.'],
         availability: { when: { fact: 'plugin.enabled', operator: 'equals', value: true } },
         surfaces: ['agent', 'mcp', 'cli'],
-        expectedContributorImmutableGenerationId: 'generation-g',
+        expectedContributorOccurrenceId: 'occurrence-g',
       }],
     } as any);
 
@@ -138,7 +138,7 @@ describe('createExternalMcpServer plugin tools', () => {
         surface: 'mcp',
         authority: 'account_automation',
         defaultSessionId: 'cli-global',
-        expectedContributorImmutableGenerationId: 'generation-g',
+        expectedContributorOccurrenceId: 'occurrence-g',
       });
     } finally {
       await client.close();

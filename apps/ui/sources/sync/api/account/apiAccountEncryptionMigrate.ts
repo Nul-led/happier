@@ -1,13 +1,13 @@
 import type { AuthCredentials } from '@/auth/storage/tokenStorage';
 import { HappyError } from '@/utils/errors/errors';
 import { backoff } from '@/utils/timing/time';
-import { serverFetch, type ServerFetch } from '@/sync/http/client';
+import { createServerFetchAtEndpoint, serverFetch, type ServerFetch } from '@/sync/http/client';
+import type { HomeCarrier } from '@/sync/runtime/homeCarrier';
 import { invalidateAccountEncryptionModeCache } from './apiAccountEncryptionMode';
 import {
-  assertCurrentAccountStoredContentServerCompatibility,
-  requireCurrentAccountStoredContentServerCompatibility,
-} from '@/sync/api/capabilities/accountStoredContentCompatibility';
-import { probeServerFeaturesAtUrl } from '@/sync/api/capabilities/serverFeaturesClient';
+  assertAccountEncryptionMigrationScopeCurrent,
+  type AccountEncryptionMigrationScope,
+} from '@/sync/domains/settings/scope/accountSettingsScope';
 import {
   AccountEncryptionMigrateSuccessResponseSchema,
   AccountEncryptionMigrateAnyErrorResponseSchema,
@@ -16,28 +16,36 @@ import {
 
 export { AccountEncryptionMigrateRequestSchema, type AccountEncryptionMigrateRequest } from '@happier-dev/protocol';
 
+export type AccountEncryptionMigrationTarget = Readonly<{
+  serverUrl: string;
+  serverId: string;
+  runtimeOrigin?: string | null;
+  homeCarrier?: HomeCarrier;
+}>;
+
 export async function migrateAccountEncryptionMode(
   credentials: AuthCredentials,
   request: AccountEncryptionMigrateRequest,
   options: Readonly<{
     retry?: 'default' | 'none';
     request?: ServerFetch;
-    target?: Readonly<{ serverUrl: string; serverId: string }>;
+    target?: AccountEncryptionMigrationTarget;
+    scope?: AccountEncryptionMigrationScope;
   }> = {},
 ): Promise<import('@happier-dev/protocol').AccountEncryptionMigrateSuccessResponse> {
-  if (options.target) {
-    assertCurrentAccountStoredContentServerCompatibility(
-      await probeServerFeaturesAtUrl({
-        endpointUrl: options.target.serverUrl,
-        serverId: options.target.serverId,
-        force: true,
-      }),
-    );
-  } else {
-    await requireCurrentAccountStoredContentServerCompatibility();
-  }
+  if (options.scope) assertAccountEncryptionMigrationScopeCurrent(options.scope);
   const migrateOnce = async () => {
-    const response = await (options.request ?? serverFetch)(
+    if (options.scope) assertAccountEncryptionMigrationScopeCurrent(options.scope);
+    const targetRequest = options.target
+      ? createServerFetchAtEndpoint({
+          endpointUrl: options.target.serverUrl,
+          ...(options.target.runtimeOrigin ? { runtimeOrigin: options.target.runtimeOrigin } : {}),
+          ...(options.target.homeCarrier ? { homeCarrier: options.target.homeCarrier } : {}),
+          credentials,
+          serverId: options.target.serverId,
+        })
+      : serverFetch;
+    const response = await (options.request ?? targetRequest)(
       '/v1/account/encryption/migrate',
       {
         method: 'POST',
@@ -51,6 +59,8 @@ export async function migrateAccountEncryptionMode(
         ? { includeAuth: false, retry: 'none' }
         : { includeAuth: false },
     );
+    // A POST acknowledgement is an external fact; the caller still gates
+    // projection/adoption on the same captured scope after this returns.
 
     const data: unknown = await response.json().catch(() => null);
     const success = AccountEncryptionMigrateSuccessResponseSchema.safeParse(data);

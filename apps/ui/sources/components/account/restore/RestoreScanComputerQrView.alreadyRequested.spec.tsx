@@ -156,32 +156,30 @@ vi.mock('@/components/qr/QrCodeScannerView', () => ({
 }));
 
 describe('RestoreScanComputerQrView (already requested)', () => {
-    it('shows a friendly error when the pairing session already has a requested device', async () => {
+    it('renders precise retry guidance when the pairing session already has a requested device', async () => {
         vi.resetModules();
         modalAlertAsyncSpy.mockClear();
         lastScannerProps = null;
 
         const { RestoreScanComputerQrView } = await import('./RestoreScanComputerQrView');
 
-        let tree: ReactTestRenderer | null = null;
+        let tree!: ReactTestRenderer;
         try {
             await act(async () => {
                 tree = create(<RestoreScanComputerQrView entryIntent="add_home" />);
             });
-            if (!tree) throw new Error('Expected renderer');
             expect(typeof lastScannerProps?.onScan).toBe('function');
 
             await act(async () => {
                 await lastScannerProps.onScan('happier:///pair?v=2&data=canonical-v2-fixture');
             });
 
-            expect(modalAlertAsyncSpy).toHaveBeenCalledWith(
-                'connect.pairingAlreadyRequestedTitle',
-                'connect.pairingAlreadyRequestedBody',
-            );
+            expect(modalAlertAsyncSpy).not.toHaveBeenCalled();
+            expect(tree.root.findAllByProps({ testID: 'restore-enrollment-retry' })).toHaveLength(1);
+            expect(tree.root.findAll((node) => node.children.includes('connect.pairingAlreadyRequestedBody'))).not.toHaveLength(0);
         } finally {
             act(() => {
-                tree?.unmount();
+                tree.unmount();
             });
         }
     });

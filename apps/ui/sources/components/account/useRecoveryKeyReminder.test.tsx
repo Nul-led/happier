@@ -76,4 +76,22 @@ describe('useRecoveryKeyReminder', () => {
         await flushHookEffects({ cycles: 2 });
         expect(hook.getCurrent().needed).toBe(false);
     });
+
+    it('says it once: the banner steps aside while a hub setup tile carries the step', async () => {
+        const { useRecoveryKeyReminder } = await import('./useRecoveryKeyReminder');
+        const banner = await renderHook(() => useRecoveryKeyReminder({ surface: 'banner' }));
+        await flushHookEffects({ cycles: 3 });
+        expect(banner.getCurrent().needed).toBe(true);
+
+        const tile = await renderHook(() => useRecoveryKeyReminder({ surface: 'hubTile' }));
+        await flushHookEffects({ cycles: 2 });
+        expect(tile.getCurrent().needed).toBe(true);
+        expect(banner.getCurrent().needed).toBe(false);
+
+        // No hub on screen (phone, narrow list, a session open): the banner carries it again.
+        await tile.unmount();
+        await flushHookEffects({ cycles: 2 });
+        expect(banner.getCurrent().needed).toBe(true);
+    });
 });
+

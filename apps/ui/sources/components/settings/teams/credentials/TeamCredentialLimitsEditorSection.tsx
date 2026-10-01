@@ -4,9 +4,12 @@ import type {
     TeamCredentialUsageCapabilitiesV1,
 } from '@happier-dev/protocol/teams';
 
+import { FieldTextInput } from '@/components/ui/forms/FieldTextInput';
 import { Item } from '@/components/ui/lists/Item';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
-import { TextInput } from '@/components/ui/text/Text';
+import { useTeamGroups } from '@/hooks/teams/useTeamGroups';
+import { useTeamMembersRoster } from '@/hooks/teams/useTeamMembersRoster';
+import { formatAccountDisplayName } from '@/sync/domains/account/formatAccountDisplayName';
 import { t } from '@/text';
 
 import type { TeamSectionContext } from '../teamSectionContext';
@@ -42,23 +45,64 @@ export const TeamCredentialLimitsEditorSection = React.memo(function TeamCredent
 }>) {
     const { context, resource, usageCapabilities, draft, busy, onRequestDraftChange } = props;
     const [editor, setEditor] = React.useState<Readonly<{ kind: 'add' } | { kind: 'edit'; index: number }> | null>(null);
-    const [pickedSubjectName, setPickedSubjectName] = React.useState<string | null>(null);
+    const [pickedNames, setPickedNames] = React.useState<ReadonlyMap<string, string>>(() => new Map());
     const [pickedSubjectMembershipId, setPickedSubjectMembershipId] = React.useState<string | null>(null);
     const targetKey = `${context.scope.serverId}:${context.scope.accountId}:${context.address.teamId}:${resource?.id ?? 'new'}`;
     const metrics = availableTeamCredentialLimitMetrics(usageCapabilities);
 
     React.useEffect(() => {
         setEditor(null);
-        setPickedSubjectName(null);
+        setPickedNames(new Map());
         setPickedSubjectMembershipId(null);
     }, [targetKey]);
+
+    const subjects = [...draft.limits, draft.pendingLimit];
+    const groups = useTeamGroups({
+        scope: context.scope,
+        address: context.address,
+        archived: 'active',
+        enabled: subjects.some((limit) => limit.subjectKind === 'team_group' && limit.subjectId !== ''),
+    });
+    const members = useTeamMembersRoster({
+        scope: context.scope,
+        address: context.address,
+        filter: 'all',
+        enabled: subjects.some((limit) => limit.subjectKind === 'team_member' && limit.subjectId !== ''),
+    });
+    const resolveSubjectName = (limit: TeamCredentialLimitDraft) => {
+        const membership = limit.subjectKind === 'team_member'
+            ? members.rows.find((row) => row.accountId === limit.subjectId)
+            : undefined;
+        return (limit.subjectKind === 'team_group'
+            ? groups.rows.find((row) => row.id === limit.subjectId)?.name
+            : membership ? formatAccountDisplayName(membership.account) : null)
+            ?? pickedNames.get(`${limit.subjectKind}:${limit.subjectId}`)
+            ?? null;
+    };
+    const subjectLabel = (limit: TeamCredentialLimitDraft) => {
+        const name = resolveSubjectName(limit);
+        if (name !== null) return name;
+        const roster = limit.subjectKind === 'team_group' ? groups : members;
+        return roster.status !== 'error' && (roster.status !== 'ready' || roster.hasMore)
+            ? t('common.loading')
+            : t('teams.credentials.limits.unknownSubject');
+    };
+    const missingGroups = subjects.some((limit) => limit.subjectKind === 'team_group' && limit.subjectId !== '' && resolveSubjectName(limit) === null);
+    const missingMembers = subjects.some((limit) => limit.subjectKind === 'team_member' && limit.subjectId !== '' && resolveSubjectName(limit) === null);
+    // Continue the authorized directory only until the saved targets are found.
+    // A failed page waits for explicit retry rather than starting a retry loop.
+    React.useEffect(() => {
+        if (missingGroups && groups.status === 'ready' && groups.hasMore) void groups.loadMore();
+    }, [missingGroups, groups.status, groups.hasMore, groups.loadMore, groups.rows]);
+    React.useEffect(() => {
+        if (missingMembers && members.status === 'ready' && members.hasMore) void members.loadMore();
+    }, [missingMembers, members.status, members.hasMore, members.loadMore, members.rows]);
 
     const requestPendingChange = (pendingLimit: TeamCredentialLimitDraft) => {
         onRequestDraftChange({ ...draft, pendingLimit });
     };
     const closeEditor = () => {
         setEditor(null);
-        setPickedSubjectName(null);
         setPickedSubjectMembershipId(null);
     };
     const exposure = resource === null ? null : resourceDirectExposure(resource);
@@ -78,7 +122,7 @@ export const TeamCredentialLimitsEditorSection = React.memo(function TeamCredent
         <>
             <ItemGroup
                 title={t('teams.credentials.limits.title')}
-                footer={[t('teams.credentials.limits.overshoot'), deliveryNote, routeNote]
+                description={[t('teams.credentials.limits.overshoot'), deliveryNote, routeNote]
                     .filter((part): part is string => part !== null)
                     .join('\n')}
             >
@@ -94,13 +138,14 @@ export const TeamCredentialLimitsEditorSection = React.memo(function TeamCredent
                         <React.Fragment key={key}>
                             <Item
                                 testID={`team-credential-limit-edit:${key}`}
-                                title={limitSubjectKindLabel(limit.subjectKind)}
+                                title={limit.subjectKind === 'team_member' || limit.subjectKind === 'team_group'
+                                    ? `${limitSubjectKindLabel(limit.subjectKind)} · ${subjectLabel(limit)}`
+                                    : limitSubjectKindLabel(limit.subjectKind)}
                                 subtitle={`${limitMetricLabel(limit.metric)} · ${limitPeriodLabel(limit.period)} · ${limit.maximum}`}
                                 detail={!limit.enabled ? t('teams.credentials.limits.disabled') : undefined}
                                 disabled={busy}
                                 onPress={() => {
                                     requestPendingChange(limit);
-                                    setPickedSubjectName(null);
                                     setPickedSubjectMembershipId(null);
                                     setEditor({ kind: 'edit', index });
                                 }}
@@ -126,6 +171,12 @@ export const TeamCredentialLimitsEditorSection = React.memo(function TeamCredent
                         </React.Fragment>
                     );
                 })}
+                {missingGroups && groups.error ? <Item testID="team-credential-limit-groups-retry"
+                    title={t('common.retry')} subtitle={t('teams.credentials.limits.subject.group')}
+                    onPress={() => { void groups.reload(); }} showChevron={false} /> : null}
+                {missingMembers && members.error ? <Item testID="team-credential-limit-members-retry"
+                    title={t('common.retry')} subtitle={t('teams.credentials.limits.subject.member')}
+                    onPress={() => { void members.reload(); }} showChevron={false} /> : null}
             </ItemGroup>
 
             {editor === null ? (
@@ -136,7 +187,6 @@ export const TeamCredentialLimitsEditorSection = React.memo(function TeamCredent
                         disabled={busy || metrics.length === 0}
                         onPress={() => {
                             requestPendingChange(EMPTY_TEAM_CREDENTIAL_LIMIT_DRAFT);
-                            setPickedSubjectName(null);
                             setPickedSubjectMembershipId(null);
                             setEditor({ kind: 'add' });
                         }}
@@ -158,7 +208,6 @@ export const TeamCredentialLimitsEditorSection = React.memo(function TeamCredent
                                 selected={draft.pendingLimit.subjectKind === kind}
                                 disabled={busy}
                                 onPress={() => {
-                                    setPickedSubjectName(null);
                                     setPickedSubjectMembershipId(null);
                                     requestPendingChange({ ...draft.pendingLimit, subjectKind: kind, subjectId: '' });
                                 }}
@@ -172,7 +221,7 @@ export const TeamCredentialLimitsEditorSection = React.memo(function TeamCredent
                             {draft.pendingLimit.subjectId ? (
                                 <Item
                                     testID={`team-credential-limit-group:${draft.pendingLimit.subjectId}`}
-                                    title={pickedSubjectName ?? t('teams.credentials.limits.unknownSubject')}
+                                    title={subjectLabel(draft.pendingLimit)}
                                     selected
                                     showChevron={false}
                                 />
@@ -188,7 +237,7 @@ export const TeamCredentialLimitsEditorSection = React.memo(function TeamCredent
                                 disabled={busy}
                                 onChoose={(principal) => {
                                     if (principal.kind !== 'group') return;
-                                    setPickedSubjectName(principal.name);
+                                    setPickedNames((names) => new Map(names).set(`team_group:${principal.id}`, principal.name));
                                     requestPendingChange({ ...draft.pendingLimit, subjectId: principal.id });
                                 }}
                             />
@@ -200,7 +249,7 @@ export const TeamCredentialLimitsEditorSection = React.memo(function TeamCredent
                             {draft.pendingLimit.subjectId ? (
                                 <Item
                                     testID={`team-credential-limit-member-account:${draft.pendingLimit.subjectId}`}
-                                    title={pickedSubjectName ?? t('teams.credentials.limits.unknownSubject')}
+                                    title={subjectLabel(draft.pendingLimit)}
                                     selected
                                     showChevron={false}
                                 />
@@ -216,7 +265,7 @@ export const TeamCredentialLimitsEditorSection = React.memo(function TeamCredent
                                 disabled={busy}
                                 onChoose={(principal) => {
                                     if (principal.kind !== 'member') return;
-                                    setPickedSubjectName(principal.name);
+                                    setPickedNames((names) => new Map(names).set(`team_member:${principal.accountId}`, principal.name));
                                     setPickedSubjectMembershipId(principal.id);
                                     requestPendingChange({ ...draft.pendingLimit, subjectId: principal.accountId });
                                 }}
@@ -226,7 +275,7 @@ export const TeamCredentialLimitsEditorSection = React.memo(function TeamCredent
 
                     <ItemGroup
                         title={t('teams.credentials.limits.metricLabel')}
-                        footer={draft.pendingLimit.metric === 'cost_usd'
+                        description={draft.pendingLimit.metric === 'cost_usd'
                             ? t('teams.credentials.limits.costNote')
                             : undefined}
                         accessibilityRole="radiogroup"
@@ -265,21 +314,13 @@ export const TeamCredentialLimitsEditorSection = React.memo(function TeamCredent
 
                     <ItemGroup
                         title={t('teams.credentials.limits.maximumLabel')}
-                        footer={draft.pendingLimit.maximum.trim() !== '' && !teamCredentialLimitMaximumValid(draft.pendingLimit)
+                        description={draft.pendingLimit.maximum.trim() !== '' && !teamCredentialLimitMaximumValid(draft.pendingLimit)
                             ? (draft.pendingLimit.metric === 'cost_usd'
                                 ? t('teams.credentials.limits.maximumInvalidCost')
                                 : t('teams.credentials.limits.maximumInvalid'))
                             : t('teams.credentials.limits.overshoot')}
                     >
-                        <TextInput
-                            testID="team-credential-limit-maximum"
-                            value={draft.pendingLimit.maximum}
-                            onChangeText={(maximum) => requestPendingChange({ ...draft.pendingLimit, maximum })}
-                            placeholder={t('teams.credentials.limits.maximumPlaceholder')}
-                            accessibilityLabel={t('teams.credentials.limits.maximumLabel')}
-                            keyboardType="numeric"
-                            editable={!busy}
-                        />
+                        <Item title={t('teams.credentials.limits.maximumLabel')} accessoryLayout="adaptive" showChevron={false} rightElement={<FieldTextInput testID="team-credential-limit-maximum" value={draft.pendingLimit.maximum} onChangeText={(maximum) => requestPendingChange({ ...draft.pendingLimit, maximum })} placeholder={t('teams.credentials.limits.maximumPlaceholder')} accessibilityLabel={t('teams.credentials.limits.maximumLabel')} keyboardType="numeric" editable={!busy} />} />
                     </ItemGroup>
 
                     <ItemGroup>

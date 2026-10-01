@@ -128,132 +128,12 @@ async function renderContent(overrides: Partial<ContentProps> = {}) {
 }
 
 describe('WorkflowRunContent', () => {
-    it('shows exact direct result-delivery attention without changing the successful outcome', async () => {
+    it('keeps a successful outcome outside Needs you while the origin acknowledgement is behind', async () => {
         const screen = await renderContent({
-            run: createWorkflowRunSummaryFixture({
-                id: 'run-1',
-                state: 'succeeded',
-                workflowResultDeliveryState: {
-                    kind: 'unavailable',
-                    reason: 'workflow_outcome_unresolved',
-                },
-            }),
+            run: createWorkflowRunSummaryFixture({ id: 'run-1', state: 'succeeded', originDeliveryAckRevision: 0 }),
         });
-
         expect(screen.getTextContent()).toContain('workflows.runState.succeeded');
-        expect(screen.findByTestId('workflow-run-result-delivery-unavailable')).toBeTruthy();
-        expect(screen.getTextContent()).toContain('workflow_outcome_unresolved');
-    });
-
-    it('renders an invocation-owned permission request and delegates its decision to the host', async () => {
-        const onRespondPermission = vi.fn();
-        const invocation = createWorkflowInvocationIndexFixture({ id: 'inv-permission', lifecycle: 'waiting_for_approval' });
-        const screen = await renderContent({
-            invocations: [invocation],
-            selectedInvocationId: invocation.id,
-            selectedInvocationProgress: {
-                kind: 'happier.workflow-progress.v1',
-                invocationPath: { blockId: 'work', scope: [] },
-                blockKind: 'step',
-                attempt: '0',
-                logicalInvocationRecordId: invocation.id,
-                interaction: {
-                    requests: {
-                        'permission-1': { tool: 'Write', arguments: { path: '/repo/file.txt' }, createdAt: 1 },
-                        'permission-2': { tool: 'Read', arguments: { path: '/repo/other.txt' }, createdAt: 2 },
-                    },
-                },
-            },
-            // The host already sent a decision for the second request only.
-            pendingPermissionRequestIds: new Set(['permission-2']),
-            onRespondPermission,
-        });
-
-        expect(screen.findByTestId('workflow-run-permission-permission-1')).toBeTruthy();
-        await act(async () => {
-            screen.findByTestId('workflow-run-permission-permission-1-deny').props.onPress();
-        });
-        expect(onRespondPermission).toHaveBeenCalledWith({ requestId: 'permission-1', approved: false });
-
-        // Both decisions for the answered request are withdrawn until the machine
-        // settles it, so an opposite press cannot race the response in flight.
-        for (const suffix of ['allow', 'deny'] as const) {
-            const control = screen.findByTestId(`workflow-run-permission-permission-2-${suffix}`);
-            expect(control.props.disabled).toBe(true);
-            expect(control.props.accessibilityState).toMatchObject({ disabled: true, busy: true });
-            await act(async () => { control.props.onPress?.(); });
-        }
-        expect(onRespondPermission).toHaveBeenCalledTimes(1);
-    });
-
-    /**
-     * A structured agent question is not a tool permission. It renders the
-     * canonical question/options/free-form contract and offers no Allow/Deny;
-     * the sibling permission on the same attempt keeps its decision controls.
-     */
-    it('renders a recorded structured question as a question, never as a permission to allow or deny', async () => {
-        const onRespondPermission = vi.fn();
-        const onAnswerQuestion = vi.fn();
-        const invocation = createWorkflowInvocationIndexFixture({ id: 'inv-question', lifecycle: 'waiting_for_approval' });
-        const screen = await renderContent({
-            invocations: [invocation],
-            selectedInvocationId: invocation.id,
-            selectedInvocationProgress: {
-                kind: 'happier.workflow-progress.v1',
-                invocationPath: { blockId: 'analyze', scope: [] },
-                blockKind: 'step',
-                attempt: '0',
-                logicalInvocationRecordId: invocation.id,
-                execution: { kind: 'detached_run', runId: 'exec-1', localInputId: 'input-1' },
-                interaction: {
-                    requests: {
-                        'question-1': {
-                            tool: 'AskUserQuestion',
-                            kind: 'user_action',
-                            createdAt: 1,
-                            arguments: {
-                                questions: [{
-                                    question: 'Which branch should the fix land on?',
-                                    header: 'Branch',
-                                    options: [{ label: 'main', description: 'Stable' }, { label: 'dev' }],
-                                    multiSelect: true,
-                                    freeform: { placeholder: 'Another branch' },
-                                }],
-                            },
-                        },
-                        'permission-1': { tool: 'Write', arguments: { path: '/repo/file.txt' }, createdAt: 2 },
-                    },
-                },
-            },
-            onRespondPermission,
-            onAnswerQuestion,
-            onOpenExecutionRun: vi.fn(),
-        });
-
-        const question = screen.findByTestId('workflow-run-question-question-1');
-        expect(question).toBeTruthy();
-        const text = screen.getTextContent();
-        expect(text).toContain('Which branch should the fix land on?');
-        expect(text).toContain('Stable');
-        expect(screen.findByTestId('workflow-run-question-question-1-choice-0')).toBeTruthy();
-        expect(screen.findByTestId('workflow-run-question-question-1-choice-1')).toBeTruthy();
-        expect(screen.findByTestId('workflow-run-question-question-1-freeform')).toBeTruthy();
-        expect(screen.findByTestId('workflow-run-permission-question-1-allow')).toBeNull();
-        expect(screen.findByTestId('workflow-run-permission-question-1-deny')).toBeNull();
-        expect(screen.findByTestId('workflow-run-permission-permission-1-allow')).toBeTruthy();
-        await act(async () => {
-            screen.findByTestId('workflow-run-question-question-1-choice-1').props.onPress();
-        });
-        await act(async () => {
-            screen.findByTestId('workflow-run-question-question-1-freeform').props.onChangeText('release');
-        });
-        await act(async () => {
-            screen.findByTestId('workflow-run-question-question-1-submit').props.onPress();
-        });
-        expect(onAnswerQuestion).toHaveBeenCalledWith({
-            requestId: 'question-1',
-            answers: { 'Which branch should the fix land on?': ['dev', 'release'] },
-        });
+        expect(screen.findByTestId('workflow-run-needs-you')).toBeNull();
     });
 
     it('virtualizes paged Activity rows under one scroll owner while keeping selected and attention content reachable', async () => {
@@ -300,10 +180,14 @@ describe('WorkflowRunContent', () => {
      */
     it('keeps the selected detail in one neighbouring inspector across the Activity/Flow switch on wide layouts', async () => {
         const props: Partial<ContentProps> = {
-            run: createWorkflowRunSummaryFixture({
-                state: 'interrupted', availability: { retry: true, recoverSameConversation: true },
-            }),
+            run: createWorkflowRunSummaryFixture({ state: 'interrupted' }),
             selectedInvocationId: 'inv-1',
+            selectedInvocationRecoveryAvailability: {
+                reattach: { kind: 'unavailable', reason: 'invocation_not_recoverable' },
+                retry: { kind: 'available', causalInvocationIds: ['inv-1'] },
+                continueSameConversation: { kind: 'available' },
+                continueFreshAgent: { kind: 'unavailable', reason: 'recovery_not_prepared' },
+            },
             invocations: [createWorkflowInvocationIndexFixture({ id: 'inv-1', lifecycle: 'failed' })],
             onRetryWithReplacement: vi.fn(),
         };
@@ -507,12 +391,18 @@ describe('WorkflowRunContent', () => {
         const screen = await renderContent({
             run: createWorkflowRunSummaryFixture({
                 id: 'run-1', state: 'interrupted',
-                availability: { cancel: true, pause: true, resumeBoundary: true, retry: true, recoverSameConversation: true },
+                availability: { cancel: true, pause: true, resumeBoundary: true },
             }),
             onCancel: vi.fn(), onPause: vi.fn(), onResume: vi.fn(), onRunAgain: vi.fn(), onDelete: vi.fn(),
             onReattach: vi.fn(), onRetrySameConversation: vi.fn(), onRetryFreshAgent: vi.fn(),
             onRetryWithReplacement: vi.fn(), onRestoreWorkspace: vi.fn(),
             selectedInvocationId: 'inv-1',
+            selectedInvocationRecoveryAvailability: {
+                reattach: { kind: 'unavailable', reason: 'invocation_not_recoverable' },
+                retry: { kind: 'available', causalInvocationIds: ['inv-1'] },
+                continueSameConversation: { kind: 'available' },
+                continueFreshAgent: { kind: 'available' },
+            },
             invocations: [createWorkflowInvocationIndexFixture({ id: 'inv-1', lifecycle: 'failed' })],
             selectedInvocationProgress: {
                 kind: 'happier.workflow-progress.v1',
@@ -737,43 +627,27 @@ describe('WorkflowRunContent', () => {
         expect(openSession).toHaveBeenCalledWith('session-1');
     });
 
-    it.each([
-        {
-            kind: 'attached_run',
-            execution: {
-                kind: 'attached_run' as const,
-                sessionId: 'session-1',
-                runId: 'execution/run 1',
-                localInputId: 'input-1',
-            },
-        },
-        {
-            kind: 'detached_run',
-            execution: {
-                kind: 'detached_run' as const,
-                runId: 'execution/run 1',
-                localInputId: 'input-1',
-            },
-        },
-    ])(
-        'routes a $kind invocation to the canonical execution Run owner',
-        async ({ execution }) => {
-            const openExecutionRun = vi.fn();
-            const screen = await renderContent({
-                selectedInvocationId: 'inv-1',
-                selectedInvocationProgress: {
-                    kind: 'happier.workflow-progress.v1',
-                    invocationPath: { blockId: 'analyze', scope: [] },
-                    blockKind: 'step', attempt: '0', logicalInvocationRecordId: 'inv-1',
-                    execution,
+    it('routes a detached invocation to the canonical execution Run owner', async () => {
+        const openExecutionRun = vi.fn();
+        const screen = await renderContent({
+            selectedInvocationId: 'inv-1',
+            selectedInvocationProgress: {
+                kind: 'happier.workflow-progress.v1',
+                invocationPath: { blockId: 'analyze', scope: [] },
+                blockKind: 'step', attempt: '0', logicalInvocationRecordId: 'inv-1',
+                execution: {
+                    kind: 'detached_run',
+                    runId: 'execution/run 1',
+                    localInputId: 'input-1',
+                    runtimeSelection: {},
                 },
-                onOpenExecutionRun: openExecutionRun,
-            });
-            await screen.pressByTestIdAsync('workflow-run-open-execution-run');
-            expect(openExecutionRun).toHaveBeenCalledWith('execution/run 1');
-            expect(screen.findByTestId('workflow-run-open-session')).toBeNull();
-        },
-    );
+            },
+            onOpenExecutionRun: openExecutionRun,
+        });
+        await screen.pressByTestIdAsync('workflow-run-open-execution-run');
+        expect(openExecutionRun).toHaveBeenCalledWith('execution/run 1');
+        expect(screen.findByTestId('workflow-run-open-session')).toBeNull();
+    });
 
     it('shows the exact selected invocation input and result from opened private content', async () => {
         const screen = await renderContent({
@@ -817,6 +691,39 @@ describe('WorkflowRunContent', () => {
      * supplied none — never omitted as if it were zero or simply not loaded.
      * A container frame executes no agent, so it carries no usage row at all.
      */
+    /**
+     * Waiting and skipped rows, and a Run whose Machine went away, state only
+     * what their canonical facts establish: the lifecycle plus the closed reason
+     * code, and the machine owner's current reachability.
+     */
+    it('states a skipped cause and lost Machine contact from their canonical facts', async () => {
+        const skipped = await renderContent({
+            invocations: [createWorkflowInvocationIndexFixture({ id: 'inv-1', lifecycle: 'skipped' })],
+            selectedInvocationId: 'inv-1',
+            selectedInvocationProgress: {
+                kind: 'happier.workflow-progress.v1',
+                invocationPath: { blockId: 'analyze', scope: [] },
+                blockKind: 'step', attempt: '0', logicalInvocationRecordId: 'inv-1',
+                reason: { code: 'condition_false' },
+            },
+        });
+        expect(skipped.findByTestId('workflow-run-invocation-cause')).not.toBeNull();
+        expect(skipped.findByTestId('workflow-run-machine-unavailable')).toBeNull();
+        await skipped.unmount();
+
+        const lost = await renderContent({ machineName: 'Mac Studio', machineReachable: false });
+        expect(lost.findByTestId('workflow-run-machine-unavailable')).not.toBeNull();
+        expect(lost.getTextContent()).toContain('workflows.run.machineUnavailable');
+        await lost.unmount();
+
+        const settled = await renderContent({
+            run: createWorkflowRunSummaryFixture({ id: 'run-1', state: 'succeeded' }),
+            machineName: 'Mac Studio',
+            machineReachable: false,
+        });
+        expect(settled.findByTestId('workflow-run-machine-unavailable')).toBeNull();
+    });
+
     it('says a step invocation usage is unavailable when the provider supplied none', async () => {
         const step = await renderContent({
             selectedInvocationId: 'inv-1',
@@ -869,8 +776,31 @@ describe('WorkflowRunContent', () => {
             .toEqual('workflows.workspace.fromStep:{"block":"Analyze the repository · inv-analyze-iteration-7"}');
     });
 
-    it('offers Stop again when terminal custody is still pending', async () => {
+    it('keeps an accepted stop request visible after the request itself has settled', async () => {
         const stopAgain = vi.fn();
+        const screen = await renderContent({
+            run: createWorkflowRunSummaryFixture({
+                id: 'run-1',
+                state: 'running',
+                availability: { cancel: true },
+            }),
+            machineName: 'Mac Studio',
+            // The request completed; the Run is still active and the server
+            // recorded `cancel_requested`. Reverting to "Stop" here told the
+            // person to stop a Run that is already stopping.
+            pendingControl: null,
+            cancelRequested: true,
+            onCancel: stopAgain,
+        });
+
+        expect(screen.getTextContent()).toContain('workflows.run.stopRequested:{"machine":"Mac Studio"}');
+        expect(screen.getTextContent()).toContain('workflows.run.stopAgain');
+        expect(screen.getTextContent()).not.toContain('"workflows.run.stop"');
+        await screen.pressByTestIdAsync('workflow-run-cancel');
+        expect(stopAgain).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not invent a repeat-stop affordance from delete custody alone', async () => {
         const screen = await renderContent({
             run: createWorkflowRunSummaryFixture({
                 state: 'outcome_uncertain',
@@ -878,12 +808,69 @@ describe('WorkflowRunContent', () => {
                 availability: { cancel: true },
             }),
             deleteBlockedByCustody: true,
-            onCancel: stopAgain,
+            onCancel: vi.fn(),
         });
 
-        expect(screen.getTextContent()).toContain('workflows.run.stopAgain');
-        await screen.pressByTestIdAsync('workflow-run-cancel');
-        expect(stopAgain).toHaveBeenCalledTimes(1);
+        // Custody is not a control state. Without a durable cancel receipt the
+        // control is the ordinary Stop.
+        expect(screen.getTextContent()).not.toContain('workflows.run.stopAgain');
+        expect(screen.getTextContent()).toContain('workflows.run.stop');
+    });
+
+    it('resolves exactly one primary action when a terminal Run can also be run again', async () => {
+        const screen = await renderContent({
+            run: createWorkflowRunSummaryFixture({
+                id: 'run-1',
+                state: 'succeeded',
+                availability: { cancel: false, pause: false },
+            }),
+            invocations: [createWorkflowInvocationIndexFixture({ id: 'inv-failed', lifecycle: 'failed' })],
+            firstFailedInvocationId: 'inv-failed',
+            firstFailedInvocationResolution: 'resolved',
+            onRunAgain: vi.fn(),
+        });
+
+        // The outcome region's dominant action is the one the state calls for.
+        // `Run workflow again` stays available, but it stops competing with it.
+        const seeFailures = flattenTestStyle(screen.findByTestId('workflow-run-see-failures')?.props.style);
+        const runAgain = flattenTestStyle(screen.findByTestId('workflow-run-run-again')?.props.style);
+        expect(seeFailures.borderWidth).toBe(0);
+        expect(runAgain.borderWidth).not.toBe(0);
+        expect(runAgain.backgroundColor).not.toBe(seeFailures.backgroundColor);
+    });
+
+    it('states how many interventions the Needs-you section holds', async () => {
+        const screen = await renderContent({
+            run: createWorkflowRunSummaryFixture({ id: 'run-1', state: 'running' }),
+            invocations: [
+                createWorkflowInvocationIndexFixture({ id: 'inv-a', lifecycle: 'waiting_for_approval' }),
+                createWorkflowInvocationIndexFixture({ id: 'inv-b', sequence: '1', lifecycle: 'needs_attention' }),
+            ],
+        });
+
+        const section = screen.findByTestId('workflow-run-needs-you');
+        expect(section?.props.accessibilityLabel).toBe('workflows.a11y.needsYou:{"count":2}');
+        expect(screen.getTextContent()).toContain('2');
+    });
+
+    it('announces a failed control request instead of leaving it silent', async () => {
+        const screen = await renderContent({
+            run: createWorkflowRunSummaryFixture({ id: 'run-1', state: 'running' }),
+            errorLabel: 'workflows.problem.targetUnavailable',
+            errorSemantics: 'alert',
+        });
+
+        expect(screen.findByTestId('workflow-run-error')?.props.accessibilityRole).toBe('alert');
+    });
+
+    it('lets someone copy the exact technical identifiers', async () => {
+        const screen = await renderContent({
+            run: createWorkflowRunSummaryFixture({ id: 'run-exact', state: 'running' }),
+        });
+
+        await screen.pressByTestIdAsync('workflow-run-technical-toggle');
+        expect(screen.findByTestId('workflow-run-run-id')?.props.selectable).toBe(true);
+        expect(screen.findByTestId('workflow-run-revision')?.props.selectable).toBe(true);
     });
 
     it('offers a reviewed new whole Run when the original workspace is unavailable', async () => {
@@ -921,6 +908,13 @@ describe('WorkflowRunContent', () => {
                 availability: { restoreWorkspace: true },
             }),
             selectedInvocationId: 'inv-1',
+            selectedInvocationRecoveryAvailability: {
+                reattach: { kind: 'unavailable', reason: 'workspace_unavailable' },
+                retry: { kind: 'unavailable', reason: 'workspace_unavailable' },
+                continueSameConversation: { kind: 'unavailable', reason: 'workspace_unavailable' },
+                continueFreshAgent: { kind: 'unavailable', reason: 'workspace_unavailable' },
+                restoreWorkspace: { kind: 'available' },
+            },
             invocations: [createWorkflowInvocationIndexFixture({ id: 'inv-1', lifecycle: 'failed' })],
             selectedInvocationProgress: {
                 kind: 'happier.workflow-progress.v1',
@@ -1052,8 +1046,14 @@ describe('WorkflowRunContent', () => {
         const same = vi.fn();
         const fresh = vi.fn();
         const screen = await renderContent({
-            run: createWorkflowRunSummaryFixture({ state: 'interrupted', availability: { retry: true } }),
+            run: createWorkflowRunSummaryFixture({ state: 'interrupted' }),
             selectedInvocationId: 'inv-1',
+            selectedInvocationRecoveryAvailability: {
+                reattach: { kind: 'unavailable', reason: 'invocation_not_recoverable' },
+                retry: { kind: 'available', causalInvocationIds: ['inv-1'] },
+                continueSameConversation: { kind: 'available' },
+                continueFreshAgent: { kind: 'available' },
+            },
             invocations: [createWorkflowInvocationIndexFixture({ id: 'inv-1', lifecycle: 'failed' })],
             onRetrySameConversation: same,
             onRetryFreshAgent: fresh,
@@ -1102,7 +1102,7 @@ describe('WorkflowRunContent', () => {
         const screen = await renderContent({
             run: createWorkflowRunSummaryFixture({
                 state: 'interrupted',
-                availability: { retry: true, inspectExecution: false },
+                availability: { inspectExecution: false },
             }),
             selectedInvocationId: 'inv-1',
             invocations: [createWorkflowInvocationIndexFixture({ id: 'inv-1', lifecycle: 'completed' })],
@@ -1422,7 +1422,7 @@ describe('WorkflowRunContent', () => {
             ],
         });
 
-        expect(screen.findByTestId('workflow-run-flow-node-analyze-state:variant:success')).toBeTruthy();
+        expect(screen.findByTestId('workflow-run-flow-node-analyze-state:variant:neutral')).toBeTruthy();
         expect(screen.findByTestId('workflow-run-flow-node-implement-state:variant:warning')).toBeTruthy();
         // Icon plus label: colour is never the only carrier of the state.
         expect(screen.findByTestId('workflow-run-flow-node-analyze-state-marker')).toBeTruthy();
@@ -1438,11 +1438,14 @@ describe('WorkflowRunContent', () => {
     it('keeps the prepared continuation and the replacement retry in separate buffers', async () => {
         const onContinuePrepared = vi.fn();
         const screen = await renderContent({
-            run: createWorkflowRunSummaryFixture({
-                state: 'interrupted',
-                availability: { retry: true, recoverSameConversation: true, recoverFreshAgent: true },
-            }),
+            run: createWorkflowRunSummaryFixture({ state: 'interrupted' }),
             selectedInvocationId: 'inv-1',
+            selectedInvocationRecoveryAvailability: {
+                reattach: { kind: 'unavailable', reason: 'invocation_not_recoverable' },
+                retry: { kind: 'available', causalInvocationIds: ['inv-1'] },
+                continueSameConversation: { kind: 'available' },
+                continueFreshAgent: { kind: 'unavailable', reason: 'recovery_not_prepared' },
+            },
             invocations: [createWorkflowInvocationIndexFixture({ id: 'inv-1', lifecycle: 'failed' })],
             selectedInvocationProgress: {
                 kind: 'happier.workflow-progress.v1',
@@ -1494,11 +1497,14 @@ describe('WorkflowRunContent', () => {
     it('lets a replacement retry choose the fresh-agent conversation when the owner allows it', async () => {
         const onRetryWithReplacement = vi.fn();
         const screen = await renderContent({
-            run: createWorkflowRunSummaryFixture({
-                state: 'interrupted',
-                availability: { retry: true, recoverSameConversation: true, recoverFreshAgent: true },
-            }),
+            run: createWorkflowRunSummaryFixture({ state: 'interrupted' }),
             selectedInvocationId: 'inv-1',
+            selectedInvocationRecoveryAvailability: {
+                reattach: { kind: 'unavailable', reason: 'invocation_not_recoverable' },
+                retry: { kind: 'available', causalInvocationIds: ['inv-1'] },
+                continueSameConversation: { kind: 'available' },
+                continueFreshAgent: { kind: 'available' },
+            },
             invocations: [createWorkflowInvocationIndexFixture({ id: 'inv-1', lifecycle: 'failed' })],
             onRetryWithReplacement,
         });

@@ -43,4 +43,15 @@ describe('trusted API token encryption preparation', () => {
         await expect(prepareApiTokenEncryptionAccess({ credentials: { token: 'keyless' }, currentness, ...context }))
             .rejects.toThrow('api_token_encryption_not_ready');
     });
+
+    it('fails closed when a released Home answers without recipient envelope readiness', async () => {
+        // A Home that predates the readiness projection omits the field entirely. That is
+        // "not ready", not a reason to dereference it and crash the whole token flow.
+        const { recipientEnvelopeReadiness: _omitted, ...currentness } = {
+            mode: 'e2ee' as const, version: 1, updatedAt: 1, signingKeyFingerprint: 'signing',
+            contentKeyFingerprint: 'any-key', recipientEnvelopeReadiness: { status: 'available' as const },
+        };
+        await expect(prepareApiTokenEncryptionAccess({ credentials, currentness, ...context }))
+            .rejects.toThrow('api_token_encryption_not_ready');
+    });
 });

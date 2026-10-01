@@ -22,6 +22,7 @@ export function buildReviewCommentLabels(): ReviewCommentsPanelLabels {
         redacted: t('files.reviewComments.durable.redacted'),
         contentUnavailable: t('files.reviewComments.durable.contentUnavailable'),
         edit: t('files.reviewComments.durable.edit'),
+        delegate: t('files.reviewComments.durable.delegate'),
         resolve: t('files.reviewComments.durable.resolve'),
         dismiss: t('files.reviewComments.durable.dismiss'),
         reopen: t('files.reviewComments.durable.reopen'),

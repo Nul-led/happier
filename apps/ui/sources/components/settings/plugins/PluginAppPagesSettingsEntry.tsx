@@ -3,10 +3,10 @@ import { useUnistyles } from 'react-native-unistyles';
 
 import {
     type CompactAppPluginDestination,
+    useActivateAppDestination,
     useCompactAppDestinations,
 } from '@/components/appShell/destinations/compactAppDestinationCatalog';
 import { CompactAppDestinationBadge } from '@/components/appShell/destinations/CompactAppDestinationBadge';
-import { usePluginAppPageCatalogActivationHandler } from '@/components/appShell/plugins/pluginAppPageNavigation';
 import { Icon } from '@/components/ui/icons/Icon';
 import { Item } from '@/components/ui/lists/Item';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
@@ -22,8 +22,8 @@ import { t } from '@/text';
  */
 export function PluginAppPagesSettingsEntry(): React.ReactElement | null {
     const { theme } = useUnistyles();
-    const activatePluginAppPage = usePluginAppPageCatalogActivationHandler();
-    const compactDestinations = useCompactAppDestinations({ browseExistingSessionsEnabled: false });
+    const activate = useActivateAppDestination();
+    const compactDestinations = useCompactAppDestinations();
     // This is the management surface for the same catalog, so hidden entries
     // stay here for recovery; ordinary discovery surfaces filter them instead.
     const pages = React.useMemo(() => compactDestinations.filter(
@@ -39,7 +39,7 @@ export function PluginAppPagesSettingsEntry(): React.ReactElement | null {
     return (
         <ItemGroup
             title={t('pluginSurfaces.appPage.title')}
-            footer={t('pluginSurfaces.appPage.subtitle')}
+            description={t('pluginSurfaces.appPage.subtitle')}
         >
             {pages.map((page) => (
                 <Item
@@ -56,13 +56,13 @@ export function PluginAppPagesSettingsEntry(): React.ReactElement | null {
                     icon={(
                         <Icon
                             name={page.icon}
-                            size={29}
-                            color={theme.colors.accent.indigo}
+                            size={20}
+                            color={theme.colors.text.secondary}
                         />
                     )}
                     rightElement={page.badge ? <CompactAppDestinationBadge destination={page} /> : undefined}
                     keepChevronWithRightElement
-                    onPress={() => activatePluginAppPage(page)}
+                    onPress={() => activate(page)}
                 />
             ))}
         </ItemGroup>

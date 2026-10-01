@@ -4,20 +4,17 @@ import { SettingsCatalogOverviewGroup } from '@/components/settings/SettingsCata
 type SettingsAiAndAgentsSectionProps = Readonly<Pick<SettingsBelowFoldSectionsProps,
     | 'onNavigate'
     | 'router'
-    | 'theme'
 >>;
 
 export function SettingsAiAndAgentsSection({
     onNavigate,
     router,
-    theme,
 }: SettingsAiAndAgentsSectionProps) {
     return (
         <SettingsCatalogOverviewGroup
             groupId="groupAiAndAgents"
             onNavigate={onNavigate}
             router={router}
-            theme={theme}
         />
     );
 }

@@ -155,6 +155,14 @@ export class VoiceAgentManager {
     }
   }
 
+  private closeTurnStream(stream: VoiceAgentTurnStreamState | null): void {
+    if (!stream) return;
+    // Closing this pagination stream is separate from the provider turn and
+    // its pending durable handoff, which retain their own graceful lifecycle.
+    stream.done = true;
+    stream.onEventsChanged();
+  }
+
   private disposeRuntimeOnce(runtime: ExecutionRunHostRuntime): Promise<void> {
     const existing = this.runtimeDisposals.get(runtime);
     if (existing) return existing;
@@ -650,6 +658,7 @@ export class VoiceAgentManager {
           return () => {
             if (disposeInFlight) return disposeInFlight;
             disposeInFlight = (async () => {
+              this.closeTurnStream(instance.activeTurnStream);
               this.unsubscribeBestEffort(instance.unsubscribeChatMessages);
               const disposals: Promise<unknown>[] = [this.disposeRuntimeOnce(instance.chatBackend)];
               if (instance.commitBackend && instance.commitBackend !== instance.chatBackend) {
@@ -744,6 +753,7 @@ export class VoiceAgentManager {
     this.startingVoiceAgents.clear();
 
     const toStop = [...this.voiceAgents.values()];
+    for (const voiceAgent of toStop) this.closeTurnStream(voiceAgent.activeTurnStream);
     this.voiceAgents.clear();
 
     await Promise.allSettled(
@@ -870,6 +880,7 @@ export class VoiceAgentManager {
     voiceAgent.lastUsedAt = this.getNowMs();
     voiceAgent.clearChatBuffer();
     const streamId = randomUUID();
+    const eventWaiters = new Set<() => void>();
     const stream: VoiceAgentTurnStreamState = {
       id: streamId,
       userText: params.userText,
@@ -884,6 +895,8 @@ export class VoiceAgentManager {
       suppressActionDeltas: false,
       outputSeq: 0,
       outputSegmentIndex: 0,
+      eventWaiters,
+      onEventsChanged: () => { for (const wake of eventWaiters) wake(); },
     };
     voiceAgent.activeTurnStream = stream;
 
@@ -903,6 +916,7 @@ export class VoiceAgentManager {
         stream.outputSeq += 1;
       }
       stream.done = true;
+      stream.onEventsChanged();
       return true;
     };
 
@@ -1004,6 +1018,7 @@ export class VoiceAgentManager {
         stream.events.push({ t: 'error', error: message, ...(code ? { errorCode: code } : {}) });
       } finally {
         stream.done = true;
+        stream.onEventsChanged();
       }
     })();
 
@@ -1017,7 +1032,7 @@ export class VoiceAgentManager {
   }
 
   async readTurnStream(
-    params: Readonly<{ voiceAgentId: string; streamId: string; cursor: number; maxEvents?: number }>,
+    params: Readonly<{ voiceAgentId: string; streamId: string; cursor: number; maxEvents?: number; waitForEvents?: boolean; signal?: AbortSignal }>,
   ): Promise<VoiceAgentTurnStreamReadResult> {
     const voiceAgent = this.voiceAgents.get(params.voiceAgentId);
     if (!voiceAgent) throw new VoiceAgentError('VOICE_AGENT_NOT_FOUND', 'Voice agent not found');
@@ -1030,6 +1045,21 @@ export class VoiceAgentManager {
     if (cursor > stream.events.length) {
       throw new VoiceAgentError('VOICE_AGENT_INVALID_CURSOR', 'Turn stream cursor is ahead of produced events');
     }
+    if (params.waitForEvents && cursor === stream.events.length && !stream.done) {
+      await new Promise<void>((resolve, reject) => {
+        const dispose = () => {
+          stream.eventWaiters.delete(wake);
+          params.signal?.removeEventListener('abort', abort);
+        };
+        const wake = () => { dispose(); resolve(); };
+        const abort = () => { dispose(); reject(params.signal?.reason); };
+        stream.eventWaiters.add(wake);
+        params.signal?.addEventListener('abort', abort, { once: true });
+        if (params.signal?.aborted) abort();
+        else if (cursor < stream.events.length || stream.done) wake();
+      });
+    }
+    params.signal?.throwIfAborted();
     const maxEvents =
       typeof params.maxEvents === 'number' && Number.isFinite(params.maxEvents) && params.maxEvents > 0
         ? Math.min(128, Math.floor(params.maxEvents))
@@ -1181,6 +1211,7 @@ export class VoiceAgentManager {
             // Stop retires the whole voice-agent instance; it is not a claim that
             // an already committed turn was cancelled. Public turn cancellation
             // rejects this state so the bridge can preserve its durable pair.
+            this.closeTurnStream(voiceAgent.activeTurnStream);
             voiceAgent.activeTurnStream = null;
           } else {
             await this.cancelActiveTurnStream(voiceAgent, voiceAgent.activeTurnStream, {
@@ -1262,6 +1293,7 @@ export class VoiceAgentManager {
       stream.outputSeq += 1;
     }
     stream.done = true;
+    stream.onEventsChanged();
     try {
       await voiceAgent.chatBackend.cancel(voiceAgent.chatSessionId);
     } catch {

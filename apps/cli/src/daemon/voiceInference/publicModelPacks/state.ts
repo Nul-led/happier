@@ -101,7 +101,18 @@ function parseLegacyCleanupOnlyInstalled(value: unknown): UnboundInstalledRecord
   const raw = value as Record<string, unknown>;
   // This is deliberately a cleanup locator, not an old metadata reader: old
   // digest-bound state never becomes loadable or license-authoritative again.
-  if (raw.schemaVersion !== 1 || !Object.hasOwn(raw, 'pluginSourceDigest')) return null;
+  const obsoleteMaterialization = raw.artifactBinding;
+  const hasObsoleteGenerationBinding = Boolean(
+    obsoleteMaterialization
+    && typeof obsoleteMaterialization === 'object'
+    && !Array.isArray(obsoleteMaterialization)
+    && (obsoleteMaterialization as Record<string, unknown>).kind === 'materialization'
+    && typeof (obsoleteMaterialization as Record<string, unknown>).immutableGenerationId === 'string',
+  );
+  if (
+    raw.schemaVersion !== 1
+    || (!Object.hasOwn(raw, 'pluginSourceDigest') && !hasObsoleteGenerationBinding)
+  ) return null;
   return parseCleanupOnlyInstalled({ identity: raw.identity, directoryKey: raw.directoryKey });
 }
 

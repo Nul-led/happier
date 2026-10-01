@@ -3,13 +3,23 @@ import { act } from 'react-test-renderer';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { ReviewCommentActionIdV1, ReviewCommentV1 } from '@happier-dev/protocol';
+import { ReviewCommentTransitionRequestV1Schema } from '@happier-dev/protocol';
 import { flushHookEffects, pressTestInstanceAsync, renderScreen } from '@/dev/testkit';
 import type {
     PluginPermissionGrant,
     PluginPermissionPendingGrantRequest,
 } from '@/sync/domains/plugins/permissions/types';
 
+import {
+    decideReviewRunFinding,
+    loadReviewRunComments,
+    readReviewRunComments,
+    resetReviewRunCommentsForTests,
+} from '@/sync/domains/reviews/comments/reviewRunComments';
+
 import { ReviewCommentsSessionSurface } from './ReviewCommentsSessionSurface';
+const submitMessageSpy = vi.fn(async (..._args: unknown[]) => undefined);
+vi.mock('@/sync/sync', () => ({ sync: { submitMessage: (...args: unknown[]) => submitMessageSpy(...args) } }));
 
 vi.mock('@/components/ui/text/Text', async () => {
     const { createUiTextModuleMock } = await import('@/dev/testkit/mocks/uiText');
@@ -87,6 +97,124 @@ function deferred<T>() {
 describe('ReviewCommentsSessionSurface', () => {
     beforeEach(() => {
         modalMock.prompt.mockReset();
+        submitMessageSpy.mockReset();
+        resetReviewRunCommentsForTests();
+    });
+
+    /**
+     * One ReviewComment, shown both here (the SCM review panel) and on the review result (the run's
+     * shared comment store). The HTTP executor is the boundary; both UI owners run for real.
+     */
+    /** The review run as the result holds it: same Home and Account as the comment. */
+    const RUN = { scope: { serverId: 'server-1', accountId: 'account-1' }, sessionId: 'session-1', runId: 'run-1' } as const;
+
+    function serveRunComment() {
+        let current = comment({ id: 'finding-comment', state: 'open', sessionId: 'session-1', runId: 'run-1', serverRevision: 3 });
+        const execute = vi.fn(async (actionId: ReviewCommentActionIdV1, input: unknown) => {
+            if (actionId === 'reviews.comments.list') return { items: [current], cursor: null };
+            if (actionId === 'reviews.comments.transition') {
+                const request = ReviewCommentTransitionRequestV1Schema.parse(input);
+                current = { ...current, state: request.toState, serverRevision: current.serverRevision + 1,
+                    ...(request.reviewTriageStatus ? { reviewTriageStatus: request.reviewTriageStatus } : {}) };
+                return { comment: current };
+            }
+            throw new Error(`unexpected action ${actionId}`);
+        });
+        return { execute };
+    }
+
+    it('shows a transition made here on the review result that holds the same comment', async () => {
+        const { execute } = serveRunComment();
+        await loadReviewRunComments({ ...RUN, execute });
+        const screen = await renderScreen(<ReviewCommentsSessionSurface scope={RUN.scope} sessionId="session-1" runId="run-1" execute={execute} />);
+        await flushHookEffects();
+
+        await screen.pressByTestIdAsync('review-comment-finding-comment-dismiss');
+        await flushHookEffects();
+
+        expect(readReviewRunComments(RUN).comments).toEqual([
+            expect.objectContaining({ id: 'finding-comment', state: 'dismissed', serverRevision: 4 }),
+        ]);
+    });
+
+    it('shows a decision made on the review result in this panel without a reload', async () => {
+        const { execute } = serveRunComment();
+        await loadReviewRunComments({ ...RUN, execute });
+        const screen = await renderScreen(<ReviewCommentsSessionSurface scope={RUN.scope} sessionId="session-1" runId="run-1" execute={execute} />);
+        await flushHookEffects();
+        expect(screen.findByTestId('review-comment-finding-comment-dismiss')).not.toBeNull();
+        const listCalls = execute.mock.calls.filter(([actionId]) => actionId === 'reviews.comments.list').length;
+
+        await act(async () => {
+            await decideReviewRunFinding({ ...RUN, commentId: 'finding-comment', decision: 'reject', execute });
+        });
+        await flushHookEffects();
+
+        // Dismissed comments leave the active list for history.
+        expect(screen.findByTestId('review-comment-finding-comment-dismiss')).toBeNull();
+        expect(execute.mock.calls.filter(([actionId]) => actionId === 'reviews.comments.list')).toHaveLength(listCalls);
+    });
+
+    it('does not import another Home\'s decision for the same Account and comment id', async () => {
+        const { execute } = serveRunComment();
+        await loadReviewRunComments({ ...RUN, execute });
+        const screen = await renderScreen(<ReviewCommentsSessionSurface
+            scope={{ ...RUN.scope, serverId: 'other-home' }} sessionId="session-1" runId="run-1" execute={execute} />);
+        await flushHookEffects();
+        await act(async () => {
+            await decideReviewRunFinding({ ...RUN, commentId: 'finding-comment', decision: 'reject', execute });
+        });
+        await flushHookEffects();
+        expect(screen.findByTestId('review-comment-finding-comment-dismiss')).not.toBeNull();
+    });
+
+    it('withdraws the old Account\'s rows even when the new Account cannot load comments', async () => {
+        const { execute } = serveRunComment();
+        const screen = await renderScreen(<ReviewCommentsSessionSurface scope={RUN.scope}
+            sessionId="session-1" runId="run-1" execute={execute} />);
+        await flushHookEffects();
+        expect(screen.findByTestId('review-comment-finding-comment-dismiss')).not.toBeNull();
+        await screen.update(<ReviewCommentsSessionSurface scope={{ ...RUN.scope, accountId: 'other-account' }}
+            sessionId="session-1" runId="run-1" execute={async () => { throw new Error('offline'); }} />);
+        await flushHookEffects();
+        expect(screen.findByTestId('review-comment-finding-comment-dismiss')).toBeNull();
+    });
+
+    it('reads workspace-only comments without requiring a legacy workspace-ref alias', async () => {
+        const execute = vi.fn(async (_actionId: ReviewCommentActionIdV1, _input: unknown) => ({ items: [], cursor: null }));
+        const workspace = { machineId: 'machine-1', path: '/repo' };
+        await renderScreen(<ReviewCommentsSessionSurface workspace={workspace} workspaceId="legacy-ref" execute={execute} />);
+        await flushHookEffects();
+        expect(execute).toHaveBeenCalledWith('reviews.comments.list', expect.objectContaining({ workspace, includeHistory: true }));
+        expect(execute.mock.calls[0]?.[1]).not.toHaveProperty('workspaceId');
+    });
+
+    it.each(['open', 'proposed'] as const)('delegates a %s file comment with distinct CAS writes and its updated revision', async (initialState) => {
+        const clock = vi.spyOn(Date, 'now').mockReturnValue(1);
+        const original = comment({ state: initialState, serverRevision: 3 });
+        const execute = vi.fn(async (actionId: ReviewCommentActionIdV1, input: unknown) => {
+            if (actionId === 'reviews.comments.list') return { items: [original], cursor: null };
+            if (actionId === 'reviews.comments.transition') {
+                const request = ReviewCommentTransitionRequestV1Schema.parse(input);
+                return { comment: comment({ state: request.toState, serverRevision: request.expectedServerRevision + 1 }) };
+            }
+            throw new Error(`unexpected action ${actionId}`);
+        });
+        const screen = await renderScreen(<ReviewCommentsSessionSurface projectId="project-1" sessionId="chosen-session" execute={execute} />);
+        await flushHookEffects();
+        await screen.pressByTestIdAsync('review-comment-comment-1-delegate');
+        await flushHookEffects();
+        clock.mockRestore();
+        expect(execute).toHaveBeenCalledWith('reviews.comments.transition', expect.objectContaining({
+            commentId: 'comment-1', projectId: 'project-1', toState: 'delegated',
+            expectedState: 'open', expectedServerRevision: initialState === 'open' ? 3 : 4, clientMutationId: expect.any(String),
+        }));
+        const mutations = execute.mock.calls.filter(([id]) => id === 'reviews.comments.transition')
+            .map(([, input]) => ReviewCommentTransitionRequestV1Schema.parse(input).clientMutationId);
+        expect(new Set(mutations).size).toBe(initialState === 'open' ? 1 : 2);
+        expect(submitMessageSpy).toHaveBeenCalledWith('chosen-session', expect.stringContaining(`"expectedServerRevision": ${initialState === 'open' ? 4 : 5}`), expect.any(String), undefined, expect.any(Object));
+        expect(submitMessageSpy.mock.calls[0]?.[1]).toContain('reviews.comments.setDisposition');
+        expect(submitMessageSpy.mock.calls[0]?.[1]).toContain('body');
     });
 
     it('renders durable active/history comments and preserves last-known rows only while refresh is pending', async () => {
@@ -176,7 +304,6 @@ describe('ReviewCommentsSessionSurface', () => {
         await flushHookEffects();
 
         expect(execute).toHaveBeenCalledWith('reviews.comments.list', expect.objectContaining({
-            projectId: 'project-1',
             sessionId: 'session-1',
             includeHistory: true,
         }));
@@ -495,6 +622,8 @@ describe('ReviewCommentsSessionSurface', () => {
 
         expect(execute).toHaveBeenCalledWith('reviews.comments.edit', expect.objectContaining({
             commentId: 'open-1',
+            projectId: 'project-1',
+            expectedServerRevision: 1,
             nextBody: 'Edited body',
             expectedBodyVersion: 1,
         }));
@@ -505,15 +634,23 @@ describe('ReviewCommentsSessionSurface', () => {
         }));
         expect(execute).toHaveBeenCalledWith('reviews.comments.redact', expect.objectContaining({
             commentId: 'open-1',
+            projectId: 'project-1',
+            expectedServerRevision: 1,
             redactBody: true,
         }));
         expect(execute).toHaveBeenCalledWith('reviews.comments.reply', expect.objectContaining({
             parentCommentId: 'open-1',
+            projectId: 'project-1',
+            expectedParentServerRevision: 1,
             body: 'Reply body',
         }));
         expect(execute).toHaveBeenCalledWith('reviews.comments.bulkTransition', expect.objectContaining({
-            commentIds: ['open-1', 'proposed-1', 'reply-1'],
-            toState: 'resolved',
+            projectId: 'project-1', commentIds: ['open-1', 'reply-1'], expectedState: 'open',
+            expectedServerRevisions: { 'open-1': 1, 'reply-1': 1 }, toState: 'resolved',
+        }));
+        expect(execute).toHaveBeenCalledWith('reviews.comments.bulkTransition', expect.objectContaining({
+            projectId: 'project-1', commentIds: ['proposed-1'], expectedState: 'proposed',
+            expectedServerRevisions: { 'proposed-1': 1 }, toState: 'resolved',
         }));
         expect(screen.getTextContent()).toContain('files.reviewComments.durable.bulkPartialFailure');
         expect(screen.getTextContent()).toContain('proposed-1');

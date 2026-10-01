@@ -12,9 +12,9 @@ import {
 import type { PackageAssetArchiveV1 } from '@happier-dev/protocol/plugins/availability';
 import {
   PluginUiArtifactDigestV1Schema,
-  PluginUiArtifactsManifestV1Schema,
-  type PluginUiArtifactsManifestEntryV1,
-  type PluginUiArtifactsManifestV1,
+  PluginUiArtifactsManifestV2Schema,
+  type PluginUiArtifactsManifestEntryV2,
+  type PluginUiArtifactsManifestV2,
 } from '@happier-dev/protocol/plugins/ui';
 
 import { readPluginManifest } from '@/plugins/manifest/read';
@@ -79,9 +79,9 @@ export type StagedNpmCompatiblePluginArchive = Readonly<{
     value: CanonicalPluginManifest;
   }>;
   generatedUiArtifacts: Readonly<{
-    contributionIds: readonly string[];
+    artifactIds: readonly string[];
     /** The exact generated graph validated from this candidate archive. */
-    manifest: PluginUiArtifactsManifestV1;
+    manifest: PluginUiArtifactsManifestV2;
     manifestDigest?: `sha256:${string}`;
   }>;
   /** Exact logical browser-safe archive reconstructed only from admitted package asset Resources. */
@@ -278,9 +278,7 @@ function validatePublishedEntrypoints(
 
 type ExpectedUiArtifact = Readonly<{
   tier: 'hostedWeb' | 'reactNative';
-  reactNativePlatforms?: ReadonlySet<'web' | 'ios' | 'android'>;
-  expectedRepackModule?: Readonly<{
-    modulePath: string;
+  expectedExecutable?: Readonly<{
     exportName: string;
   }>;
 }>;
@@ -290,9 +288,7 @@ function expectedUiArtifacts(manifest: CanonicalPluginManifest): ReadonlyMap<str
   const claim = (artifact: Readonly<{
     id: string;
     tier: 'hostedWeb' | 'reactNative';
-    reactNativePlatforms?: readonly ('web' | 'ios' | 'android')[];
-    expectedRepackModule?: Readonly<{
-      modulePath: string;
+    expectedExecutable?: Readonly<{
       exportName: string;
     }>;
   }>): void => {
@@ -300,24 +296,17 @@ function expectedUiArtifacts(manifest: CanonicalPluginManifest): ReadonlyMap<str
     if (current && current.tier !== artifact.tier) {
       reject('manifest_invalid', `UI artifact ${artifact.id} is assigned conflicting UI artifact tiers`);
     }
-    const reactNativePlatforms = artifact.reactNativePlatforms || current?.reactNativePlatforms
-      ? new Set([...(current?.reactNativePlatforms ?? []), ...(artifact.reactNativePlatforms ?? [])])
-      : undefined;
     if (
-      current?.expectedRepackModule
-      && artifact.expectedRepackModule
-      && (
-        current.expectedRepackModule.modulePath !== artifact.expectedRepackModule.modulePath
-        || current.expectedRepackModule.exportName !== artifact.expectedRepackModule.exportName
-      )
+      current?.expectedExecutable
+      && artifact.expectedExecutable
+      && current.expectedExecutable.exportName !== artifact.expectedExecutable.exportName
     ) {
-      reject('manifest_invalid', `UI artifact ${artifact.id} is assigned conflicting Re.Pack modules`);
+      reject('manifest_invalid', `UI artifact ${artifact.id} is assigned conflicting executable exports`);
     }
-    const expectedRepackModule = current?.expectedRepackModule ?? artifact.expectedRepackModule;
+    const expectedExecutable = current?.expectedExecutable ?? artifact.expectedExecutable;
     expected.set(artifact.id, Object.freeze({
       tier: artifact.tier,
-      ...(reactNativePlatforms ? { reactNativePlatforms } : {}),
-      ...(expectedRepackModule ? { expectedRepackModule } : {}),
+      ...(expectedExecutable ? { expectedExecutable } : {}),
     }));
   };
   for (const renderer of manifest.contributes.ui.renderers) {
@@ -334,9 +323,7 @@ function expectedUiArtifacts(manifest: CanonicalPluginManifest): ReadonlyMap<str
     claim({
       id: provider.client.artifactId,
       tier: 'reactNative',
-      reactNativePlatforms: provider.platforms,
-      expectedRepackModule: Object.freeze({
-        modulePath: provider.client.modulePath,
+      expectedExecutable: Object.freeze({
         exportName: provider.client.exportName,
       }),
     });
@@ -346,9 +333,7 @@ function expectedUiArtifacts(manifest: CanonicalPluginManifest): ReadonlyMap<str
     claim({
       id: action.execution.client.artifactId,
       tier: 'reactNative',
-      reactNativePlatforms: action.execution.platforms,
-      expectedRepackModule: Object.freeze({
-        modulePath: action.execution.client.modulePath,
+      expectedExecutable: Object.freeze({
         exportName: action.execution.client.exportName,
       }),
     });
@@ -409,12 +394,30 @@ async function validateUiArtifacts(input: Readonly<{
     .map((path) => path.slice(UI_ARTIFACTS_ROOT.length + 1))
     .sort((left, right) => left.localeCompare(right));
   if (expectedIds.length === 0) {
-    if (manifestFile || packagedFiles.length > 0) {
+    if (packagedFiles.length > 0) {
       reject('ui_artifact_identity_mismatch', 'Candidate contains generated UI artifacts that no contribution declares');
     }
+    if (manifestFile) {
+      const parsedJson = await readBoundedJson({
+        rootPath: input.rootPath,
+        path: UI_ARTIFACTS_MANIFEST_PATH,
+        inventoryByPath: input.inventoryByPath,
+        missingCode: 'ui_artifact_manifest_missing',
+        invalidCode: 'ui_artifact_manifest_invalid',
+        signal: input.signal,
+      });
+      const parsed = PluginUiArtifactsManifestV2Schema.safeParse(parsedJson.value);
+      if (!parsed.success || parsed.data.entries.length > 0) {
+        reject('ui_artifact_identity_mismatch', 'Candidate contains generated UI artifacts that no contribution declares');
+      }
+      return Object.freeze({
+        artifactIds: Object.freeze([]),
+        manifest: parsed.data,
+      });
+    }
     return Object.freeze({
-      contributionIds: Object.freeze([]),
-      manifest: PluginUiArtifactsManifestV1Schema.parse({ version: 1, entries: [] }),
+      artifactIds: Object.freeze([]),
+      manifest: PluginUiArtifactsManifestV2Schema.parse({ version: 2, entries: [] }),
     });
   }
   if (!manifestFile) reject('ui_artifact_manifest_missing', 'Candidate is missing generated UI artifact inventory');
@@ -426,61 +429,35 @@ async function validateUiArtifacts(input: Readonly<{
     invalidCode: 'ui_artifact_manifest_invalid',
     signal: input.signal,
   });
-  const parsed = PluginUiArtifactsManifestV1Schema.safeParse(parsedJson.value);
+  const parsed = PluginUiArtifactsManifestV2Schema.safeParse(parsedJson.value);
   if (!parsed.success) reject('ui_artifact_manifest_invalid', 'Generated UI artifact inventory does not match its schema');
 
-  const actualIds = [...new Set(parsed.data.entries.map((entry) => entry.contributionId))]
+  const actualIds = [...new Set(parsed.data.entries.map((entry) => entry.artifactId))]
     .sort((left, right) => left.localeCompare(right));
   if (actualIds.length !== expectedIds.length || actualIds.some((id, index) => id !== expectedIds[index])) {
     reject('ui_artifact_identity_mismatch', 'Generated UI artifacts do not exactly match manifest artifact references');
   }
 
-  for (const [artifactId, expectation] of expected) {
-    if (!expectation.reactNativePlatforms) continue;
-    const actualPlatforms = new Set(parsed.data.entries
-      .filter((entry) => entry.contributionId === artifactId && entry.tier === 'reactNative')
-      .flatMap((entry) => entry.platform ? [entry.platform] : []));
-    if (
-      actualPlatforms.size !== expectation.reactNativePlatforms.size
-      || [...expectation.reactNativePlatforms].some((platform) => !actualPlatforms.has(platform))
-    ) {
-      reject(
-        'ui_artifact_identity_mismatch',
-        `Generated React Native UI artifact platforms do not exactly match the declaration: ${artifactId}`,
-      );
-    }
-  }
-
   const claimedFiles = new Set<string>();
   const artifactSlots = new Set<string>();
   for (const entry of parsed.data.entries) {
-    const expectation = expected.get(entry.contributionId);
+    const expectation = expected.get(entry.artifactId);
     if (expectation?.tier !== entry.tier) {
-      reject('ui_artifact_identity_mismatch', `Generated UI artifact tier does not match its declaring contribution: ${entry.contributionId}`);
+      reject('ui_artifact_identity_mismatch', `Generated UI artifact tier does not match its declaration: ${entry.artifactId}`);
     }
     if (
-      entry.repack
-      && expectation.expectedRepackModule
-      && (
-        entry.repack.modulePath !== expectation.expectedRepackModule.modulePath
-        || entry.repack.exportName !== expectation.expectedRepackModule.exportName
-      )
+      entry.tier === 'reactNative'
+      && expectation.expectedExecutable
+      && !entry.executable.exports.includes(expectation.expectedExecutable.exportName)
     ) {
       reject(
         'ui_artifact_identity_mismatch',
-        `Generated React Native UI artifact Re.Pack identity does not match the declaration: ${entry.contributionId}`,
+        `Generated React Native UI artifact export does not match the declaration: ${entry.artifactId}`,
       );
     }
-    if (
-      entry.tier === 'hostedWeb'
-      && entry.platform !== undefined
-      && entry.platform !== 'web'
-    ) {
-      reject('ui_artifact_identity_mismatch', `Generated UI artifact platform is invalid for its tier: ${entry.contributionId}`);
-    }
-    const slot = `${entry.contributionId}\u0000${entry.tier}\u0000${entry.platform ?? ''}`;
+    const slot = `${entry.artifactId}\u0000${entry.tier}`;
     if (artifactSlots.has(slot)) {
-      reject('ui_artifact_identity_mismatch', `Generated UI artifact slot is declared more than once: ${entry.contributionId}`);
+      reject('ui_artifact_identity_mismatch', `Generated UI artifact slot is declared more than once: ${entry.artifactId}`);
     }
     artifactSlots.add(slot);
     await validateUiArtifactEntry({
@@ -496,7 +473,7 @@ async function validateUiArtifacts(input: Readonly<{
     reject('ui_artifact_identity_mismatch', 'Generated UI artifact inventory does not claim exactly the packaged artifact files');
   }
   return Object.freeze({
-    contributionIds: Object.freeze(actualIds),
+    artifactIds: Object.freeze(actualIds),
     manifest: parsed.data,
     manifestDigest: parsedJson.file.digest,
   });
@@ -530,7 +507,7 @@ async function createStagedPackageAssetArchive(input: Readonly<{
 
 async function validateUiArtifactEntry(input: Readonly<{
   rootPath: string;
-  entry: PluginUiArtifactsManifestEntryV1;
+  entry: PluginUiArtifactsManifestEntryV2;
   inventoryByPath: ReadonlyMap<string, PortableArchiveFile>;
   claimedFiles: Set<string>;
   signal?: AbortSignal;
@@ -539,7 +516,7 @@ async function validateUiArtifactEntry(input: Readonly<{
   const entryPath = readUiFilePath(input.entry.entry);
   const declaredPaths = input.entry.files.map((file) => readUiFilePath(file.relativePath));
   if (!declaredPaths.includes(entryPath) || new Set(declaredPaths).size !== declaredPaths.length) {
-    reject('ui_artifact_manifest_invalid', `UI artifact ${input.entry.contributionId} has an invalid file set`);
+    reject('ui_artifact_manifest_invalid', `UI artifact ${input.entry.artifactId} has an invalid file set`);
   }
   const files = input.entry.files.map((declaredFile) => {
     const relativePath = readUiFilePath(declaredFile.relativePath);
@@ -559,7 +536,7 @@ async function validateUiArtifactEntry(input: Readonly<{
   });
   const actualDigest = await computeUiFileSetDigest({ rootPath: input.rootPath, files, signal: input.signal });
   if (actualDigest !== input.entry.digest) {
-    reject('ui_artifact_digest_mismatch', `UI artifact digest mismatch for ${input.entry.contributionId}`);
+    reject('ui_artifact_digest_mismatch', `UI artifact digest mismatch for ${input.entry.artifactId}`);
   }
 }
 

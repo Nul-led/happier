@@ -69,8 +69,8 @@ export type ProviderManagedCatalogRuntimePort<TTicket> = Readonly<{
     source: ProviderManagedCatalogSource;
     request: ProviderProbeAuthorizationRequest;
     ticket: TTicket;
-    /** Exact executable-registry generation that authorized the source. */
-    expectedRuntimeRegistryGeneration?: number;
+    /** Exact Provider plugin activation occurrence that authorized the source. */
+    expectedActivationOccurrenceId?: string;
     signal?: AbortSignal;
     revalidateBeforeEffect: () => Promise<
       Readonly<{ ok: true }> | Readonly<{ ok: false; error: ProviderErrorV1 }>
@@ -474,16 +474,17 @@ export function createProviderCatalogService<TTicket, TCredentialRef>(dependenci
           }
           return { ok: true as const };
         };
+        const expectedActivationOccurrenceId =
+          operationScope?.registry?.providerActivationOccurrenceIdsByPluginId?.get(
+            sources.first.implementationIdentity.pluginId,
+          );
         const launchPromise = dependencies.managedCatalogRuntime.launch({
           source: sources.first,
           request: firstAuthorization.request,
           ticket: firstAuthorization.ticket,
-          ...(operationScope?.registry?.runtimeRegistryGeneration === undefined
+          ...(expectedActivationOccurrenceId === undefined
             ? {}
-            : {
-                expectedRuntimeRegistryGeneration:
-                  operationScope.registry.runtimeRegistryGeneration,
-              }),
+            : { expectedActivationOccurrenceId }),
           ...(input.signal ? { signal: input.signal } : {}),
           revalidateBeforeEffect: revalidateAll,
         });

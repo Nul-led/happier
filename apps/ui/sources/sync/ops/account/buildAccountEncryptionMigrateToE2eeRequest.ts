@@ -22,12 +22,7 @@ import {
 
 import { getRandomBytes } from '@/platform/cryptoRandom';
 import { resolveAccountScopedCryptoMaterialFromCredentials } from '@/sync/domains/connectedServices/resolveAccountScopedCryptoMaterialFromCredentials';
-import { decodeAutomationTemplate } from '@/sync/domains/automations/automationTemplateCodec';
-import {
-  AUTOMATION_TEMPLATE_ENVELOPE_KIND,
-  encodeAutomationTemplateForTransport,
-  tryDecodeAutomationTemplateEnvelope,
-} from '@/sync/domains/automations/automationTemplateTransport';
+import { convertAccountEncryptionMigrationTemplate } from './buildAccountEncryptionMigrationAutomations';
 
 import {
   type AccountEncryptionMigrateRequest,
@@ -43,6 +38,7 @@ import {
   buildAccountEncryptionSessionDraftsDirective,
   type AccountEncryptionSessionDraftMigrationCandidate,
 } from './buildAccountEncryptionSessionDraftsDirective';
+import { buildAccountEncryptionAuthoringMemoryDirective, type AccountEncryptionAuthoringMemoryMigrationCandidate } from './buildAccountEncryptionAuthoringMemoryDirective';
 
 type ConnectedServiceCredentialMetadataInput = Readonly<{
   kind: 'oauth' | 'token';
@@ -70,6 +66,7 @@ export async function buildAccountEncryptionMigrateToE2eeRequest(params: Readonl
   qualifiedConnectedAccounts?: readonly QualifiedConnectedAccountProfileV4[];
   automations: ReadonlyArray<Readonly<{ id: string; templateVersion: number; templateCiphertext: string }>>;
   sessionDrafts?: readonly AccountEncryptionSessionDraftMigrationCandidate[];
+  authoringMemory?: readonly AccountEncryptionAuthoringMemoryMigrationCandidate[];
   storageDirectives: AccountEncryptionMigrationStorageDirectives;
   passwordCredential?: AccountEncryptionMigrateTransitionPasswordCredential;
   fetchConnectedServiceCredentialPlain: (args: Readonly<{ serviceId: ConnectedServiceId; profileId: string }>) => Promise<Readonly<{
@@ -201,44 +198,19 @@ export async function buildAccountEncryptionMigrateToE2eeRequest(params: Readonl
     };
   })();
 
-  const automations = await (async () => {
+  const automations = params.storageDirectives.automations ?? await (async () => {
     if (params.automations.length === 0) {
       return { action: 'assert_empty' as const };
     }
 
-    const templates: any[] = [];
+    const templates = [];
     for (const automation of params.automations) {
-      const envelope = tryDecodeAutomationTemplateEnvelope(automation.templateCiphertext);
-      if (!envelope) throw new Error(`Invalid automation template envelope (${automation.id})`);
-
-      if (envelope.kind === AUTOMATION_TEMPLATE_ENVELOPE_KIND) {
-        templates.push({
-          automationId: automation.id,
-          expectedTemplateVersion: automation.templateVersion,
-          templateCiphertext: automation.templateCiphertext,
-        });
-        continue;
-      }
-
-      const decoded = decodeAutomationTemplate(JSON.stringify(envelope.payload));
-      if (!decoded) throw new Error(`Invalid automation template payload (${automation.id})`);
-
-      const encryptedTemplateCiphertext = await encodeAutomationTemplateForTransport({
-        accountMode: 'e2ee',
-        template: decoded,
-        encryptRaw: async (value) =>
-          sealAccountScopedBlobCiphertext({
-            kind: 'automation_template_payload',
-            material,
-            payload: value,
-            randomBytes: getRandomBytes,
-          }),
-      });
-
       templates.push({
         automationId: automation.id,
         expectedTemplateVersion: automation.templateVersion,
-        templateCiphertext: encryptedTemplateCiphertext,
+        templateCiphertext: await convertAccountEncryptionMigrationTemplate({
+          id: automation.id, templateCiphertext: automation.templateCiphertext, toMode: 'e2ee', targetMaterial: material,
+        }),
       });
     }
     return { action: 'migrate' as const, templates };
@@ -246,6 +218,9 @@ export async function buildAccountEncryptionMigrateToE2eeRequest(params: Readonl
   const sessionDrafts = buildAccountEncryptionSessionDraftsDirective({
     candidates: params.sessionDrafts ?? [],
     target: { mode: 'e2ee', material, randomBytes: getRandomBytes },
+  });
+  const authoringMemory = buildAccountEncryptionAuthoringMemoryDirective({
+    candidates: params.authoringMemory ?? [], target: { mode: 'e2ee', material, randomBytes: getRandomBytes },
   });
   const unsignedRequest =
     AccountEncryptionMigrateUnsignedRequestSchema.parse({
@@ -268,6 +243,7 @@ export async function buildAccountEncryptionMigrateToE2eeRequest(params: Readonl
       ...params.storageDirectives,
       ...(params.passwordCredential ? { passwordCredential: params.passwordCredential } : {}),
       ...(sessionDrafts ? { sessionDrafts } : {}),
+      ...(authoringMemory ? { authoringMemory } : {}),
     });
   const signature = params.keyProof.sign(
     createAccountEncryptionMigrateProofSigningInputV1({

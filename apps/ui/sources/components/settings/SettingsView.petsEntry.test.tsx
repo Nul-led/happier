@@ -71,12 +71,6 @@ vi.mock('expo-constants', () => ({
     default: { expoConfig: { version: '0.0.0-test' } },
 }));
 
-vi.mock('@/constants/Typography', () => ({
-    Typography: {
-        default: () => ({}),
-        mono: () => ({}),
-    },
-}));
 
 vi.mock('@/components/ui/lists/ItemList', () => ({
     ItemList: ({ children }: { children?: React.ReactNode }) => React.createElement('ItemList', null, children),
@@ -143,12 +137,6 @@ vi.mock('@/components/sessions/new/components/MachineCliGlyphs', () => ({
     MachineCliGlyphs: 'MachineCliGlyphs',
 }));
 
-vi.mock('@/agents/catalog/catalog', () => ({
-    DEFAULT_AGENT_ID: 'agent_default',
-    getAgentCore: () => ({ uiConnectedService: { serviceId: 'anthropic', labelKey: 'agentInput.agent.claude', connectRoute: null } }),
-    resolveAgentIdFromConnectedServiceId: () => null,
-}));
-
 vi.mock('@/components/settings/supportUsBehavior', () => ({
     resolveSupportUsAction: () => 'github',
 }));
@@ -168,7 +156,8 @@ vi.mock('@/hooks/server/useFeatureEnabled', () => ({
     },
 }));
 
-vi.mock('@/components/appShell/plugins/AppShellPluginUiProjection', () => ({
+vi.mock('@/components/appShell/plugins/AppShellPluginUiProjection', async (importOriginal) => ({
+    ...await importOriginal<typeof import('@/components/appShell/plugins/AppShellPluginUiProjection')>(),
     useAppShellPluginUiProjection: () => ({ pluginUiProjection: null }),
 }));
 
@@ -181,7 +170,8 @@ vi.mock('@/utils/system/requestReview', () => ({
     requestReview: vi.fn(),
 }));
 
-vi.mock('@/utils/platform/desktopHost', () => ({
+vi.mock('@/utils/platform/desktopHost', async (importOriginal) => ({
+    ...await importOriginal<typeof import('@/utils/platform/desktopHost')>(),
     isDesktopHost: () => false,
 }));
 

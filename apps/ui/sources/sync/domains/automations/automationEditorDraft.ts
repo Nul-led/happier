@@ -105,7 +105,7 @@ export type AutomationTriggerEditorValue = Readonly<{
 
 /**
  * What an Automation may execute: the incumbent one-shot recipe, or a frozen
- * workflow copy. Both arms are already accepted by the canonical Automation API
+ * workflow trigger context. Both arms are accepted by the canonical Automation API
  * union, so the editor carries the same union rather than a second draft store
  * for workflows.
  */
@@ -130,6 +130,9 @@ export type AutomationEditorDraft = AutomationTriggerEditorValue & Readonly<{
     /** Client-stable identity used only by a not-yet-persisted definition. */
     pendingAutomationId: string | null;
     expectedTemplateVersion: number | null;
+    /** The canonical live target, null for an inline workflow or legacy recipe. */
+    workflowDefinitionId?: string | null;
+    scopeSessionId?: string | null;
     /** True only after the canonical recipe composer reseals a next-version recipe. */
     recipeDirty?: boolean;
     executionRecipe: AutomationEditorExecutionRecipe;
@@ -230,6 +233,8 @@ export function automationEditorDraftFromDetail(
         automationId: detail.id,
         pendingAutomationId: null,
         expectedTemplateVersion: detail.templateVersion,
+        workflowDefinitionId: detail.workflowDefinitionId ?? null,
+        scopeSessionId: detail.scopeSessionId ?? null,
         removedTriggers: [],
         name: detail.name,
         description: detail.description,

@@ -61,7 +61,7 @@ describe('happier auth service', () => {
     });
 
     const text = output.mock.calls.flat().join('\n');
-    expect(text).toContain('did not confirm its identity or Account Service role');
+    expect(text).toContain('did not confirm its identity or sign-in role');
     expect(process.exitCode).toBe(1);
   });
 
@@ -74,43 +74,68 @@ describe('happier auth service', () => {
       resolvePresentation,
     });
 
-    expect(output.mock.calls.flat().join('\n')).toContain('No Account Service is selected.');
+    expect(output.mock.calls.flat().join('\n')).toContain('No sign-in service is selected.');
     expect(resolvePresentation).not.toHaveBeenCalled();
   });
 
-  it('signs in through the one setup-entry owner and reports the Home it entered', async () => {
+  it('signs in through the setup-entry owner without entering or switching a Home', async () => {
     const output = captureLog();
+    const promptInput = vi.fn(async () => 'k');
     const runSetupEntry = vi.fn(async () => ({
-      kind: 'home_entered' as const,
-      homeServerIdentityId: 'srv_home',
-      profileId: 'profile-1',
-      selection: 'sole' as const,
+      kind: 'signed_in' as const,
+      endpoint: 'https://service.example',
     }));
 
     await handleAuthServiceCommand(['use', 'https://service.example'], undefined, {
       createSession: () => sessionOwner(),
       runSetupEntry: runSetupEntry as never,
+      isInteractiveTerminal: () => true,
+      promptInput,
     });
 
     expect(runSetupEntry).toHaveBeenCalledWith({
       endpoint: 'https://service.example',
       context: { kind: 'none' },
+      stopAfter: 'sign_in',
+      promptInputFn: promptInput,
     });
-    expect(output.mock.calls.flat().join('\n')).toContain('entered Home srv_home');
+    expect(output.mock.calls.flat().join('\n')).toContain('https://service.example');
     expect(process.exitCode).toBeUndefined();
   });
 
-  it('hands an unfinished choice back to the interactive journey instead of re-asking it here', async () => {
+  it('tells a non-interactive caller exactly which command signs in when no valid credential is stored', async () => {
+    const output = captureLog();
+    const runSetupEntry = vi.fn(async () => ({ kind: 'cancelled' as const }));
+
+    await handleAuthServiceCommand(['use', 'https://service.example'], undefined, {
+      createSession: () => sessionOwner(),
+      runSetupEntry: runSetupEntry as never,
+      isInteractiveTerminal: () => false,
+      promptInput: vi.fn(async () => ''),
+    });
+
+    expect(runSetupEntry).toHaveBeenCalledWith({
+      endpoint: 'https://service.example',
+      context: { kind: 'none' },
+      stopAfter: 'sign_in',
+    });
+    const text = output.mock.calls.flat().join('\n');
+    expect(text).toContain('happier auth service use https://service.example');
+    expect(text).not.toContain('cancelled');
+    expect(process.exitCode).toBe(1);
+  });
+
+  it('reports a sign-in the service refused in words instead of its raw outcome kind', async () => {
     const output = captureLog();
 
     await handleAuthServiceCommand(['use', 'https://service.example'], undefined, {
       createSession: () => sessionOwner(),
-      runSetupEntry: (async () => ({ kind: 'choose_home', homes: [] })) as never,
+      runSetupEntry: (async () => ({ kind: 'account_service_unavailable' })) as never,
+      isInteractiveTerminal: () => true,
+      promptInput: vi.fn(async () => ''),
     });
 
-    const text = output.mock.calls.flat().join('\n');
-    expect(text).toContain('choose_home');
-    expect(text).toContain('happier setup');
+    expect(output.mock.calls.flat().join('\n')).not.toContain('account_service_unavailable');
     expect(process.exitCode).toBe(1);
   });
 
@@ -124,7 +149,7 @@ describe('happier auth service', () => {
 
     expect(logout).toHaveBeenCalledOnce();
     expect(output.mock.calls.flat().join('\n'))
-      .toContain('Homes you already entered keep their own credentials.');
+      .toContain('Homes you already entered keep their own access.');
   });
 
   it('refuses an unknown or malformed service subcommand', async () => {

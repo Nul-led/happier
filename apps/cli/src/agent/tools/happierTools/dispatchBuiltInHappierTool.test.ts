@@ -368,7 +368,7 @@ describe('built-in Happier tools', () => {
       modelSelection: {
         v: 1,
         updatedAt: 1,
-        ref: { agentTargetKey: 'backend:claude', modelId: 'claude-opus-4-8' },
+        ref: { agentTargetKey: 'agent:happier.agent.claude/claude', modelId: 'claude-opus-4-8' },
       },
     } as const;
 
@@ -701,7 +701,7 @@ describe('built-in Happier tools', () => {
       kind: 'plugins_reload',
       outcome: 'reviewRequired',
       pendingReview: {
-        kind: 'reviewRequired',
+        kind: 'reviewRequired', reviewKind: 'installation', reason: 'firstInstall', currentVersion: null, authorityExpansion: [],
         pendingChangeId: 'pending-1',
       },
     } as const;

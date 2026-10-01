@@ -11,6 +11,7 @@ import {
 import { acquireAuthoritativePluginRuntimeRegistryLease } from '@/plugins/runtime/reload/runtimeLease';
 import type { ResolvedProviderContribution } from '@/plugins/projection/registry/types';
 import { resolveAccountSettingsScopeKey } from '@/settings/accountSettings/accountSettingsScopeKey';
+import { readAuthoringMemoryLastUsedProfile } from '@/settings/profiles/readAuthoringMemoryLastUsedProfile';
 import {
   awaitWithinProviderOperation,
   createProviderOperationLifetime,
@@ -46,6 +47,7 @@ export function triggerLegacyProfileMigration(input: Readonly<{
     credentials: input.credentials,
     providersEnabled: input.providersEnabled,
     machineId: input.machineId,
+    readAuthoringMemory: async () => ({ lastUsedProfile: await readAuthoringMemoryLastUsedProfile(input.credentials) }),
   });
 }
 
@@ -104,6 +106,9 @@ export async function confirmLegacyProfileMigrationConflict(input: Readonly<{
         >;
         const baseContext = buildLegacyProfileMigrationContext({
           rawSettings: latestRawSettings,
+          authoringMemory: { lastUsedProfile: await awaitWithinProviderOperation(
+            readAuthoringMemoryLastUsedProfile(input.credentials, lifetime.signal), lifetime,
+          ) },
           providersByContributionKey,
           allocatedConnectionIdsBySourceProfileId,
           migratedAt: input.migratedAt,

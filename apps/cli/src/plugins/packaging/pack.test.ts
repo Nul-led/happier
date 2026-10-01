@@ -51,10 +51,9 @@ async function writeSelectedPackage(root: string): Promise<void> {
   const packageJsonPath = join(root, 'package.json');
   const packageJson = JSON.parse(await readFile(packageJsonPath, 'utf8')) as Record<string, unknown>;
   packageJson.files = ['README.md'];
-  // This fixture rewrites the scaffold source to have no SDK imports. Its
-  // package contract therefore needs no registry dependency when pack prepares
-  // the operation-local author copy.
-  delete packageJson.dependencies;
+  // This fixture rewrites the scaffold source to have no SDK imports, but the
+  // packed package contract still requires the canonical SDK runtime
+  // dependency declaration, so the scaffold-emitted `dependencies` stay.
   delete packageJson.devDependencies;
   await writeFile(packageJsonPath, JSON.stringify(packageJson, null, 2), 'utf8');
   await writeFile(join(root, 'README.md'), '# Selected plugin\n', 'utf8');
@@ -346,6 +345,7 @@ describe('packLocalPlugin', () => {
         keywords: ['happier-plugin'],
         happier: { manifest: '.happier-plugin/plugin.json' },
         files: ['.happier-plugin', 'index.ts'],
+        dependencies: { '@happier-dev/plugin-sdk': '0.0.0' },
       }, null, 2), 'utf8');
       await writeFile(
         join(root, PLUGIN_DAEMON_OUTPUT_MANIFEST_RELATIVE_PATH),
@@ -442,6 +442,7 @@ describe('packLocalPlugin', () => {
           },
         },
         files: ['a-note.txt', 'Z-note.txt', 'index.ts'],
+        dependencies: { '@happier-dev/plugin-sdk': '0.0.0' },
       }, null, 2), 'utf8');
       await writeFile(join(root, 'a-note.txt'), 'a\n', 'utf8');
       await writeFile(join(root, 'Z-note.txt'), 'z\n', 'utf8');
@@ -489,7 +490,7 @@ describe('packLocalPlugin', () => {
       expect(packagedPackageJson.happier?.compatibilityProjection).toMatchObject({
         version: 1,
         manifest: { id: 'acme.code-defined', version: '1.0.0' },
-        uiArtifacts: { version: 1, entries: [] },
+        uiArtifacts: { version: 2, entries: [] },
       });
       expect(packagedPackageJson.happier?.compatibilityProjection).not.toHaveProperty('builtWith');
       expect(packagedPackageJson.happier?.marketplaceDiscovery).toEqual({
@@ -549,6 +550,7 @@ describe('packLocalPlugin', () => {
         keywords: ['happier-plugin'],
         happier: { manifest: '.happier-plugin/plugin.json' },
         files: ['index.ts'],
+        dependencies: { '@happier-dev/plugin-sdk': '0.0.0' },
       }, null, 2), 'utf8');
       await writeFile(join(root, 'index.ts'), [
         "export const manifest = {",
@@ -563,7 +565,8 @@ describe('packLocalPlugin', () => {
 
       const result = await packLocalPlugin({ locator: root, outPath: archivePath });
 
-      expect(result.ok).toBe(true);
+      expect(result, result.ok ? '' : result.diagnostics.map((entry) => entry.message).join('\n'))
+        .toMatchObject({ ok: true });
       if (!result.ok) return;
       expect(result.manifestPath.endsWith(`${sep}index.ts`)).toBe(true);
       // The reported path must name the author tree the caller passed in, not
@@ -596,6 +599,7 @@ describe('packLocalPlugin', () => {
         keywords: ['happier-plugin'],
         happier: { manifest: '.happier-plugin/plugin.json' },
         files: ['index.ts', 'note.txt'],
+        dependencies: { '@happier-dev/plugin-sdk': '0.0.0' },
       }, null, 2), 'utf8');
       await writeFile(notePath, 'copied-before-evaluation\n', 'utf8');
       await writeFile(join(root, 'index.ts'), [
@@ -677,7 +681,10 @@ describe('packLocalPlugin', () => {
 
       expect(result).toMatchObject({
         ok: false,
-        diagnostics: [expect.objectContaining({ message: expect.stringContaining('Plugin development install failed') })],
+        diagnostics: [expect.objectContaining({
+          code: 'plugin_pack_sdk_dependency_invalid',
+          message: expect.stringContaining("supported specifier '0.0.0'"),
+        })],
       });
     } finally {
       await registry.close();
@@ -1015,13 +1022,13 @@ describe('packLocalPlugin', () => {
       });
       expect(staged.candidate.inventory.map(({ path }) => path)).toEqual(expect.arrayContaining([
         'dist/daemon.js',
-        'dist/happier-plugin-ui/react-native-web/voice-runtime-web/entry.mjs.bundle',
+        'dist/happier-plugin-ui/react-native/voice-runtime-web/entry.cjs.bundle',
       ]));
       const packedExecutableSources = await Promise.all([
         readFile(join(staged.candidate.rootPath, 'dist/daemon.js'), 'utf8'),
         readFile(join(
           staged.candidate.rootPath,
-          'dist/happier-plugin-ui/react-native-web/voice-runtime-web/entry.mjs.bundle',
+          'dist/happier-plugin-ui/react-native/voice-runtime-web/entry.cjs.bundle',
         ), 'utf8'),
       ]);
       expect(packedExecutableSources.join('\n')).not.toMatch(
@@ -1273,3 +1280,85 @@ describe('packLocalPlugin', () => {
   });
 
 });
+
+describe('plugin pack SDK dependency contract', () => {
+  async function writeSdkContractFixture(root: string, options?: Readonly<{ sdkSpecifier?: string | null }>): Promise<void> {
+    await mkdir(root, { recursive: true });
+    await writeFile(join(root, 'package.json'), JSON.stringify({
+      name: 'happier-plugin-sdk-contract-fixture',
+      version: '1.0.0',
+      type: 'module',
+      keywords: ['happier-plugin'],
+      happier: { manifest: '.happier-plugin/plugin.json' },
+      files: ['index.ts'],
+      ...(options?.sdkSpecifier === null
+        ? {}
+        : { dependencies: { '@happier-dev/plugin-sdk': options?.sdkSpecifier ?? '0.0.0' } }),
+    }, null, 2), 'utf8');
+    await writeFile(join(root, 'index.ts'), [
+      "import { definePlugin } from '@happier-dev/plugin-sdk';",
+      'export const { manifest, activate } = definePlugin({',
+      "  id: 'acme.sdk-contract', version: '1.0.0',",
+      "  displayName: 'SDK contract', engines: { happier: '>=0.0.0' }, runtime: { apiVersion: 1 },",
+      "  entrypoints: { daemon: './dist/index.js' }, hostAccess: { required: [], optional: [] },",
+      '  contributes: {},',
+      '});',
+      '',
+    ].join('\n'), 'utf8');
+  }
+
+  it('rejects an author package that imports the SDK without declaring the runtime dependency', async () => {
+    const parent = await mkdtemp(join(tmpdir(), 'happier-pack-sdk-missing-'));
+    const root = join(parent, 'plugin');
+    await writeSdkContractFixture(root, { sdkSpecifier: null });
+    try {
+      const result = await packLocalPlugin({ locator: root });
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.diagnostics).toEqual([expect.objectContaining({
+        code: 'plugin_pack_sdk_dependency_invalid',
+        message: expect.stringMatching(/dependencies/),
+      })]);
+      expect(result.diagnostics[0]?.message).toContain('@happier-dev/plugin-sdk');
+    } finally {
+      await rm(parent, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects forbidden local/workspace SDK dependency forms', async () => {
+    const parent = await mkdtemp(join(tmpdir(), 'happier-pack-sdk-workspace-'));
+    const root = join(parent, 'plugin');
+    await writeSdkContractFixture(root, { sdkSpecifier: 'workspace:*' });
+    try {
+      const result = await packLocalPlugin({ locator: root });
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.diagnostics).toEqual([expect.objectContaining({
+        code: 'plugin_pack_sdk_dependency_invalid',
+        message: expect.stringMatching(/workspace:/),
+      })]);
+    } finally {
+      await rm(parent, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects SDK dependency versions outside the canonical supported packet', async () => {
+    const parent = await mkdtemp(join(tmpdir(), 'happier-pack-sdk-incompatible-'));
+    const root = join(parent, 'plugin');
+    await writeSdkContractFixture(root, { sdkSpecifier: '9.9.9' });
+    const sdkTarball = await createTestPluginSdkTarball();
+    const registry = await startCandidateSdkRegistry({ sdkTarball });
+    try {
+      const result = await packLocalPlugin({ locator: root, sdkRegistryOrigin: registry.origin });
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.diagnostics).toEqual([expect.objectContaining({
+        code: 'plugin_pack_sdk_dependency_invalid',
+        message: expect.stringMatching(/9\.9\.9/),
+      })]);
+    } finally {
+      await registry.close();
+      await rm(parent, { recursive: true, force: true });
+    }
+  });
+}, 240_000);

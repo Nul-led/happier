@@ -24,8 +24,14 @@ import {
 } from '@/sync/domains/browser/policy/evaluate';
 import { t } from '@/text';
 
+import { ServiceRowView } from '@/components/sessions/localServices/ServiceRowView';
+import { Icon } from '@/components/ui/icons/Icon';
+import { Typography } from '@/constants/Typography';
+import { resolveReasonCopy } from '@/sync/domains/surfaces/copy';
+import { useUnistyles } from 'react-native-unistyles';
+
 import { BrowserUrlField } from '../BrowserUrlField';
-import { BrowserTargetCard } from './BrowserTargetCard';
+import { bindServicesOpenInBrowser } from '../surfaces/openBrowserTargetInWorkspace';
 
 export type BrowserLaunchpadOpenTargetOptions = Readonly<{
     platform: BrowserPlatformV1;
@@ -42,7 +48,6 @@ type ResolvedBrowserLaunchpadRow = BrowserLaunchpadRow & Readonly<{
 
 const SECTION_ORDER: readonly BrowserLaunchpadSection[] = [
     'running',
-    'managed',
     'plugin',
     'recent',
     'unavailable',
@@ -63,6 +68,9 @@ const stylesheet = StyleSheet.create((theme) => ({
         marginHorizontal: 16,
         marginTop: 12,
     },
+    monoSubtitle: {
+        ...Typography.mono(),
+    },
     terminalState: {
         // The card owns its own centring; this only gives it something to centre inside when the
         // list is otherwise empty.
@@ -74,8 +82,6 @@ function titleForSection(section: BrowserLaunchpadSection): string {
     switch (section) {
         case 'running':
             return t('browserLaunchpad.sections.running');
-        case 'managed':
-            return t('browserLaunchpad.sections.managed');
         case 'plugin':
             return t('browserLaunchpad.sections.plugin');
         case 'recent':
@@ -83,6 +89,17 @@ function titleForSection(section: BrowserLaunchpadSection): string {
         case 'unavailable':
             return t('browserLaunchpad.sections.unavailable');
     }
+}
+
+/**
+ * A launchpad row's quiet fact: only a reason when it cannot be opened. An openable row says nothing
+ * extra; its section already says what it is (no "Ready to open" repeated down the list, H-UX F-11).
+ */
+function reasonForRow(row: BrowserLaunchpadRow, openDisabled: boolean): string | undefined {
+    if (row.disabledReason) {
+        return resolveReasonCopy({ reasonCode: row.disabledReason, kind: 'browserLaunchpad' }).message;
+    }
+    return openDisabled ? t('browserLaunchpad.status.openUnavailable') : undefined;
 }
 
 function rowsBySection(rows: readonly ResolvedBrowserLaunchpadRow[]): ReadonlyMap<BrowserLaunchpadSection, readonly ResolvedBrowserLaunchpadRow[]> {
@@ -103,7 +120,7 @@ function resolveLaunchpadRow(
     desktopWebViewAvailability: DesktopWebViewNativeAvailability | null | undefined,
     allowExternalUrlBrowsing: boolean,
 ): ResolvedBrowserLaunchpadRow {
-    if (!row.target || row.disabledReason) {
+    if (!row.target || row.disabledReason || row.serviceRow) {
         return row;
     }
     if (row.profileMode && browserProfile?.storageMode !== row.profileMode) {
@@ -176,6 +193,7 @@ export function BrowserLaunchpad(props: Readonly<{
     allowExternalUrlBrowsing?: boolean;
     refreshStatus: 'idle' | 'refreshing' | 'error';
     refreshError?: string | null;
+    localServicePreviewServerId?: string | null;
     onOpenTarget?: (target: BrowserViewTargetV1, options?: BrowserLaunchpadOpenTargetOptions) => void;
     /**
      * OWNER-NAV (DV-NAV): the current-tab in-place navigation seam used by the URL entry box. A
@@ -205,13 +223,32 @@ export function BrowserLaunchpad(props: Readonly<{
         ],
     );
     const grouped = React.useMemo(() => rowsBySection(resolvedRows), [resolvedRows]);
-    const handleOpenTarget = React.useCallback((row: ResolvedBrowserLaunchpadRow) => {
+    const handleOpenTarget = React.useCallback(async (row: ResolvedBrowserLaunchpadRow) => {
         if (!row.target || row.disabledReason) {
             return;
         }
         const open = row.launchMode === 'currentView'
             ? props.onNavigateInPlace
             : props.onOpenTarget;
+        if (row.target.kind === 'localServicePreview') {
+            if (!open) return;
+            await bindServicesOpenInBrowser({
+                onOpenTarget: open,
+                platform: props.platform,
+                serverId: props.localServicePreviewServerId,
+            })({
+                id: row.target.targetId,
+                source: 'registered_preview',
+                machineId: row.target.machineId,
+                ...(row.target.sessionId ? { sessionId: row.target.sessionId } : {}),
+                title: row.title,
+                confidence: 'high',
+                state: 'available',
+                actions: ['open_preview'],
+                browserTarget: row.target,
+            });
+            return;
+        }
         open?.(row.target, {
             platform: props.platform,
             ...(row.currentUrl ? { currentUrl: row.currentUrl } : {}),
@@ -219,7 +256,22 @@ export function BrowserLaunchpad(props: Readonly<{
             ...(row.targetPolicyDecision ? { targetPolicyDecision: row.targetPolicyDecision } : {}),
             ...(row.desktopWebViewAvailability ? { desktopWebViewAvailability: row.desktopWebViewAvailability } : {}),
         });
-    }, [props.onNavigateInPlace, props.onOpenTarget, props.platform]);
+    }, [props.onNavigateInPlace, props.onOpenTarget, props.platform, props.localServicePreviewServerId]);
+
+    // Running previews are the Local services rows: they open through the same one-tap Open, which
+    // reaches this launchpad's own open seam (a new tab beside this one) with a typed outcome.
+    const onOpenTarget = props.onOpenTarget;
+    const platform = props.platform;
+    const openService = React.useMemo(() => (onOpenTarget
+        ? bindServicesOpenInBrowser({ onOpenTarget, platform, serverId: props.localServicePreviewServerId })
+        : undefined), [onOpenTarget, platform, props.localServicePreviewServerId]);
+    // One expanded row at a time, as in Local services.
+    const [expandedServiceId, setExpandedServiceId] = React.useState<string | null>(null);
+    const { theme } = useUnistyles();
+    const recentMark = React.useMemo(
+        () => <Icon name="clock-counter-clockwise" size={18} color={theme.colors.text.secondary} />,
+        [theme.colors.text.secondary],
+    );
 
     // The URL entry submits a normalized http(s) URL; turning it into a target is the launchpad's
     // job because the seam it delegates to is target-shaped. One normalizer, one target builder.
@@ -256,8 +308,9 @@ export function BrowserLaunchpad(props: Readonly<{
                         clearOnSubmit
                         value=""
                         disabled={!props.onNavigateInPlace}
-                        label={t('browserLaunchpad.urlEntry.label')}
-                        placeholder={t('browserLaunchpad.urlEntry.placeholder')}
+                        // No eyebrow above the field (lab W, F-17): the field itself says what it is for.
+                        leading={<Icon name="globe" size={17} color={theme.colors.text.tertiary} />}
+                        placeholder={t('browserLaunchpad.urlEntry.label')}
                         accessibilityLabel={t('browserLaunchpad.urlEntry.label')}
                         onSubmitUrl={handleSubmitUrl}
                     />
@@ -277,9 +330,8 @@ export function BrowserLaunchpad(props: Readonly<{
                                 testID={`${testID}-error`}
                                 kind="error"
                                 title={t('browserLaunchpad.error.title')}
-                                {...(props.refreshError
-                                    ? { reason: t('browserLaunchpad.error.subtitle', { reason: props.refreshError }) }
-                                    : {})}
+                                // The refresh code is a diagnostic, never product copy: it stays behind Details.
+                                {...(props.refreshError ? { diagnosticCode: props.refreshError } : {})}
                                 accessibilitySemantics="alert"
                             />
                         ) : (
@@ -300,7 +352,6 @@ export function BrowserLaunchpad(props: Readonly<{
                                     <BrowserLaunchpadRefreshBanner
                                         testID={testID}
                                         status={props.refreshStatus}
-                                        refreshError={props.refreshError ?? null}
                                     />
                                 </ItemGroup>
                             </View>
@@ -316,18 +367,43 @@ export function BrowserLaunchpad(props: Readonly<{
                                     title={titleForSection(section)}
                                     selectableItemCountOverride={rows.length}
                                 >
-                                    {rows.map((row, index) => (
-                                        <BrowserTargetCard
-                                            key={row.id}
-                                            row={row}
-                                            entranceIndex={index}
-                                            testID={`${testID}-card:${row.id}`}
-                                            onOpenTarget={handleOpenTarget}
-                                            openDisabled={row.launchMode === 'currentView'
-                                                ? !props.onNavigateInPlace
-                                                : !props.onOpenTarget}
-                                        />
-                                    ))}
+                                    {rows.map((row) => {
+                                        if (row.serviceRow) {
+                                            const serviceRowId = row.serviceRow.id;
+                                            return (
+                                                <ServiceRowView
+                                                    key={row.id}
+                                                    row={row.serviceRow}
+                                                    onOpenServiceInBrowser={openService}
+                                                    expanded={expandedServiceId === serviceRowId}
+                                                    onExpandedChange={(next) => setExpandedServiceId(next ? serviceRowId : null)}
+                                                    testID={`${testID}-service:${serviceRowId}`}
+                                                />
+                                            );
+                                        }
+                                        const openDisabled = row.launchMode === 'currentView'
+                                            ? !props.onNavigateInPlace
+                                            : !props.onOpenTarget;
+                                        const disabled = Boolean(openDisabled || row.disabledReason || !row.target);
+                                        return (
+                                            <Item
+                                                key={row.id}
+                                                testID={`${testID}-card:${row.id}`}
+                                                title={row.title}
+                                                subtitle={row.subtitle}
+                                                subtitleStyle={row.sourceKind === 'recent' ? stylesheet.monoSubtitle : undefined}
+                                                icon={row.sourceKind === 'recent' ? recentMark : undefined}
+                                                detail={reasonForRow(row, openDisabled)}
+                                                detailTestID={disabled ? `${testID}-card:${row.id}-disabled` : `${testID}-card:${row.id}-available`}
+                                                disabled={disabled}
+                                                mode="interactive"
+                                                showChevron={!disabled}
+                                                onPress={() => {
+                                                    if (!disabled) return handleOpenTarget(row);
+                                                }}
+                                            />
+                                        );
+                                    })}
                                 </ItemGroup>
                             );
                         })}
@@ -347,7 +423,6 @@ export function BrowserLaunchpad(props: Readonly<{
 function BrowserLaunchpadRefreshBanner(props: Readonly<{
     testID: string;
     status: 'refreshing' | 'error';
-    refreshError: string | null;
 }>): React.ReactElement {
     if (props.status === 'refreshing') {
         return (
@@ -363,7 +438,6 @@ function BrowserLaunchpadRefreshBanner(props: Readonly<{
         <Item
             testID={`${props.testID}-error`}
             title={t('browserLaunchpad.error.title')}
-            subtitle={props.refreshError ? t('browserLaunchpad.error.subtitle', { reason: props.refreshError }) : undefined}
             mode="info"
             showChevron={false}
         />

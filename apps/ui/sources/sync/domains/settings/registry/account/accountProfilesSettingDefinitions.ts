@@ -25,23 +25,6 @@ function buildProfilesSummaryProperties(value: unknown): Record<string, number> 
     };
 }
 
-function serializeLastUsedProfileKind(value: unknown, settingsRecord: Readonly<Record<string, unknown>>): 'none' | 'builtin' | 'custom' {
-    if (typeof value !== 'string' || value.length === 0)
-        return 'none';
-    const profiles = Array.isArray(settingsRecord.profiles) ? settingsRecord.profiles : [];
-    const matchingProfile = profiles.find((profile) => (profile
-        && typeof profile === 'object'
-        && !Array.isArray(profile)
-        && (profile as Record<string, unknown>).id === value));
-    if (matchingProfile
-        && typeof matchingProfile === 'object'
-        && !Array.isArray(matchingProfile)
-        && (matchingProfile as Record<string, unknown>).isBuiltIn === true) {
-        return 'builtin';
-    }
-    return 'custom';
-}
-
 function buildSecretBindingsSummaryProperties(value: unknown): Record<string, number> {
     const bindingsByProfileId = value && typeof value === 'object' && !Array.isArray(value)
         ? Object.values(value as Record<string, unknown>)
@@ -77,14 +60,6 @@ export const ACCOUNT_PROFILES_SETTING_ANALYTICS = defineAccountSettingAnalytics(
         privacy: 'count_only',
         identityScope: 'person',
         serializeCurrentProperties: buildProfilesSummaryProperties,
-    },
-    lastUsedProfile: {
-        trackCurrentState: true,
-        trackChanges: true,
-        valueKind: 'enum',
-        privacy: 'safe',
-        identityScope: 'person',
-        serializeCurrentWithContext: serializeLastUsedProfileKind,
     },
     profileEnabledById: {
         trackCurrentState: true,

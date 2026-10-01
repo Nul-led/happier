@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { Pressable, View, type GestureResponderEvent } from 'react-native';
+import { View, type GestureResponderEvent } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 import { Item } from '@/components/ui/lists/Item';
@@ -10,6 +10,7 @@ import {
 import { InboxSection } from '@/components/inbox/InboxSection';
 import { ActivitySpinner } from '@/components/ui/feedback/ActivitySpinner';
 import { Icon, ICON_SIZE } from '@/components/ui/icons/Icon';
+import { TactilePressable } from '@/components/ui/interactions/TactilePressable';
 import { t } from '@/text';
 import {
     useServerScopedMachine,
@@ -154,17 +155,14 @@ const ActionOperationRow = React.memo(function ActionOperationRow(props: Readonl
                     color={iconColor}
                   />}
             rightElement={canStop ? (
-                <Pressable
+                <TactilePressable
                     testID={`action-operation-stop.${snapshot.operationId}`}
-                    accessibilityRole="button"
                     accessibilityLabel={t('inbox.actionOperations.cancel.stop')}
                     disabled={stopPending}
                     onPress={stop}
-                    style={({ pressed }) => [
-                        styles.stopButton,
-                        pressed ? styles.stopButtonPressed : null,
-                        stopPending ? styles.stopButtonPending : null,
-                    ]}
+                    glyph
+                    containerStyle={stopPending ? styles.stopButtonPending : undefined}
+                    style={styles.stopButton}
                 >
                     {stopPending ? (
                         <ActivitySpinner size="small" color={theme.colors.text.secondary} />
@@ -175,23 +173,20 @@ const ActionOperationRow = React.memo(function ActionOperationRow(props: Readonl
                             color={stopFailed ? theme.colors.status.error : theme.colors.text.secondary}
                         />
                     )}
-                </Pressable>
+                </TactilePressable>
             ) : canDismiss && props.onDismissOperation ? (
-                <Pressable
+                <TactilePressable
                     testID={`action-operation-dismiss.${snapshot.operationId}`}
-                    accessibilityRole="button"
                     accessibilityLabel={t('inbox.actionOperations.dismiss')}
                     onPress={(event) => {
                         event?.stopPropagation();
                         props.onDismissOperation?.(props.operation);
                     }}
-                    style={({ pressed }) => [
-                        styles.stopButton,
-                        pressed ? styles.stopButtonPressed : null,
-                    ]}
+                    glyph
+                    style={styles.stopButton}
                 >
                     <Icon name="x" size={ICON_SIZE.sm} color={theme.colors.text.secondary} />
-                </Pressable>
+                </TactilePressable>
             ) : undefined}
             rightElementOutsidePressable={true}
             keepChevronWithRightElement={inboxPresentation && canDismiss}
@@ -366,10 +361,6 @@ const styles = StyleSheet.create((theme) => ({
         alignItems: 'center',
         justifyContent: 'center',
         backgroundColor: theme.colors.surface.elevated,
-    },
-    stopButtonPressed: {
-        opacity: 0.7,
-        transform: [{ scale: 0.94 }],
     },
     stopButtonPending: {
         opacity: 0.45,

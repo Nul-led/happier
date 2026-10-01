@@ -8,7 +8,12 @@ import {
   type AIBackendProfile,
   type AiLaunchProfile,
   type AiLaunchProfileReadDiagnostic,
+  type ArtifactSharingResourceV1,
+  loadAiLaunchProfileArtifacts,
 } from '@happier-dev/protocol';
+import { createCredentialedAccountArtifactStore } from '@/api/artifacts/accountArtifactStore';
+import type { StoredCredentials } from '@/persistence';
+import { readAuthoringMemoryLastUsedProfile } from './readAuthoringMemoryLastUsedProfile';
 
 export type CliAiLaunchProfile = AiLaunchProfile;
 
@@ -29,13 +34,13 @@ function isPlainRecord(value: unknown): value is Record<string, unknown> {
   return proto === Object.prototype || proto === null;
 }
 
-export function readProfilesFromAccountSettings(settings: unknown): AccountSettingsProfilesSnapshot {
+export function readProfilesFromAccountSettings(settings: unknown, artifactsById?: ReadonlyMap<string, ArtifactSharingResourceV1>, authoringMemory: Readonly<{ lastUsedProfile: string | null }> = { lastUsedProfile: null }): AccountSettingsProfilesSnapshot {
   const record = isPlainRecord(settings) ? settings : {};
   const customProfiles: AIBackendProfile[] = [];
   const profiles: CliAiLaunchProfile[] = [];
   const opaqueProfiles: unknown[] = [];
   const rawProfiles = record.profiles;
-  const collection = readAiLaunchProfileCollection(rawProfiles);
+  const collection = readAiLaunchProfileCollection(rawProfiles, artifactsById ? { artifactsById, includeShared: true } : undefined);
   for (const entry of collection.entries) {
     if (entry.kind === 'legacy') {
       customProfiles.push(entry.profile);
@@ -62,13 +67,18 @@ export function readProfilesFromAccountSettings(settings: unknown): AccountSetti
       }
     }
   }
+  for (const profile of profiles) {
+    if (profile.secretBindings) secretBindingsByProfileId[profile.id] = {
+      ...profile.secretBindings, ...secretBindingsByProfileId[profile.id],
+    };
+  }
 
   const favoriteProfiles = Array.isArray(record.favoriteProfiles)
     ? record.favoriteProfiles.filter((entry): entry is string => typeof entry === 'string')
     : [];
   const enabledById = isPlainRecord(record.profileEnabledById) ? record.profileEnabledById : {};
   for (const profileId of ['gemini-api-key', 'gemini-vertex'] as const) {
-    const hasHistoricalEvidence = record.lastUsedProfile === profileId
+    const hasHistoricalEvidence = authoringMemory.lastUsedProfile === profileId
       || favoriteProfiles.includes(profileId)
       || enabledById[profileId] === true
       || Object.prototype.hasOwnProperty.call(secretBindingsByProfileId, profileId);
@@ -88,7 +98,7 @@ export function readProfilesFromAccountSettings(settings: unknown): AccountSetti
   const visibleById = new Map<string, CliAiLaunchProfile>();
   for (const builtIn of resolveVisibleBuiltInAiLaunchProfilesV1({
     evidence: {
-      lastUsedProfile: typeof record.lastUsedProfile === 'string' ? record.lastUsedProfile : null,
+      lastUsedProfile: authoringMemory.lastUsedProfile,
       favoriteProfileIds: favoriteProfiles,
       profileEnabledById: Object.fromEntries(
         Object.entries(enabledById).filter((entry): entry is [string, boolean] => typeof entry[1] === 'boolean'),
@@ -111,4 +121,17 @@ export function readProfilesFromAccountSettings(settings: unknown): AccountSetti
     visibleProfiles: [...visibleById.values()],
     terminalMigratedProfileIds,
   };
+}
+
+export async function loadAccountLaunchProfileArtifacts(settings: unknown, credentials: StoredCredentials, signal?: AbortSignal) {
+  const record = isPlainRecord(settings) ? settings : {};
+  return await loadAiLaunchProfileArtifacts(record.profiles, createCredentialedAccountArtifactStore(credentials), signal);
+}
+
+export async function readAccountLaunchProfiles(settings: unknown, credentials: StoredCredentials, signal?: AbortSignal) {
+  const [artifacts, lastUsedProfile] = await Promise.all([
+    loadAccountLaunchProfileArtifacts(settings, credentials, signal),
+    readAuthoringMemoryLastUsedProfile(credentials, signal),
+  ]);
+  return readProfilesFromAccountSettings(settings, artifacts, { lastUsedProfile });
 }

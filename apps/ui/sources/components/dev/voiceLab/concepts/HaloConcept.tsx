@@ -13,7 +13,8 @@ import Animated, {
 import { Text } from '@/components/ui/text/Text';
 import { Typography } from '@/constants/Typography';
 
-import { ControlRow, TactilePressable } from '@/components/voice/controls/VoiceControls';
+import { TactilePressable } from '@/components/ui/interactions/TactilePressable';
+import { ControlRow } from '@/components/voice/controls/VoiceControls';
 import { Bloom, Grain } from '@/components/voice/light/VoiceLight';
 import { TranscriptStream } from '@/components/voice/surface/VoiceTranscriptStream';
 import { useVoiceEnergy } from '@/components/voice/light/useVoiceEnergy';

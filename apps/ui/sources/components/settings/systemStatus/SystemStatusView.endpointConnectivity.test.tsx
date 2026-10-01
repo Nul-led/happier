@@ -15,7 +15,14 @@ import { renderScreen, standardCleanup } from '@/dev/testkit';
 afterEach(() => {
     standardCleanup();
     serverProfilesState.publicServerUrl = null;
-    activeServerSnapshot.carrier = 'https';
+    activeServerSnapshotState.snapshot = {
+        generation: 1,
+        serverId: 'home-stable-id',
+        serverUrl: 'https://legacy.example.test',
+        runtimeOrigin: 'http://127.0.0.1:43123',
+        carrier: 'https',
+    };
+    activeServerSnapshotState.listeners.clear();
     irohDiagnosticsState.values = [{
         homeServerIdentityId: 'home-stable-id',
         state: 'reconnecting',
@@ -111,14 +118,17 @@ vi.mock('expo-clipboard', () => ({
 
 vi.mock('@/constants/Typography', async (importOriginal) => await importOriginal());
 
-const activeServerSnapshot = vi.hoisted(() => ({
-    generation: 1,
-    serverId: 'home-stable-id',
-    serverUrl: 'https://legacy.example.test',
-    runtimeOrigin: 'http://127.0.0.1:43123',
-    carrier: 'https' as 'https' | 'iroh',
+const activeServerSnapshotState = vi.hoisted(() => ({
+    snapshot: {
+        generation: 1,
+        serverId: 'home-stable-id',
+        serverUrl: 'https://legacy.example.test',
+        runtimeOrigin: 'http://127.0.0.1:43123',
+        carrier: 'https' as 'https' | 'iroh',
+    },
+    listeners: new Set<() => void>(),
 }));
-const useActiveServerSnapshotMock = vi.hoisted(() => vi.fn(() => activeServerSnapshot));
+const useActiveServerSnapshotMock = vi.hoisted(() => vi.fn());
 const serverProfilesState = vi.hoisted(() => ({
     publicServerUrl: null as string | null | undefined,
 }));
@@ -139,8 +149,24 @@ const irohDiagnosticsState = vi.hoisted(() => ({
     listeners: new Set<() => void>(),
 }));
 
+useActiveServerSnapshotMock.mockImplementation(() => React.useSyncExternalStore(
+    (listener) => {
+        activeServerSnapshotState.listeners.add(listener);
+        return () => activeServerSnapshotState.listeners.delete(listener);
+    },
+    () => activeServerSnapshotState.snapshot,
+    () => activeServerSnapshotState.snapshot,
+));
+
 vi.mock('@/hooks/server/useActiveServerSnapshot', () => ({
     useActiveServerSnapshot: useActiveServerSnapshotMock,
+}));
+
+vi.mock('@/sync/runtime/orchestration/connectionManager', () => ({
+    getAppliedActiveServerSnapshot: () => activeServerSnapshotState.snapshot,
+    isAppliedActiveServerRuntimeAvailable: () => true,
+    subscribeAppliedActiveServer: () => () => {},
+    subscribeAppliedActiveServerRuntimeAvailability: () => () => {},
 }));
 
 vi.mock('@/sync/domains/server/serverProfiles', async (importOriginal) => {
@@ -166,6 +192,9 @@ vi.mock('@/sync/runtime/irohHomeTransportDiagnostics', () => ({
     retireIrohHomeTransportDiagnostics: vi.fn(),
     readIrohHomeTransportDiagnostics: () => irohDiagnosticsState.values,
     readIrohHomeTransportDiagnosticsRevision: () => irohDiagnosticsState.revision,
+    isIrohHomeTransportDiagnosticsCurrent: (diagnostics: { state?: unknown; current?: unknown } | null | undefined) => (
+        diagnostics?.state === 'connected' && diagnostics.current !== undefined
+    ),
     subscribeIrohHomeTransportDiagnostics: (listener: () => void) => {
         irohDiagnosticsState.listeners.add(listener);
         return () => irohDiagnosticsState.listeners.delete(listener);
@@ -192,6 +221,7 @@ vi.mock('@/sync/domains/state/storage', async () => {
             lastDisconnectedAt: Date.now(),
             lastErrorMessage: 'Network request failed',
         }),
+    useSyncError: () => null,
     useLastSyncAt: () => null,
     useAllMachines: () => [{
         id: 'machine-1',
@@ -200,6 +230,14 @@ vi.mock('@/sync/domains/state/storage', async () => {
         updatedAt: Date.now(),
         metadata: { host: 'machine-one' },
     }],
+    useMachineListForServer: () => [{
+        id: 'machine-1',
+        active: true,
+        activeAt: Date.now(),
+        updatedAt: Date.now(),
+        metadata: { host: 'machine-one' },
+    }],
+    useMachineListStatusForServer: () => 'loaded',
     useMachineListByServerId: () => ({}),
     useMachineListStatusByServerId: () => ({}),
 });
@@ -221,10 +259,11 @@ describe('SystemStatusView (endpoint connectivity)', () => {
         expect(joined).toContain('systemStatus.transport.irohHistory');
         expect(joined).not.toContain('systemStatus.transport.irohCurrent');
         expect(joined).toContain('systemStatus.server.activeHomeHealth');
-        expect(joined).toContain('status.connected');
+        // Home health reads in the Home summary vocabulary, like the popover.
+        expect(joined).toContain('connectionStatus.summary.connected');
         expect(joined).toContain('connectionStatus.labels.lastKnownPath');
         expect(joined).toContain('connectionStatus.values.pathRelay');
-        expect(joined).toContain('connectionStatus.summary.reconnecting');
+        expect(joined).not.toContain('connectionStatus.summary.reconnecting');
         expect(joined).toContain('connectionStatus.labels.relayConfiguration');
         expect(joined).toContain('1/3');
         expect(joined).not.toContain('connectionStatus.labels.currentPath');
@@ -241,10 +280,26 @@ describe('SystemStatusView (endpoint connectivity)', () => {
         });
 
         const updated = screen.getTextContent();
-        expect(updated).toContain('connectionStatus.labels.currentPath');
+        expect(updated).toContain('systemStatus.transport.irohHistory');
+        expect(updated).not.toContain('systemStatus.transport.irohCurrent');
+        expect(updated).toContain('connectionStatus.labels.lastKnownPath');
+        expect(updated).not.toContain('connectionStatus.labels.currentPath');
         expect(updated).toContain('connectionStatus.values.pathDirect');
-        expect(updated).toContain('systemStatus.transport.irohCurrent');
-        expect(updated).not.toContain('connectionStatus.labels.lastKnownPath');
+
+        expect(activeServerSnapshotState.listeners.size).toBeGreaterThan(0);
+        activeServerSnapshotState.snapshot = {
+            ...activeServerSnapshotState.snapshot,
+            carrier: 'iroh',
+            generation: activeServerSnapshotState.snapshot.generation + 1,
+        };
+        await act(async () => {
+            for (const listener of activeServerSnapshotState.listeners) listener();
+        });
+
+        const liveIroh = screen.getTextContent();
+        expect(liveIroh).toContain('systemStatus.transport.irohCurrent');
+        expect(liveIroh).toContain('connectionStatus.labels.currentPath');
+        expect(liveIroh).not.toContain('connectionStatus.labels.lastKnownPath');
     });
 
     it('keeps unknown public ingress distinct from a Home known to have no public ingress', async () => {

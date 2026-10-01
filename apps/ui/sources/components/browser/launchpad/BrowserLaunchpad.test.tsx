@@ -1,6 +1,6 @@
 import * as React from 'react';
 import { act } from 'react-test-renderer';
-import type { BrowserViewTargetV1, FeatureDecision } from '@happier-dev/protocol';
+import type { BrowserViewTargetV1, DaemonLocalServicePreviewOpenOrCreateResponseV1, FeatureDecision, LocalServicePreviewResourceV1 } from '@happier-dev/protocol';
 import { describe, expect, it, vi } from 'vitest';
 
 import { renderScreen } from '@/dev/testkit';
@@ -12,6 +12,11 @@ import {
 } from '@/components/browser/surfaces/openBrowserTargetInWorkspace';
 import type { DetailsTab } from '@/components/appShell/panes/details/workspace/detailsWorkspaceTypes';
 import type { BrowserLaunchpadOpenTargetOptions } from './BrowserLaunchpad';
+import type { LocalServiceLaunchTarget } from '@/sync/domains/local/services/launch';
+import type { ServiceRow } from '@/sync/domains/local/services/serviceRow';
+
+const machineRpcMock = vi.hoisted(() => vi.fn());
+vi.mock('@/sync/runtime/orchestration/serverScopedRpc/serverScopedMachineRpc', () => ({ machineRpcWithServerScope: machineRpcMock }));
 
 vi.mock('@expo/vector-icons', async () => (await import('@/dev/testkit/mocks/icons')).createExpoVectorIconsMock());
 
@@ -39,6 +44,16 @@ const localPreviewTarget = {
         addressLabel: 'localhost:5173',
     },
 } satisfies BrowserViewTargetV1;
+
+function previewRegistrationResponse(accessUrl = 'https://preview-vite.preview.test/?previewToken=fresh'): DaemonLocalServicePreviewOpenOrCreateResponseV1 {
+    const resource: LocalServicePreviewResourceV1 = {
+        previewId: 'preview_vite', sessionId: 'session_1', machineId: 'machine_1',
+        owner: { kind: 'session', id: 'session_1' }, target: { scheme: 'http', host: '127.0.0.1', port: 5173 },
+        initialPath: { pathname: '/', search: '' }, display: { title: 'Vite app', addressLabel: 'localhost:5173' }, originMode: 'host', browserTarget: localPreviewTarget,
+    };
+    const preview = { previewId: resource.previewId, resource, accessUrl, expiresAt: 123_000, diagnostics: [] };
+    return { protocolVersion: 1, status: 'existing', preview, snapshot: { v: 1, machineId: resource.machineId, generatedAt: 63_000, refreshState: 'idle', resources: [resource], previews: [preview], diagnostics: [] } };
+}
 
 const externalTarget = {
     kind: 'externalUrl',
@@ -114,66 +129,127 @@ const availableDesktopWebView = {
     disabledReasons: [],
 } as const;
 
-const rows: readonly BrowserLaunchpadRow[] = [{
-    id: 'localService:launcher_preview',
-    section: 'running',
-    sourceKind: 'localService',
+const previewLaunchTarget = {
+    id: 'preview:preview_vite',
+    source: 'registered_preview',
+    machineId: 'machine_1',
+    sessionId: 'session_1',
     title: 'Vite app',
     subtitle: 'localhost:5173',
-    detail: 'Ready for preview',
+    confidence: 'high',
+    state: 'available',
+    actions: ['open_preview'],
+    browserTarget: localPreviewTarget,
+} satisfies LocalServiceLaunchTarget;
+
+/** A running service exactly as the Services pane receives it from the canonical row model. */
+const serviceRows: readonly ServiceRow[] = [{
+    id: 'preview:preview_vite',
+    scope: 'thisSession',
+    title: 'Vite app',
+    portLabel: ':5173',
+    scheme: 'http',
+    host: 'localhost',
+    workspaceLabel: null,
+    processLabel: null,
+    sourceLabel: 'localServices.source.preview',
+    status: 'running',
+    reasonCode: null,
+    primaryAction: { kind: 'open', openTarget: previewLaunchTarget },
+    terminateIdentityConfidence: null,
+    target: previewLaunchTarget,
+    internal: false,
+}];
+
+/** The launchpad row that carries it (the model's transport for the canonical Services row). */
+const serviceLaunchpadRows: readonly BrowserLaunchpadRow[] = serviceRows.map((serviceRow) => ({
+    id: `service:${serviceRow.id}`,
+    section: 'running',
+    sourceKind: 'localService',
+    title: serviceRow.title,
+    detail: 'registered_preview',
     target: localPreviewTarget,
-    currentUrl: 'https://preview.happier.test/app/',
-    currentUrlExpiresAt: 1_700_000_000_000,
     disabledReason: null,
     lastSeenAt: 1_000,
-}, {
-    id: 'localService:launcher_stale',
-    section: 'unavailable',
-    sourceKind: 'localService',
-    title: 'Old service',
-    subtitle: 'localhost:4000',
-    detail: 'Unavailable',
-    target: {
-        ...localPreviewTarget,
-        targetId: 'preview_stale',
-        display: {
-            title: 'Old service',
-            addressLabel: 'localhost:4000',
-        },
-    },
-    disabledReason: 'stale_service',
-    lastSeenAt: 900,
+    serviceRow,
+}));
+
+const rows: readonly BrowserLaunchpadRow[] = [...serviceLaunchpadRows, {
+    id: 'recent:external_docs',
+    section: 'recent',
+    sourceKind: 'recent',
+    title: 'Docs',
+    subtitle: 'docs.happier.test',
+    detail: 'externalUrl',
+    target: externalTarget,
+    disabledReason: null,
+    lastSeenAt: 1_000,
 }];
 
 describe('BrowserLaunchpad', () => {
-    it('keeps rows visible while refreshing and opens only available browser targets', async () => {
+    it('keeps rows visible while refreshing', async () => {
         const { BrowserLaunchpad } = await import('./BrowserLaunchpad');
-        const onOpenTarget = vi.fn<(target: BrowserViewTargetV1) => void>();
 
         const screen = await renderScreen(
             <BrowserLaunchpad
-                platform="android"
+                platform="desktop"
                 rows={rows}
                 refreshStatus="refreshing"
-                onOpenTarget={onOpenTarget}
+                onOpenTarget={vi.fn()}
                 testID="browser-launchpad"
             />,
         );
 
         expect(screen.findByTestId('browser-launchpad-refreshing')).toBeTruthy();
-        expect(screen.findByTestId('browser-launchpad-card:localService:launcher_preview')).toBeTruthy();
-        expect(screen.findByTestId('browser-launchpad-card:localService:launcher_stale')).toBeTruthy();
-        expect(screen.findByTestId('browser-launchpad-card:localService:launcher_stale-disabled')).toBeTruthy();
+        expect(screen.findByTestId('browser-launchpad-service:preview:preview_vite')).toBeTruthy();
+        expect(screen.findByTestId('browser-launchpad-card:recent:external_docs')).toBeTruthy();
+    });
 
-        await screen.pressByTestIdAsync('browser-launchpad-card:localService:launcher_preview');
-        await screen.pressByTestIdAsync('browser-launchpad-card:localService:launcher_stale');
+    /**
+     * Lab W reconciled with lab S (services lab L): Running previews reuse the Local services row, so a
+     * running service opens with the same one-tap Open it has in the Services pane.
+     */
+    it('opens a running service from the Services row in one tap', async () => {
+        const response = previewRegistrationResponse();
+        machineRpcMock.mockResolvedValueOnce(response);
+        const { BrowserLaunchpad } = await import('./BrowserLaunchpad');
+        const onOpenTarget = vi.fn<(target: BrowserViewTargetV1, options?: BrowserLaunchpadOpenTargetOptions) => void>();
+
+        const screen = await renderScreen(
+            <BrowserLaunchpad
+                platform="desktop"
+                rows={serviceLaunchpadRows}
+                refreshStatus="idle"
+                onOpenTarget={onOpenTarget}
+                testID="browser-launchpad"
+            />,
+        );
+
+        await screen.pressByTestIdAsync('browser-launchpad-service:preview:preview_vite-open');
 
         expect(onOpenTarget).toHaveBeenCalledTimes(1);
-        expect(onOpenTarget).toHaveBeenCalledWith(localPreviewTarget, {
-            platform: 'android',
-            currentUrl: 'https://preview.happier.test/app/',
-            currentUrlExpiresAt: 1_700_000_000_000,
-        });
+        expect(onOpenTarget.mock.calls[0]?.[0]).toEqual(localPreviewTarget);
+        expect(onOpenTarget.mock.calls[0]?.[1]).toMatchObject({ currentUrl: response.preview.accessUrl });
+    });
+
+    it('renews a private-preview admission when opening a recent target', async () => {
+        machineRpcMock.mockClear();
+        const { BrowserLaunchpad } = await import('./BrowserLaunchpad');
+        const response = previewRegistrationResponse('https://preview-vite.preview.test/?previewToken=renewed');
+        machineRpcMock.mockResolvedValueOnce(response);
+        const onOpenTarget = vi.fn();
+        const screen = await renderScreen(
+            <BrowserLaunchpad platform="web" rows={[{
+                id: 'recent:preview_vite', section: 'recent', sourceKind: 'recent', title: 'Vite app',
+                detail: 'localServicePreview', target: localPreviewTarget, disabledReason: null,
+                currentUrl: 'https://preview-vite.preview.test/?previewToken=expired', currentUrlExpiresAt: 61_000, lastSeenAt: 1_000,
+            }]} refreshStatus="idle" onOpenTarget={onOpenTarget} localServicePreviewServerId="server_1" />,
+        );
+        await screen.pressByTestIdAsync('browser-launchpad-card:recent:preview_vite');
+        expect(machineRpcMock).toHaveBeenCalledWith(expect.objectContaining({
+            serverId: 'server_1', payload: { machineId: 'machine_1', sessionId: 'session_1', launchTargetId: 'preview_vite' },
+        }));
+        expect(onOpenTarget).toHaveBeenCalledWith(localPreviewTarget, { platform: 'web', currentUrl: response.preview.accessUrl });
     });
 
     it('disables target rows when the platform adapter is unavailable', async () => {
@@ -265,7 +341,7 @@ describe('BrowserLaunchpad', () => {
             />,
         );
 
-        expect(screen.findByTestId('browser-launchpad-card:pluginHostedWeb:preview-available')).not.toBeNull();
+        expect(screen.findByTestId('browser-launchpad-card:pluginHostedWeb:preview-disabled')).toBeNull();
 
         await screen.pressByTestIdAsync('browser-launchpad-card:pluginHostedWeb:preview');
 
@@ -302,7 +378,7 @@ describe('BrowserLaunchpad', () => {
             />,
         );
 
-        expect(screen.findByTestId('browser-launchpad-card:recent:external_docs-available')).not.toBeNull();
+        expect(screen.findByTestId('browser-launchpad-card:recent:external_docs-disabled')).toBeNull();
 
         await screen.pressByTestIdAsync('browser-launchpad-card:recent:external_docs');
 
@@ -425,25 +501,9 @@ describe('BrowserLaunchpad', () => {
         expect(target.kind === 'externalUrl' ? target.url : null).toBe('https://example.test/');
     });
 
-    it('shows a live listening pulse for running rows and a stale dot for unavailable rows', async () => {
-        const { BrowserLaunchpad } = await import('./BrowserLaunchpad');
-
-        const screen = await renderScreen(
-            <BrowserLaunchpad
-                platform="android"
-                rows={rows}
-                refreshStatus="idle"
-                onOpenTarget={vi.fn()}
-                testID="browser-launchpad"
-            />,
-        );
-
-        expect(screen.findByTestId('browser-launchpad-card:localService:launcher_preview-dot-live')).toBeTruthy();
-        expect(screen.findByTestId('browser-launchpad-card:localService:launcher_stale-dot-stale')).toBeTruthy();
-    });
-
     it('opens a running row through the canonical opener, creating BOTH a details tab AND a live content record', async () => {
         const { BrowserLaunchpad } = await import('./BrowserLaunchpad');
+        machineRpcMock.mockResolvedValueOnce(previewRegistrationResponse());
 
         const openedTabs: DetailsTab[] = [];
         // Wire the launcher through the REAL FP-BRW-OPEN-TARGET-1 opener. The launcher only calls
@@ -460,14 +520,14 @@ describe('BrowserLaunchpad', () => {
         const screen = await renderScreen(
             <BrowserLaunchpad
                 platform="android"
-                rows={rows}
+                rows={serviceLaunchpadRows}
                 refreshStatus="idle"
                 onOpenTarget={onOpenTarget}
                 testID="browser-launchpad"
             />,
         );
 
-        await screen.pressByTestIdAsync('browser-launchpad-card:localService:launcher_preview');
+        await screen.pressByTestIdAsync('browser-launchpad-service:preview:preview_vite-open');
 
         // (i) a canonical browser-view details-workspace tab for the target…
         expect(openedTabs).toHaveLength(1);

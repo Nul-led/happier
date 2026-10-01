@@ -124,6 +124,7 @@ function projection(nativeEmail: string) {
     return {
         v: 1 as const,
         encryptionMode: 'plain' as const,
+        terminalPresentUserPolicy: 'allowed' as const,
         nativeEmail,
         password: { status: 'enrolled' as const, revision: 4 },
     };
@@ -145,6 +146,7 @@ it('loads the canonical projection and opens the enrolled Plain password form', 
         changeE2eePassword: vi.fn(),
         removePlainPassword: vi.fn(),
         removeE2eePassword: vi.fn(),
+        setTerminalPresentUserPolicy: vi.fn(async (terminalPresentUserPolicy: 'allowed' | 'disallowed') => ({ v: 1 as const, terminalPresentUserPolicy })),
         requestEmailChange: vi.fn(),
     };
 
@@ -165,6 +167,7 @@ it('retires old Account work and never renders or republishes its projection aft
         enrollPlainPassword: vi.fn(), enrollE2eePassword: vi.fn(), changePlainPassword: vi.fn(), changeE2eePassword: vi.fn(),
         removePlainPassword: vi.fn(), removeE2eePassword: vi.fn(),
         requestPasswordEnrollmentEmail: vi.fn(),
+        setTerminalPresentUserPolicy: vi.fn(async (terminalPresentUserPolicy: 'allowed' | 'disallowed') => ({ v: 1 as const, terminalPresentUserPolicy })),
         requestEmailChange: vi.fn(() => oldMutation.promise),
     };
     screen = await renderScreen(<AccountEmailPasswordSection client={client} />);
@@ -199,6 +202,7 @@ it('remains alive through React StrictMode effect replay and publishes the curre
         read: vi.fn(async () => projection('strict@example.test')),
         enrollPlainPassword: vi.fn(), enrollE2eePassword: vi.fn(), changePlainPassword: vi.fn(), changeE2eePassword: vi.fn(),
         removePlainPassword: vi.fn(), removeE2eePassword: vi.fn(),
+        setTerminalPresentUserPolicy: vi.fn(async (terminalPresentUserPolicy: 'allowed' | 'disallowed') => ({ v: 1 as const, terminalPresentUserPolicy })),
         requestPasswordEnrollmentEmail: vi.fn(), requestEmailChange: vi.fn(),
     };
     screen = await renderScreen(
@@ -211,6 +215,7 @@ function e2eeNotEnrolledProjection() {
     return {
         v: 1 as const,
         encryptionMode: 'e2ee' as const,
+        terminalPresentUserPolicy: 'allowed' as const,
         nativeEmail: null,
         password: { status: 'not_enrolled' as const, revision: null },
     };
@@ -220,6 +225,7 @@ function e2eeEnrolledProjection() {
     return {
         v: 1 as const,
         encryptionMode: 'e2ee' as const,
+        terminalPresentUserPolicy: 'allowed' as const,
         nativeEmail: 'person@example.test',
         password: { status: 'enrolled' as const, revision: 4 },
     };
@@ -229,6 +235,7 @@ function plainNotEnrolledProjection() {
     return {
         v: 1 as const,
         encryptionMode: 'plain' as const,
+        terminalPresentUserPolicy: 'allowed' as const,
         nativeEmail: null,
         password: { status: 'not_enrolled' as const, revision: null },
     };
@@ -344,6 +351,7 @@ it('submits first Plain enrollment only with the exact purpose-bound proof in cu
         enrollPlainPassword: vi.fn(async () => ({ v: 1 as const, status: 'updated' as const })),
         enrollE2eePassword: vi.fn(), requestPasswordEnrollmentEmail: vi.fn(),
         changePlainPassword: vi.fn(), changeE2eePassword: vi.fn(),
+        setTerminalPresentUserPolicy: vi.fn(async (terminalPresentUserPolicy: 'allowed' | 'disallowed') => ({ v: 1 as const, terminalPresentUserPolicy })),
         removePlainPassword: vi.fn(), removeE2eePassword: vi.fn(), requestEmailChange: vi.fn(),
     };
 
@@ -391,6 +399,7 @@ it('settles deferred Plain enrollment from the exact approval Artifact without r
         }),
         enrollE2eePassword: vi.fn(), requestPasswordEnrollmentEmail: vi.fn(),
         changePlainPassword: vi.fn(), changeE2eePassword: vi.fn(),
+        setTerminalPresentUserPolicy: vi.fn(async (terminalPresentUserPolicy: 'allowed' | 'disallowed') => ({ v: 1 as const, terminalPresentUserPolicy })),
         removePlainPassword: vi.fn(), removeE2eePassword: vi.fn(), requestEmailChange: vi.fn(),
     };
 
@@ -447,6 +456,7 @@ it.each([
         }),
         enrollE2eePassword: vi.fn(), requestPasswordEnrollmentEmail: vi.fn(),
         changePlainPassword: vi.fn(), changeE2eePassword: vi.fn(),
+        setTerminalPresentUserPolicy: vi.fn(async (terminalPresentUserPolicy: 'allowed' | 'disallowed') => ({ v: 1 as const, terminalPresentUserPolicy })),
         removePlainPassword: vi.fn(), removeE2eePassword: vi.fn(), requestEmailChange: vi.fn(),
     };
 
@@ -485,6 +495,7 @@ it('expires a deferred Plain enrollment without replaying it or retaining proof 
         }),
         enrollE2eePassword: vi.fn(), requestPasswordEnrollmentEmail: vi.fn(),
         changePlainPassword: vi.fn(), changeE2eePassword: vi.fn(),
+        setTerminalPresentUserPolicy: vi.fn(async (terminalPresentUserPolicy: 'allowed' | 'disallowed') => ({ v: 1 as const, terminalPresentUserPolicy })),
         removePlainPassword: vi.fn(), removeE2eePassword: vi.fn(), requestEmailChange: vi.fn(),
     };
 
@@ -528,6 +539,7 @@ it('rejects a same-Artifact approval from another Account without completing enr
         }),
         enrollE2eePassword: vi.fn(), requestPasswordEnrollmentEmail: vi.fn(),
         changePlainPassword: vi.fn(), changeE2eePassword: vi.fn(),
+        setTerminalPresentUserPolicy: vi.fn(async (terminalPresentUserPolicy: 'allowed' | 'disallowed') => ({ v: 1 as const, terminalPresentUserPolicy })),
         removePlainPassword: vi.fn(), removeE2eePassword: vi.fn(), requestEmailChange: vi.fn(),
     };
 
@@ -571,6 +583,7 @@ it('consumes a mounted proof once and clears failed reauthentication without loo
         }),
         enrollE2eePassword: vi.fn(), requestPasswordEnrollmentEmail: vi.fn(),
         changePlainPassword: vi.fn(), changeE2eePassword: vi.fn(),
+        setTerminalPresentUserPolicy: vi.fn(async (terminalPresentUserPolicy: 'allowed' | 'disallowed') => ({ v: 1 as const, terminalPresentUserPolicy })),
         removePlainPassword: vi.fn(), removeE2eePassword: vi.fn(), requestEmailChange: vi.fn(),
     };
 
@@ -596,6 +609,7 @@ it('does not auto-submit after reload when process-local enrollment custody is a
         enrollPlainPassword: vi.fn(),
         enrollE2eePassword: vi.fn(), requestPasswordEnrollmentEmail: vi.fn(),
         changePlainPassword: vi.fn(), changeE2eePassword: vi.fn(),
+        setTerminalPresentUserPolicy: vi.fn(async (terminalPresentUserPolicy: 'allowed' | 'disallowed') => ({ v: 1 as const, terminalPresentUserPolicy })),
         removePlainPassword: vi.fn(), removeE2eePassword: vi.fn(), requestEmailChange: vi.fn(),
     };
 
@@ -613,6 +627,7 @@ it('retires exact callback-claimed custody when the user cancels enrollment', as
         enrollPlainPassword: vi.fn(),
         enrollE2eePassword: vi.fn(), requestPasswordEnrollmentEmail: vi.fn(),
         changePlainPassword: vi.fn(), changeE2eePassword: vi.fn(),
+        setTerminalPresentUserPolicy: vi.fn(async (terminalPresentUserPolicy: 'allowed' | 'disallowed') => ({ v: 1 as const, terminalPresentUserPolicy })),
         removePlainPassword: vi.fn(), removeE2eePassword: vi.fn(), requestEmailChange: vi.fn(),
     };
     screen = await renderScreen(
@@ -643,6 +658,7 @@ it('stops an in-flight preparation when the person cancels, instead of dispatchi
         enrollPlainPassword: vi.fn(async () => ({ v: 1 as const, status: 'updated' as const })),
         enrollE2eePassword: vi.fn(), requestPasswordEnrollmentEmail: vi.fn(),
         changePlainPassword: vi.fn(), changeE2eePassword: vi.fn(),
+        setTerminalPresentUserPolicy: vi.fn(async (terminalPresentUserPolicy: 'allowed' | 'disallowed') => ({ v: 1 as const, terminalPresentUserPolicy })),
         removePlainPassword: vi.fn(), removeE2eePassword: vi.fn(), requestEmailChange: vi.fn(),
     };
 
@@ -694,6 +710,7 @@ it('aborts mounted proof submission and retires process-local custody on unmount
         )),
         enrollE2eePassword: vi.fn(), requestPasswordEnrollmentEmail: vi.fn(),
         changePlainPassword: vi.fn(), changeE2eePassword: vi.fn(),
+        setTerminalPresentUserPolicy: vi.fn(async (terminalPresentUserPolicy: 'allowed' | 'disallowed') => ({ v: 1 as const, terminalPresentUserPolicy })),
         removePlainPassword: vi.fn(), removeE2eePassword: vi.fn(), requestEmailChange: vi.fn(),
     };
 
@@ -747,6 +764,7 @@ it('opens web OAuth from a direct continuation gesture and submits in the live c
         enrollE2eePassword: vi.fn(),
         requestPasswordEnrollmentEmail: vi.fn(),
         changePlainPassword: vi.fn(), changeE2eePassword: vi.fn(),
+        setTerminalPresentUserPolicy: vi.fn(async (terminalPresentUserPolicy: 'allowed' | 'disallowed') => ({ v: 1 as const, terminalPresentUserPolicy })),
         removePlainPassword: vi.fn(), removeE2eePassword: vi.fn(), requestEmailChange: vi.fn(),
     };
     screen = await renderScreen(
@@ -820,6 +838,7 @@ it('unlocks the web enrollment form for a fresh preparation after the auth popup
         enrollPlainPassword: vi.fn(), enrollE2eePassword: vi.fn(),
         requestPasswordEnrollmentEmail: vi.fn(),
         changePlainPassword: vi.fn(), changeE2eePassword: vi.fn(),
+        setTerminalPresentUserPolicy: vi.fn(async (terminalPresentUserPolicy: 'allowed' | 'disallowed') => ({ v: 1 as const, terminalPresentUserPolicy })),
         removePlainPassword: vi.fn(), removeE2eePassword: vi.fn(), requestEmailChange: vi.fn(),
     };
     screen = await renderScreen(
@@ -851,6 +870,7 @@ it('requests mailbox verification before acquiring a Plain enrollment proof', as
         enrollPlainPassword: vi.fn(), enrollE2eePassword: vi.fn(),
         requestPasswordEnrollmentEmail: vi.fn(async () => undefined),
         changePlainPassword: vi.fn(), changeE2eePassword: vi.fn(),
+        setTerminalPresentUserPolicy: vi.fn(async (terminalPresentUserPolicy: 'allowed' | 'disallowed') => ({ v: 1 as const, terminalPresentUserPolicy })),
         removePlainPassword: vi.fn(), removeE2eePassword: vi.fn(), requestEmailChange: vi.fn(),
     };
     screen = await renderScreen(<AccountEmailPasswordSection client={client} />);
@@ -882,6 +902,7 @@ it('opens the existing first-password enrollment form for an explicit Connect co
         enrollPlainPassword: vi.fn(), enrollE2eePassword: vi.fn(),
         requestPasswordEnrollmentEmail: vi.fn(),
         changePlainPassword: vi.fn(), changeE2eePassword: vi.fn(),
+        setTerminalPresentUserPolicy: vi.fn(async (terminalPresentUserPolicy: 'allowed' | 'disallowed') => ({ v: 1 as const, terminalPresentUserPolicy })),
         removePlainPassword: vi.fn(), removeE2eePassword: vi.fn(), requestEmailChange: vi.fn(),
     };
 
@@ -902,6 +923,7 @@ it('requests exact-Account mailbox verification before first E2EE password enrol
         enrollE2eePassword: vi.fn(),
         requestPasswordEnrollmentEmail: vi.fn(async () => undefined),
         changePlainPassword: vi.fn(), changeE2eePassword: vi.fn(),
+        setTerminalPresentUserPolicy: vi.fn(async (terminalPresentUserPolicy: 'allowed' | 'disallowed') => ({ v: 1 as const, terminalPresentUserPolicy })),
         removePlainPassword: vi.fn(), removeE2eePassword: vi.fn(), requestEmailChange: vi.fn(),
     };
 
@@ -936,6 +958,7 @@ it('carries the exact mailbox verification bearer into the existing E2EE enrollm
         enrollE2eePassword: vi.fn(async () => ({ v: 1 as const, status: 'updated' as const })),
         requestPasswordEnrollmentEmail: vi.fn(),
         changePlainPassword: vi.fn(), changeE2eePassword: vi.fn(),
+        setTerminalPresentUserPolicy: vi.fn(async (terminalPresentUserPolicy: 'allowed' | 'disallowed') => ({ v: 1 as const, terminalPresentUserPolicy })),
         removePlainPassword: vi.fn(), removeE2eePassword: vi.fn(), requestEmailChange: vi.fn(),
     };
 
@@ -1017,6 +1040,7 @@ it('validates E2EE mutation proof against the stable Home identity and canonical
         changePlainPassword: vi.fn(), changeE2eePassword: vi.fn(),
         removePlainPassword: vi.fn(),
         removeE2eePassword: vi.fn(async () => ({ v: 1 as const, status: 'updated' as const })),
+        setTerminalPresentUserPolicy: vi.fn(async (terminalPresentUserPolicy: 'allowed' | 'disallowed') => ({ v: 1 as const, terminalPresentUserPolicy })),
         requestEmailChange: vi.fn(),
     };
     const confirm = vi.spyOn(Modal, 'confirm').mockResolvedValueOnce(true);
@@ -1058,6 +1082,7 @@ it('echoes a requested sign-in email change only as a masked address', async () 
         requestPasswordEnrollmentEmail: vi.fn(),
         changePlainPassword: vi.fn(), changeE2eePassword: vi.fn(),
         removePlainPassword: vi.fn(), removeE2eePassword: vi.fn(),
+        setTerminalPresentUserPolicy: vi.fn(async (terminalPresentUserPolicy: 'allowed' | 'disallowed') => ({ v: 1 as const, terminalPresentUserPolicy })),
         requestEmailChange: vi.fn(async () => ({
             v: 1 as const,
             status: 'verification_sent' as const,
@@ -1092,6 +1117,7 @@ it('confirms a completed Plain password change on the surface that requested it'
         requestPasswordEnrollmentEmail: vi.fn(),
         changePlainPassword: vi.fn(async () => ({ v: 1 as const, status: 'updated' as const })),
         changeE2eePassword: vi.fn(),
+        setTerminalPresentUserPolicy: vi.fn(async (terminalPresentUserPolicy: 'allowed' | 'disallowed') => ({ v: 1 as const, terminalPresentUserPolicy })),
         removePlainPassword: vi.fn(), removeE2eePassword: vi.fn(), requestEmailChange: vi.fn(),
     };
 
@@ -1124,6 +1150,7 @@ it('clears a completed-change confirmation when the person reopens the password 
         requestPasswordEnrollmentEmail: vi.fn(),
         changePlainPassword: vi.fn(async () => ({ v: 1 as const, status: 'updated' as const })),
         changeE2eePassword: vi.fn(),
+        setTerminalPresentUserPolicy: vi.fn(async (terminalPresentUserPolicy: 'allowed' | 'disallowed') => ({ v: 1 as const, terminalPresentUserPolicy })),
         removePlainPassword: vi.fn(), removeE2eePassword: vi.fn(), requestEmailChange: vi.fn(),
     };
 
@@ -1170,6 +1197,7 @@ it('settles the surface after native OAuth enrollment completes without a second
         enrollE2eePassword: vi.fn(),
         requestPasswordEnrollmentEmail: vi.fn(),
         changePlainPassword: vi.fn(), changeE2eePassword: vi.fn(),
+        setTerminalPresentUserPolicy: vi.fn(async (terminalPresentUserPolicy: 'allowed' | 'disallowed') => ({ v: 1 as const, terminalPresentUserPolicy })),
         removePlainPassword: vi.fn(), removeE2eePassword: vi.fn(), requestEmailChange: vi.fn(),
     };
 
@@ -1203,6 +1231,7 @@ function clientFor(read: () => Promise<unknown>, overrides: Record<string, unkno
         enrollPlainPassword: vi.fn(), enrollE2eePassword: vi.fn(),
         requestPasswordEnrollmentEmail: vi.fn(),
         changePlainPassword: vi.fn(), changeE2eePassword: vi.fn(),
+        setTerminalPresentUserPolicy: vi.fn(async (terminalPresentUserPolicy: 'allowed' | 'disallowed') => ({ v: 1 as const, terminalPresentUserPolicy })),
         removePlainPassword: vi.fn(), removeE2eePassword: vi.fn(), requestEmailChange: vi.fn(),
         ...overrides,
     } as never;
@@ -1213,16 +1242,19 @@ it('keeps the section and its rows in place while the projection loads', async (
     screen = await renderScreen(<AccountEmailPasswordSection client={clientFor(() => pending.promise)} />);
 
     // The rows exist before their values do, so nothing below them moves when
-    // the projection arrives.
-    expect(screen.findByTestId('settings-account-sign-in-email-loading')).not.toBeNull();
-    expect(screen.findByTestId('settings-account-password-loading')).not.toBeNull();
+    // the projection arrives: two quiet placeholder rows, announced as busy,
+    // never a "Loading…" text value.
+    const placeholder = screen.findHostByTestId('settings-account-security-loading');
+    expect(placeholder?.props.accessibilityState).toEqual({ busy: true });
+    expect(screen.findHostByTestId('settings-account-security-loading-skeleton:1')).not.toBeNull();
+    expect(screen.getTextContent()).not.toContain('common.loading');
 
     await act(async () => {
         pending.resolve(projection('person@example.test'));
         await pending.promise;
     });
     await vi.waitFor(() => expect(screen?.findByTestId('settings-account-sign-in-email')).not.toBeNull());
-    expect(screen.findByTestId('settings-account-sign-in-email-loading')).toBeNull();
+    expect(screen.findByTestId('settings-account-security-loading')).toBeNull();
     expect(screen.getTextContent()).toContain('person@example.test');
 });
 
@@ -1234,8 +1266,9 @@ it('keeps the unavailable row on screen while a retry is in flight', async () =>
     screen = await renderScreen(<AccountEmailPasswordSection client={clientFor(read)} />);
     await vi.waitFor(() => expect(screen?.findByTestId('settings-account-security-unavailable')).not.toBeNull());
 
+    // One failure row for the read, saying what failed, with its Retry.
     await act(async () => {
-        screen?.pressByTestId('settings-account-security-unavailable');
+        screen?.pressByTestId('settings-account-security-unavailable-retry');
     });
     expect(read).toHaveBeenCalledTimes(2);
     // Retrying never blanks the section: the row stays until the answer lands.
@@ -1287,6 +1320,7 @@ it('submits the password form from the keyboard on the last field', async () => 
 
 it('submits the sign-in email form from the keyboard', async () => {
     const client = clientFor(async () => projection('person@example.test'), {
+        setTerminalPresentUserPolicy: vi.fn(async (terminalPresentUserPolicy: 'allowed' | 'disallowed') => ({ v: 1 as const, terminalPresentUserPolicy })),
         requestEmailChange: vi.fn(async () => ({ v: 1 as const, status: 'verification_sent' as const })),
     });
     screen = await renderScreen(<AccountEmailPasswordSection client={client} />);
@@ -1306,6 +1340,7 @@ it('submits the sign-in email form from the keyboard', async () => {
 
 it('shows one problem once, on the surface that produced it, while an address is pending', async () => {
     const client = clientFor(async () => projection('person@example.test'), {
+        setTerminalPresentUserPolicy: vi.fn(async (terminalPresentUserPolicy: 'allowed' | 'disallowed') => ({ v: 1 as const, terminalPresentUserPolicy })),
         requestEmailChange: vi.fn(async () => ({ v: 1 as const, status: 'verification_sent' as const })),
         changePlainPassword: vi.fn(async () => {
             throw new HappyError('wrong', false, { kind: 'auth', code: 'authentication_failed' });
@@ -1333,4 +1368,74 @@ it('shows one problem once, on the surface that produced it, while an address is
     expect(screen.getTextContent().split(message).length - 1).toBe(1);
     // The pending address is still announced in its own row.
     expect(screen.findByTestId('settings-account-pending-email-actions')).not.toBeNull();
+});
+
+/** The ids rendered inside one row's subtree. */
+function rowContains(row: { findAll: (predicate: (node: { props?: { testID?: unknown } }) => boolean) => unknown[] } | null, testID: string): boolean {
+    return (row?.findAll((node) => node.props?.testID === testID).length ?? 0) > 0;
+}
+
+function setupStep(): number | undefined {
+    return screen?.findByTestId('settings-account-email-password-steps')?.props.accessibilityValue?.now;
+}
+
+it('says a sign-in email comes first and runs the one mailbox-first setup from the email row', async () => {
+    const client = clientFor(async () => plainNotEnrolledProjection(), {
+        requestPasswordEnrollmentEmail: vi.fn(async () => undefined),
+    });
+    screen = await renderScreen(<AccountEmailPasswordSection client={client} />);
+    await vi.waitFor(() => expect(screen?.findByTestId('settings-account-password')).not.toBeNull());
+    expect(screen.getTextContent()).toContain(nativePasswordTranslations.en.passwordNeedsEmail);
+
+    // Password leads into the email row instead of opening an email form of its own.
+    await screen.pressByTestIdAsync('settings-account-password');
+    const emailRow = screen.findByTestId('settings-account-sign-in-email-row');
+    expect(rowContains(emailRow, 'settings-account-password-enroll-email')).toBe(true);
+    expect(screen.findAllHostsByTestId('settings-account-password-enroll-email')).toHaveLength(1);
+    expect(setupStep()).toBe(1);
+
+    await act(async () => {
+        screen?.changeTextByTestId('settings-account-password-enroll-email', 'person@example.test');
+    });
+    await screen.pressByTestIdAsync('settings-account-change-password-submit');
+    expect((client as unknown as { requestPasswordEnrollmentEmail: ReturnType<typeof vi.fn> }).requestPasswordEnrollmentEmail)
+        .toHaveBeenCalledWith({ email: 'person@example.test' }, expect.any(AbortSignal));
+    // Step 2: the confirmation is awaited in the same row.
+    await vi.waitFor(() => expect(rowContains(screen!.findByTestId('settings-account-sign-in-email-row'), 'settings-account-pending-email-actions')).toBe(true));
+    expect(setupStep()).toBe(2);
+});
+
+it('does not offer a sign-in email change when there is no sign-in email to change', async () => {
+    // The Home refuses an email change without a current sign-in email (`identity_changed`);
+    // the first address is added by the mailbox-first setup.
+    const client = clientFor(async () => e2eeNotEnrolledProjection(), {
+        requestPasswordEnrollmentEmail: vi.fn(async () => undefined),
+    });
+    screen = await renderScreen(<AccountEmailPasswordSection client={client} />);
+    await vi.waitFor(() => expect(screen?.findByTestId('settings-account-sign-in-email')).not.toBeNull());
+    await screen.pressByTestIdAsync('settings-account-sign-in-email');
+
+    expect(screen.findByTestId('settings-account-change-email-form')).toBeNull();
+    expect(screen.findByTestId('settings-account-password-enroll-email')).not.toBeNull();
+    await act(async () => {
+        screen?.changeTextByTestId('settings-account-password-enroll-email', 'person@example.test');
+    });
+    await screen.pressByTestIdAsync('settings-account-change-password-submit');
+
+    const calls = client as unknown as Record<string, ReturnType<typeof vi.fn>>;
+    expect(calls.requestEmailChange).not.toHaveBeenCalled();
+    expect(calls.requestPasswordEnrollmentEmail).toHaveBeenCalledWith({ email: 'person@example.test' }, expect.any(AbortSignal));
+});
+
+it('continues the setup at the password step in the email row after the confirmation link', async () => {
+    await useSavedE2eeHome();
+    const client = clientFor(async () => e2eeNotEnrolledProjection());
+    screen = await renderScreen(
+        <AccountEmailPasswordSection client={client} verificationToken="enrollment-proof" />,
+    );
+    await vi.waitFor(() => expect(screen?.findByTestId('settings-account-change-password-form')).not.toBeNull());
+
+    const emailRow = screen.findByTestId('settings-account-sign-in-email-row');
+    expect(rowContains(emailRow, 'settings-account-new-password')).toBe(true);
+    expect(setupStep()).toBe(3);
 });

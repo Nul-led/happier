@@ -1,6 +1,4 @@
 import * as React from 'react';
-import { View } from 'react-native';
-import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 import {
     type McpServerBindingV1,
@@ -12,21 +10,24 @@ import { McpServerBindingEditor } from '@/components/settings/mcpServers/McpServ
 import { McpServerBindingDraftExpander } from '@/components/settings/mcpServers/McpServerBindingDraftExpander';
 import { McpServerTestPanel } from '@/components/settings/mcpServers/McpServerTestPanel';
 import { McpValueRefMapEditor } from '@/components/settings/mcpServers/McpValueRefMapEditor';
-import { MachineAdministrationTargetSelector } from '@/components/settings/machines/MachineAdministrationTargetSelector';
-import { SETTINGS_TEXT_INPUT_METRICS } from '@/components/ui/forms/settingsTextInputMetrics';
+import { FieldTextInput } from '@/components/ui/forms/FieldTextInput';
+import { StringListField } from '@/components/ui/forms/StringListField';
+import { ExpandableItem } from '@/components/ui/lists/ExpandableItem';
 import { Item } from '@/components/ui/lists/Item';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
-import { SegmentedTabBar } from '@/components/ui/navigation/SegmentedTabBar';
-import { SettingsActionFooter } from '@/components/ui/settingsSurface/SettingsActionFooter';
-import { Text, TextInput } from '@/components/ui/text/Text';
+import { SegmentedChoiceItem } from '@/components/ui/lists/SegmentedChoiceItem';
 import type { SavedSecret } from '@/sync/domains/settings/savedSecretTypes';
 import { useSettingMutable } from '@/sync/domains/state/storage';
 import type { Machine } from '@/sync/domains/state/storageTypes';
 import type { MachineAdministrationTargetSelectionV1 } from '@/sync/domains/machines/administration/useTargetSelection';
 import { parseMcpCommandLine } from '@/sync/domains/settings/mcpServers/parseMcpCommandLine';
 import { t } from '@/text';
-import { Icon } from '@/components/ui/icons/Icon';
 
+/**
+ * The sections of one MCP server's editor: what it is called, how Happier starts or reaches it, the
+ * values it receives, where it applies (each rule expands in place; a new rule is a draft row), and a
+ * test against the managed machine. Saving and deleting belong to the page header.
+ */
 export const McpServerConfigureForm = React.memo(function McpServerConfigureForm(props: Readonly<{
     draftServer: McpServerCatalogEntryV1;
     draftBindings: McpServerBindingV1[];
@@ -36,33 +37,20 @@ export const McpServerConfigureForm = React.memo(function McpServerConfigureForm
     onChangeSecrets: (next: SavedSecret[]) => void;
     onChangeServer: (updater: (current: McpServerCatalogEntryV1) => McpServerCatalogEntryV1) => void;
     onChangeBindings: (updater: (current: McpServerBindingV1[]) => McpServerBindingV1[]) => void;
-    onSave: () => void;
-    onDelete: () => void;
-    saveDisabled: boolean;
-    isExistingServer: boolean;
 }>) {
-    const { theme } = useUnistyles();
     const [favoriteDirectoriesRaw, setFavoriteDirectoriesRaw] = useSettingMutable('favoriteDirectories');
     const favoriteDirectories = Array.isArray(favoriteDirectoriesRaw) ? favoriteDirectoriesRaw : [];
     const [advancedCommandEditorOpen, setAdvancedCommandEditorOpen] = React.useState(false);
+    const { onChangeServer } = props;
 
-    const transportItems = React.useMemo(() => ([
-        {
-            key: 'stdio',
-            title: t('settings.mcpServersTransportLocalTitle'),
-        },
-        {
-            key: 'http',
-            title: t('settings.mcpServersTransportHttpTitle'),
-        },
-        {
-            key: 'sse',
-            title: t('settings.mcpServersTransportSseTitle'),
-        },
+    const transportOptions = React.useMemo(() => ([
+        { id: 'stdio' as const, label: t('settings.mcpServersTransportLocalTitle'), description: t('settings.mcpServersTransportLocalSubtitle') },
+        { id: 'http' as const, label: t('settings.mcpServersTransportHttpTitle'), description: t('settings.mcpServersTransportHttpSubtitle') },
+        { id: 'sse' as const, label: t('settings.mcpServersTransportSseTitle'), description: t('settings.mcpServersTransportSseSubtitle') },
     ]), []);
 
     const setTransport = React.useCallback((transport: McpServerCatalogEntryTransportV1) => {
-        props.onChangeServer((current) => {
+        onChangeServer((current) => {
             const now = Date.now();
             if (transport === 'stdio') {
                 return {
@@ -81,7 +69,7 @@ export const McpServerConfigureForm = React.memo(function McpServerConfigureForm
                 updatedAt: now,
             };
         });
-    }, [props]);
+    }, [onChangeServer]);
 
     const commandLineValue = React.useMemo(() => {
         const command = props.draftServer.stdio?.command?.trim() ?? '';
@@ -91,151 +79,166 @@ export const McpServerConfigureForm = React.memo(function McpServerConfigureForm
 
     return (
         <>
-            <MachineAdministrationTargetSelector
-                selection={props.targetSelection}
-                testIDPrefix="settings.mcpServers.administration.target"
-            />
-            <ItemGroup title={t('settings.mcpServersEditorBasics')}>
-                <View style={styles.sectionContent}>
-                    <Text style={styles.fieldLabel}>{t('settings.mcpServersFieldName')}</Text>
-                    <TextInput
-                        testID="mcp.server.editor.name"
-                        style={styles.textInput}
-                        value={props.draftServer.name}
-                        autoCapitalize="none"
-                        autoCorrect={false}
-                        onChangeText={(text) => props.onChangeServer((current) => ({ ...current, name: text, updatedAt: Date.now() }))}
-                        placeholder="my_server"
-                        placeholderTextColor={theme.colors.input.placeholder}
-                    />
-
-                    <Text style={styles.fieldLabel}>{t('settings.mcpServersFieldTitle')}</Text>
-                    <TextInput
-                        style={styles.textInput}
-                        value={props.draftServer.title ?? ''}
-                        onChangeText={(text) => props.onChangeServer((current) => ({
-                            ...current,
-                            title: text.trim() ? text : undefined,
-                            updatedAt: Date.now(),
-                        }))}
-                        placeholder={t('settings.mcpServersFieldTitlePlaceholder')}
-                        placeholderTextColor={theme.colors.input.placeholder}
-                    />
-                </View>
+            <ItemGroup title={t('mcpSettings.serverSection')} description={t('mcpSettings.serverSectionDescription')}>
+                <Item
+                    title={t('settings.mcpServersFieldName')}
+                    accessoryLayout="adaptive"
+                    showChevron={false}
+                    rightElement={(
+                        <FieldTextInput
+                            testID="mcp.server.editor.name"
+                            value={props.draftServer.name}
+                            onChangeText={(text) => onChangeServer((current) => ({ ...current, name: text, updatedAt: Date.now() }))}
+                            accessibilityLabel={t('settings.mcpServersFieldName')}
+                            placeholder="my_server"
+                            monospace
+                        />
+                    )}
+                />
+                <Item
+                    title={t('settings.mcpServersFieldTitle')}
+                    accessoryLayout="adaptive"
+                    showChevron={false}
+                    rightElement={(
+                        <FieldTextInput
+                            testID="mcp.server.editor.title"
+                            value={props.draftServer.title ?? ''}
+                            onChangeText={(text) => onChangeServer((current) => ({
+                                ...current,
+                                title: text.trim() ? text : undefined,
+                                updatedAt: Date.now(),
+                            }))}
+                            accessibilityLabel={t('settings.mcpServersFieldTitle')}
+                            placeholder={t('settings.mcpServersFieldTitlePlaceholder')}
+                            autoCapitalize="words"
+                        />
+                    )}
+                />
             </ItemGroup>
 
-            <ItemGroup title={t('settings.mcpServersFieldTransport')}>
-                <View style={styles.sectionContent}>
-                    <View style={styles.segmentedTabsContainer}>
-                        <SegmentedTabBar
-                            tabs={transportItems.map((item) => ({ id: item.key as McpServerCatalogEntryTransportV1, label: item.title }))}
-                            activeTabId={props.draftServer.transport}
-                            onSelectTab={(key) => setTransport(key)}
-                            testIDPrefix="mcp.server.transport"
-                        />
-                    </View>
-
-                    {props.draftServer.transport === 'stdio' ? (
-                        <>
-                            <Text style={styles.fieldLabel}>{t('settings.mcpServersFieldCommandLine')}</Text>
-                            <TextInput
+            <ItemGroup title={t('mcpSettings.connectionSection')} description={t('mcpSettings.connectionSectionDescription')}>
+                <SegmentedChoiceItem<McpServerCatalogEntryTransportV1>
+                    testID="mcp.server.transport"
+                    testIDPrefix="mcp.server.transport"
+                    title={t('settings.mcpServersFieldTransport')}
+                    value={props.draftServer.transport}
+                    options={transportOptions}
+                    onChange={setTransport}
+                />
+                {props.draftServer.transport === 'stdio' ? (
+                    <Item
+                        title={t('settings.mcpServersFieldCommandLine')}
+                        accessoryLayout="stacked"
+                        showChevron={false}
+                        rightElement={(
+                            <FieldTextInput
                                 testID="mcp.server.editor.commandLine"
-                                style={styles.textInput}
                                 value={commandLineValue}
-                                autoCapitalize="none"
-                                autoCorrect={false}
                                 onChangeText={(text) => {
                                     const parsed = parseMcpCommandLine(text);
-                                    props.onChangeServer((current) => ({
+                                    onChangeServer((current) => ({
                                         ...current,
                                         stdio: { command: parsed.command, args: parsed.args },
                                         updatedAt: Date.now(),
                                     }));
                                 }}
+                                accessibilityLabel={t('settings.mcpServersFieldCommandLine')}
                                 placeholder={t('settings.mcpServersFieldCommandLinePlaceholder')}
-                                placeholderTextColor={theme.colors.input.placeholder}
+                                monospace
                             />
-
-                            <View style={styles.advancedEditorRow}>
-                                <Item
-                                    title={t('settings.mcpServersAdvancedCommandEditorTitle')}
-                                    subtitle={t('settings.mcpServersAdvancedCommandEditorSubtitle')}
-                                    icon={<Icon name="sliders-horizontal" size={29} color={theme.colors.text.secondary} />}
-                                    selected={advancedCommandEditorOpen}
-                                    onPress={() => setAdvancedCommandEditorOpen((value) => !value)}
-                                />
-                            </View>
-
-                            {advancedCommandEditorOpen ? (
-                                <View style={styles.advancedEditorFields}>
-                                    <Text style={styles.fieldLabel}>{t('settings.mcpServersFieldCommand')}</Text>
-                                    <TextInput
-                                        style={styles.textInput}
-                                        value={props.draftServer.stdio?.command ?? ''}
-                                        autoCapitalize="none"
-                                        autoCorrect={false}
-                                        onChangeText={(text) =>
-                                            props.onChangeServer((current) => ({
-                                                ...current,
-                                                stdio: { command: text, args: current.stdio?.args ?? [] },
-                                                updatedAt: Date.now(),
-                                            }))}
-                                        placeholder="node"
-                                        placeholderTextColor={theme.colors.input.placeholder}
-                                    />
-
-                                    <Text style={styles.fieldLabel}>{t('settings.mcpServersFieldArgs')}</Text>
-                                    <TextInput
-                                        style={styles.textInput}
-                                        value={(props.draftServer.stdio?.args ?? []).join('\n')}
-                                        autoCapitalize="none"
-                                        autoCorrect={false}
-                                        multiline
-                                        onChangeText={(text) =>
-                                            props.onChangeServer((current) => ({
-                                                ...current,
-                                                stdio: {
-                                                    command: current.stdio?.command ?? '',
-                                                    args: text.split('\n').map((line) => line.trim()).filter(Boolean),
-                                                },
-                                                updatedAt: Date.now(),
-                                            }))}
-                                        placeholder={t('settings.mcpServersArgsPlaceholder')}
-                                        placeholderTextColor={theme.colors.input.placeholder}
-                                    />
-                                </View>
-                            ) : null}
-                        </>
-                    ) : (
-                        <>
-                            <Text style={styles.fieldLabel}>{t('settings.mcpServersFieldUrl')}</Text>
-                            <TextInput
-                                style={styles.textInput}
+                        )}
+                    />
+                ) : (
+                    <Item
+                        title={t('settings.mcpServersFieldUrl')}
+                        accessoryLayout="adaptive"
+                        showChevron={false}
+                        rightElement={(
+                            <FieldTextInput
+                                testID="mcp.server.editor.url"
                                 value={props.draftServer.remote?.url ?? ''}
-                                autoCapitalize="none"
-                                autoCorrect={false}
-                                onChangeText={(text) =>
-                                    props.onChangeServer((current) => ({
+                                onChangeText={(text) => onChangeServer((current) => ({
+                                    ...current,
+                                    remote: { url: text, headers: current.remote?.headers ?? {} },
+                                    updatedAt: Date.now(),
+                                }))}
+                                accessibilityLabel={t('settings.mcpServersFieldUrl')}
+                                placeholder="https://example.com/mcp"
+                                keyboardType="url"
+                                monospace
+                            />
+                        )}
+                    />
+                )}
+                {props.draftServer.transport === 'stdio' ? (
+                    <ExpandableItem
+                        testID="mcp.server.editor.advancedCommand"
+                        expanded={advancedCommandEditorOpen}
+                        onExpandedChange={setAdvancedCommandEditorOpen}
+                        header={({ headerProps }) => (
+                            <Item
+                                {...headerProps}
+                                title={t('settings.mcpServersAdvancedCommandEditorTitle')}
+                                subtitle={t('settings.mcpServersAdvancedCommandEditorSubtitle')}
+                                showChevron={false}
+                            />
+                        )}
+                    >
+                        <Item
+                            title={t('settings.mcpServersFieldCommand')}
+                            accessoryLayout="adaptive"
+                            showChevron={false}
+                            showDivider={false}
+                            rightElement={(
+                                <FieldTextInput
+                                    testID="mcp.server.editor.command"
+                                    value={props.draftServer.stdio?.command ?? ''}
+                                    onChangeText={(text) => onChangeServer((current) => ({
                                         ...current,
-                                        remote: { url: text, headers: current.remote?.headers ?? {} },
+                                        stdio: { command: text, args: current.stdio?.args ?? [] },
                                         updatedAt: Date.now(),
                                     }))}
-                                placeholder="https://example.com/mcp"
-                                placeholderTextColor={theme.colors.input.placeholder}
-                            />
-                        </>
-                    )}
-                </View>
+                                    accessibilityLabel={t('settings.mcpServersFieldCommand')}
+                                    placeholder="node"
+                                    monospace
+                                />
+                            )}
+                        />
+                        <Item
+                            title={t('settings.mcpServersFieldArgs')}
+                            accessoryLayout="stacked"
+                            showChevron={false}
+                            showDivider={false}
+                            rightElement={(
+                                <StringListField
+                                    testID="mcp.server.editor.args"
+                                    values={props.draftServer.stdio?.args ?? []}
+                                    onChange={(args) => onChangeServer((current) => ({
+                                        ...current,
+                                        stdio: { command: current.stdio?.command ?? '', args },
+                                        updatedAt: Date.now(),
+                                    }))}
+                                    itemLabel={(position) => t('settingsAgents.customAcp.argumentLabel', { position })}
+                                    removeLabel={(position) => t('settingsAgents.customAcp.removeArgument', { position })}
+                                    addLabel={t('settingsAgents.customAcp.addArgument')}
+                                    itemPlaceholder={t('settingsAgents.customAcp.argumentPlaceholder')}
+                                    monospace
+                                />
+                            )}
+                        />
+                    </ExpandableItem>
+                ) : null}
             </ItemGroup>
 
             <McpValueRefMapEditor
                 kind="env"
                 title={t('settings.mcpServersEditorEnv')}
+                description={t('mcpSettings.envDescription')}
                 iconName="code"
                 entries={props.draftServer.env}
                 secrets={props.secrets}
                 onChangeSecrets={props.onChangeSecrets}
-                onChangeEntries={(next) => props.onChangeServer((current) => ({ ...current, env: next, updatedAt: Date.now() }))}
+                onChangeEntries={(next) => onChangeServer((current) => ({ ...current, env: next, updatedAt: Date.now() }))}
                 addRowTitle={t('settings.mcpServersEnvAdd')}
                 addRowSubtitle={t('settings.mcpServersEnvAddSubtitle')}
                 emptyTitle={t('settings.mcpServersEnvEmptyTitle')}
@@ -247,12 +250,13 @@ export const McpServerConfigureForm = React.memo(function McpServerConfigureForm
                 <McpValueRefMapEditor
                     kind="header"
                     title={t('settings.mcpServersEditorHeaders')}
+                    description={t('mcpSettings.headersDescription')}
                     iconName="key"
                     entries={props.draftServer.remote?.headers ?? {}}
                     secrets={props.secrets}
                     onChangeSecrets={props.onChangeSecrets}
                     onChangeEntries={(next) =>
-                        props.onChangeServer((current) => ({
+                        onChangeServer((current) => ({
                             ...current,
                             remote: { url: current.remote?.url ?? '', headers: next },
                             updatedAt: Date.now(),
@@ -265,38 +269,35 @@ export const McpServerConfigureForm = React.memo(function McpServerConfigureForm
                 />
             )}
 
-            {props.draftBindings.length === 0 ? (
-                <ItemGroup title={t('settings.mcpServersEditorAppliesTo')} footer={t('settings.mcpServersEditorAppliesToSubtitle')}>
+            <ItemGroup title={t('settings.mcpServersEditorAppliesTo')} description={t('settings.mcpServersEditorAppliesToSubtitle')}>
+                {props.draftBindings.length === 0 ? (
                     <Item
                         title={t('settings.mcpServersBindingsEmptyTitle')}
                         subtitle={t('settings.mcpServersBindingsEmptySubtitle')}
-                        icon={<Icon name="push-pin" size={29} color={theme.colors.text.secondary} />}
+                        mode="info"
                         showChevron={false}
                     />
-                </ItemGroup>
-            ) : null}
-
-            {props.draftBindings.map((binding) => (
-                <McpServerBindingEditor
-                    key={binding.id}
-                    binding={binding}
-                    serverTransport={props.draftServer.transport}
-                    secrets={props.secrets}
-                    onChangeSecrets={props.onChangeSecrets}
+                ) : null}
+                {props.draftBindings.map((binding) => (
+                    <McpServerBindingEditor
+                        key={binding.id}
+                        binding={binding}
+                        serverTransport={props.draftServer.transport}
+                        secrets={props.secrets}
+                        onChangeSecrets={props.onChangeSecrets}
+                        machines={props.machines}
+                        onChange={(next) => props.onChangeBindings((current) => current.map((item) => (item.id === binding.id ? next : item)))}
+                        onDelete={() => props.onChangeBindings((current) => current.filter((item) => item.id !== binding.id))}
+                    />
+                ))}
+                <McpServerBindingDraftExpander
+                    serverId={props.draftServer.id}
                     machines={props.machines}
-                    onChange={(next) => props.onChangeBindings((current) => current.map((item) => (item.id === binding.id ? next : item)))}
-                    onDelete={() => props.onChangeBindings((current) => current.filter((item) => item.id !== binding.id))}
+                    favoriteDirectories={favoriteDirectories}
+                    onChangeFavoriteDirectories={setFavoriteDirectoriesRaw}
+                    onAddBinding={(binding) => props.onChangeBindings((current) => [...current, binding])}
                 />
-            ))}
-
-            <McpServerBindingDraftExpander
-                serverId={props.draftServer.id}
-                machines={props.machines}
-                favoriteDirectories={favoriteDirectories}
-                onChangeFavoriteDirectories={setFavoriteDirectoriesRaw}
-                onAddBinding={(binding) => props.onChangeBindings((current) => [...current, binding])}
-                expandedContainerStyle={styles.expandedBindingContainer}
-            />
+            </ItemGroup>
 
             <McpServerTestPanel
                 server={props.draftServer}
@@ -304,54 +305,6 @@ export const McpServerConfigureForm = React.memo(function McpServerConfigureForm
                 machines={props.machines}
                 targetSelection={props.targetSelection}
             />
-
-            <SettingsActionFooter
-                primaryLabel={t('common.save')}
-                primaryDisabled={props.saveDisabled}
-                primaryTestID="mcp.server.editor.save"
-                onPrimaryPress={props.onSave}
-                secondaryLabel={props.isExistingServer ? t('common.delete') : t('common.cancel')}
-                secondaryTestID="mcp.server.editor.secondaryAction"
-                secondaryTone={props.isExistingServer ? 'destructive' : 'default'}
-                onSecondaryPress={props.onDelete}
-            />
         </>
     );
 });
-
-const styles = StyleSheet.create((theme) => ({
-    sectionContent: {
-        paddingHorizontal: 16,
-        paddingTop: 12,
-        paddingBottom: 16,
-    },
-    segmentedTabsContainer: {
-        paddingBottom: 12,
-    },
-    fieldLabel: {
-        fontSize: 13,
-        color: theme.colors.text.secondary,
-        marginBottom: 8,
-        marginTop: 12,
-        fontWeight: '600',
-    },
-    textInput: {
-        backgroundColor: theme.colors.input.background,
-        borderRadius: 10,
-        paddingHorizontal: 12,
-        paddingVertical: 10,
-        ...SETTINGS_TEXT_INPUT_METRICS,
-        color: theme.colors.input.text,
-        borderWidth: 0.5,
-        borderColor: theme.colors.border.default,
-    },
-    advancedEditorRow: {
-        marginTop: 12,
-    },
-    advancedEditorFields: {
-        paddingTop: 8,
-    },
-    expandedBindingContainer: {
-        paddingTop: 0,
-    },
-}));

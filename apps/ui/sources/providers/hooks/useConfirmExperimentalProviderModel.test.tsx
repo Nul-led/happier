@@ -62,7 +62,7 @@ const confirmation = {
     kind: 'confirm-experimental',
     connectionId: ProviderConnectionIdSchema.parse('pc_experimental'),
     expectedConnectionRevision: 3,
-    agentTargetKey: 'backend:codex',
+    agentTargetKey: 'agent:happier.agent.codex/codex',
     modelId: 'experimental-model',
     compatibilityFingerprint: 'compatibility:v1:experimental',
     providerName: 'Gateway',
@@ -89,7 +89,7 @@ describe('useConfirmExperimentalProviderModel', () => {
             enabled: true,
             machineId: 'machine-a',
             serverId: 'server-a',
-            agentTargetKey: 'backend:codex',
+            agentTargetKey: 'agent:happier.agent.codex/codex',
             refresh,
         }));
 
@@ -122,7 +122,7 @@ describe('useConfirmExperimentalProviderModel', () => {
                 enabled: true,
                 machineId: props.machineId,
                 serverId: props.serverId,
-                agentTargetKey: 'backend:codex',
+                agentTargetKey: 'agent:happier.agent.codex/codex',
                 refresh,
             }),
             { initialProps: { machineId: 'machine-a', serverId: 'server-a' } },
@@ -152,7 +152,7 @@ describe('useConfirmExperimentalProviderModel', () => {
             enabled: true,
             machineId: 'machine-a',
             serverId: 'server-a',
-            agentTargetKey: 'backend:codex',
+            agentTargetKey: 'agent:happier.agent.codex/codex',
             refresh,
         }));
 
@@ -186,14 +186,14 @@ describe('useConfirmExperimentalProviderModel', () => {
                 agentTargetKey: props.agentTargetKey,
                 refresh,
             }),
-            { initialProps: { agentTargetKey: 'backend:codex' } },
+            { initialProps: { agentTargetKey: 'agent:happier.agent.codex/codex' } },
         );
 
         let pending!: Promise<boolean>;
         act(() => {
             pending = hook.getCurrent().confirm(confirmation, commitSelectionSpy);
         });
-        await hook.rerender({ agentTargetKey: 'backend:claude' });
+        await hook.rerender({ agentTargetKey: 'agent:happier.agent.claude/claude' });
         await act(async () => modalResult.resolve(true));
 
         await expect(pending).resolves.toBe(false);
@@ -212,7 +212,7 @@ describe('useConfirmExperimentalProviderModel', () => {
                 enabled: props.enabled,
                 machineId: 'machine-a',
                 serverId: 'server-a',
-                agentTargetKey: 'backend:codex',
+                agentTargetKey: 'agent:happier.agent.codex/codex',
                 refresh,
             }),
             { initialProps: { enabled: true } },
@@ -243,7 +243,7 @@ describe('useConfirmExperimentalProviderModel', () => {
                 enabled: true,
                 machineId: props.machineId,
                 serverId: props.serverId,
-                agentTargetKey: 'backend:codex',
+                agentTargetKey: 'agent:happier.agent.codex/codex',
                 refresh,
             }),
             { initialProps: { machineId: 'machine-a', serverId: 'server-a' } },
@@ -275,7 +275,7 @@ describe('useConfirmExperimentalProviderModel', () => {
             enabled: true,
             machineId: 'machine-a',
             serverId: 'server-a',
-            agentTargetKey: 'backend:codex',
+            agentTargetKey: 'agent:happier.agent.codex/codex',
             refresh: vi.fn(async () => {}),
         }));
 
@@ -297,7 +297,7 @@ describe('useConfirmExperimentalProviderModel', () => {
             enabled: true,
             machineId: 'machine-a',
             serverId: 'server-a',
-            agentTargetKey: 'backend:codex',
+            agentTargetKey: 'agent:happier.agent.codex/codex',
             refresh,
         }));
 
@@ -326,7 +326,7 @@ describe('useConfirmExperimentalProviderModel', () => {
             enabled: true,
             machineId: 'machine-a',
             serverId: 'server-a',
-            agentTargetKey: 'backend:codex',
+            agentTargetKey: 'agent:happier.agent.codex/codex',
             refresh,
         }));
 
@@ -356,7 +356,7 @@ describe('useConfirmExperimentalProviderModel', () => {
                 enabled: true,
                 machineId: props.machineId,
                 serverId: props.serverId,
-                agentTargetKey: 'backend:codex',
+                agentTargetKey: 'agent:happier.agent.codex/codex',
                 refresh: vi.fn(async () => {}),
             }),
             { initialProps: { machineId: 'machine-a', serverId: 'server-a' } },
@@ -389,7 +389,7 @@ describe('useConfirmExperimentalProviderModel', () => {
             enabled: true,
             machineId: 'machine-a',
             serverId: 'server-a',
-            agentTargetKey: 'backend:codex',
+            agentTargetKey: 'agent:happier.agent.codex/codex',
             refresh: vi.fn(async () => {}),
         }));
         await act(async () => { await hook.getCurrent().confirm(confirmation, commitSelectionSpy); });

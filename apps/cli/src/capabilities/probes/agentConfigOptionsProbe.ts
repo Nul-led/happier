@@ -1,3 +1,5 @@
+import type { RuntimeDescriptorV1 } from '@happier-dev/protocol';
+import type { AgentCatalogEntry } from '@/agent/catalog/types';
 import type { CatalogAgentLookupId } from '@/agent/catalog/ids';
 import { AsyncTtlCache, type BackendTargetRefV1 } from '@happier-dev/protocol';
 import type { StoredCredentials } from '@/persistence';
@@ -42,6 +44,7 @@ function buildUnavailable(agentId: CatalogAgentLookupId): ProbedAgentConfigOptio
 function shouldFailClosedForMissingCli(params: {
   agentId: CatalogAgentLookupId;
   backendTarget?: BackendTargetRefV1;
+  runtimeDescriptorV1?: RuntimeDescriptorV1;
 }): boolean {
   if (params.backendTarget?.kind === 'configuredAcpBackend') return false;
   return resolveAgentCliLaunchSpec(params.agentId) === null;
@@ -64,7 +67,12 @@ function normalizeDynamicConfigOptions(configOptionsRaw: unknown): ProbedAgentCo
 
 export async function probeAgentConfigOptionsBestEffort(params: {
   agentId: CatalogAgentLookupId;
+  catalogEntry?: AgentCatalogEntry | null;
+  runtimeCacheKey?: string;
+  signal?: AbortSignal;
   backendTarget?: BackendTargetRefV1;
+  runtimeDescriptorV1?: RuntimeDescriptorV1;
+  runtimeKindOverride?: string;
   cwd: string;
   timeoutMs?: number;
   accountSettings?: Readonly<Record<string, unknown>> | null;
@@ -78,6 +86,10 @@ export async function probeAgentConfigOptionsBestEffort(params: {
   const cwd = typeof params.cwd === 'string' && params.cwd.trim().length > 0 ? params.cwd.trim() : process.cwd();
   const probeVariant = await resolveAgentProbeVariant({
     agentId: params.agentId,
+    catalogEntry: params.catalogEntry,
+    runtimeCacheKey: params.runtimeCacheKey,
+    runtimeDescriptorV1: params.runtimeDescriptorV1,
+    runtimeKindOverride: params.runtimeKindOverride,
     probeKind: 'configOptions',
     backendTarget: params.backendTarget,
     accountSettings: params.accountSettings,
@@ -106,7 +118,7 @@ export async function probeAgentConfigOptionsBestEffort(params: {
       agentConfigOptionsProbeCache.setError(cacheKey, { nowMs: nowMs2, ttlMs: PROBE_CONFIG_OPTIONS_FAILURE_TTL_MS });
       return unavailable;
     }
-    const preflightAdapter = await resolvePreflightSessionControlsProbeAdapter(params.agentId);
+    const preflightAdapter = await resolvePreflightSessionControlsProbeAdapter(params.agentId, params.catalogEntry);
     if (preflightAdapter?.probeConfigOptionsRaw) {
       const timeoutMs = typeof params.timeoutMs === 'number' ? params.timeoutMs : 15_000;
 
@@ -117,6 +129,9 @@ export async function probeAgentConfigOptionsBestEffort(params: {
           materializedEnv: params.materializedEnv,
         }, async ({ env }) => await preflightAdapter.probeConfigOptionsRaw!({
           backendTarget: params.backendTarget,
+          ...(params.signal ? { signal: params.signal } : {}),
+          runtimeDescriptorV1: params.runtimeDescriptorV1,
+          runtimeKindOverride: params.runtimeKindOverride,
           probeKind: 'configOptions',
           cwd,
           timeoutMs,

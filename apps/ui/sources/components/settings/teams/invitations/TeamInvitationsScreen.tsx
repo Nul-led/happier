@@ -1,6 +1,6 @@
 import * as React from 'react';
-import { useRouter } from 'expo-router';
-import { useFocusEffect } from '@react-navigation/native';
+import { useRouter } from '@/components/appShell/workspace/destinationRoute';
+import { useFocusEffect } from '@/components/appShell/workspace/destinationRoute';
 import type {
     TeamInvitationReissueResultV1,
     TeamInvitationRowV1,
@@ -9,9 +9,10 @@ import { Platform } from 'react-native';
 import { useUnistyles } from 'react-native-unistyles';
 
 import { announceAccessibilityMessage } from '@/components/ui/accessibility/announceAccessibilityMessage';
-import { Icon } from '@/components/ui/icons/Icon';
 import { Item } from '@/components/ui/lists/Item';
+import { AttentionBanner } from '@/components/ui/lists/AttentionBanner';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
+import { SectionActionButton } from '@/components/ui/lists/SectionActionButton';
 import { VirtualizedList } from '@/components/ui/lists/virtualized';
 import { useTeamInvitations } from '@/hooks/teams/useTeamInvitations';
 import { Modal } from '@/modal';
@@ -21,16 +22,21 @@ import {
     revokeTeamInvitation,
 } from '@/sync/ops/teams/teamInvitationOperations';
 import { isTeamActionApprovalPendingError } from '@/sync/ops/teams/teamActionClient';
-import { t } from '@/text';
+import { getPreferredLanguage, t } from '@/text';
+import { formatWithCachedDateTimeFormatter } from '@/utils/datetime/cachedIntlFormatters';
 
 import { TeamSection } from '../TeamSection';
 import type { TeamSectionContext } from '../teamSectionContext';
-import { teamMutationFailureLabel } from '../teamMutationPresentation';
+import { teamMutationFailureLabel, teamReadFailureLabel } from '../teamMutationPresentation';
 import { teamInvitationCreatePath } from '../teamsRoutes';
 import { TeamLinkDelivery } from '../TeamLinkDelivery';
 import { resolveTeamInvitationPresentation } from './teamInvitationPresentation';
 
 const INVITATION_CHUNK_SIZE = 12;
+// JavaScript timers accept a signed 32-bit millisecond delay. A far-future
+// invitation is still a valid row; wake in platform-sized chunks rather than
+// overflowing the timer (which would fire immediately and spin).
+const MAX_TIMER_DELAY_MS = 2_147_483_647;
 
 type InvitationVirtualizedSegment = Readonly<{
     key: string;
@@ -117,8 +123,24 @@ const InvitationsList = React.memo(function InvitationsList(props: Readonly<{
         void invitations.reload();
     }, [invitations.reload, publishNotice]);
 
-    // Evaluated once per render so every row in one pass agrees about "now".
-    const now = Date.now();
+    // One shared clock value keeps every row in a render consistent. The
+    // nearest expiry wakes this surface once; there is no polling loop or
+    // per-row timer, and the invitation owner remains authoritative.
+    const [now, setNow] = React.useState(() => Date.now());
+    React.useEffect(() => {
+        const nextExpiry = invitations.rows
+            .filter((row) => row.state === 'active' && row.expiresAt > now)
+            .map((row) => row.expiresAt)
+            .sort((left, right) => left - right)[0];
+        if (nextExpiry === undefined) return;
+        const delay = Math.min(MAX_TIMER_DELAY_MS, Math.max(0, nextExpiry - now + 1));
+        const timer = setTimeout(() => setNow(Date.now()), delay);
+        // Node's test/runtime timer exposes `unref`; using it keeps this
+        // best-effort UI wake from holding a process open while preserving the
+        // normal browser/native timer behavior.
+        (timer as ReturnType<typeof setTimeout> & { unref?: () => void }).unref?.();
+        return () => clearTimeout(timer);
+    }, [invitations.rows, now]);
 
     const invitationSegments = React.useMemo<readonly InvitationVirtualizedSegment[]>(() => {
         const segments: InvitationVirtualizedSegment[] = [];
@@ -134,6 +156,16 @@ const InvitationsList = React.memo(function InvitationsList(props: Readonly<{
         return segments;
     }, [invitations.rows]);
 
+    // Adding happens in the collection: the Invitations section carries its "+".
+    const inviteAction = canManage && context.canMutate ? (
+        <SectionActionButton
+            testID="team-invitations-create"
+            icon="plus"
+            title={t('teams.invitations.invite')}
+            onPress={() => router.push(teamInvitationCreatePath(context.address))}
+        />
+    ) : undefined;
+
     return (
         <VirtualizedList
             testID="team-invitations-virtualized-list"
@@ -143,8 +175,15 @@ const InvitationsList = React.memo(function InvitationsList(props: Readonly<{
                 <>
                     {props.header}
                     {!canManage ? (
-                        <ItemGroup footer={t('teams.errors.forbidden')}>
-                            <Item testID="team-invitations-forbidden" title={t('homeGovernance.forbiddenTitle')} showChevron={false} />
+                        <ItemGroup>
+                            <Item
+                                testID="team-invitations-forbidden"
+                                title={t('homeGovernance.forbiddenTitle')}
+                                subtitle={t('teams.errors.forbidden')}
+                                subtitleLines={0}
+                                mode="info"
+                                showChevron={false}
+                            />
                         </ItemGroup>
                     ) : null}
                     {/* A reissued bearer is handed over exactly the way a freshly created
@@ -163,13 +202,19 @@ const InvitationsList = React.memo(function InvitationsList(props: Readonly<{
                         />
                     ) : null}
                     {canManage && invitations.status === 'loading' && invitations.rows.length === 0 ? (
-                        <ItemGroup>
-                            <Item testID="team-invitations-loading" title={t('teams.tabs.invitations')} loading showChevron={false} />
+                        <ItemGroup title={t('teams.tabs.invitations')} action={inviteAction}>
+                            <Item testID="team-invitations-loading" title={t('teams.loading')} loading mode="info" showChevron={false} />
                         </ItemGroup>
                     ) : null}
                     {canManage && invitations.rows.length === 0 && invitations.status === 'ready' ? (
-                        <ItemGroup footer={t('teams.invitations.emptyBody')}>
-                            <Item testID="team-invitations-empty" title={t('teams.invitations.emptyTitle')} showChevron={false} />
+                        <ItemGroup title={t('teams.tabs.invitations')} action={inviteAction}>
+                            <Item
+                                testID="team-invitations-empty"
+                                title={t('teams.invitations.emptyTitle')}
+                                subtitle={t('teams.invitations.emptyBody')}
+                                mode="info"
+                                showChevron={false}
+                            />
                         </ItemGroup>
                     ) : null}
                 </>
@@ -177,7 +222,8 @@ const InvitationsList = React.memo(function InvitationsList(props: Readonly<{
             renderItem={({ item: segment }) => (
                 <ItemGroup
                     title={segment.first ? t('teams.tabs.invitations') : undefined}
-                    footer={segment.last
+                    action={segment.first ? inviteAction : undefined}
+                    description={segment.last
                         ? notice ?? (invitations.rows.some((row) => row.recipientEmailMask === null)
                             ? t('teams.invitations.bearerUnavailable')
                             : undefined)
@@ -208,7 +254,7 @@ const InvitationsList = React.memo(function InvitationsList(props: Readonly<{
                                     .filter((part): part is string => part !== null)
                                     .join(' · ')}
                                 detail={t('teams.invitations.expires', {
-                                    when: new Date(row.expiresAt).toLocaleDateString(),
+                                    when: formatWithCachedDateTimeFormatter(new Date(row.expiresAt), getPreferredLanguage(), { dateStyle: 'medium' }),
                                 })}
                                 disabled={isActionable && busy}
                                 mode={isActionable ? 'interactive' : 'info'}
@@ -371,15 +417,13 @@ const InvitationsList = React.memo(function InvitationsList(props: Readonly<{
             ListFooterComponent={canManage ? (
                 <>
                     {invitations.error ? (
-                        <ItemGroup footer={t('teams.unavailable.offline')}>
-                            <Item
-                                testID="team-invitations-retry"
-                                title={t('teams.unavailable.retry')}
-                                icon={<Icon name="arrow-clockwise" size={29} color={theme.colors.text.secondary} />}
-                                onPress={() => void invitations.reload()}
-                                showChevron={false}
-                            />
-                        </ItemGroup>
+                        <AttentionBanner
+                            testID="team-invitations-unavailable"
+                            title={teamReadFailureLabel(invitations.error)}
+                            action={invitations.error.retryable
+                                ? { label: t('teams.unavailable.retry'), onPress: () => void invitations.reload(), testID: 'team-invitations-retry' }
+                                : undefined}
+                        />
                     ) : invitations.hasMore && invitations.rows.length > 0 ? (
                         <ItemGroup>
                             <Item
@@ -392,20 +436,11 @@ const InvitationsList = React.memo(function InvitationsList(props: Readonly<{
                             />
                         </ItemGroup>
                     ) : null}
-                    {context.canMutate ? (
-                        <ItemGroup>
-                            <Item
-                                testID="team-invitations-create"
-                                title={t('teams.invitations.invite')}
-                                onPress={() => router.push(teamInvitationCreatePath(context.address))}
-                            />
-                        </ItemGroup>
-                    ) : null}
                 </>
             ) : null}
             style={{
                 flex: 1,
-                backgroundColor: theme.colors.background.canvas,
+                backgroundColor: theme.colors.surface.base,
                 ...(Platform.OS === 'web' ? { minHeight: 0 } : {}),
             }}
             contentContainerStyle={{ paddingBottom: Platform.OS === 'ios' ? 34 : 16 }}
@@ -428,6 +463,7 @@ export const TeamInvitationsScreen = React.memo(function TeamInvitationsScreen(p
             serverId={props.serverId}
             teamId={props.teamId}
             title={t('teams.tabs.invitations')}
+            description={t('teams.pages.invitations')}
             presentation="virtualized-list"
         >
             {(context, header) => <InvitationsList context={context} header={header} />}

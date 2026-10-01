@@ -3,7 +3,8 @@ import type { AutomationTemplate } from './automationTypes';
 import {
     AUTOMATION_TEMPLATE_ENCRYPTED_V1_KIND,
     AUTOMATION_TEMPLATE_PLAIN_V1_KIND,
-    normalizeAutomationTemplateEnvelopeStoredRead,
+    readAutomationTemplateStoredEnvelopeV1,
+    automationTemplateStoredPayloadMatchesEnvelopeV1,
     type AutomationTemplateEnvelope,
     type EncryptedAutomationTemplateEnvelope,
     type PlainAutomationTemplateEnvelope,
@@ -33,26 +34,10 @@ export type AutomationTemplatePayloadResolution =
         kind: 'invalid';
     }>;
 
-function tryParseStoredEnvelope(payload: string) {
-    if (typeof payload !== 'string') return null;
-    const trimmed = payload.trim();
-    if (!trimmed) return null;
-    try {
-        const parsed = JSON.parse(trimmed);
-        return normalizeAutomationTemplateEnvelopeStoredRead(parsed);
-    } catch {
-        return null;
-    }
-}
+const tryParseStoredEnvelope = readAutomationTemplateStoredEnvelopeV1;
 
 function tryParseEnvelope(payload: string): AutomationTemplateEnvelope | null {
     return tryParseStoredEnvelope(payload)?.envelope ?? null;
-}
-
-function normalizeExistingSessionId(input: unknown): string | undefined {
-    if (typeof input !== 'string') return undefined;
-    const trimmed = input.trim();
-    return trimmed.length > 0 ? trimmed : undefined;
 }
 
 export function tryDecodeAutomationTemplateEnvelope(templateCiphertext: string): AutomationTemplateEnvelope | null {
@@ -95,13 +80,7 @@ export async function resolveAutomationTemplatePayload(params: Readonly<{
                 reason: 'encryption_material_unavailable',
             };
         }
-        if (
-            storedRead.legacyExistingSessionId
-            && (!payload || typeof payload !== 'object' || Array.isArray(payload)
-                || normalizeExistingSessionId(
-                    (payload as Record<string, unknown>).existingSessionId,
-                ) !== storedRead.legacyExistingSessionId)
-        ) {
+        if (!automationTemplateStoredPayloadMatchesEnvelopeV1(storedRead, payload)) {
             return { kind: 'invalid' };
         }
         return {

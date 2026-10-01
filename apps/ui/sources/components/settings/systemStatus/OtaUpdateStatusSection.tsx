@@ -1,14 +1,15 @@
 import * as React from 'react';
-import { Linking, Platform } from 'react-native';
+import { useRouter } from '@/components/appShell/workspace/destinationRoute';
 import { useUnistyles } from 'react-native-unistyles';
+import { Icon } from '@/components/ui/icons/Icon';
 
 import { Item } from '@/components/ui/lists/Item';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
 import { Text } from '@/components/ui/text/Text';
 import { useUpdates } from '@/hooks/inbox/useUpdates';
 import { useNativeUpdate } from '@/hooks/ui/useNativeUpdate';
+import { UPDATES_ROUTE } from '@/components/updates/updatesRoute';
 import { t } from '@/text';
-import { Icon } from '@/components/ui/icons/Icon';
 
 function toErrorMessage(error: unknown): string | null {
     if (error instanceof Error) {
@@ -37,83 +38,52 @@ function formatDownloadProgress(progress: number | undefined): string | undefine
     return `${clamped}%`;
 }
 
+/**
+ * Diagnostics only: what the store and OTA owners report. The update itself — the store link, the
+ * OTA check and the restart — lives in Settings › Updates, the one entry (plan R13 (e)).
+ */
 export const OtaUpdateStatusSection = React.memo(function OtaUpdateStatusSection() {
     const { theme } = useUnistyles();
+    const router = useRouter();
     const updateUrl = useNativeUpdate();
     const {
-        otaUpdatesEnabled,
         otaRuntimeSupported,
-        isChecking,
         isDownloading,
-        isRestarting,
         isUpdatePending,
         downloadProgress,
         checkError,
         downloadError,
         lastCheckForUpdateTimeSinceRestart,
-        checkForUpdates,
-        reloadApp,
     } = useUpdates();
 
     const errorMessage = toErrorMessage(downloadError) ?? toErrorMessage(checkError);
-    const actionSubtitle = errorMessage
-        ? <Text style={{ color: theme.colors.text.secondary }}>{errorMessage}</Text>
-        : isUpdatePending
-            ? t('updateBanner.pressToApply')
-            : t('updateBanner.checkNowSubtitle');
-
-    const actionDetail = isDownloading ? formatDownloadProgress(downloadProgress) : undefined;
-
-    const openStoreUpdate = React.useCallback(async () => {
-        if (!updateUrl) return;
-        const supported = await Linking.canOpenURL(updateUrl);
-        if (!supported) return;
-        await Linking.openURL(updateUrl);
-    }, [updateUrl]);
-
-    const runOtaAction = React.useCallback(() => {
-        if (!otaUpdatesEnabled || !otaRuntimeSupported) return;
-        if (isUpdatePending) {
-            void reloadApp();
-            return;
-        }
-        void checkForUpdates();
-    }, [checkForUpdates, isUpdatePending, otaRuntimeSupported, otaUpdatesEnabled, reloadApp]);
+    const openUpdates = React.useCallback(() => {
+        router.push(UPDATES_ROUTE);
+    }, [router]);
 
     if (!updateUrl && !otaRuntimeSupported) {
         return null;
     }
 
     return (
-        <ItemGroup>
-            {updateUrl ? (
+        <ItemGroup title={t('systemStatus.sections.updates')}>
+            {otaRuntimeSupported ? (
                 <Item
-                    title={t('updateBanner.nativeUpdateAvailable')}
-                    subtitle={Platform.OS === 'ios' ? t('updateBanner.tapToUpdateAppStore') : t('updateBanner.tapToUpdatePlayStore')}
-                    onPress={openStoreUpdate}
-                    icon={<Icon name="download" size={24} color={theme.colors.state.success.foreground} />}
+                    title={t('updateBanner.lastCheckedTitle')}
+                    detail={isDownloading ? formatDownloadProgress(downloadProgress) : formatLastChecked(lastCheckForUpdateTimeSinceRestart)}
+                    subtitle={errorMessage
+                        ? <Text style={{ color: theme.colors.text.secondary }}>{errorMessage}</Text>
+                        : isUpdatePending ? t('updateBanner.updateAvailable') : undefined}
+                    mode="info"
                 />
             ) : null}
-            {otaRuntimeSupported ? (
-                <>
-                    <Item
-                        title={isUpdatePending ? t('updateBanner.updateAvailable') : t('updateBanner.checkNowTitle')}
-                        subtitle={actionSubtitle}
-                        detail={actionDetail}
-                        onPress={runOtaAction}
-                        loading={isUpdatePending ? isRestarting : (isChecking || isDownloading)}
-                        disabled={isUpdatePending ? isRestarting : (isChecking || isDownloading)}
-                        showChevron={false}
-                        icon={<Icon name={isUpdatePending ? 'arrows-clockwise' : 'arrow-clockwise'} size={24} color={theme.colors.accent.indigo} />}
-                    />
-                    <Item
-                        title={t('updateBanner.lastCheckedTitle')}
-                        detail={formatLastChecked(lastCheckForUpdateTimeSinceRestart)}
-                        mode="info"
-                        icon={<Icon name="clock" size={24} color={theme.colors.accent.orange} />}
-                    />
-                </>
-            ) : null}
+            <Item
+                icon={<Icon name="download" />}
+                testID="system-status-open-updates"
+                title={t('updates.action.openUpdates')}
+                {...(updateUrl ? { subtitle: t('updateBanner.nativeUpdateAvailable') } : {})}
+                onPress={openUpdates}
+            />
         </ItemGroup>
     );
 });

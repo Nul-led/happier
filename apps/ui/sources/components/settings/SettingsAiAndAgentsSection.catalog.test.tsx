@@ -52,7 +52,6 @@ describe('SettingsAiAndAgentsSection catalog projection', () => {
         const screen = await renderScreen(
             <SettingsAiAndAgentsSection
                 router={{ push } as never}
-                theme={{ colors: { accent: {}, state: {}, text: { secondary: '#777' } } } as never}
             />,
         );
 
@@ -69,7 +68,6 @@ describe('SettingsAiAndAgentsSection catalog projection', () => {
         const screen = await renderScreen(
             <SettingsAiAndAgentsSection
                 router={{ push: vi.fn() } as never}
-                theme={{ colors: { accent: {}, state: {}, text: { secondary: '#777' } } } as never}
             />,
         );
 
@@ -84,7 +82,6 @@ describe('SettingsAiAndAgentsSection catalog projection', () => {
         const screen = await renderScreen(
             <SettingsAiAndAgentsSection
                 router={{ push } as never}
-                theme={{ colors: { accent: {}, state: {}, text: { secondary: '#777' } } } as never}
                 onNavigate={onNavigate}
             />,
         );

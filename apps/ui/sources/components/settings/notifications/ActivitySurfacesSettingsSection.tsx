@@ -1,20 +1,20 @@
 import * as React from 'react';
 
-import { useUnistyles } from 'react-native-unistyles';
-
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
-import { Item } from '@/components/ui/lists/Item';
+import { SegmentedChoiceItem } from '@/components/ui/lists/SegmentedChoiceItem';
+import { DropdownMenu } from '@/components/ui/forms/dropdown/DropdownMenu';
 import { Switch } from '@/components/ui/forms/Switch';
 import { t } from '@/text';
 import type { TranslationKey } from '@/text';
 
 import type { LocalSettings } from '@/sync/domains/settings/localSettings';
-import { Icon, type IconName } from '@/components/ui/icons/Icon';
+import { SettingAnchor, SettingRow } from '@/components/settings/shell/SettingRow';
+import type { SettingRef } from '@/components/settings/catalog/settingDeclarations';
+import { NOTIFICATIONS_SETTINGS } from '@/components/settings/notifications/notificationsSettings';
 
 type ActivitySurfaceChoice<T extends string | number> = Readonly<{
     value: T;
     titleKey: TranslationKey;
-    icon: string;
 }>;
 
 type ActivitySurfacesSettingsSectionProps = Readonly<{
@@ -27,12 +27,10 @@ const ACTIVITY_SURFACE_TAP_TARGET_OPTIONS: readonly ActivitySurfaceChoice<'open_
     {
         value: 'open_session',
         titleKey: 'settingsNotifications.activitySurfaces.tapTargetOpenSessionTitle',
-        icon: 'arrow-right',
     },
     {
         value: 'open_sessions',
         titleKey: 'settingsNotifications.activitySurfaces.tapTargetOpenSessionsTitle',
-        icon: 'stack',
     },
 ];
 
@@ -40,17 +38,14 @@ const ACTIVITY_SURFACE_PRIVACY_OPTIONS: readonly ActivitySurfaceChoice<'status_o
     {
         value: 'status_only',
         titleKey: 'settingsNotifications.activitySurfaces.privacyStatusOnlyTitle',
-        icon: 'shield-check',
     },
     {
         value: 'title_only',
         titleKey: 'settingsNotifications.activitySurfaces.privacyTitleOnlyTitle',
-        icon: 'text-aa',
     },
     {
         value: 'include_preview',
         titleKey: 'settingsNotifications.activitySurfaces.privacyIncludePreviewTitle',
-        icon: 'chat-circle-dots',
     },
 ];
 
@@ -58,17 +53,14 @@ const LIVE_ACTIVITY_MODE_OPTIONS: readonly ActivitySurfaceChoice<'focused' | 'at
     {
         value: 'focused',
         titleKey: 'settingsNotifications.activitySurfaces.liveActivities.focusedTitle',
-        icon: 'crosshair',
     },
     {
         value: 'attention',
         titleKey: 'settingsNotifications.activitySurfaces.liveActivities.attentionTitle',
-        icon: 'warning-circle',
     },
     {
         value: 'running',
         titleKey: 'settingsNotifications.activitySurfaces.liveActivities.runningTitle',
-        icon: 'pulse',
     },
 ];
 
@@ -76,17 +68,14 @@ const LIVE_ACTIVITY_STRATEGY_OPTIONS: readonly ActivitySurfaceChoice<'dynamic_pr
     {
         value: 'dynamic_primary',
         titleKey: 'settingsNotifications.activitySurfaces.liveActivities.dynamicPrimaryTitle',
-        icon: 'arrows-left-right',
     },
     {
         value: 'pinned_primary',
         titleKey: 'settingsNotifications.activitySurfaces.liveActivities.pinnedPrimaryTitle',
-        icon: 'push-pin',
     },
     {
         value: 'session_specific',
         titleKey: 'settingsNotifications.activitySurfaces.liveActivities.sessionSpecificTitle',
-        icon: 'stack-simple',
     },
 ];
 
@@ -94,17 +83,14 @@ const LIVE_ACTIVITY_MAX_CONCURRENT_OPTIONS: readonly ActivitySurfaceChoice<1 | 2
     {
         value: 1,
         titleKey: 'settingsNotifications.activitySurfaces.liveActivities.maxConcurrentOneTitle',
-        icon: 'circle',
     },
     {
         value: 2,
         titleKey: 'settingsNotifications.activitySurfaces.liveActivities.maxConcurrentTwoTitle',
-        icon: 'stack-simple',
     },
     {
         value: 4,
         titleKey: 'settingsNotifications.activitySurfaces.liveActivities.maxConcurrentFourTitle',
-        icon: 'grid-four',
     },
 ];
 
@@ -112,40 +98,77 @@ const HOME_SCREEN_WIDGET_MODE_OPTIONS: readonly ActivitySurfaceChoice<'summary' 
     {
         value: 'summary',
         titleKey: 'settingsNotifications.activitySurfaces.widgets.summaryTitle',
-        icon: 'list',
     },
     {
         value: 'attention',
         titleKey: 'settingsNotifications.activitySurfaces.widgets.attentionTitle',
-        icon: 'warning-circle',
     },
     {
         value: 'running',
         titleKey: 'settingsNotifications.activitySurfaces.widgets.runningTitle',
-        icon: 'pulse',
     },
 ];
 
-function renderChoiceRows<T extends string | number>(
-    choices: readonly ActivitySurfaceChoice<T>[],
-    params: {
-        disabled: boolean;
-        selectedValue: T;
-        onSelect: (value: T) => void;
-        color: string;
-    },
-) {
-    return choices.map((choice) => (
-        <Item
-            key={String(choice.value)}
-            title={t(choice.titleKey)}
-            icon={<Icon name={choice.icon as IconName} size={29} color={params.color} />}
-            selected={params.selectedValue === choice.value}
-            disabled={params.disabled}
-            onPress={() => params.onSelect(choice.value)}
-            showChevron={false}
-        />
-    ));
+/**
+ * One choice among an activity-surface option table. `segmented` for short labels; `select` (the page
+ * field select) where the labels would not fit beside each other on a phone (R5: segmented is for
+ * 2–4 short options).
+ */
+function ActivitySurfaceChoiceRow<T extends string | number>(props: Readonly<{
+    setting: SettingRef;
+    subtitle?: string;
+    testIDPrefix: string;
+    choices: readonly ActivitySurfaceChoice<T>[];
+    disabled: boolean;
+    selectedValue: T;
+    onSelect: (value: T) => void;
+    control?: 'segmented' | 'select';
+    /** Injected by the enclosing `ItemGroup`. */
+    showDivider?: boolean;
+}>) {
+    const [menuOpen, setMenuOpen] = React.useState(false);
+    const select = (next: string) => {
+        const choice = props.choices.find((candidate) => String(candidate.value) === next);
+        if (choice) props.onSelect(choice.value);
+    };
+    if (props.control === 'select') {
+        return (
+            <SettingAnchor setting={props.setting} showDivider={props.showDivider}>
+                <DropdownMenu
+                    testID={props.testIDPrefix}
+                    open={menuOpen}
+                    onOpenChange={(next) => setMenuOpen(props.disabled ? false : next)}
+                    selectedId={String(props.selectedValue)}
+                    items={props.choices.map((choice) => ({ id: String(choice.value), title: t(choice.titleKey) }))}
+                    onSelect={(id) => {
+                        setMenuOpen(false);
+                        select(id);
+                    }}
+                    itemTrigger={{
+                        title: t(props.setting.titleKey),
+                        subtitle: props.subtitle,
+                        showSelectedSubtitle: false,
+                        itemProps: { disabled: props.disabled, testID: `${props.testIDPrefix}-trigger` },
+                    }}
+                />
+            </SettingAnchor>
+        );
+    }
+    const options = props.choices.map((choice) => ({ id: String(choice.value), label: t(choice.titleKey) }));
+    return (
+        <SettingAnchor setting={props.setting} showDivider={props.showDivider}>
+            <SegmentedChoiceItem<string>
+                testID={props.testIDPrefix}
+                testIDPrefix={props.testIDPrefix}
+                title={t(props.setting.titleKey)}
+                subtitle={props.subtitle}
+                disabled={props.disabled}
+                options={options}
+                value={String(props.selectedValue)}
+                onChange={select}
+            />
+        </SettingAnchor>
+    );
 }
 
 export const ActivitySurfacesSettingsSection = React.memo(function ActivitySurfacesSettingsSection({
@@ -153,8 +176,6 @@ export const ActivitySurfacesSettingsSection = React.memo(function ActivitySurfa
     setLocalSetting,
     renderMode = 'all',
 }: ActivitySurfacesSettingsSectionProps) {
-    const { theme } = useUnistyles();
-
     const activitySurfacesEnabled = localSettings.activitySurfacesEnabled !== false;
     const liveActivitiesEnabled = localSettings.liveActivitiesEnabled !== false;
     const widgetsEnabled = localSettings.widgetsEnabled !== false;
@@ -168,13 +189,11 @@ export const ActivitySurfacesSettingsSection = React.memo(function ActivitySurfa
         <>
             <ItemGroup
                 title={t('settingsNotifications.activitySurfaces.title')}
-                footer={t('settingsNotifications.activitySurfaces.footer')}
+                description={t('settingsNotifications.activitySurfaces.footer')}
             >
-                <Item
+                <SettingRow
                     testID="settings-notifications-activity-surfaces-enabled"
-                    title={t('common.enabled')}
-                    subtitle={t('settingsNotifications.activitySurfaces.enabledSubtitle')}
-                    icon={<Icon name="sparkle" size={29} color={theme.colors.accent.blue} />}
+                    setting={NOTIFICATIONS_SETTINGS.settings.enabled}
                     rightElement={(
                         <Switch
                             value={activitySurfacesEnabled}
@@ -187,45 +206,37 @@ export const ActivitySurfacesSettingsSection = React.memo(function ActivitySurfa
 
             <ItemGroup
                 title={t('settingsNotifications.activitySurfaces.shared.title')}
-                footer={t('settingsNotifications.activitySurfaces.shared.footer')}
+                description={t('settingsNotifications.activitySurfaces.shared.footer')}
             >
-                <Item
-                    title={t('settingsNotifications.activitySurfaces.tapTargetTitle')}
-                    icon={<Icon name="arrow-right" size={29} color={theme.colors.text.secondary} />}
+                <ActivitySurfaceChoiceRow
+                    setting={NOTIFICATIONS_SETTINGS.settings.tapTarget}
+                    testIDPrefix="settings-notifications-activity-tap-target"
+                    control="select"
+                    choices={ACTIVITY_SURFACE_TAP_TARGET_OPTIONS}
                     disabled={!activitySurfacesEnabled}
-                    showChevron={false}
+                    selectedValue={localSettings.activitySurfaceTapTarget}
+                    onSelect={(value) => setLocalSetting({ activitySurfaceTapTarget: value })}
                 />
-                {renderChoiceRows(ACTIVITY_SURFACE_TAP_TARGET_OPTIONS, {
-                    disabled: !activitySurfacesEnabled,
-                    selectedValue: localSettings.activitySurfaceTapTarget,
-                    onSelect: (value) => setLocalSetting({ activitySurfaceTapTarget: value }),
-                    color: theme.colors.accent.blue,
-                })}
-                <Item
-                    title={t('settingsNotifications.activitySurfaces.privacyTitle')}
-                    icon={<Icon name="shield-check" size={29} color={theme.colors.text.secondary} />}
+                <ActivitySurfaceChoiceRow
+                    setting={NOTIFICATIONS_SETTINGS.settings.privacy}
+                    testIDPrefix="settings-notifications-activity-privacy"
+                    control="select"
+                    choices={ACTIVITY_SURFACE_PRIVACY_OPTIONS}
                     disabled={!activitySurfacesEnabled}
-                    showChevron={false}
+                    selectedValue={localSettings.activitySurfacePrivacyMode}
+                    onSelect={(value) => setLocalSetting({ activitySurfacePrivacyMode: value })}
                 />
-                {renderChoiceRows(ACTIVITY_SURFACE_PRIVACY_OPTIONS, {
-                    disabled: !activitySurfacesEnabled,
-                    selectedValue: localSettings.activitySurfacePrivacyMode,
-                    onSelect: (value) => setLocalSetting({ activitySurfacePrivacyMode: value }),
-                    color: theme.colors.accent.blue,
-                })}
             </ItemGroup>
 
             {showPlatformSpecificSections ? (
                 <>
                     <ItemGroup
                         title={t('settingsNotifications.activitySurfaces.liveActivities.title')}
-                        footer={t('settingsNotifications.activitySurfaces.liveActivities.footer')}
+                        description={t('settingsNotifications.activitySurfaces.liveActivities.footer')}
                     >
-                        <Item
+                        <SettingRow
                             testID="settings-notifications-live-activities-enabled"
-                            title={t('common.enabled')}
-                            subtitle={t('settingsNotifications.activitySurfaces.liveActivities.enabledSubtitle')}
-                            icon={<Icon name="device-mobile" size={29} color={theme.colors.accent.blue} />}
+                            setting={NOTIFICATIONS_SETTINGS.settings.liveActivitiesEnabled}
                             rightElement={(
                                 <Switch
                                     value={liveActivitiesEnabled}
@@ -235,47 +246,37 @@ export const ActivitySurfacesSettingsSection = React.memo(function ActivitySurfa
                             )}
                             showChevron={false}
                         />
-                        <Item
-                            title={t('settingsNotifications.activitySurfaces.liveActivities.strategyTitle')}
+                        <ActivitySurfaceChoiceRow
+                            setting={NOTIFICATIONS_SETTINGS.settings.strategy}
                             subtitle={t('settingsNotifications.activitySurfaces.liveActivities.strategySubtitle')}
-                            icon={<Icon name="git-branch" size={29} color={theme.colors.text.secondary} />}
+                            testIDPrefix="settings-notifications-live-activities-strategy"
+                            control="select"
+                            choices={LIVE_ACTIVITY_STRATEGY_OPTIONS}
                             disabled={!activitySurfacesEnabled || !liveActivitiesEnabled}
-                            showChevron={false}
+                            selectedValue={localSettings.liveActivitiesStrategy}
+                            onSelect={(value) => setLocalSetting({ liveActivitiesStrategy: value })}
                         />
-                        {renderChoiceRows(LIVE_ACTIVITY_STRATEGY_OPTIONS, {
-                            disabled: !activitySurfacesEnabled || !liveActivitiesEnabled,
-                            selectedValue: localSettings.liveActivitiesStrategy,
-                            onSelect: (value) => setLocalSetting({ liveActivitiesStrategy: value }),
-                            color: theme.colors.accent.blue,
-                        })}
-                        <Item
-                            title={t('settingsNotifications.activitySurfaces.liveActivities.presentationTitle')}
+                        <ActivitySurfaceChoiceRow
+                            setting={NOTIFICATIONS_SETTINGS.settings.presentation}
                             subtitle={t('settingsNotifications.activitySurfaces.liveActivities.presentationSubtitle')}
-                            icon={<Icon name="eye" size={29} color={theme.colors.text.secondary} />}
+                            testIDPrefix="settings-notifications-live-activities-mode"
+                            control="select"
+                            choices={LIVE_ACTIVITY_MODE_OPTIONS}
                             disabled={!activitySurfacesEnabled || !liveActivitiesEnabled}
-                            showChevron={false}
+                            selectedValue={localSettings.liveActivitiesMode}
+                            onSelect={(value) => setLocalSetting({ liveActivitiesMode: value })}
                         />
-                        {renderChoiceRows(LIVE_ACTIVITY_MODE_OPTIONS, {
-                            disabled: !activitySurfacesEnabled || !liveActivitiesEnabled,
-                            selectedValue: localSettings.liveActivitiesMode,
-                            onSelect: (value) => setLocalSetting({ liveActivitiesMode: value }),
-                            color: theme.colors.accent.blue,
-                        })}
-                        <Item
-                            title={t('settingsNotifications.activitySurfaces.liveActivities.maxConcurrentTitle')}
-                            icon={<Icon name="stack-simple" size={29} color={theme.colors.text.secondary} />}
+                        <ActivitySurfaceChoiceRow
+                            setting={NOTIFICATIONS_SETTINGS.settings.maxConcurrent}
+                            subtitle={liveActivitiesConcurrencyEnabled ? undefined : t('settingsNotifications.activitySurfaces.liveActivities.maxConcurrentNeedsSessionSpecific')}
+                            testIDPrefix="settings-notifications-live-activities-max-concurrent"
+                            choices={LIVE_ACTIVITY_MAX_CONCURRENT_OPTIONS}
                             disabled={!liveActivitiesConcurrencyEnabled}
-                            showChevron={false}
+                            selectedValue={localSettings.liveActivitiesMaxConcurrent}
+                            onSelect={(value) => setLocalSetting({ liveActivitiesMaxConcurrent: value })}
                         />
-                        {renderChoiceRows(LIVE_ACTIVITY_MAX_CONCURRENT_OPTIONS, {
-                            disabled: !liveActivitiesConcurrencyEnabled,
-                            selectedValue: localSettings.liveActivitiesMaxConcurrent,
-                            onSelect: (value) => setLocalSetting({ liveActivitiesMaxConcurrent: value }),
-                            color: theme.colors.accent.blue,
-                        })}
-                        <Item
-                            title={t('settingsNotifications.activitySurfaces.liveActivities.previewTextTitle')}
-                            icon={<Icon name="chat-circle-dots" size={29} color={theme.colors.text.secondary} />}
+                        <SettingRow
+                            setting={NOTIFICATIONS_SETTINGS.settings.previewText}
                             rightElement={(
                                 <Switch
                                     value={localSettings.liveActivitiesShowPreviewText !== false}
@@ -285,9 +286,8 @@ export const ActivitySurfacesSettingsSection = React.memo(function ActivitySurfa
                             )}
                             showChevron={false}
                         />
-                        <Item
-                            title={t('settingsNotifications.activitySurfaces.liveActivities.actionButtonsTitle')}
-                            icon={<Icon name="hand" size={29} color={theme.colors.text.secondary} />}
+                        <SettingRow
+                            setting={NOTIFICATIONS_SETTINGS.settings.actionButtons}
                             rightElement={(
                                 <Switch
                                     value={localSettings.liveActivitiesAllowActionButtons !== false}
@@ -297,9 +297,8 @@ export const ActivitySurfacesSettingsSection = React.memo(function ActivitySurfa
                             )}
                             showChevron={false}
                         />
-                        <Item
-                            title={t('settingsNotifications.activitySurfaces.liveActivities.includeReadyTitle')}
-                            icon={<Icon name="check-circle" size={29} color={theme.colors.text.secondary} />}
+                        <SettingRow
+                            setting={NOTIFICATIONS_SETTINGS.settings.includeReady}
                             rightElement={(
                                 <Switch
                                     value={localSettings.liveActivitiesIncludeReady !== false}
@@ -309,9 +308,8 @@ export const ActivitySurfacesSettingsSection = React.memo(function ActivitySurfa
                             )}
                             showChevron={false}
                         />
-                        <Item
-                            title={t('settingsNotifications.activitySurfaces.liveActivities.includeThinkingTitle')}
-                            icon={<Icon name="pulse" size={29} color={theme.colors.text.secondary} />}
+                        <SettingRow
+                            setting={NOTIFICATIONS_SETTINGS.settings.includeThinking}
                             rightElement={(
                                 <Switch
                                     value={localSettings.liveActivitiesIncludeThinking !== false}
@@ -325,13 +323,11 @@ export const ActivitySurfacesSettingsSection = React.memo(function ActivitySurfa
 
                     <ItemGroup
                         title={t('settingsNotifications.activitySurfaces.widgets.title')}
-                        footer={t('settingsNotifications.activitySurfaces.widgets.footer')}
+                        description={t('settingsNotifications.activitySurfaces.widgets.footer')}
                     >
-                        <Item
+                        <SettingRow
                             testID="settings-notifications-home-screen-widgets-enabled"
-                            title={t('common.enabled')}
-                            subtitle={t('settingsNotifications.activitySurfaces.widgets.enabledSubtitle')}
-                            icon={<Icon name="grid-four" size={29} color={theme.colors.accent.blue} />}
+                            setting={NOTIFICATIONS_SETTINGS.settings.widgetsEnabled}
                             rightElement={(
                                 <Switch
                                     value={widgetsEnabled}
@@ -341,15 +337,17 @@ export const ActivitySurfacesSettingsSection = React.memo(function ActivitySurfa
                             )}
                             showChevron={false}
                         />
-                        {renderChoiceRows(HOME_SCREEN_WIDGET_MODE_OPTIONS, {
-                            disabled: !activitySurfacesEnabled || !widgetsEnabled,
-                            selectedValue: localSettings.widgetsPresetMode,
-                            onSelect: (value) => setLocalSetting({ widgetsPresetMode: value }),
-                            color: theme.colors.accent.blue,
-                        })}
-                        <Item
-                            title={t('settingsNotifications.activitySurfaces.widgets.previewTextTitle')}
-                            icon={<Icon name="chat-circle-dots" size={29} color={theme.colors.text.secondary} />}
+                        <ActivitySurfaceChoiceRow
+                            setting={NOTIFICATIONS_SETTINGS.settings.widgetsMode}
+                            testIDPrefix="settings-notifications-widgets-mode"
+                            control="select"
+                            choices={HOME_SCREEN_WIDGET_MODE_OPTIONS}
+                            disabled={!activitySurfacesEnabled || !widgetsEnabled}
+                            selectedValue={localSettings.widgetsPresetMode}
+                            onSelect={(value) => setLocalSetting({ widgetsPresetMode: value })}
+                        />
+                        <SettingRow
+                            setting={NOTIFICATIONS_SETTINGS.settings.widgetsPreviewText}
                             rightElement={(
                                 <Switch
                                     value={localSettings.widgetsShowPreviewText !== false}
@@ -359,9 +357,8 @@ export const ActivitySurfacesSettingsSection = React.memo(function ActivitySurfa
                             )}
                             showChevron={false}
                         />
-                        <Item
-                            title={t('settingsNotifications.activitySurfaces.widgets.machinePathTitle')}
-                            icon={<Icon name="folder-open" size={29} color={theme.colors.text.secondary} />}
+                        <SettingRow
+                            setting={NOTIFICATIONS_SETTINGS.settings.machinePath}
                             rightElement={(
                                 <Switch
                                     value={localSettings.widgetsShowMachinePath !== false}

@@ -7,8 +7,12 @@ import { t } from '@/text';
 
 import { teamRoleLabel } from './teamLabels';
 import type { TeamsDirectoryRow } from './teamsDirectoryViewState';
+import { collectionListStyles } from '@/components/ui/lists/collection/CollectionList';
+import { HappierCollectionListMark } from '@happier-dev/plugin-ui/presentation';
 
 const TEAM_AVATAR_SIZE = 36;
+/** Fits the rail's mark box, so Team names align with the rest of the rail. */
+const TEAM_RAIL_AVATAR_SIZE = 28;
 
 /**
  * One Team in the directory.
@@ -23,8 +27,12 @@ export const TeamRow = React.memo(function TeamRow(props: Readonly<{
     row: TeamsDirectoryRow;
     showHome: boolean;
     onPress: () => void;
+    /** `rail`: the compact row of the Teams collection rail, selected while its Team is open. */
+    variant?: 'page' | 'rail';
+    selected?: boolean;
 }>) {
     const { row } = props;
+    const rail = props.variant === 'rail';
     const roleLabel = row.team.viewerRole ? teamRoleLabel(row.team.viewerRole) : '';
     const subtitle = props.showHome
         ? [roleLabel, row.homeName].filter((part) => part.length > 0).join(' · ')
@@ -40,15 +48,33 @@ export const TeamRow = React.memo(function TeamRow(props: Readonly<{
                 role: roleLabel,
                 home: row.homeName,
             })}
-            leftElement={(
-                <Avatar
-                    id={row.address.teamId}
-                    square
-                    size={TEAM_AVATAR_SIZE}
-                    imageUrl={row.team.logo?.url ?? null}
-                    thumbhash={row.team.logo?.thumbhash ?? null}
-                />
-            )}
+            {...(rail ? {
+                icon: (
+                    <HappierCollectionListMark>
+                        <Avatar
+                            id={row.address.teamId}
+                            square
+                            size={TEAM_RAIL_AVATAR_SIZE}
+                            imageUrl={row.team.logo?.url ?? null}
+                            thumbhash={row.team.logo?.thumbhash ?? null}
+                        />
+                    </HappierCollectionListMark>
+                ),
+                selected: props.selected === true,
+                density: 'compact' as const,
+                showChevron: false,
+                pressableStyle: collectionListStyles.row,
+            } : {
+                leftElement: (
+                    <Avatar
+                        id={row.address.teamId}
+                        square
+                        size={TEAM_AVATAR_SIZE}
+                        imageUrl={row.team.logo?.url ?? null}
+                        thumbhash={row.team.logo?.thumbhash ?? null}
+                    />
+                ),
+            })}
             rightElement={row.team.archivedAt !== null ? (
                 <StatusPill
                     testID={`teams-row-archived:${row.address.teamId}`}

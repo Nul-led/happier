@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { StyleSheet, useUnistyles } from 'react-native-unistyles';
+import { View } from 'react-native';
 
 import type { ImportedMcpInputResolutionV1 } from '@/sync/domains/settings/mcpServers/materializeImportedMcpServerDrafts';
 import type { ParseImportedMcpServerJsonResult } from '@/sync/domains/settings/mcpServers/parseImportedMcpServerJson';
@@ -7,14 +7,15 @@ import type { ParseImportedMcpServerJsonResult } from '@/sync/domains/settings/m
 import { Item } from '@/components/ui/lists/Item';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
 import { SettingsActionFooter } from '@/components/ui/settingsSurface/SettingsActionFooter';
-import { Text, TextInput } from '@/components/ui/text/Text';
+import { FieldTextInput } from '@/components/ui/forms/FieldTextInput';
+import { SectionContentRow } from '@/components/ui/lists/SectionContentRow';
 import { t } from '@/text';
 
 import { McpInputMappingEditor } from './McpInputMappingEditor';
 import { McpServerBadgePills } from './McpServerBadgePills';
 import { McpServerRowSummary } from './McpServerRowSummary';
-import { resolveTransportIconName, resolveTransportLabel } from './mcpServerUi';
-import { Icon } from '@/components/ui/icons/Icon';
+import { resolveTransportLabel } from './mcpServerUi';
+import { collectionListStyles } from '@/components/ui/lists/collection/CollectionList';
 
 export const McpServerImportJsonTab = React.memo(function McpServerImportJsonTab(props: Readonly<{
     rawJson: string;
@@ -27,22 +28,22 @@ export const McpServerImportJsonTab = React.memo(function McpServerImportJsonTab
     onCancel: () => void;
     onImport: () => void;
 }>) {
-    const { theme } = useUnistyles();
 
     return (
         <>
-            <ItemGroup title={t('settings.mcpServersImportJsonTitle')} footer={t('settings.mcpServersImportJsonSubtitle')}>
-                <TextInput
-                    testID="mcp.server.importJson.input"
-                    multiline
-                    style={styles.importInput}
-                    value={props.rawJson}
-                    onChangeText={props.onChangeRawJson}
-                    placeholder={t('settings.mcpServersImportJsonPlaceholder')}
-                    placeholderTextColor={theme.colors.input.placeholder}
-                    autoCapitalize="none"
-                    autoCorrect={false}
-                />
+            <ItemGroup title={t('settings.mcpServersImportJsonTitle')} description={t('settings.mcpServersImportJsonSubtitle')}>
+                <SectionContentRow>
+                    <FieldTextInput
+                        testID="mcp.server.importJson.input"
+                        multiline
+                        minLines={10}
+                        monospace
+                        value={props.rawJson}
+                        onChangeText={props.onChangeRawJson}
+                        accessibilityLabel={t('settings.mcpServersImportJsonTitle')}
+                        placeholder={t('settings.mcpServersImportJsonPlaceholder')}
+                    />
+                </SectionContentRow>
             </ItemGroup>
 
             {props.parseResult.errors.length > 0 ? (
@@ -50,9 +51,8 @@ export const McpServerImportJsonTab = React.memo(function McpServerImportJsonTab
                     {props.parseResult.errors.map((error, index) => (
                         <Item
                             key={`error:${index}`}
-                            title={t('settings.mcpServersImportJsonErrorTitle')}
-                            subtitle={error}
-                            icon={<Icon name="warning-circle" size={29} color={theme.colors.state.danger.foreground} />}
+                            title={error}
+                            subtitleLeading={<View style={collectionListStyles.troubleDot} />}
                             showChevron={false}
                             mode="info"
                         />
@@ -65,9 +65,7 @@ export const McpServerImportJsonTab = React.memo(function McpServerImportJsonTab
                     {[...props.parseResult.warnings, ...props.mappingIssues].map((warning, index) => (
                         <Item
                             key={`warning:${index}`}
-                            title={t('settings.mcpServersImportJsonWarningsTitle')}
-                            subtitle={warning}
-                            icon={<Icon name="warning-circle" size={29} color={theme.colors.text.secondary} />}
+                            title={warning}
                             showChevron={false}
                             mode="info"
                         />
@@ -89,7 +87,6 @@ export const McpServerImportJsonTab = React.memo(function McpServerImportJsonTab
                                     secondary={server.enabled ? t('settings.mcpServersStatusActive') : t('settings.mcpServersStatusUnavailable')}
                                 />
                             )}
-                            icon={<Icon name={resolveTransportIconName(server.transport)} size={29} color={theme.colors.accent.blue} />}
                             detail={resolveTransportLabel(server.transport)}
                             rightElement={(
                                 <McpServerBadgePills
@@ -111,7 +108,6 @@ export const McpServerImportJsonTab = React.memo(function McpServerImportJsonTab
                         testID="mcp.server.importJson.empty"
                         title={t('settings.mcpServersImportJsonEmptyTitle')}
                         subtitle={t('settings.mcpServersImportJsonEmptySubtitle')}
-                        icon={<Icon name="file-text" size={29} color={theme.colors.text.secondary} />}
                         showChevron={false}
                         mode="info"
                     />
@@ -136,21 +132,3 @@ export const McpServerImportJsonTab = React.memo(function McpServerImportJsonTab
         </>
     );
 });
-
-const styles = StyleSheet.create((theme) => ({
-    importInput: {
-        minHeight: 220,
-        marginHorizontal: 16,
-        marginVertical: 16,
-        borderRadius: 14,
-        borderWidth: 1,
-        borderColor: theme.colors.border.default,
-        backgroundColor: theme.colors.input.background,
-        color: theme.colors.input.text,
-        paddingHorizontal: 14,
-        paddingVertical: 14,
-        fontSize: 14,
-        lineHeight: 20,
-        textAlignVertical: 'top',
-    },
-}));

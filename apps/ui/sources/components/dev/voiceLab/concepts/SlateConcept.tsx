@@ -5,7 +5,8 @@ import Animated, { useAnimatedStyle } from 'react-native-reanimated';
 import { Text } from '@/components/ui/text/Text';
 import { Typography } from '@/constants/Typography';
 
-import { ControlRow, TactilePressable } from '@/components/voice/controls/VoiceControls';
+import { TactilePressable } from '@/components/ui/interactions/TactilePressable';
+import { ControlRow } from '@/components/voice/controls/VoiceControls';
 import { TranscriptStream } from '@/components/voice/surface/VoiceTranscriptStream';
 import { useVoiceEnergy } from '@/components/voice/light/useVoiceEnergy';
 import { controlsForState, VOICE_LAB_TRANSCRIPT } from '../voiceLabModel';

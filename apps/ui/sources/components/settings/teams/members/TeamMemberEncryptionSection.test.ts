@@ -1,10 +1,12 @@
 import * as React from 'react';
+import { act } from 'react-test-renderer';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import tweetnacl from 'tweetnacl';
 import { signAccountContentKeyBindingV1, tryWriteServerEnabledBitInPlace } from '@happier-dev/protocol';
 
 import {
     createRootLayoutFeaturesResponse,
+    createDeferred,
     renderSettingsView,
     standardCleanup,
     teamMembershipFixture,
@@ -28,6 +30,14 @@ import {
     projectTeamMemberEncryptionReadyState,
     projectTeamMemberPreparationOutcome,
 } from './TeamMemberEncryptionSection';
+
+const announcements = vi.hoisted(() => vi.fn());
+vi.mock('react-native', async () => {
+    const { createReactNativeNativeMock } = await import('@/dev/testkit/mocks/reactNative');
+    return createReactNativeNativeMock({ platformOS: 'ios' }, {
+        AccessibilityInfo: { announceForAccessibility: announcements },
+    });
+});
 
 afterEach(() => {
     standardCleanup();
@@ -236,6 +246,93 @@ describe('member encrypted-access state', () => {
 });
 
 describe('TeamMemberEncryptionSection mounted membership history', () => {
+    it('qualifies prepared history to the sessions this manager can manage', async () => {
+        const recipientContent = tweetnacl.box.keyPair();
+        const recipientSigning = tweetnacl.sign.keyPair();
+        const request = vi.fn(async (url: string) => {
+            const path = new URL(url).pathname;
+            if (path.includes('/account/encryption')) {
+                return new Response(JSON.stringify({
+                    mode: 'e2ee', version: 1, signingKeyFingerprint: 'signing-current',
+                    contentKeyFingerprint: 'content-current', updatedAt: 1,
+                    recipientEnvelopeReadiness: { status: 'available' },
+                }));
+            }
+            return new Response(JSON.stringify({
+                status: 'ready', recipientAccountId: 'recipient-1',
+                contentKey: {
+                    status: 'available', accountSigningPublicKey: encodeHex(recipientSigning.publicKey),
+                    contentPublicKey: encodeBase64(recipientContent.publicKey, 'base64'),
+                    contentPublicKeySignature: encodeBase64(signAccountContentKeyBindingV1({
+                        accountSigningSecretKey: recipientSigning.secretKey,
+                        contentPublicKey: recipientContent.publicKey,
+                    }), 'base64'),
+                },
+                items: [],
+                exceptions: { callerEnvelopeRepairRequiredCount: 0, callerVisibleNonTransferableSessionCount: 0 },
+                nextCursor: null,
+            }));
+        });
+        const setup = await setupMountedMemberRequest(request, { accountEncryption: 'e2ee' });
+        const screen = await renderSettingsView(React.createElement(TeamMemberEncryptionSection, {
+            context: createMountedContext(setup.profile.id, vi.fn()),
+        }));
+        await vi.waitFor(() => expect(screen.findRow('team-member-encryption-status')).not.toBeNull());
+        expect(screen.getTextContent()).toContain(t('teams.members.encryption.scopeBody'));
+    });
+
+    it('rechecks later Account setup in the same mounted detail and announces only material preparation changes', async () => {
+        announcements.mockClear();
+        const recipientContent = tweetnacl.box.keyPair();
+        const recipientSigning = tweetnacl.sign.keyPair();
+        const commit = createDeferred<Response>();
+        let setupFinished = false;
+        let prepared = false;
+        let managerKeys!: ReturnType<typeof tweetnacl.box.keyPair>;
+        const request = vi.fn(async (url: string, init?: RequestInit) => {
+            if (new URL(url).pathname.includes('/account/encryption')) return new Response(JSON.stringify({
+                mode: 'e2ee', version: 1, signingKeyFingerprint: 'signing-current', contentKeyFingerprint: 'content-current',
+                updatedAt: 1, recipientEnvelopeReadiness: { status: 'available' },
+            }));
+            if (init?.method === 'PATCH') {
+                prepared = true;
+                return await commit.promise;
+            }
+            if (!setupFinished) return new Response(JSON.stringify({
+                status: 'recipient_unavailable', recipientAccountId: 'recipient-1',
+                contentKey: { status: 'unavailable', reason: 'encryption_setup_required' },
+            }));
+            return new Response(JSON.stringify({
+                status: 'ready', recipientAccountId: 'recipient-1',
+                contentKey: { status: 'available', accountSigningPublicKey: encodeHex(recipientSigning.publicKey),
+                    contentPublicKey: encodeBase64(recipientContent.publicKey, 'base64'),
+                    contentPublicKeySignature: encodeBase64(signAccountContentKeyBindingV1({
+                        accountSigningSecretKey: recipientSigning.secretKey, contentPublicKey: recipientContent.publicKey,
+                    }), 'base64') },
+                items: prepared ? [] : [{ sessionId: 'session-1', callerDataKeyEnvelope: encryptDataKeyForRecipientV0(
+                    new Uint8Array(32).fill(7), encodeBase64(managerKeys.publicKey, 'base64')) }],
+                exceptions: { callerEnvelopeRepairRequiredCount: 0, callerVisibleNonTransferableSessionCount: 0 }, nextCursor: null,
+            }));
+        });
+        const setup = await setupMountedMemberRequest(request, { accountEncryption: 'e2ee' });
+        managerKeys = setup.managerKeys;
+        const screen = await renderSettingsView(React.createElement(TeamMemberEncryptionSection, {
+            context: createMountedContext(setup.profile.id, vi.fn()),
+        }));
+        await vi.waitFor(() => expect(screen.findRow('team-member-encryption-setup-required')).not.toBeNull());
+        announcements.mockClear();
+        setupFinished = true;
+        await act(async () => { screen.pressRow('team-member-encryption-check-again'); });
+        await vi.waitFor(() => expect(screen.findRow('team-member-encryption-prepare')).not.toBeNull());
+        announcements.mockClear();
+        await act(async () => { screen.pressRow('team-member-encryption-prepare'); });
+        await vi.waitFor(() => expect(prepared).toBe(true));
+        expect(announcements).toHaveBeenCalledTimes(1);
+        await act(async () => { commit.resolve(new Response(JSON.stringify({ appliedCount: 1 }))); });
+        await vi.waitFor(() => expect(screen.findRow('team-member-encryption-prepare')).toBeNull());
+        await vi.waitFor(() => expect(screen.findRow('team-member-encryption-status')).not.toBeNull());
+        expect(announcements).toHaveBeenCalledTimes(2);
+    });
     it.each([
         [
             'Team',
@@ -346,5 +443,64 @@ describe('TeamMemberEncryptionSection mounted membership history', () => {
         const rendered = screen.getTextContent();
         expect(rendered).toContain(t('teams.members.encryption.repairRequired'));
         expect(rendered).not.toContain(t('teams.members.encryption.setupRequired'));
+    });
+
+    it('keeps settled setup state visible while a retry is checking the Home', async () => {
+        const recipientContent = tweetnacl.box.keyPair();
+        const recipientSigning = tweetnacl.sign.keyPair();
+        const retry = createDeferred<Response>();
+        let collectionGets = 0;
+        const request = vi.fn(async (url: string) => {
+            const path = new URL(url).pathname;
+            if (path.includes('/account/encryption')) {
+                return new Response(JSON.stringify({
+                    mode: 'e2ee',
+                    version: 1,
+                    signingKeyFingerprint: 'signing-current',
+                    contentKeyFingerprint: 'content-current',
+                    updatedAt: 1,
+                    recipientEnvelopeReadiness: { status: 'available' },
+                }));
+            }
+            collectionGets += 1;
+            if (collectionGets === 1) {
+                return new Response(JSON.stringify({
+                    status: 'recipient_unavailable',
+                    recipientAccountId: 'recipient-1',
+                    contentKey: { status: 'unavailable', reason: 'encryption_setup_required' },
+                }));
+            }
+            return await retry.promise;
+        });
+        const setup = await setupMountedMemberRequest(request, { accountEncryption: 'e2ee' });
+        const screen = await renderSettingsView(React.createElement(TeamMemberEncryptionSection, {
+            context: createMountedContext(setup.profile.id, vi.fn()),
+        }));
+
+        await vi.waitFor(() => expect(screen.findByTestId('team-member-encryption-check-again')).not.toBeNull());
+        await act(async () => { screen.findByTestId('team-member-encryption-check-again')?.props.onPress(); });
+
+        expect(screen.findByTestId('team-member-encryption-setup-required')).not.toBeNull();
+        expect(screen.findByTestId('team-member-encryption-setup-required')?.props.loading).toBe(true);
+
+        await act(async () => {
+            retry.resolve(new Response(JSON.stringify({
+                status: 'ready',
+                recipientAccountId: 'recipient-1',
+                contentKey: {
+                    status: 'available',
+                    accountSigningPublicKey: encodeHex(recipientSigning.publicKey),
+                    contentPublicKey: encodeBase64(recipientContent.publicKey, 'base64'),
+                    contentPublicKeySignature: encodeBase64(signAccountContentKeyBindingV1({
+                        accountSigningSecretKey: recipientSigning.secretKey,
+                        contentPublicKey: recipientContent.publicKey,
+                    }), 'base64'),
+                },
+                items: [],
+                exceptions: { callerEnvelopeRepairRequiredCount: 0, callerVisibleNonTransferableSessionCount: 0 },
+                nextCursor: null,
+            })));
+        });
+        await vi.waitFor(() => expect(screen.findByTestId('team-member-encryption-status')).not.toBeNull());
     });
 });

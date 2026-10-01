@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { useRouter } from 'expo-router';
+import { useRouter } from '@/components/appShell/workspace/destinationRoute';
 import {
     HomeAccountSearchResultV1Schema,
     type HomeAccountPickerRowV1,
@@ -10,15 +10,19 @@ import {
 } from '@happier-dev/protocol/teams';
 
 import { Avatar } from '@/components/ui/avatar/Avatar';
+import { RoundButton } from '@/components/ui/buttons/RoundButton';
+import { CompactSearchField } from '@/components/ui/forms/CompactSearchField';
 import { Item } from '@/components/ui/lists/Item';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
-import { TextInput } from '@/components/ui/text/Text';
+import { SectionButtonRow } from '@/components/ui/lists/SectionButtonRow';
+import { SectionContentRow } from '@/components/ui/lists/SectionContentRow';
+import { SegmentedChoiceItem } from '@/components/ui/lists/SegmentedChoiceItem';
 import {
     isTeamActionApprovalPendingError,
     runTeamAction,
     type HomeDomainFailure,
 } from '@/sync/ops/teams/teamActionClient';
-import { formatAccountDisplayName } from '@/sync/domains/account/formatAccountDisplayName';
+import { resolveAccountDisplayName } from '@/sync/domains/account/formatAccountDisplayName';
 import { teamMemberDetailPath } from '@/components/settings/teams/teamsRoutes';
 import { addTeamMember } from '@/sync/ops/teams/teamMemberOperations';
 import { t } from '@/text';
@@ -178,126 +182,120 @@ const AddMemberForm = React.memo(function AddMemberForm(props: Readonly<{ contex
 
     if (!context.team.capabilities.manageMembers) {
         return (
-            <ItemGroup footer={t('teams.errors.forbidden')}>
-                <Item testID="team-member-add-forbidden" title={t('homeGovernance.forbiddenTitle')} showChevron={false} />
+            <ItemGroup>
+                <Item
+                    testID="team-member-add-forbidden"
+                    title={t('homeGovernance.forbiddenTitle')}
+                    subtitle={t('teams.errors.forbidden')}
+                    subtitleLines={0}
+                    mode="info"
+                    showChevron={false}
+                />
             </ItemGroup>
         );
     }
 
     return (
         <>
-            <ItemGroup title={t('teams.members.addTitle', { team: context.team.name })}>
-                <TextInput
-                    testID="team-member-add-search"
-                    value={query}
-                    onChangeText={(value) => {
-                        setQuery(value);
-                        setSelected(null);
-                    }}
-                    placeholder={t('teams.members.personPlaceholder')}
-                    accessibilityLabel={t('teams.members.personLabel')}
-                />
-            </ItemGroup>
-
-            {candidates.length > 0 ? (
-                <ItemGroup
-                    title={t('teams.members.personLabel')}
-                    accessibilityRole="radiogroup"
-                    accessibilityLabel={t('teams.members.personLabel')}
-                >
-                    {candidates.map((candidate) => (
-                        <Item
-                            key={candidate.accountId}
-                            testID={`team-member-add-candidate:${candidate.accountId}`}
-                            title={formatAccountDisplayName(candidate.profile) ?? candidate.accountId}
-                            selected={selected?.accountId === candidate.accountId}
-                            accessibilityRole="radio"
-                            webRole="radio"
-                            accessibilityChecked={selected?.accountId === candidate.accountId}
-                            // An ineligible Account stays visible and unselectable
-                            // so the manager can see it was found, not missing —
-                            // and is told why it cannot be chosen.
-                            disabled={!candidate.eligible}
-                            subtitle={candidate.eligible ? undefined : t('teams.members.ineligible')}
-                            leftElement={(
-                                <Avatar
-                                    id={candidate.accountId}
-                                    size={PICKER_AVATAR_SIZE}
-                                    imageUrl={candidate.profile.avatarUrl}
-                                />
-                            )}
-                            onPress={() => setSelected(candidate)}
-                            showChevron={false}
-                        />
-                    ))}
-                </ItemGroup>
-            ) : null}
-
-            {search.status === 'loading' ? (
-                <ItemGroup>
+            <ItemGroup
+                title={t('teams.members.personLabel')}
+                accessibilityRole={candidates.length > 0 ? 'radiogroup' : undefined}
+                accessibilityLabel={t('teams.members.personLabel')}
+            >
+                <SectionContentRow>
+                    <CompactSearchField
+                        testID="team-member-add-search"
+                        value={query}
+                        onChangeText={(value) => {
+                            setQuery(value);
+                            setSelected(null);
+                        }}
+                        placeholder={t('teams.members.personPlaceholder')}
+                    />
+                </SectionContentRow>
+                {candidates.map((candidate) => (
+                    <Item
+                        key={candidate.accountId}
+                        testID={`team-member-add-candidate:${candidate.accountId}`}
+                        title={resolveAccountDisplayName({ profile: candidate.profile, accountId: candidate.accountId }).name}
+                        subtitle={[
+                            resolveAccountDisplayName({ profile: candidate.profile, accountId: candidate.accountId }).hint,
+                            candidate.eligible ? null : t('teams.members.ineligible'),
+                        ].filter((part): part is string => part !== null).join(' · ') || undefined}
+                        selected={selected?.accountId === candidate.accountId}
+                        accessibilityRole="radio"
+                        webRole="radio"
+                        accessibilityChecked={selected?.accountId === candidate.accountId}
+                        // An ineligible Account stays visible and unselectable
+                        // so the manager can see it was found, not missing —
+                        // and is told why it cannot be chosen.
+                        disabled={!candidate.eligible}
+                        leftElement={(
+                            <Avatar
+                                id={candidate.accountId}
+                                size={PICKER_AVATAR_SIZE}
+                                imageUrl={candidate.profile.avatarUrl}
+                            />
+                        )}
+                        onPress={() => setSelected(candidate)}
+                        showChevron={false}
+                    />
+                ))}
+                {search.status === 'loading' ? (
                     <Item
                         testID="team-member-add-search-loading"
                         title={t('teams.members.personLabel')}
                         loading
+                        mode="info"
                         showChevron={false}
                     />
-                </ItemGroup>
-            ) : null}
-
-            {search.status === 'ready' && candidates.length === 0 ? (
-                <ItemGroup footer={t('teams.members.emptyBody')}>
+                ) : null}
+                {search.status === 'ready' && candidates.length === 0 ? (
                     <Item
                         testID="team-member-add-search-empty"
                         title={t('teams.members.emptyTitle')}
+                        subtitle={t('teams.members.emptyBody')}
+                        mode="info"
                         showChevron={false}
                     />
-                </ItemGroup>
-            ) : null}
-
-            {search.status === 'error' ? (
-                <ItemGroup footer={search.failure
-                    ? teamReadFailureLabel(search.failure)
-                    : t('teams.errors.generic')}>
+                ) : null}
+                {search.status === 'error' ? (
                     <Item
                         testID={search.failure?.retryable
                             ? 'team-member-add-search-retry'
                             : 'team-member-add-search-unavailable'}
-                        title={search.failure?.retryable
-                            ? t('teams.unavailable.retry')
+                        title={search.failure
+                            ? teamReadFailureLabel(search.failure)
                             : t('teams.errors.generic')}
+                        subtitleLines={0}
+                        detail={search.failure?.retryable ? t('teams.unavailable.retry') : undefined}
                         onPress={search.failure?.retryable
                             ? () => setSearchRetry((value) => value + 1)
                             : undefined}
                         showChevron={false}
                     />
-                </ItemGroup>
-            ) : null}
+                ) : null}
+            </ItemGroup>
 
-            <ItemGroup
-                title={t('teams.members.roleLabel')}
-                footer={roleHelp(role)}
-                accessibilityRole="radiogroup"
-                accessibilityLabel={t('teams.members.roleLabel')}
-            >
-                {ADMISSIBLE_ROLES.map((candidate) => (
-                    <Item
-                        key={candidate}
-                        testID={`team-member-add-role:${candidate}`}
-                        title={teamRoleLabel(candidate)}
-                        selected={candidate === role}
-                        accessibilityRole="radio"
-                        webRole="radio"
-                        accessibilityChecked={candidate === role}
-                        onPress={() => setRole(candidate)}
-                        showChevron={false}
-                    />
-                ))}
+            <ItemGroup>
+                <SegmentedChoiceItem
+                    title={t('teams.members.roleLabel')}
+                    options={ADMISSIBLE_ROLES.map((candidate) => ({
+                        id: candidate,
+                        label: teamRoleLabel(candidate),
+                        description: roleHelp(candidate),
+                    }))}
+                    value={role}
+                    onChange={setRole}
+                    testIDPrefix="team-member-add-role"
+                    subtitleLines={0}
+                />
             </ItemGroup>
 
             {historyChoiceAvailable ? (
                 <ItemGroup
                     title={t('teams.history.label')}
-                    footer={t('teams.history.scopeNote')}
+                    description={t('teams.history.scopeNote')}
                     accessibilityRole="radiogroup"
                     accessibilityLabel={t('teams.history.label')}
                 >
@@ -324,15 +322,17 @@ const AddMemberForm = React.memo(function AddMemberForm(props: Readonly<{ contex
                 </ItemGroup>
             ) : null}
 
-            <ItemGroup footer={error ?? undefined}>
-                <Item
-                    testID="team-member-add-submit"
-                    title={t('teams.members.addSubmit')}
-                    loading={submitting}
-                    disabled={!selected || submitting || !context.canMutate}
-                    onPress={() => void submit()}
-                    showChevron={false}
-                />
+            <ItemGroup surface="none">
+                <SectionButtonRow footnote={error} footnoteTone="danger" footnoteTestID="team-member-add-error">
+                    <RoundButton
+                        testID="team-member-add-submit"
+                        size="small"
+                        title={t('teams.members.addSubmit')}
+                        loading={submitting}
+                        disabled={!selected || submitting || !context.canMutate}
+                        onPress={() => void submit()}
+                    />
+                </SectionButtonRow>
             </ItemGroup>
         </>
     );
@@ -343,7 +343,12 @@ export const TeamMemberAddScreen = React.memo(function TeamMemberAddScreen(props
     teamId: string;
 }>) {
     return (
-        <TeamSection serverId={props.serverId} teamId={props.teamId} title={t('teams.members.add')}>
+        <TeamSection
+            serverId={props.serverId}
+            teamId={props.teamId}
+            title={t('teams.members.add')}
+            description={t('teams.pages.addMember')}
+        >
             {(context) => <AddMemberForm context={context} />}
         </TeamSection>
     );

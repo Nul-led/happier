@@ -1,4 +1,9 @@
-import { parseSshTrustPromptData, type SystemTaskJsonObject } from '@happier-dev/protocol';
+import { describeBackgroundServiceTargetMode } from '@happier-dev/cli-common/happierRuntime';
+import {
+  parseReplaceRemoteBackgroundServicesPromptData,
+  parseSshTrustPromptData,
+  type SystemTaskJsonObject,
+} from '@happier-dev/protocol';
 
 /** The two host-identity prompts an SSH system task can raise. */
 export type SshHostTrustPromptKind = 'ssh.trustHost' | 'ssh.replaceHostKey';
@@ -62,6 +67,53 @@ export async function answerSshHostTrustPrompt(params: Readonly<{
   if (params.assumeYes) return { trusted: true };
   if (!params.interactive) return { trusted: false };
   return { trusted: await params.confirm(message) };
+}
+
+/** The replacement prompt as a human reads it: the target and every service it would replace. */
+export function formatRemoteBackgroundServiceReplacementPrompt(data: SystemTaskJsonObject, fallbackMessage = ''): string {
+  const parsed = parseReplaceRemoteBackgroundServicesPromptData(data);
+  const services = parsed.services.map((service) => {
+    const details = [
+      service.releaseChannel,
+      describeBackgroundServiceTargetMode(service.targetMode),
+    ].filter(Boolean).join(', ');
+    return `- ${service.label}${details ? ` (${details})` : ''} — ${service.running ? 'running' : 'stopped'}`;
+  });
+  return [
+    fallbackMessage || 'Replace existing remote background services?',
+    parsed.targetServerUrl ? `Target server: ${parsed.targetServerUrl}` : '',
+    parsed.targetReleaseChannel ? `Target release channel: ${parsed.targetReleaseChannel}` : '',
+    services.length > 0 ? 'Existing services:' : '',
+    ...services,
+  ].filter(Boolean).join('\n');
+}
+
+/**
+ * The single CLI policy for the remote background-service replacement prompt,
+ * shared by `happier machine setup` and `happier home create --ssh`.
+ *
+ * Replacement removes services, so an interactive answer defaults to keeping
+ * them. What `--yes` means is each command's documented contract, passed
+ * explicitly: machine setup replaces, Home creation declines (it has the
+ * explicit `--replace-services` flag instead).
+ */
+export async function answerRemoteBackgroundServiceReplacementPrompt(params: Readonly<{
+  data: SystemTaskJsonObject;
+  assumeYes: boolean;
+  assumeYesMeans: 'replace' | 'decline';
+  interactive: boolean;
+  /** The task's own prompt message, when it supplied one. */
+  message?: string;
+  /** Asks the formatted question; the caller's yes/no primitive must default to no. */
+  confirm: (message: string) => Promise<boolean>;
+}>): Promise<Readonly<{ replaceExistingServices: boolean }>> {
+  if (params.assumeYes) return { replaceExistingServices: params.assumeYesMeans === 'replace' };
+  if (!params.interactive) return { replaceExistingServices: false };
+  return {
+    replaceExistingServices: await params.confirm(
+      `${formatRemoteBackgroundServiceReplacementPrompt(params.data, params.message ?? '')}\nReplace these background services?`,
+    ),
+  };
 }
 
 /** `--trusted-host-key <known_hosts line>`, the non-interactive exact pin. */

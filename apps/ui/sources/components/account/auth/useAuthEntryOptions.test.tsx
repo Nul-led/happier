@@ -13,6 +13,15 @@ const subscribeActiveServerMock = vi.hoisted(() => vi.fn());
 const getAuthProviderMock = vi.hoisted(() => vi.fn());
 const getServerRetentionPolicyMock = vi.hoisted(() => vi.fn());
 const fetchHomeAuthEntryMock = vi.hoisted(() => vi.fn());
+const getServerProfileByIdMock = vi.hoisted(() => vi.fn());
+
+// Some shared store modules read the active runtime while the test graph is
+// being collected, before `beforeEach` installs the per-case snapshot.
+getActiveServerSnapshotMock.mockReturnValue({
+    serverId: 'server-example',
+    serverUrl: 'http://api.example.test',
+    generation: 1,
+});
 
 vi.mock('@/auth/entry/authEntryClient', () => ({
     fetchHomeAuthEntry: fetchHomeAuthEntryMock,
@@ -25,9 +34,18 @@ vi.mock('@/sync/api/capabilities/serverFeaturesClient', () => ({
 }));
 
 vi.mock('@/sync/domains/server/serverRuntime', () => ({
-    getActiveServerSnapshot: getActiveServerSnapshotMock,
+    getActiveServerSnapshot: () => getActiveServerSnapshotMock() ?? {
+        serverId: 'server-example',
+        serverUrl: 'http://api.example.test',
+        generation: 1,
+    },
     getActiveServerHomeCarrier: getActiveServerHomeCarrierMock,
     subscribeActiveServer: subscribeActiveServerMock,
+}));
+
+vi.mock('@/sync/domains/server/serverProfiles', async (importOriginal) => ({
+    ...await importOriginal<typeof import('@/sync/domains/server/serverProfiles')>(),
+    getServerProfileById: getServerProfileByIdMock,
 }));
 
 vi.mock('@/auth/providers/registry', () => ({
@@ -79,8 +97,10 @@ describe('useAuthEntryOptions', () => {
         subscribeActiveServerMock.mockReset();
         getAuthProviderMock.mockReset();
         getServerRetentionPolicyMock.mockReset();
-        getServerRetentionPolicyMock.mockResolvedValue(null);
+        getServerRetentionPolicyMock.mockResolvedValue({ status: 'failed' });
         fetchHomeAuthEntryMock.mockReset();
+        getServerProfileByIdMock.mockReset();
+        getServerProfileByIdMock.mockReturnValue(null);
         fetchHomeAuthEntryMock.mockResolvedValue({ kind: 'unsupported' });
         currentActiveServerSnapshot = {
             serverId: 'server-example',
@@ -150,8 +170,103 @@ describe('useAuthEntryOptions', () => {
             execution: { kind: 'oauth', providerId: 'acme', mode: 'keyless' },
             method: expect.objectContaining({ presentation: { displayName: 'Acme Workforce' } }),
         })]);
-        expect(hook.getCurrent().providerKeylessTitle).toContain('Acme Workforce');
         expect(hook.getCurrent().keyChallengeV2Available).toBe(true);
+    });
+
+    it('renders the active Home cached feature catalog on first paint while live probes are pending', async () => {
+        const pendingFeatures = createDeferred<never>();
+        const pendingAuthEntry = createDeferred<never>();
+        getCachedServerFeaturesSnapshotMock.mockReturnValue({
+            status: 'ready',
+            features: {
+                capabilities: {
+                    auth: {
+                        methods: [{
+                            id: 'key_challenge',
+                            actions: [{ id: 'provision', enabled: true, mode: 'keyed' }],
+                        }],
+                    },
+                },
+            },
+        });
+        getServerFeaturesSnapshotMock.mockReturnValue(pendingFeatures.promise);
+        fetchHomeAuthEntryMock.mockReturnValue(pendingAuthEntry.promise);
+
+        const { useAuthEntryOptions } = await import('./useAuthEntryOptions');
+        const hook = await renderHook(() => useAuthEntryOptions());
+
+        expect(getCachedServerFeaturesSnapshotMock).toHaveBeenCalledWith({ serverId: 'server-example' });
+        expect(hook.getCurrent()).toMatchObject({
+            serverAvailability: 'ready',
+            showAuthActions: true,
+            authenticationActions: [expect.objectContaining({ execution: { kind: 'generated_key' } })],
+        });
+    });
+
+    it('falls back to the active Home cached catalog when live feature refresh fails', async () => {
+        getCachedServerFeaturesSnapshotMock.mockReturnValue({
+            status: 'ready',
+            features: {
+                capabilities: {
+                    auth: {
+                        methods: [{
+                            id: 'key_challenge',
+                            actions: [{ id: 'provision', enabled: true, mode: 'keyed' }],
+                        }],
+                    },
+                },
+            },
+        });
+        getServerFeaturesSnapshotMock.mockResolvedValue({ status: 'error', reason: 'network' });
+
+        const { useAuthEntryOptions } = await import('./useAuthEntryOptions');
+        const hook = await renderHook(() => useAuthEntryOptions());
+        await flushHookEffects({ cycles: 2, turns: 2 });
+
+        expect(hook.getCurrent()).toMatchObject({
+            serverAvailability: 'ready',
+            showAuthActions: true,
+            authenticationActions: [expect.objectContaining({ execution: { kind: 'generated_key' } })],
+            authEntryUnavailable: true,
+        });
+    });
+
+    it('keeps valid Home actions visible while a forced live probe is pending', async () => {
+        const readyFeatures = {
+            status: 'ready' as const,
+            features: {
+                capabilities: {
+                    auth: {
+                        methods: [{
+                            id: 'key_challenge',
+                            actions: [{ id: 'provision', enabled: true, mode: 'keyed' as const }],
+                        }],
+                    },
+                },
+            },
+        };
+        getServerFeaturesSnapshotMock.mockResolvedValueOnce(readyFeatures);
+
+        const { useAuthEntryOptions } = await import('./useAuthEntryOptions');
+        const hook = await renderHook(() => useAuthEntryOptions());
+        await flushHookEffects({ cycles: 2, turns: 2 });
+        expect(hook.getCurrent()).toMatchObject({ serverAvailability: 'ready', showAuthActions: true });
+
+        const pendingFeatures = createDeferred<never>();
+        const pendingAuthEntry = createDeferred<never>();
+        getServerFeaturesSnapshotMock.mockReturnValueOnce(pendingFeatures.promise);
+        fetchHomeAuthEntryMock.mockReturnValueOnce(pendingAuthEntry.promise);
+
+        await act(async () => {
+            hook.getCurrent().retryServerCheck();
+        });
+        await flushHookEffects({ cycles: 1, turns: 1 });
+
+        expect(hook.getCurrent()).toMatchObject({
+            serverAvailability: 'ready',
+            showAuthActions: true,
+            authenticationActions: [expect.objectContaining({ execution: { kind: 'generated_key' } })],
+        });
     });
 
     it('derives ready-state auth options from server features', async () => {
@@ -194,11 +309,39 @@ describe('useAuthEntryOptions', () => {
         expect(options.serverAvailability).toBe('ready');
         expect(options.serverUrlForCopy).toBe('http://api.example.test');
         expect(options.showAuthActions).toBe(true);
-        expect(options.showProviderSignup).toBe(true);
-        expect(options.showAnonymousSignup).toBe(true);
-        expect(options.showMtlsLogin).toBe(true);
-        expect(options.providerSignupTitle).toContain('GitHub');
-        expect(options.mtlsTitle).toBe('Sign in with certificate');
+        expect(options.authenticationActions).toEqual(expect.arrayContaining([
+            expect.objectContaining({ execution: { kind: 'generated_key' } }),
+            expect.objectContaining({ execution: { kind: 'oauth', providerId: 'github', mode: 'keyed' } }),
+            expect.objectContaining({ execution: { kind: 'mtls' } }),
+        ]));
+    });
+
+    it('says it could not check the Home\'s data retention, with a retry, instead of saying nothing', async () => {
+        getServerFeaturesSnapshotMock.mockResolvedValue({
+            status: 'ready',
+            features: { capabilities: { auth: { methods: [], signup: { methods: [] }, login: { methods: [], requiredProviders: [] }, ui: { autoRedirect: { enabled: false, providerId: null } } } } },
+        });
+        getServerRetentionPolicyMock.mockResolvedValue({ status: 'failed' });
+
+        const { useAuthEntryOptions } = await import('./useAuthEntryOptions');
+        const hook = await renderHook(() => useAuthEntryOptions());
+        await flushHookEffects({ cycles: 2, turns: 2 });
+
+        // Sign-in never waits on retention: the Home stays usable while the disclosure is unreadable.
+        expect(hook.getCurrent().serverAvailability).toBe('ready');
+        const unreadable = hook.getCurrent().retentionDisclosure;
+        expect(unreadable).toMatchObject({ kind: 'unreadable' });
+
+        getServerRetentionPolicyMock.mockResolvedValue({
+            status: 'ready',
+            policy: { enabled: true, completeness: 'complete', domains: [{ id: 'sessionSidechainMessages', policy: { mode: 'delete_older_than', days: 7 } }] },
+        });
+        const { act } = await import('react-test-renderer');
+        await act(async () => { (unreadable as { retry: () => void }).retry(); });
+        await flushHookEffects({ cycles: 2, turns: 2 });
+
+        expect(getServerRetentionPolicyMock).toHaveBeenLastCalledWith(expect.objectContaining({ force: true }));
+        expect(hook.getCurrent().retentionDisclosure).toMatchObject({ kind: 'summary', summary: expect.any(String) });
     });
 
     it('projects the active Home carrier as the exact authentication transport', async () => {
@@ -267,7 +410,7 @@ describe('useAuthEntryOptions', () => {
         await act(async () => resolveTargetB?.({ status: 'unsupported', reason: 'invalid_payload' }));
     });
 
-    it('converges a stale enabled signup action to an explicit empty primary action after a forced policy refresh', async () => {
+    it('removes stale provisioning while retaining login after a forced policy refresh', async () => {
         getServerFeaturesSnapshotMock
             .mockResolvedValueOnce({
                 status: 'ready',
@@ -310,10 +453,10 @@ describe('useAuthEntryOptions', () => {
         const hook = await renderHook(() => useAuthEntryOptions());
         await flushHookEffects({ cycles: 2, turns: 2 });
 
-        expect(hook.getCurrent().primaryAction).toEqual({
-            kind: 'anonymous',
-            title: 'Create account',
-        });
+        expect(hook.getCurrent().authenticationActions).toEqual(expect.arrayContaining([
+            expect.objectContaining({ execution: { kind: 'generated_key' } }),
+            expect.objectContaining({ execution: { kind: 'key_entry' } }),
+        ]));
 
         await act(async () => {
             hook.getCurrent().retryServerCheck();
@@ -322,9 +465,7 @@ describe('useAuthEntryOptions', () => {
 
         expect(getServerFeaturesSnapshotMock).toHaveBeenCalledTimes(2);
         expect(getServerFeaturesSnapshotMock.mock.calls[1]?.[0]?.force).toBe(true);
-        expect(hook.getCurrent().showAnonymousSignup).toBe(false);
-        expect(hook.getCurrent().showProviderSignup).toBe(false);
-        expect(hook.getCurrent().primaryAction).toBeNull();
+        expect(hook.getCurrent().authenticationActions).toEqual([expect.objectContaining({ execution: { kind: 'key_entry' } })]);
     });
 
     it('marks invalid server payloads as incompatible and hides auth actions', async () => {
@@ -422,7 +563,6 @@ describe('useAuthEntryOptions', () => {
         expect(hook.getCurrent().serverAvailability).toBe('ready');
         expect(hook.getCurrent().showAuthActions).toBe(true);
         expect(hook.getCurrent().authenticationActions).toEqual([]);
-        expect(hook.getCurrent().primaryAction).toBeNull();
     });
 
     it('does not schedule an automatic retry and reconciles only when the canonical feature cache reports recovery', async () => {
@@ -548,8 +688,7 @@ describe('useAuthEntryOptions', () => {
         expect(options.serverAvailability).toBe('ready');
         expect(options.authEntryUnavailable).toBe(true);
         expect(options.showAuthActions).toBe(true);
-        expect(options.showProviderSignup).toBe(true);
-        expect(options.providerId).toBe('github');
+        expect(options.authenticationActions).toEqual([expect.objectContaining({ execution: { kind: 'oauth', providerId: 'github', mode: 'keyed' } })]);
     });
 
     it('keeps a Home-denied auth entry blocked instead of substituting the feature catalog', async () => {
@@ -608,7 +747,6 @@ describe('useAuthEntryOptions', () => {
         expect(hook.getCurrent().serverAvailability).toBe('ready');
         expect(hook.getCurrent().showAuthActions).toBe(true);
         expect(hook.getCurrent().authenticationActions).toEqual([]);
-        expect(hook.getCurrent().primaryAction).toBeNull();
         expect(getServerFeaturesSnapshotMock).toHaveBeenCalledTimes(4);
         expect(getServerFeaturesSnapshotMock.mock.calls.map(([params]) => params?.force)).toEqual([
             false,
@@ -661,5 +799,28 @@ describe('useAuthEntryOptions', () => {
         await flushHookEffects({ cycles: 2, turns: 2 });
 
         expect(hook.getCurrent().serverUrlForCopy).toBe('http://api.override.test');
+    });
+
+    it('projects the identity-bound Personal Home receipt into auth presentation context', async () => {
+        getServerProfileByIdMock.mockReturnValue({
+            id: 'server-example',
+            name: 'Personal Home',
+            serverUrl: 'http://api.example.test',
+            serverIdentityId: 'srv_personal_home',
+            personalHomeBootstrapCompleted: true,
+            createdAt: 1,
+            updatedAt: 1,
+            lastUsedAt: 1,
+        });
+        getServerFeaturesSnapshotMock.mockResolvedValue({
+            status: 'ready',
+            features: { capabilities: { auth: { methods: [] } } },
+        });
+
+        const { useAuthEntryOptions } = await import('./useAuthEntryOptions');
+        const hook = await renderHook(() => useAuthEntryOptions());
+        await flushHookEffects({ cycles: 2, turns: 2 });
+
+        expect(hook.getCurrent().isPersonalHome).toBe(true);
     });
 });

@@ -66,6 +66,15 @@ async function createSessionRunnerFixture(input: Readonly<{
     "      export: 'createClaudeAgentRuntime',",
     '      runtimeApiVersion: 1,',
     '    },',
+    '    connectedAccountLaunch: { stateSharingDescriptor: {',
+    '      nativeHome: { environmentKey: "CUSTOM_AGENT_ROOT", defaultRelativePath: ".custom" },',
+    '      providerSupportStatus: "supported",',
+    '      config: { supported: true, modes: ["isolated"], entries: [] },',
+    '      state: { supported: true, modes: ["isolated"], entries: [',
+    '        { path: "state", mode: "env_redirect", envVar: "CUSTOM_AGENT_STATE_ROOT" },',
+    '      ] },',
+    '      authIsolation: { mode: "materialized_home", secretEntries: [] },',
+    '    } },',
     '  });',
     '}',
     '',
@@ -88,7 +97,6 @@ describe('plugin author runtime staging authority', () => {
     const staged = await evaluatePluginAuthorRuntimeStagingSource({
       locator: join(PI_PLUGIN_ROOT, 'src', 'index.ts'),
       rootPath: PI_PLUGIN_ROOT,
-      immutableGenerationId: 'bundled-pi-companion-positive',
       authority: {
         kind: 'bundled_first_party',
         pluginId: 'happier.agent.pi',
@@ -107,13 +115,13 @@ describe('plugin author runtime staging authority', () => {
         externalSessionsExport: 'piExternalSessionsContribution',
       },
     })]);
+    expect(staged.agentNativeHomeEnvironmentKeys).toEqual(['PI_CODING_AGENT_DIR']);
   });
 
   it('stages no session runner locator for declarative-ACP Antigravity', async () => {
     const staged = await evaluatePluginAuthorRuntimeStagingSource({
       locator: join(ANTIGRAVITY_PLUGIN_ROOT, 'src', 'index.ts'),
       rootPath: ANTIGRAVITY_PLUGIN_ROOT,
-      immutableGenerationId: 'bundled-antigravity-declarative-acp',
       authority: {
         kind: 'bundled_first_party',
         pluginId: 'happier.agent.antigravity',
@@ -124,6 +132,7 @@ describe('plugin author runtime staging authority', () => {
     // The ACP runtime declared in the manifest owns Antigravity sessions. A staged
     // custom locator here would mean the retired plugin-side runtime came back.
     expect(staged.sessionRunnerFactories).toEqual([]);
+    expect(staged.agentNativeHomeEnvironmentKeys).toEqual([]);
   });
 
   it('admits the exact bundled Claude source root through normal activation validation', async () => {
@@ -134,7 +143,6 @@ describe('plugin author runtime staging authority', () => {
       const staged = await evaluatePluginAuthorRuntimeStagingSource({
         locator: fixture.entryPath,
         rootPath: fixture.rootPath,
-        immutableGenerationId: 'bundled-claude-staging-positive',
         authority: {
           kind: 'bundled_first_party',
           pluginId: 'happier.agent.claude',
@@ -154,6 +162,7 @@ describe('plugin author runtime staging authority', () => {
       expect(staged.sessionRunnerFactories[0]).not.toHaveProperty(
         'workflowRunRecordSessionOpen',
       );
+      expect(staged.agentNativeHomeEnvironmentKeys).toEqual(['CUSTOM_AGENT_ROOT', 'CUSTOM_AGENT_STATE_ROOT']);
     } finally {
       await fixture.dispose();
     }
@@ -167,7 +176,6 @@ describe('plugin author runtime staging authority', () => {
       await expect(evaluatePluginAuthorRuntimeStagingSource({
         locator: fixture.entryPath,
         rootPath: fixture.rootPath,
-        immutableGenerationId: 'bundled-claude-staging-wrong-id',
         authority: {
           kind: 'bundled_first_party',
           pluginId: 'happier.agent.codex',
@@ -178,7 +186,6 @@ describe('plugin author runtime staging authority', () => {
       await expect(evaluatePluginAuthorRuntimeStagingSource({
         locator: fixture.entryPath,
         rootPath: fixture.rootPath,
-        immutableGenerationId: 'bundled-claude-staging-wrong-root',
         authority: {
           kind: 'bundled_first_party',
           pluginId: 'happier.agent.claude',
@@ -198,7 +205,6 @@ describe('plugin author runtime staging authority', () => {
       const staged = await evaluatePluginAuthorRuntimeStagingSource({
         locator: fixture.entryPath,
         rootPath: fixture.rootPath,
-        immutableGenerationId: 'external-companion-ignored',
       });
 
       expect(staged.sessionRunnerFactories).toHaveLength(1);

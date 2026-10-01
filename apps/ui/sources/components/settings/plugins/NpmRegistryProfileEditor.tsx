@@ -7,7 +7,6 @@ import { NpmRegistryOriginV1Schema, NpmRegistryProfileInputV1Schema } from '@hap
 import { RoundButton } from '@/components/ui/buttons/RoundButton';
 import { MachineSetupTextField } from '@/components/ui/forms/MachineSetupTextField';
 import { Switch } from '@/components/ui/forms/Switch';
-import { Icon } from '@/components/ui/icons/Icon';
 import { Item } from '@/components/ui/lists/Item';
 import { Modal, type CustomModalInjectedProps } from '@/modal';
 import { t } from '@/text';
@@ -213,7 +212,6 @@ export function NpmRegistryProfileEditorModal(props: Readonly<{
                             ? t('settingsPlugins.registriesUseAsDefault')
                             : t('settingsPlugins.registriesScopedOnly')}
                         subtitleLines={0}
-                        icon={<Icon name="stack" size={24} color={theme.colors.text.secondary} />}
                         rightElement={<Switch value={useAsDefault} onValueChange={setUseAsDefault} />}
                         rightElementOutsidePressable
                         onPress={() => setUseAsDefault((current) => !current)}
@@ -226,7 +224,6 @@ export function NpmRegistryProfileEditorModal(props: Readonly<{
                             ? t('settingsPlugins.registriesAllowPrivateNetwork')
                             : t('settingsPlugins.registriesPublicOnly')}
                         subtitleLines={0}
-                        icon={<Icon name="globe" size={24} color={theme.colors.text.secondary} />}
                         rightElement={<Switch value={allowPrivateNetwork} onValueChange={setAllowPrivateNetwork} />}
                         rightElementOutsidePressable
                         onPress={() => setAllowPrivateNetwork((current) => !current)}

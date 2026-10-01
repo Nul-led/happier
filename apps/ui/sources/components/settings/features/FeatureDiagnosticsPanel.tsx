@@ -33,7 +33,7 @@ export function FeatureDiagnosticsPanel(props: { featureIds: readonly FeatureId[
     return (
         <ItemGroup
             title={t('settingsFeatures.featureDiagnostics.title')}
-            footer={t('settingsFeatures.featureDiagnostics.footer')}
+            description={t('settingsFeatures.featureDiagnostics.footer')}
         >
             {props.featureIds.map((featureId) => (
                 <FeatureDiagnosticsRow key={featureId} featureId={featureId} scope={props.scope} />

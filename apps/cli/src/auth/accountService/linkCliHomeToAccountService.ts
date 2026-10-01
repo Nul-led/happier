@@ -18,6 +18,7 @@ import {
 } from '@happier-dev/protocol';
 
 import { acquireTerminalAuthEnrollmentRuntime } from '@/auth/terminalAuthEnrollmentRuntime';
+import { buildTerminalAuthorityCeilingHttpHeaders } from '@/settings/accountSettings/resolveEffectiveTerminalPresentUserPolicy';
 import { fetchServerFeaturesSnapshot } from '@/features/serverFeaturesClient';
 import { readStoredCredentialsForServerId } from '@/persistence';
 import { getActiveServerProfile, getServerProfile, type ServerProfile } from '@/server/serverProfiles';
@@ -37,7 +38,12 @@ export type CliHomeLinkUnavailableReason =
 export type CliHomeLinkResult =
   | Readonly<{ kind: 'linked'; homeServerIdentityId: string }>
   | Readonly<{ kind: 'relink_required'; homeServerIdentityId: string }>
-  | Readonly<{ kind: 'unavailable'; reason: CliHomeLinkUnavailableReason }>
+  | Readonly<{
+      kind: 'unavailable';
+      reason: CliHomeLinkUnavailableReason;
+      /** The selected sign-in service, when one is selected but not signed in. */
+      selectedEndpoint?: string;
+    }>
   | Readonly<{ kind: 'cancelled' | 'failed' }>;
 
 export type CliHomeUnlinkResult =
@@ -73,6 +79,7 @@ async function resolveExactHomeProfile(homeServerIdentityId: string | undefined)
 async function parsedRequest<T>(input: Readonly<{
   url: string;
   token: string;
+  serverHttpBaseUrl: string;
   schema: { safeParse(value: unknown): { success: true; data: T } | { success: false } };
   init?: RequestInit;
   signal?: AbortSignal;
@@ -80,6 +87,9 @@ async function parsedRequest<T>(input: Readonly<{
   const headers = new Headers(input.init?.headers);
   headers.set('Accept', 'application/json');
   headers.set('Authorization', `Bearer ${input.token}`);
+  for (const [key, value] of Object.entries(buildTerminalAuthorityCeilingHttpHeaders({ token: input.token, serverHttpBaseUrl: input.serverHttpBaseUrl }))) {
+    headers.set(key, value);
+  }
   const response = await fetch(input.url, { ...input.init, headers, signal: input.signal });
   if (!response.ok) {
     if (response.status === 409) {
@@ -89,10 +99,10 @@ async function parsedRequest<T>(input: Readonly<{
         throw new CliHomeRelinkConflictError();
       }
     }
-    throw new Error(`Account Service Home-link request failed (${response.status})`);
+    throw new Error(`Home-link request failed (${response.status})`);
   }
   const parsed = input.schema.safeParse(await response.json().catch(() => null));
-  if (!parsed.success) throw new Error('Invalid Account Service Home-link response');
+  if (!parsed.success) throw new Error('Invalid Home-link response');
   return parsed.data;
 }
 
@@ -131,7 +141,9 @@ export async function linkCliHomeToAccountService(input: Readonly<{
   } catch {
     return { kind: 'failed' };
   }
-  if (!accountServiceCredential) return { kind: 'unavailable', reason: 'account_service_credentials_unavailable' };
+  if (!accountServiceCredential) {
+    return { kind: 'unavailable', reason: 'account_service_credentials_unavailable', selectedEndpoint: selection.endpoint };
+  }
 
   const snapshot = await fetchServerFeaturesSnapshot({
     serverUrl: selection.endpoint,
@@ -168,6 +180,7 @@ export async function linkCliHomeToAccountService(input: Readonly<{
       readAccountSubject: async (credential) => (await parsedRequest({
         url: endpointUrl(selection.endpoint, ACCOUNT_DIRECTORY_ME_HTTP_PATH_V1),
         token: credential.token,
+        serverHttpBaseUrl: selection.endpoint,
         schema: AccountDirectoryMeResponseV1Schema,
         signal: input.signal,
       })).accountId,
@@ -186,6 +199,7 @@ export async function linkCliHomeToAccountService(input: Readonly<{
           await parsedRequest({
             url: endpointUrl(acquired.runtime.runtimeOrigin, buildAccountDirectoryLinkHttpPathV1(selection.serverIdentityId)),
             token: credential.token,
+            serverHttpBaseUrl: acquired.runtime.runtimeOrigin,
             schema: AccountDirectoryLinkPutResponseV1Schema,
             init: { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) },
             signal: input.signal,
@@ -203,6 +217,7 @@ export async function linkCliHomeToAccountService(input: Readonly<{
         await parsedRequest({
           url: endpointUrl(selection.endpoint, buildAccountDirectoryHomeHttpPathV1(home.homeServerIdentityId)),
           token: credential.token,
+          serverHttpBaseUrl: selection.endpoint,
           schema: AccountDirectoryHomePutResponseV1Schema,
           init: { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) },
         });
@@ -257,6 +272,7 @@ export async function unlinkCliHomeFromAccountService(input: Readonly<{
     await parsedRequest({
       url: endpointUrl(acquired.runtime.runtimeOrigin, buildAccountDirectoryLinkHttpPathV1(selection.serverIdentityId)),
       token: homeCredential.token,
+      serverHttpBaseUrl: acquired.runtime.runtimeOrigin,
       schema: AccountDirectoryLinkDeleteResponseV1Schema,
       init: {
         method: 'DELETE',

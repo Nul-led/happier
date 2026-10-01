@@ -4,6 +4,7 @@ import type { ReactTestInstance } from 'react-test-renderer';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { renderScreen } from '@/dev/testkit';
+import { presentConnectedAccountIdentity } from '@/sync/domains/connectedServices/maskAccountEmail';
 import type { QualifiedConnectedAccountUiGroup } from '@/sync/domains/connectedServices/qualifiedConnectedAccountUiSource';
 import {
     ConnectedServiceAuthGroupPolicyV1Schema,
@@ -12,9 +13,11 @@ import {
     type QualifiedConnectedAccountRef,
 } from '@happier-dev/protocol';
 
+import type { PoolMemberRow } from './PoolMemberRow';
 import {
     buildPoolQuotaLimitCandidates,
     QualifiedPoolDetailView,
+    type PoolMemberQuota,
     type QualifiedPoolDetailAccount,
     type QualifiedPoolDetailMutations,
 } from './QualifiedPoolDetailView';
@@ -53,7 +56,7 @@ vi.mock('react-native-worklets', () => ({
 
 vi.mock('@/text', async () => {
     const { createTextModuleMock } = await import('@/dev/testkit/mocks/text');
-    return createTextModuleMock({ translate: (key: string) => key });
+    return createTextModuleMock();
 });
 
 vi.mock('@/modal', async () => {
@@ -73,14 +76,6 @@ vi.mock('@/components/ui/icons/Icon', () => ({
     Icon: (props: Record<string, unknown>) => React.createElement('Icon', props),
 }));
 
-// The account block is exercised by its own suite; a passthrough surfaces the
-// props this view wires (variant / order / enable / active / actions / gesture).
-vi.mock('@/components/settings/connectedServices/account/QualifiedAccountBlock', () => ({
-    QualifiedAccountBlock: (props: Record<string, unknown>) =>
-        React.createElement('QualifiedAccountBlock', props),
-    qualifiedServicePresentationKey: (service: { pluginId: string; localId: string }) =>
-        `${service.pluginId}:${service.localId}`,
-}));
 
 vi.mock('@/components/ui/forms/dropdown/DropdownMenu', () => ({
     DropdownMenu: (props: Record<string, unknown>) => React.createElement('DropdownMenu', props),
@@ -172,73 +167,86 @@ async function flush(times = 8): Promise<void> {
     }
 }
 
+type ViewOverrides = Partial<Omit<React.ComponentProps<typeof QualifiedPoolDetailView>, 'group' | 'mutations'>>;
+
 async function renderPoolDetail(
     overrides: Partial<QualifiedConnectedAccountUiGroup> = {},
-    viewOverrides: Readonly<{
-        error?: string | null;
-        autoQuotaResetEnabled?: boolean;
-        autoDisablePlanInvalidEnabled?: boolean;
-        quotaLimitSelectionEnabled?: boolean;
-        quotaSnapshots?: ReadonlyArray<ConnectedServiceQuotaSnapshotV1>;
-        quotaEnabledMemberCount?: number;
-        quotaLoadingMemberCount?: number;
-        onShareWithTeam?: () => void;
-    }> = {},
+    viewOverrides: ViewOverrides = {},
 ) {
     const group = createGroup(overrides);
     const screen = await renderScreen(
         <QualifiedPoolDetailView
-            group={group}
             accounts={ACCOUNTS}
             serviceLabel="Codex"
+            now={NOW}
+            {...viewOverrides}
+            group={group}
             mutations={createMutations()}
-            error={viewOverrides.error ?? null}
-            autoQuotaResetEnabled={viewOverrides.autoQuotaResetEnabled}
-            autoDisablePlanInvalidEnabled={viewOverrides.autoDisablePlanInvalidEnabled}
-            quotaLimitSelectionEnabled={viewOverrides.quotaLimitSelectionEnabled}
-            quotaSnapshots={viewOverrides.quotaSnapshots}
-            quotaEnabledMemberCount={viewOverrides.quotaEnabledMemberCount}
-            quotaLoadingMemberCount={viewOverrides.quotaLoadingMemberCount}
-            onShareWithTeam={viewOverrides.onShareWithTeam}
         />,
     );
     await flush(2);
     return { screen, group };
 }
 
-type MemberBlockProps = Readonly<{
-    account: QualifiedConnectedAccountRef;
-    title?: string;
-    identityLabel?: string | null;
-    variant?: string;
-    groupId?: string | null;
-    enabled?: boolean;
-    onToggleEnabled?: (next: boolean) => void;
-    isActive?: boolean;
-    onSetActive?: () => void;
-    reorderGesture?: unknown;
-    actions?: ReadonlyArray<{ id: string; disabled?: boolean; onPress?: () => void }>;
-}>;
+const NOW = 1_800_000_000_000;
+const MIN = 60_000;
 
-type Screen = Awaited<ReturnType<typeof renderPoolDetail>>['screen'];
-
-function memberBlocks(screen: Screen): MemberBlockProps[] {
-    return screen.root
-        .findAllByType('QualifiedAccountBlock' as never)
-        .map((node) => node.props as MemberBlockProps);
+function snapshot(profileId: string, meters: ReadonlyArray<Readonly<{ id: string; label: string; left: number; resetsInMs: number }>>, extra: Partial<ConnectedServiceQuotaSnapshotV1> = {}): ConnectedServiceQuotaSnapshotV1 {
+    return {
+        v: 1,
+        serviceId: 'openai-codex',
+        profileId,
+        fetchedAt: NOW - MIN,
+        staleAfterMs: 15 * MIN,
+        planLabel: 'Pro',
+        accountLabel: null,
+        meters: meters.map((meter) => ({
+            meterId: meter.id,
+            label: meter.label,
+            used: null,
+            limit: null,
+            remainingPct: meter.left,
+            unit: 'percent',
+            utilizationPct: 100 - meter.left,
+            resetsAt: NOW + meter.resetsInMs,
+            status: 'ok',
+            details: {},
+        })),
+        ...extra,
+    } as ConnectedServiceQuotaSnapshotV1;
 }
 
-function memberBlock(screen: Screen, accountId: string): MemberBlockProps {
-    const block = memberBlocks(screen).find((candidate) => candidate.account.accountId === accountId);
-    if (!block) throw new Error(`no member block for "${accountId}"`);
-    return block;
+function quota(entries: Readonly<Record<string, ConnectedServiceQuotaSnapshotV1 | null>>): Record<string, PoolMemberQuota> {
+    return Object.fromEntries(Object.entries(entries).map(([accountId, value]) => [accountId, { snapshot: value, loading: false }]));
+}
+
+type Screen = Awaited<ReturnType<typeof renderPoolDetail>>['screen'];
+type MemberRowProps = React.ComponentProps<typeof PoolMemberRow>;
+
+function memberRows(screen: Screen): MemberRowProps[] {
+    // The row's own element: the one carrying its actions and usage (the Item below reuses its testID).
+    return screen.root
+        .findAll((node) => /^connected-services-pool-detail:member:[^:]+$/.test(String(node.props?.testID ?? ''))
+            && Array.isArray(node.props?.actions) && node.props?.usage !== undefined)
+        .map((node) => node.props as MemberRowProps);
+}
+
+function memberRow(screen: Screen, accountId: string): MemberRowProps {
+    const row = memberRows(screen).find((candidate) => candidate.testID.endsWith(`:member:${accountId}`));
+    if (!row) throw new Error(`no member row for "${accountId}"`);
+    return row;
 }
 
 function memberAction(screen: Screen, accountId: string, suffix: string) {
-    const action = memberBlock(screen, accountId).actions
-        ?.find((candidate) => candidate.id.endsWith(`:${suffix}`));
+    const action = memberRow(screen, accountId).actions.find((candidate) => candidate.id.endsWith(`:${suffix}`));
     if (!action) throw new Error(`no "${suffix}" action for "${accountId}"`);
     return action;
+}
+
+function itemProps(screen: Screen, testID: string): Record<string, any> {
+    const node = screen.root.findAll((candidate) => candidate.props?.testID === testID && candidate.props?.title !== undefined)[0];
+    if (!node) throw new Error(`no item "${testID}"`);
+    return node.props;
 }
 
 function dropdownByTriggerTestId(screen: Screen, testID: string): ReactTestInstance {
@@ -280,9 +288,6 @@ async function pressRow(screen: Screen, testID: string): Promise<void> {
     await flush();
 }
 
-async function expandAdvanced(screen: Screen): Promise<void> {
-    await pressRow(screen, 'connected-services-pool-detail:advanced:header');
-}
 
 beforeEach(() => {
     modalSpies.prompt.mockReset();
@@ -441,56 +446,36 @@ describe('QualifiedPoolDetailView', () => {
 
     it('authors one nonempty custom quota-family selection and preserves unavailable saved limits', async () => {
         const { screen } = await renderPoolDetail({
-            policy: policy({
-                quotaLimitSelection: { mode: 'selected', providerLimitIds: ['legacy-limit'] },
-            }),
+            policy: policy({ quotaLimitSelection: { mode: 'selected', providerLimitIds: ['legacy-limit'] } }),
         }, {
             quotaLimitSelectionEnabled: true,
-            quotaSnapshots: [{
-                v: 1,
-                serviceId: 'openai-codex',
-                profileId: 'work',
-                fetchedAt: 1_000,
-                staleAfterMs: 60_000,
-                planLabel: null,
-                accountLabel: null,
-                meters: [{
-                    meterId: 'spark:primary',
-                    label: 'Spark · Primary',
-                    providerLimitId: 'spark',
-                    used: null,
-                    limit: null,
-                    unit: 'unknown',
-                    utilizationPct: 10,
-                    resetsAt: null,
-                    status: 'ok',
-                    details: {},
-                }],
-            }],
+            memberQuotaByAccountId: quota({
+                work: {
+                    ...snapshot('work', []),
+                    meters: [{
+                        meterId: 'spark:primary', label: 'Spark · Primary', providerLimitId: 'spark',
+                        used: null, limit: null, unit: 'unknown', utilizationPct: 10, resetsAt: null, status: 'ok', details: {},
+                    }],
+                } as ConnectedServiceQuotaSnapshotV1,
+            }),
         });
-        const menu = screen.root
-            .findAllByType('DropdownMenu' as never)
-            .find((candidate) => candidate.props.items?.some((item: { title?: string }) => (
-                item.title === 'connectedServices.detail.groupDetail.quotaLimitsAllTitle'
-            )));
+        const menu = quotaLimitsMenu(screen);
         expect(menu?.props.items).toEqual(expect.arrayContaining([
             expect.objectContaining({ id: 'spark', title: 'Spark' }),
             expect.objectContaining({
                 id: 'legacy-limit',
-                subtitle: expect.stringMatching(
-                    /quotaLimitUnavailableSubtitle.*quotaLimitTechnicalIdSubtitle/,
-                ),
+                subtitle: expect.stringMatching(/quotaLimitUnavailableSubtitle.*quotaLimitTechnicalIdSubtitle/),
             }),
         ]));
 
         await act(async () => menu?.props.onOpenChange(true));
-        await act(async () => menu?.props.onSelect('legacy-limit'));
-        await act(async () => menu?.props.onOpenChange(false));
+        await act(async () => quotaLimitsMenu(screen)?.props.onSelect('legacy-limit'));
+        await act(async () => quotaLimitsMenu(screen)?.props.onOpenChange(false));
         expect(patch).not.toHaveBeenCalled();
 
-        await act(async () => menu?.props.onOpenChange(true));
-        await act(async () => menu?.props.onSelect('spark'));
-        await act(async () => menu?.props.onOpenChange(false));
+        await act(async () => quotaLimitsMenu(screen)?.props.onOpenChange(true));
+        await act(async () => quotaLimitsMenu(screen)?.props.onSelect('spark'));
+        await act(async () => quotaLimitsMenu(screen)?.props.onOpenChange(false));
         expect(patch).toHaveBeenCalledWith(expect.objectContaining({
             policy: expect.objectContaining({
                 quotaLimitSelection: { mode: 'selected', providerLimitIds: ['legacy-limit', 'spark'] },
@@ -500,55 +485,39 @@ describe('QualifiedPoolDetailView', () => {
 
     it('does not expose quota policy authoring when the negotiated feature is absent', async () => {
         const { screen } = await renderPoolDetail();
-        expect(screen.root.findAllByType('DropdownMenu' as never).some(
-            (candidate) => candidate.props.items?.some((item: { title?: string }) => (
-                item.title === 'connectedServices.detail.groupDetail.quotaLimitsAllTitle'
-            )),
-        )).toBe(false);
+        expect(quotaLimitsMenu(screen)).toBeUndefined();
     });
 
     it('marks the reported-limit inventory incomplete while enabled member quotas load', async () => {
         const { screen } = await renderPoolDetail({}, {
             quotaLimitSelectionEnabled: true,
-            quotaEnabledMemberCount: 2,
-            quotaLoadingMemberCount: 1,
+            memberQuotaByAccountId: { work: { snapshot: null, loading: true }, backup: { snapshot: null, loading: false } },
         });
-        const menu = screen.root
-            .findAllByType('DropdownMenu' as never)
-            .find((candidate) => candidate.props.items?.some((item: { title?: string }) => (
-                item.title === 'connectedServices.detail.groupDetail.quotaLimitsAllTitle'
-            )));
-        expect(menu?.props.items).toEqual(expect.arrayContaining([
-            expect.objectContaining({
-                id: ' ',
-                subtitle: 'connectedServices.detail.groupDetail.quotaLimitsAllLoadingSubtitle',
-            }),
+        expect(quotaLimitsMenu(screen)?.props.items).toEqual(expect.arrayContaining([
+            expect.objectContaining({ id: ' ', subtitle: expect.stringContaining('quotaLimitsAllLoadingSubtitle') }),
         ]));
     });
 
-    it('offers the current Pool to a Team through the mounted source action', async () => {
+    it('offers the current Pool to a Team from the pool menu', async () => {
         const onShareWithTeam = vi.fn();
         const { screen } = await renderPoolDetail({}, { onShareWithTeam });
-
-        screen.pressByTestId('connected-services-pool-detail:share-with-team');
-
+        await act(async () => { moreMenu(screen).props.onSelect('share'); });
         expect(onShareWithTeam).toHaveBeenCalledTimes(1);
+
+        const withoutTeams = await renderPoolDetail();
+        expect(moreMenu(withoutTeams.screen).props.items.map((item: { id: string }) => item.id)).not.toContain('share');
     });
 
     it('offers explicit quota-reset spending only when the owning service and server support it', async () => {
         const { screen } = await renderPoolDetail({}, { autoQuotaResetEnabled: true });
         const toggle = screen.findByTestId('connected-services-pool-detail:auto-quota-reset:toggle');
-        expect(toggle).toBeTruthy();
         expect(toggle?.props.value).toBe(false);
         await act(async () => { await toggle?.props.onValueChange(true); });
         expect(patch).toHaveBeenCalledWith(expect.objectContaining({
             policy: expect.objectContaining({ autoUseQuotaResetsWhenExhausted: true }),
         }));
-    });
-
-    it('fails closed when quota-reset support is absent', async () => {
-        const { screen } = await renderPoolDetail();
-        expect(screen.findByTestId('connected-services-pool-detail:auto-quota-reset:toggle')).toBeNull();
+        const absent = await renderPoolDetail();
+        expect(absent.screen.findByTestId('connected-services-pool-detail:auto-quota-reset:toggle')).toBeNull();
     });
 
     it('offers opt-in model-entitlement auto-disable only when the server enables it', async () => {
@@ -559,131 +528,193 @@ describe('QualifiedPoolDetailView', () => {
         expect(patch).toHaveBeenCalledWith(expect.objectContaining({
             policy: expect.objectContaining({ autoDisablePlanInvalidAccounts: true }),
         }));
-
         const unavailable = await renderPoolDetail();
         expect(unavailable.screen.findByTestId('connected-services-pool-detail:auto-disable-plan-invalid:toggle')).toBeNull();
     });
-    it('renders members as pool-member account blocks in priority order', async () => {
-        const { screen, group } = await renderPoolDetail();
 
-        const blocks = memberBlocks(screen);
-        expect(blocks.map((block) => block.account.accountId)).toEqual(['work', 'backup']);
-        for (const block of blocks) {
-            expect(block.variant).toBe('poolMember');
-            expect(block.groupId).toBe(group.ref.groupId);
-        }
-        expect(memberBlock(screen, 'work').isActive).toBe(true);
-        expect(memberBlock(screen, 'backup').isActive).toBe(false);
-        // Two members means reorder is live: each row carries a drag gesture.
-        expect(memberBlock(screen, 'work').reorderGesture).toBeTruthy();
+    it('lists members in priority order with the active one marked and reorder live', async () => {
+        const { screen } = await renderPoolDetail();
+        expect(memberRows(screen).map((row) => row.testID)).toEqual([
+            'connected-services-pool-detail:member:work',
+            'connected-services-pool-detail:member:backup',
+        ]);
+        expect(memberRow(screen, 'work').active).toBe(true);
+        expect(memberRow(screen, 'backup').active).toBe(false);
+        expect(memberRow(screen, 'work').reorderGesture).toBeTruthy();
     });
 
-    it('shows why a model-ineligible member was disabled automatically', async () => {
+    it('says why the pool turned a member off, and that an off member is not used', async () => {
         const { screen } = await renderPoolDetail({
             members: [
-                {
-                    ref: accountRef('work'),
-                    priority: 100,
-                    enabled: false,
-                    state: { autoDisabledReason: 'model_not_entitled' },
-                },
+                { ref: accountRef('work'), priority: 100, enabled: true, state: {} },
+                { ref: accountRef('backup'), priority: 200, enabled: false, state: { autoDisabledReason: 'model_not_entitled' } },
             ],
         });
-
-        expect(memberBlock(screen, 'work').identityLabel).toBe(
-            'connectedServices.detail.groups.memberAutoDisabledModelNotEntitled',
-        );
+        expect(memberRow(screen, 'backup').note).toEqual({ icon: 'info', text: 'connectedServicesPool.autoOffModel' });
+        expect(memberRow(screen, 'backup').usage).toEqual({ kind: 'off' });
     });
 
-    it('names a member by its human identity and keeps the remaining identity facts on the identity line', async () => {
-        const { screen } = await renderPoolDetail();
-        // No user label: the provider email names the account (the plugin display
-        // name only wins when there is no email), so a pool member reads exactly as
-        // the same account reads on the accounts list. The canonical account id
-        // keys the row and never appears on either line.
-        expect(memberBlock(screen, 'work').title).toBe('work@example.com');
-        expect(memberBlock(screen, 'work').identityLabel).toBe('Codex');
+    it('names a member once: by its label, else its email, never the raw account id', async () => {
+        const { screen } = await renderPoolDetail({}, {
+            memberQuotaByAccountId: quota({ work: snapshot('work', [{ id: '5h', label: '5-hour', left: 40, resetsInMs: 60 * MIN }]) }),
+        });
+        // No user label: the email names the account and is not repeated on the identity line.
+        expect(memberRow(screen, 'work').title).toBe('work@example.com');
+        expect(memberRow(screen, 'work').identityLabel).toBe('Pro');
 
-        const labelled = await renderScreen(
-            <QualifiedPoolDetailView
-                group={createGroup()}
-                accounts={ACCOUNTS}
-                accountLabels={{ work: 'Primary' }}
-                serviceLabel="Codex"
-                mutations={createMutations()}
-            />,
-        );
-        await flush(2);
-        expect(memberBlock(labelled, 'work').title).toBe('Primary');
-        expect(memberBlock(labelled, 'work').identityLabel).toBe('Codex · work@example.com');
+        const labelled = await renderPoolDetail({}, { accountLabels: { work: 'Primary' } });
+        expect(memberRow(labelled.screen, 'work').title).toBe('Primary');
+        expect(memberRow(labelled.screen, 'work').identityLabel).toBe('work@example.com');
+
+        const unnamed = await renderPoolDetail({}, {
+            accounts: [
+                { ref: accountRef('work'), providerIdentity: { email: 'work@example.com' }, status: 'connected' },
+                { ref: accountRef('backup'), status: 'connected' },
+            ],
+        });
+        expect(memberRow(unnamed.screen, 'backup').title).toBe('Codex');
+        expect(memberRow(unnamed.screen, 'backup').identityLabel ?? '').not.toContain('backup');
     });
 
-    it('falls back to the provider email, never the raw account id, for an account with no name', async () => {
-        const screen = await renderScreen(
-            <QualifiedPoolDetailView
-                group={createGroup()}
-                accounts={[
-                    { ref: accountRef('work'), providerIdentity: { email: 'work@example.com' }, status: 'connected' },
-                    { ref: accountRef('backup'), status: 'connected' },
-                ]}
-                serviceLabel="Codex"
-                mutations={createMutations()}
-            />,
-        );
-        await flush(2);
+    it('hides provider id fallback names across members, choices and Now while retaining user names', async () => {
+        const { screen } = await renderPoolDetail({}, {
+            accounts: [
+                { ref: accountRef('work'), providerIdentity: { accountId: 'provider-account-42' } },
+                { ref: accountRef('backup'), providerIdentity: { accountId: 'provider-account-43' } },
+            ],
+            accountLabels: { backup: 'provider-account-43' },
+            presentIdentity: (input) => presentConnectedAccountIdentity({
+                ...input, hidden: true, label: input.label ?? null,
+                email: input.email ?? null, accountId: input.accountId ?? null,
+            }),
+        });
+        expect(memberRow(screen, 'work').title).toBe('provi•••42');
+        expect(memberRow(screen, 'backup').title).toBe('provider-account-43');
+        expect(membersDropdown(screen).props.items[0]).toMatchObject({ title: 'provi•••42' });
+        expect(itemProps(screen, 'connected-services-pool-detail:now').title).toBe('connectedServicesPool.using(name=provi•••42)');
+        expect(screen.getTextContent()).not.toContain('provider-account-42');
+    });
 
-        expect(memberBlock(screen, 'work').title).toBe('work@example.com');
-        expect(memberBlock(screen, 'work').identityLabel).toBe('Codex');
-        // Nothing recognisable exists for `backup`, so the service title remains
-        // the primary label and the identity line stays empty. The opaque id is
-        // NOT a fallback: it keys the row, and a user cannot recognise an
-        // account by it on screen or through a screen reader.
-        expect(memberBlock(screen, 'backup').title).toBe('Codex');
-        expect(memberBlock(screen, 'backup').identityLabel ?? '').not.toContain('backup');
+    it('averages what is left across the members that are on, with who has room and who is not reported', async () => {
+        const { screen } = await renderPoolDetail({
+            members: [
+                { ref: accountRef('work'), priority: 100, enabled: true, state: {} },
+                { ref: accountRef('backup'), priority: 200, enabled: true, state: {} },
+                { ref: accountRef('spare'), priority: 300, enabled: true, state: {} },
+            ],
+        }, {
+            memberQuotaByAccountId: quota({
+                work: snapshot('work', [{ id: '5h', label: '5-hour', left: 40, resetsInMs: 90 * MIN }]),
+                backup: snapshot('backup', [{ id: '5h', label: '5-hour', left: 0, resetsInMs: 30 * MIN }]),
+                spare: null,
+            }),
+        });
+        const meter = screen.root.findAll((node) => node.props?.testID === 'connected-services-pool-detail:left:5h' && node.props?.remainingPct !== undefined)[0];
+        expect(meter?.props).toMatchObject({ remainingPct: 20, resetsAt: NOW + 30 * MIN, resetPrefix: 'next', size: 'wide' });
+        const room = screen.root.findAll((node) => node.props?.testID === 'connected-services-pool-detail:left:room' && typeof node.props?.children === 'string')[0];
+        expect(room?.props.children).toBe('connectedServicesPool.roomCount(count=1,total=2) · connectedServicesPool.notReported(count=1)');
+    });
+
+    it('names who is in use and what happens when it runs out, and switches by hand to the next member', async () => {
+        const { screen, group } = await renderPoolDetail({
+            policy: policy({ strategy: 'priority', autoSwitch: true }),
+            activeSince: { accountId: 'work', atMs: NOW - 30 * MIN },
+        });
+        const now = itemProps(screen, 'connected-services-pool-detail:now');
+        expect(now.title).toMatch(/^connectedServicesPool\.usingSince\(name=work@example\.com,time=/);
+        expect(now.subtitle).toBe('connectedServicesPool.leadInOrder connectedServicesPool.nextOnRunOut(name=work@example.com,next=backup@example.com)');
+
+        await pressRow(screen, 'connected-services-pool-detail:now:switch');
+        expect(setActiveAccount).toHaveBeenCalledWith(expect.objectContaining({ group, account: expect.objectContaining({ accountId: 'backup' }) }));
+    });
+
+    it('does not claim a since time the pool has not tied to the active member', async () => {
+        const { screen } = await renderPoolDetail({ activeSince: null });
+        expect(itemProps(screen, 'connected-services-pool-detail:now').title).toBe('connectedServicesPool.using(name=work@example.com)');
+    });
+
+    it('keeps the active account when usage-limit switching is disabled, while still allowing Switch now', async () => {
+        const { screen, group } = await renderPoolDetail({
+            policy: policy({
+                strategy: 'priority',
+                autoSwitch: true,
+                switchOn: { ...policy().switchOn, usageLimit: false },
+            }),
+        });
+        expect(itemProps(screen, 'connected-services-pool-detail:now').subtitle)
+            .toBe('connectedServicesPool.leadInOrder connectedServicesPool.fallbackOff(name=work@example.com)');
+        await pressRow(screen, 'connected-services-pool-detail:now:switch');
+        expect(setActiveAccount).toHaveBeenCalledWith(expect.objectContaining({ group, account: expect.objectContaining({ accountId: 'backup' }) }));
+    });
+
+    it('with one member on, says there is nothing to fall back to and offers to turn the next one on', async () => {
+        const { screen, group } = await renderPoolDetail({
+            members: [
+                { ref: accountRef('work'), priority: 100, enabled: true, state: {} },
+                { ref: accountRef('backup'), priority: 200, enabled: false, state: {} },
+            ],
+        });
+        expect(itemProps(screen, 'connected-services-pool-detail:now').subtitle).toBe('connectedServicesPool.onlyOneOn(name=work@example.com)');
+        await pressRow(screen, 'connected-services-pool-detail:now:turn-on');
+        expect(patchMember).toHaveBeenCalledWith(expect.objectContaining({ group, account: expect.objectContaining({ accountId: 'backup' }), enabled: true }));
+    });
+
+    it('when every member is waiting, names the first one back', async () => {
+        const { screen } = await renderPoolDetail({}, {
+            memberQuotaByAccountId: quota({
+                work: snapshot('work', [{ id: '5h', label: '5-hour', left: 0, resetsInMs: 90 * MIN }]),
+                backup: snapshot('backup', [{ id: '5h', label: '5-hour', left: 0, resetsInMs: 30 * MIN }]),
+            }),
+        });
+        const now = itemProps(screen, 'connected-services-pool-detail:now');
+        expect(now.title).toBe('connectedServicesPool.allWaitingTitle');
+        expect(now.subtitle).toMatch(/^connectedServicesPool\.allWaitingFirst\(name=backup@example\.com,/);
+    });
+
+    it('★ makes the pool an agent\'s default and Used by names the agents that use it', async () => {
+        const setDefault = vi.fn();
+        const { screen } = await renderPoolDetail({}, {
+            agentDefaults: {
+                choices: [
+                    { agentId: 'codex', title: 'Codex', isDefault: true },
+                    { agentId: 'opencode', title: 'OpenCode', isDefault: false },
+                ],
+                setDefault,
+            },
+        });
+        const star = screen.root.findAllByType('DropdownMenu' as never)
+            .find((node) => node.props.items?.some((item: { id: string }) => item.id === 'opencode'));
+        await act(async () => { star?.props.onSelect('opencode'); });
+        expect(setDefault).toHaveBeenCalledWith('opencode', true);
+        await act(async () => { star?.props.onSelect('codex'); });
+        expect(setDefault).toHaveBeenCalledWith('codex', false);
+        expect(screen.findByTestId('connected-services-pool-detail:used-by:Codex')).not.toBeNull();
+        expect(screen.findByTestId('connected-services-pool-detail:used-by:OpenCode')).toBeNull();
     });
 
     it('offers each membership candidate with its name and identity line', async () => {
         const { screen } = await renderPoolDetail();
-
-        const options = membersDropdown(screen).props.items as ReadonlyArray<{
-            id: string;
-            title: string;
-            subtitle?: string;
-        }>;
-        // The canonical id keys each option for the mutation and appears nowhere
-        // in the title or subtitle a person reads.
+        const options = membersDropdown(screen).props.items as ReadonlyArray<{ id: string; title: string; subtitle?: string }>;
         expect(options.map((option) => option.id)).toEqual(['work', 'backup', 'spare']);
-        expect(options[0]).toMatchObject({ title: 'work@example.com', subtitle: 'Codex' });
-        expect(options[1]).toMatchObject({ title: 'backup@example.com', subtitle: 'Codex' });
+        expect(options[0]).toMatchObject({ title: 'work@example.com' });
+        expect(options[0]?.subtitle).toBeUndefined();
     });
 
-    it('toggling a member enable switch patches that member', async () => {
+    it('toggling a member switch patches that member', async () => {
         const { screen, group } = await renderPoolDetail();
-
-        await act(async () => {
-            memberBlock(screen, 'backup').onToggleEnabled?.(false);
-        });
+        await act(async () => { memberRow(screen, 'backup').onEnabledChange?.(false); });
         await flush();
-
         expect(patchMember).toHaveBeenCalledTimes(1);
-        expect(patchMember.mock.calls[0]?.[0]).toMatchObject({
-            group,
-            account: { accountId: 'backup' },
-            enabled: false,
-        });
+        expect(patchMember.mock.calls[0]?.[0]).toMatchObject({ group, account: { accountId: 'backup' }, enabled: false });
     });
 
     it('moving a member down writes spaced priorities in sequence, threading the returned group', async () => {
         const { screen, group } = await renderPoolDetail();
-
         await press(memberAction(screen, 'work', 'move-down'));
-
         expect(patchMember).toHaveBeenCalledTimes(2);
         const [first, second] = patchMember.mock.calls.map((call) => call[0]);
         expect(first).toMatchObject({ account: { accountId: 'backup' }, priority: 100 });
         expect(second).toMatchObject({ account: { accountId: 'work' }, priority: 200 });
-        // The first call runs against the incoming group; the second against the
-        // group the first call RETURNED (dev's sequential-mutation idiom).
         expect(first?.group).toBe(group);
         expect(second?.group).toBe(mutationResults.patchMember[0]);
     });
@@ -696,286 +727,207 @@ describe('QualifiedPoolDetailView', () => {
             return {
                 ...group,
                 members: group.members.map((member) => (
-                    member.ref.accountId === account.accountId && priority !== undefined
-                        ? { ...member, priority }
-                        : member
+                    member.ref.accountId === account.accountId && priority !== undefined ? { ...member, priority } : member
                 )),
             };
         });
-
         await press(memberAction(screen, 'work', 'move-down'));
-
-        // The group prop has NOT changed yet — the new order is the local,
-        // atomic optimistic reprice, not a server round-trip.
-        expect(memberBlocks(screen).map((block) => block.account.accountId))
-            .toEqual(['backup', 'work']);
-
-        await act(async () => {
-            releaseFirstPatch?.();
-        });
+        expect(memberRows(screen).map((row) => row.testID.split(':').at(-1))).toEqual(['backup', 'work']);
+        await act(async () => { releaseFirstPatch?.(); });
         await flush();
     });
 
     it('stops the reorder sequence when a member patch fails', async () => {
         const { screen } = await renderPoolDetail();
         patchMember.mockResolvedValueOnce(null);
-
         await press(memberAction(screen, 'work', 'move-down'));
-
         expect(patchMember).toHaveBeenCalledTimes(1);
     });
 
     it('disables move-up on the first member and move-down on the last', async () => {
         const { screen } = await renderPoolDetail();
-
         expect(memberAction(screen, 'work', 'move-up').disabled).toBe(true);
         expect(memberAction(screen, 'backup', 'move-down').disabled).toBe(true);
         expect(memberAction(screen, 'work', 'move-down').disabled).toBe(false);
     });
 
-    it('making a member active calls setActiveAccount', async () => {
+    it('the radio makes a non-active member the active one', async () => {
         const { screen, group } = await renderPoolDetail();
-
-        await press(memberAction(screen, 'backup', 'set-active'));
-
-        expect(setActiveAccount).toHaveBeenCalledTimes(1);
-        expect(setActiveAccount.mock.calls[0]?.[0]).toMatchObject({
-            group,
-            account: { accountId: 'backup' },
-        });
-    });
-
-    it('exposes the leading radio affordance for a non-active member only', async () => {
-        const { screen } = await renderPoolDetail();
-
-        expect(memberBlock(screen, 'work').onSetActive).toBeUndefined();
-        await act(async () => {
-            memberBlock(screen, 'backup').onSetActive?.();
-        });
+        expect(memberRow(screen, 'work').onMakeActive).toBeNull();
+        await act(async () => { memberRow(screen, 'backup').onMakeActive?.(); });
         await flush();
-
         expect(setActiveAccount).toHaveBeenCalledTimes(1);
+        expect(setActiveAccount.mock.calls[0]?.[0]).toMatchObject({ group, account: { accountId: 'backup' } });
     });
 
     it('confirms before removing a member and does not remove when declined', async () => {
         const { screen } = await renderPoolDetail();
-
         await press(memberAction(screen, 'backup', 'remove'));
-
         expect(modalSpies.confirm).toHaveBeenCalledTimes(1);
         expect(removeMember).not.toHaveBeenCalled();
-
         modalSpies.confirm.mockResolvedValue(true);
         await press(memberAction(screen, 'backup', 'remove'));
-
         expect(removeMember).toHaveBeenCalledTimes(1);
         expect(removeMember.mock.calls[0]?.[0]).toMatchObject({ account: { accountId: 'backup' } });
     });
 
-    it('renders the shared membership multi-select seeded with current members', async () => {
+    it('Manage members adds the accounts checked in its list', async () => {
         const { screen } = await renderPoolDetail();
-
-        const dropdown = membersDropdown(screen);
-        expect(dropdown.props.items.map((item: { id: string }) => item.id))
-            .toEqual(['work', 'backup', 'spare']);
-
-        await act(async () => {
-            dropdown.props.onOpenChange?.(true);
-        });
-        await act(async () => {
-            membersDropdown(screen).props.onSelect?.('spare');
-        });
-        await act(async () => {
-            membersDropdown(screen).props.onOpenChange?.(false);
-        });
+        await act(async () => { membersDropdown(screen).props.onOpenChange?.(true); });
+        await act(async () => { membersDropdown(screen).props.onSelect?.('spare'); });
+        await act(async () => { membersDropdown(screen).props.onOpenChange?.(false); });
         await flush();
-
         expect(addMember).toHaveBeenCalledTimes(1);
         expect(addMember.mock.calls[0]?.[0]).toMatchObject({ account: { accountId: 'spare' } });
     });
 
-    it('renders the header summary and the server-active status row', async () => {
-        const { screen } = await renderPoolDetail();
-
-        expect(screen.findByTestId('connected-services-pool-detail:summary')).not.toBeNull();
-        expect(screen.findByTestId('connected-services-pool-detail:server-active-status')).not.toBeNull();
+    it('heads the page with the pool name and how many members are on', async () => {
+        const { screen } = await renderPoolDetail({
+            members: [
+                { ref: accountRef('work'), priority: 100, enabled: true, state: {} },
+                { ref: accountRef('backup'), priority: 200, enabled: false, state: {} },
+            ],
+        });
+        const header = itemlessHeader(screen);
+        expect(header.title).toBe('Team pool');
+        expect(header.meta).toEqual([expect.objectContaining({ text: 'connectedServicesPool.membersOn(service=Codex,on=1,total=2)' })]);
     });
 
-    it('names a pool whose display name is only whitespace by its author service title', async () => {
-        // A blank name must never render as an empty row title or promote the
-        // opaque pool id into the primary presentation.
+    it('names a pool whose display name is only whitespace by its service title', async () => {
         const { screen } = await renderPoolDetail({ displayName: '   ' });
-
-        const nameRow = screen.find((node) => (
-            node.props?.testID === 'connected-services-pool-detail:name'
-            && typeof node.props?.subtitle === 'string'
-        ));
-        expect(nameRow.props.subtitle).toBe('Codex');
-    });
-
-    it('omits the server-active status row when the pool has no active account', async () => {
-        const { screen } = await renderPoolDetail({ activeAccountId: null });
-
-        expect(screen.findByTestId('connected-services-pool-detail:server-active-status')).toBeNull();
+        expect(itemlessHeader(screen).title).toBe('Codex');
     });
 
     it('renames the pool through a prompt', async () => {
         const { screen, group } = await renderPoolDetail();
         modalSpies.prompt.mockResolvedValue('  Renamed pool  ');
-
-        await pressRow(screen, 'connected-services-pool-detail:name');
-
+        await pressRow(screen, 'connected-services-pool-detail:rename');
         expect(patch).toHaveBeenCalledTimes(1);
         expect(patch.mock.calls[0]?.[0]).toMatchObject({ group, displayName: 'Renamed pool' });
     });
 
-    it('patches automatic fallback, strategy and the soft-switch threshold', async () => {
+    it('patches automatic fallback, strategy and the switch-early threshold', async () => {
         const { screen, group } = await renderPoolDetail();
-
         await act(async () => {
-            switchByTestId(screen, 'connected-services-pool-detail:auto-switch:toggle')
-                .props.onValueChange?.(true);
+            switchByTestId(screen, 'connected-services-pool-detail:auto-switch:toggle').props.onValueChange?.(true);
         });
         await flush();
         expect(patch.mock.calls[0]?.[0]).toMatchObject({ group, policy: { autoSwitch: true } });
 
-        await act(async () => {
-            dropdownByTriggerTestId(screen, 'connected-services-pool-detail:strategy')
-                .props.onSelect?.('manual');
-        });
+        await act(async () => { itemProps(screen, 'connected-services-pool-detail:strategy').onChange?.('manual'); });
         await flush();
         expect(patch.mock.calls[1]?.[0]).toMatchObject({ policy: { strategy: 'manual' } });
 
-        modalSpies.prompt.mockResolvedValue('25');
-        await pressRow(screen, 'connected-services-pool-detail:soft-switch-threshold');
+        await act(async () => { itemProps(screen, 'connected-services-pool-detail:soft-switch-threshold').onCommit('25'); });
+        await flush();
         expect(patch.mock.calls[2]?.[0]).toMatchObject({ policy: { softSwitchRemainingPercent: 25 } });
     });
 
-    it('rejects an out-of-range soft-switch threshold without patching', async () => {
+    it('keeps an out-of-range switch-early value out of the policy and restores the saved one', async () => {
         const { screen } = await renderPoolDetail();
-        modalSpies.prompt.mockResolvedValue('180');
-
-        await pressRow(screen, 'connected-services-pool-detail:soft-switch-threshold');
-
-        expect(modalSpies.alert).toHaveBeenCalledTimes(1);
+        let shown: string | void = undefined;
+        await act(async () => { shown = itemProps(screen, 'connected-services-pool-detail:soft-switch-threshold').onCommit('180'); });
+        expect(shown).toBe('15');
         expect(patch).not.toHaveBeenCalled();
     });
 
     it('patches every advanced policy control', async () => {
-        const { screen } = await renderPoolDetail();
-        await expandAdvanced(screen);
+        const { screen } = await renderPoolDetail({}, { initialAdvancedExpanded: true });
 
         await act(async () => {
-            switchByTestId(screen, 'connected-services-pool-detail:auto-restore-primary:toggle')
-                .props.onValueChange?.(true);
+            switchByTestId(screen, 'connected-services-pool-detail:auto-restore-primary:toggle').props.onValueChange?.(true);
         });
         await flush();
-        expect(patch.mock.calls.at(-1)?.[0]).toMatchObject({
-            policy: { autoRestorePrimaryWhenReset: true },
-        });
+        expect(patch.mock.calls.at(-1)?.[0]).toMatchObject({ policy: { autoRestorePrimaryWhenReset: true } });
 
         for (const key of ['usageLimit', 'authExpired', 'accountChanged', 'refreshFailure'] as const) {
             const current = createGroup().policy.switchOn[key];
-            await act(async () => {
-                switchByTestId(screen, `connected-services-pool-detail:switch-on:${key}:toggle`)
-                    .props.onValueChange?.(!current);
-            });
-            await flush();
+            await pressRow(screen, `connected-services-pool-detail:switch-on:${key}`);
             expect(patch.mock.calls.at(-1)?.[0]).toMatchObject({
                 policy: { switchOn: { ...createGroup().policy.switchOn, [key]: !current } },
             });
         }
 
-        modalSpies.prompt.mockResolvedValue('10');
-        await pressRow(screen, 'connected-services-pool-detail:stale-probe-after');
-        expect(patch.mock.calls.at(-1)?.[0]).toMatchObject({
-            policy: { probeIfSnapshotOlderThanMs: 600_000 },
-        });
+        await act(async () => { itemProps(screen, 'connected-services-pool-detail:stale-probe-after').onCommit('10'); });
+        expect(patch.mock.calls.at(-1)?.[0]).toMatchObject({ policy: { probeIfSnapshotOlderThanMs: 600_000 } });
+        await act(async () => { itemProps(screen, 'connected-services-pool-detail:switches-per-turn').onCommit('2'); });
+        expect(patch.mock.calls.at(-1)?.[0]).toMatchObject({ policy: { maxSwitchesPerTurn: 2 } });
+        await act(async () => { itemProps(screen, 'connected-services-pool-detail:switches-per-hour').onCommit('6'); });
+        expect(patch.mock.calls.at(-1)?.[0]).toMatchObject({ policy: { maxSwitchesPerSessionHour: 6 } });
 
         await act(async () => {
-            dropdownByTriggerTestId(screen, 'connected-services-pool-detail:recovery-mode')
-                .props.onSelect?.('off');
+            dropdownByTriggerTestId(screen, 'connected-services-pool-detail:recovery-mode').props.onSelect?.('off');
         });
         await flush();
         expect(patch.mock.calls.at(-1)?.[0]).toMatchObject({ policy: { recoveryMode: 'off' } });
-
-        expect(screen.findByTestId('connected-services-pool-detail:switch-budget')).not.toBeNull();
         expect(screen.findByTestId('connected-services-pool-detail:recovery-prompt')).not.toBeNull();
     });
 
     it('keeps the advanced controls collapsed until the disclosure is opened', async () => {
         const { screen } = await renderPoolDetail();
-
-        expect(screen.findByTestId('connected-services-pool-detail:switch-budget')).toBeNull();
-
-        await expandAdvanced(screen);
-
-        expect(screen.findByTestId('connected-services-pool-detail:switch-budget')).not.toBeNull();
+        expect(screen.findByTestId('connected-services-pool-detail:switches-per-turn')).toBeNull();
+        await pressRow(screen, 'connected-services-pool-detail:advanced:header');
+        expect(screen.findByTestId('connected-services-pool-detail:switches-per-turn')).not.toBeNull();
     });
 
     it('confirms before deleting the pool', async () => {
         const { screen, group } = await renderPoolDetail();
-
         await pressRow(screen, 'connected-services-pool-detail:delete');
         expect(modalSpies.confirm).toHaveBeenCalledTimes(1);
         expect(deleteGroup).not.toHaveBeenCalled();
-
         modalSpies.confirm.mockResolvedValue(true);
         await pressRow(screen, 'connected-services-pool-detail:delete');
         expect(deleteGroup).toHaveBeenCalledWith(group);
     });
 
     it('disables the fallback controls when automatic fallback is unavailable', async () => {
-        const group = createGroup();
-        const screen = await renderScreen(
-            <QualifiedPoolDetailView
-                group={group}
-                accounts={ACCOUNTS}
-                serviceLabel="Codex"
-                mutations={createMutations()}
-                fallbackControlsEnabled={false}
-                fallbackDisabledSubtitle="unsupported"
-            />,
-        );
-        await flush(2);
-
-        expect(
-            switchByTestId(screen, 'connected-services-pool-detail:auto-switch:toggle').props.disabled,
-        ).toBe(true);
+        const { screen } = await renderPoolDetail({}, { fallbackControlsEnabled: false, fallbackDisabledSubtitle: 'unsupported' });
+        expect(switchByTestId(screen, 'connected-services-pool-detail:auto-switch:toggle').props.disabled).toBe(true);
         await act(async () => {
-            switchByTestId(screen, 'connected-services-pool-detail:auto-switch:toggle')
-                .props.onValueChange?.(true);
+            switchByTestId(screen, 'connected-services-pool-detail:auto-switch:toggle').props.onValueChange?.(true);
         });
         await flush();
         expect(patch).not.toHaveBeenCalled();
+        expect(memberRow(screen, 'backup').onMakeActive).toBeNull();
     });
 
-    it('renders an empty-members row when the pool has no members', async () => {
+    it('invites members when the pool has none, and the invitation opens Manage members', async () => {
         const { screen } = await renderPoolDetail({ members: [], activeAccountId: null });
-
-        expect(memberBlocks(screen)).toHaveLength(0);
-        expect(screen.findByTestId('connected-services-pool-detail:no-members')).not.toBeNull();
+        expect(memberRows(screen)).toHaveLength(0);
+        const empty = screen.root.findAll((node) => node.props?.testID === 'connected-services-pool-detail:no-members' && node.props?.action)[0];
+        expect(empty).toBeTruthy();
+        await act(async () => { empty?.props.action.onPress(); });
+        expect(membersDropdown(screen).props.open).toBe(true);
     });
 
     it('surfaces a failed mutation instead of letting the change fail silently', async () => {
-        // The mutation owner reports failure by returning null and setting its
-        // error. Without a slot for it the pool would simply reconcile back to
-        // server state, leaving the user to infer that anything went wrong.
         const { screen } = await renderPoolDetail({}, { error: 'connect_group_generation_conflict' });
-
-        // The row's testID lands on both the Item and its host view; the Item is
-        // the one carrying the message.
-        const errorRow = screen.root
+        const errorNode = screen.root
             .findAll((node) => node.props?.testID === 'connected-services-pool-detail:error')
-            .find((node) => typeof node.props?.subtitle === 'string');
-        expect(errorRow?.props.subtitle).toBe('connect_group_generation_conflict');
-    });
-
-    it('renders no error row when the mutation owner reports none', async () => {
-        const { screen } = await renderPoolDetail();
-
-        expect(screen.root.findAll((node) => (
-            node.props?.testID === 'connected-services-pool-detail:error'
-        ))).toHaveLength(0);
+            .find((node) => node.props?.description === 'connect_group_generation_conflict');
+        expect(errorNode).toBeTruthy();
+        const none = await renderPoolDetail();
+        expect(none.screen.root.findAll((node) => node.props?.testID === 'connected-services-pool-detail:error')).toHaveLength(0);
     });
 });
+
+function quotaLimitsMenu(screen: Screen) {
+    return screen.root
+        .findAllByType('DropdownMenu' as never)
+        .find((candidate) => candidate.props.items?.some((item: { title?: string }) => (
+            item.title === 'connectedServices.detail.groupDetail.quotaLimitsAllTitle'
+        )));
+}
+
+function moreMenu(screen: Screen) {
+    const node = screen.root.findAllByType('DropdownMenu' as never)
+        .find((candidate) => candidate.props.items?.some((item: { id: string }) => item.id === 'delete'));
+    if (!node) throw new Error('no pool menu');
+    return node;
+}
+
+function itemlessHeader(screen: Screen): Record<string, any> {
+    const node = screen.root.findAll((candidate) => candidate.props?.testID === 'connected-services-pool-detail:summary' && candidate.props?.meta !== undefined)[0];
+    if (!node) throw new Error('no header');
+    return node.props;
+}

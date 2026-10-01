@@ -7,20 +7,20 @@ import { installServerSettingsHooksCommonModuleMocks } from './serverSettingsHoo
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
-const settingsState = {
+const settingsState = vi.hoisted(() => ({
     serverSelectionGroups: [
         { id: 'grp-one', name: 'Group One', serverIds: ['server-a'], presentation: 'grouped' },
     ] as any[],
     serverSelectionActiveTargetKind: 'group' as 'server' | 'group' | null,
     serverSelectionActiveTargetId: 'grp-one' as string | null,
-};
+}));
 const storageState = settingsState as Record<string, unknown>;
-const homeViewState = {
+const homeViewState = vi.hoisted(() => ({
     version: 1 as const,
-    get groups() { return storageState.serverSelectionGroups as any[]; },
-    get activeTargetKind() { return storageState.serverSelectionActiveTargetKind as 'server' | 'group' | null; },
-    get activeTargetId() { return storageState.serverSelectionActiveTargetId as string | null; },
-};
+    get groups() { return settingsState.serverSelectionGroups as any[]; },
+    get activeTargetKind() { return settingsState.serverSelectionActiveTargetKind as 'server' | 'group' | null; },
+    get activeTargetId() { return settingsState.serverSelectionActiveTargetId as string | null; },
+}));
 const useSettingMutableMock = ((key: string) => [
     storageState[key],
     (value: unknown) => {
@@ -31,12 +31,14 @@ const useSettingMutableMock = ((key: string) => [
 const routerReplaceMock = vi.fn();
 const modalAlertMock = vi.fn();
 const modalConfirmMock = vi.fn(async () => false);
-let activeServerId = 'server-a';
-let activeServerSnapshot = { serverId: 'server-a', serverUrl: 'https://a.example.test', generation: 1 };
+const activeServerState = vi.hoisted(() => ({
+    id: 'server-a',
+    snapshot: { serverId: 'server-a', serverUrl: 'https://a.example.test', generation: 1 },
+}));
 
 function setActiveServerForTest(serverId: string) {
-    activeServerId = serverId;
-    activeServerSnapshot = { serverId, serverUrl: `https://${serverId}.example.test`, generation: 1 };
+    activeServerState.id = serverId;
+    activeServerState.snapshot = { serverId, serverUrl: `https://${serverId}.example.test`, generation: 1 };
 }
 
 vi.mock('@/auth/context/AuthContext', () => ({
@@ -72,18 +74,24 @@ installServerSettingsHooksCommonModuleMocks({
     },
 });
 
-vi.mock('@/sync/runtime/orchestration/connectionManager', () => ({
+vi.mock('@/sync/runtime/orchestration/connectionManager', async (importOriginal) => ({
+    ...await importOriginal<typeof import('@/sync/runtime/orchestration/connectionManager')>(),
     switchConnectionToActiveServer: vi.fn(async () => {}),
+    getAppliedActiveServerSnapshot: () => activeServerState.snapshot,
+    isAppliedActiveServerRuntimeAvailable: () => true,
+    subscribeAppliedActiveServer: () => () => {},
+    subscribeApplyingActiveServer: () => () => {},
 }));
 
-vi.mock('@/sync/domains/server/serverProfiles', () => ({
-    getActiveServerSnapshot: () => activeServerSnapshot,
+vi.mock('@/sync/domains/server/serverProfiles', async (importOriginal) => ({
+    ...await importOriginal<typeof import('@/sync/domains/server/serverProfiles')>(),
+    getActiveServerSnapshot: () => activeServerState.snapshot,
     listServerProfiles: () => [
         { id: 'server-a', name: 'A', serverUrl: 'https://a.example.test', lastUsedAt: 0 },
         { id: 'server-b', name: 'B', serverUrl: 'https://b.example.test', lastUsedAt: 0 },
     ],
     resolveServerProfileScopeId: (profile: { id: string; serverIdentityId?: string | null }) => profile.serverIdentityId ?? profile.id,
-    getActiveServerId: () => activeServerId,
+    getActiveServerId: () => activeServerState.id,
     getDeviceDefaultServerId: () => 'server-a',
     getResetToDefaultServerId: () => 'server-a',
     subscribeActiveServer: vi.fn(() => () => {}),
@@ -160,6 +168,27 @@ describe('useServerSettingsScreenController', () => {
         await renderScreen(React.createElement(Probe));
 
         expect(value.activeTargetKey).toBe('group:grp-one');
+    });
+
+    it('keeps an explicit All Homes selection rather than treating it as a stale group', async () => {
+        setActiveServerForTest('server-a');
+        storageState.serverSelectionGroups = [];
+        storageState.serverSelectionActiveTargetKind = 'group';
+        storageState.serverSelectionActiveTargetId = '@all-homes';
+
+        const { useServerSettingsScreenController } = await import('./useServerSettingsScreenController');
+
+        let value: any = null;
+        function Probe() {
+            value = useServerSettingsScreenController();
+            return null;
+        }
+
+        await renderScreen(React.createElement(Probe));
+
+        expect(value.activeTargetKey).toBe('group:@all-homes');
+        expect(storageState.serverSelectionActiveTargetKind).toBe('group');
+        expect(storageState.serverSelectionActiveTargetId).toBe('@all-homes');
     });
 
     it('keeps a valid explicit Home target when another Home is focused', async () => {

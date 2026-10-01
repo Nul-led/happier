@@ -1,44 +1,31 @@
 import { t } from '@/text';
 import type { WorkflowPhaseRollup } from '@/components/sessions/workState/sessionWorkflowActivityTypes';
-import type { SessionWorkflowRunHeadlineV1, SessionWorkflowRunStatusV1 } from '@happier-dev/protocol';
+import { fromWorkflowRunStatus, type SessionWorkflowRunHeadlineV1, type SessionWorkflowRunStatusV1 } from '@happier-dev/protocol';
+
+import { resolveWorkStatusTone, type WorkStatusTone } from '@/components/work/status/resolveWorkStatusTone';
 
 /**
  * Neutral workflow presentation owner.
  *
- * Status tone, progress and rollup formatting shared by every workflow surface — the transcript
+ * Progress and rollup formatting shared by every workflow surface — the transcript
  * card, the Session work-state popover, and the managed library/run/Flow surfaces. It is
  * origin-neutral on purpose: nothing here reads a Claude observation snapshot or a managed run
  * record, only exact counts and statuses already normalized by the owning reader. Claude-observation
  * snapshot normalization stays in `@/components/sessions/workState/sessionWorkflowActivityPresentation`.
  */
 
-/** Workflow status tone shared by the compact badge, popover, and transcript card (themed downstream). */
-export type WorkflowStatusTone = 'active' | 'warning' | 'complete' | 'neutral';
-
-/** Run-status tone: failed/blocked warns, active is active, terminal-success is complete. */
-export function resolveWorkflowRunTone(status: SessionWorkflowRunStatusV1): WorkflowStatusTone {
-    if (status === 'failed' || status === 'blocked' || status === 'stopped') return 'warning';
-    if (status === 'active') return 'active';
-    if (status === 'complete') return 'complete';
-    if (status === 'cancelled') return 'neutral';
-    return 'neutral';
+/**
+ * An observed run's tone, from the one work-status owner (INT §5.3): the run's status reads as the
+ * agent-activity vocabulary every roster row speaks, so healthy work is neutral, a dependency block or
+ * a stop is not alarm, and only a failure is trouble.
+ */
+export function resolveWorkflowRunTone(status: SessionWorkflowRunStatusV1): WorkStatusTone {
+    return resolveWorkStatusTone({ kind: 'agent_activity', facts: { status: fromWorkflowRunStatus(status), word: '' } }).tone;
 }
 
-/** Phase/run rollup tone: any failed/blocked agent warns, any active agent is active, all-complete is complete. */
-export function resolveWorkflowRollupTone(rollup: WorkflowPhaseRollup): WorkflowStatusTone {
-    if (rollup.failed > 0 || rollup.blocked > 0) return 'warning';
-    if (rollup.active > 0) return 'active';
-    if (rollup.total > 0 && rollup.complete === rollup.total) return 'complete';
-    return 'neutral';
-}
-
-/** Progress meter tone for `MeterBar`: success/warning/danger/neutral from a run-level rollup. */
-export function resolveWorkflowMeterTone(rollup: WorkflowPhaseRollup): 'success' | 'warning' | 'danger' | 'neutral' {
-    if (rollup.failed > 0) return 'danger';
-    if (rollup.blocked > 0) return 'warning';
-    if (rollup.total > 0 && rollup.complete === rollup.total) return 'success';
-    if (rollup.active > 0) return 'success';
-    return 'neutral';
+/** Progress meter tone for `MeterBar`: neutral while the run is healthy, danger once an agent failed. */
+export function resolveWorkflowMeterTone(rollup: WorkflowPhaseRollup): 'danger' | 'neutral' {
+    return rollup.failed > 0 ? 'danger' : 'neutral';
 }
 
 /** Completed-over-total fraction in 0..1 for the progress meter; 0 when there are no agents. */

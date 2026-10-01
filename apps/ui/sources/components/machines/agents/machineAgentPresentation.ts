@@ -1,0 +1,259 @@
+import type {
+    MachineAgent,
+    MachineAgentJob,
+    MachineAgentSignInSession,
+} from '@/agents/machineAgents/machineAgentTypes';
+
+/** A failed install or update, as the install-job owner reports it. */
+export type MachineAgentJobFailure = Extract<NonNullable<MachineAgentJob['outcome']>, { kind: 'failed' }>;
+
+const UNKNOWN_FAILURE: MachineAgentJobFailure = { kind: 'failed', code: 'unknown', stepId: null, message: null };
+
+/**
+ * How one agent on one machine reads on every surface (lab `agent-setup`): which phase of the setup
+ * form it is in, the one status line of its row or card, and the one action next to it. Pure: it maps
+ * the inventory model (`MachineAgent`, decided by its owner) plus the shared sign-in session to
+ * presentation; it never decides installed / signed in itself.
+ */
+
+export type AgentSetupPhase =
+    | 'install'
+    | 'manualInstall'
+    | 'installing'
+    | 'installFailed'
+    | 'unsupported'
+    | 'signIn'
+    | 'waitingForSignIn'
+    | 'ready'
+    | 'checking'
+    | 'unknown';
+
+export type MachineAgentRowAction =
+    | Readonly<{ kind: 'install' }>
+    | Readonly<{ kind: 'update' }>
+    | Readonly<{ kind: 'signIn' }>
+    | Readonly<{ kind: 'retry' }>
+    | Readonly<{ kind: 'cancel' }>
+    | Readonly<{ kind: 'showTerminal' }>
+    | Readonly<{ kind: 'guide'; url: string }>;
+
+export type MachineAgentStatusTone = 'quiet' | 'warn' | 'bad';
+
+export type MachineAgentStatus =
+    | Readonly<{ kind: 'ready'; tone: 'quiet'; via: 'connected' | 'native'; label: string | null; updateTo: string | null }>
+    | Readonly<{ kind: 'needsSignIn'; tone: 'warn' }>
+    | Readonly<{ kind: 'waitingForSignIn'; tone: 'quiet' }>
+    | Readonly<{ kind: 'notInstalled'; tone: 'quiet'; sizeBytes: number | null; manual: boolean }>
+    | Readonly<{ kind: 'unsupported'; tone: 'quiet'; reason: 'os' | 'arch' }>
+    | Readonly<{ kind: 'installing'; tone: 'quiet'; stepLabel: string | null; bytesDone: number | null; bytesTotal: number | null }>
+    | Readonly<{ kind: 'failed'; tone: 'bad'; failure: MachineAgentJobFailure }>
+    | Readonly<{ kind: 'checking'; tone: 'quiet' }>
+    | Readonly<{ kind: 'offline'; tone: 'quiet'; lastKnown: 'signedIn' | 'signedOut' | 'notInstalled' | 'unknown' }>
+    | Readonly<{ kind: 'unknown'; tone: 'quiet' }>;
+
+function isJobRunning(agent: MachineAgent): boolean {
+    return agent.job !== null && agent.job.outcome === null;
+}
+
+function jobFailure(agent: MachineAgent) {
+    const outcome = agent.job?.outcome;
+    return outcome && outcome.kind === 'failed' && outcome.code !== 'cancelled' ? outcome : null;
+}
+
+function isSignInOpen(session: MachineAgentSignInSession | null | undefined): boolean {
+    return session?.phase === 'opening' || session?.phase === 'waiting';
+}
+
+export function resolveAgentSetupPhase(agent: MachineAgent, session?: MachineAgentSignInSession | null): AgentSetupPhase {
+    if (isJobRunning(agent)) return 'installing';
+    if (jobFailure(agent)) return 'installFailed';
+    if (!agent.platform.supported || agent.state === 'unsupported') return 'unsupported';
+    switch (agent.state) {
+        case 'installing':
+            return 'installing';
+        case 'failed':
+            return 'installFailed';
+        case 'notInstalled':
+            return agent.install.available ? 'install' : 'manualInstall';
+        case 'needsSignIn':
+            return isSignInOpen(session) ? 'waitingForSignIn' : 'signIn';
+        case 'ready':
+        case 'updateAvailable':
+            return 'ready';
+        case 'checking':
+            return 'checking';
+        case 'unknown':
+            return 'unknown';
+    }
+}
+
+/** The one action beside a row or card; null when there is nothing to do (healthy, offline, unsupported). */
+export function resolveMachineAgentRowAction(
+    agent: MachineAgent,
+    session?: MachineAgentSignInSession | null,
+): MachineAgentRowAction | null {
+    if (agent.stale) return null;
+    const phase = resolveAgentSetupPhase(agent, session);
+    switch (phase) {
+        case 'installing': return { kind: 'cancel' };
+        case 'installFailed': return { kind: 'retry' };
+        case 'install': return { kind: 'install' };
+        case 'manualInstall': return agent.install.guideUrl ? { kind: 'guide', url: agent.install.guideUrl } : null;
+        case 'signIn': return { kind: 'signIn' };
+        case 'waitingForSignIn': return { kind: 'showTerminal' };
+        case 'ready':
+            return agent.state === 'updateAvailable' && agent.update?.supported === true ? { kind: 'update' } : null;
+        case 'unsupported':
+        case 'checking':
+        case 'unknown':
+            return null;
+    }
+}
+
+function runningStep(agent: MachineAgent) {
+    const steps = agent.job?.steps ?? [];
+    return steps.find((step) => step.state === 'running') ?? steps.find((step) => step.state === 'pending') ?? null;
+}
+
+/** The one status line of a row or card. Only trouble has a tone. */
+export function resolveMachineAgentStatus(
+    agent: MachineAgent,
+    session?: MachineAgentSignInSession | null,
+): MachineAgentStatus {
+    if (agent.stale) {
+        const lastKnown = !agent.installed
+            ? 'notInstalled'
+            : agent.signIn.status === 'signedIn' ? 'signedIn' : agent.signIn.status === 'signedOut' ? 'signedOut' : 'unknown';
+        return { kind: 'offline', tone: 'quiet', lastKnown };
+    }
+    const phase = resolveAgentSetupPhase(agent, session);
+    switch (phase) {
+        case 'installing': {
+            const step = runningStep(agent);
+            return { kind: 'installing', tone: 'quiet', stepLabel: step?.label ?? null, bytesDone: step?.bytesDone ?? null, bytesTotal: step?.bytesTotal ?? null };
+        }
+        case 'installFailed':
+            return { kind: 'failed', tone: 'bad', failure: jobFailure(agent) ?? UNKNOWN_FAILURE };
+        case 'unsupported':
+            return { kind: 'unsupported', tone: 'quiet', reason: agent.platform.supported ? 'os' : agent.platform.reason };
+        case 'install':
+        case 'manualInstall':
+            return { kind: 'notInstalled', tone: 'quiet', sizeBytes: agent.install.sizeBytes, manual: phase === 'manualInstall' };
+        case 'signIn':
+            return { kind: 'needsSignIn', tone: 'warn' };
+        case 'waitingForSignIn':
+            return { kind: 'waitingForSignIn', tone: 'quiet' };
+        case 'ready': {
+            const via = agent.signIn.via;
+            const updateTo = agent.state === 'updateAvailable' ? agent.latestVersion : null;
+            if (via?.kind === 'connected') return { kind: 'ready', tone: 'quiet', via: 'connected', label: via.profileLabel ?? via.title, updateTo };
+            return { kind: 'ready', tone: 'quiet', via: 'native', label: via?.kind === 'native' ? via.accountLabel : null, updateTo };
+        }
+        case 'checking':
+            return { kind: 'checking', tone: 'quiet' };
+        case 'unknown':
+            return { kind: 'unknown', tone: 'quiet' };
+    }
+}
+
+/**
+ * Where an agent sits in the engine popover's rail for the composer's machine (user ruling 2026-09-30:
+ * the real rail + pane popover): agents on the machine first, then "Not on <machine> yet" marked with a
+ * download glyph, then the ones that can't run there. `opensSetup`: selecting the row shows the setup
+ * form in the right pane instead of the models, and never makes it the session's agent. Null (nothing
+ * known yet) keeps today's placement: a row is never hidden or blocked on a missing answer.
+ */
+export type MachineAgentPickerPlacement = Readonly<{
+    group: 'onMachine' | 'notOnMachine' | 'cantRun';
+    marker: 'none' | 'needsSignIn' | 'download' | 'installing' | 'failed' | 'unsupported';
+    opensSetup: boolean;
+}>;
+
+export function resolveMachineAgentPickerPlacement(
+    agent: MachineAgent | null,
+    session?: MachineAgentSignInSession | null,
+): MachineAgentPickerPlacement {
+    if (!agent) return { group: 'onMachine', marker: 'none', opensSetup: false };
+    const phase = resolveAgentSetupPhase(agent, session);
+    switch (phase) {
+        case 'ready':
+        case 'checking':
+        case 'unknown':
+            return { group: 'onMachine', marker: 'none', opensSetup: false };
+        case 'signIn':
+        case 'waitingForSignIn':
+            return { group: 'onMachine', marker: 'needsSignIn', opensSetup: true };
+        case 'install':
+        case 'manualInstall':
+            return { group: 'notOnMachine', marker: 'download', opensSetup: true };
+        case 'installing':
+            return { group: agent.installed ? 'onMachine' : 'notOnMachine', marker: 'installing', opensSetup: true };
+        case 'installFailed':
+            return { group: agent.installed ? 'onMachine' : 'notOnMachine', marker: 'failed', opensSetup: true };
+        case 'unsupported':
+            return { group: 'cantRun', marker: 'unsupported', opensSetup: true };
+    }
+}
+
+/**
+ * Installed agents first (what this machine runs today), then what could run here; never what can't. An
+ * agent installed from "Add an agent" during this run keeps its place while its form finishes the setup
+ * (its install job is still held), so the open form never jumps between groups.
+ */
+export function splitMachineAgents(agents: readonly MachineAgent[]): Readonly<{ installed: MachineAgent[]; available: MachineAgent[] }> {
+    const installed: MachineAgent[] = [];
+    const available: MachineAgent[] = [];
+    for (const agent of agents) {
+        const installedHere = agent.job?.intent === 'install';
+        if (agent.installed && !installedHere) installed.push(agent);
+        else if (agent.platform.supported) available.push(agent);
+    }
+    return { installed, available };
+}
+
+/**
+ * Why the composer can't start a session with the chosen agent on the chosen machine, and the fix
+ * (lab `agent-setup` ST "session start"): not on the machine yet → Set up; signed out → Sign in. Null
+ * when the agent can start (or nothing is known yet: the spawn's typed failure still speaks then).
+ */
+export function resolveAgentSessionStartBlock(agent: MachineAgent | null): 'notInstalled' | 'signedOut' | null {
+    if (!agent || agent.stale) return null;
+    switch (resolveAgentSetupPhase(agent)) {
+        case 'install':
+        case 'manualInstall':
+        case 'installing':
+        case 'installFailed':
+        case 'unsupported':
+            return 'notInstalled';
+        case 'signIn':
+        case 'waitingForSignIn':
+            return 'signedOut';
+        default:
+            return null;
+    }
+}
+
+/** How many agents the block offers before "All agents" (lab H1: three). */
+const FIRST_AGENT_CHOICES = 3;
+
+/**
+ * The agents Home offers first on a machine with none (lab H1): ones whose connected service is already
+ * connected lead (they sign in with nothing more to do), then the rest in catalog order. Only agents that
+ * can run on the machine and Happier can install.
+ */
+export function rankFirstAgentChoices(agents: readonly MachineAgent[]): Readonly<{ choices: MachineAgent[]; more: number }> {
+    const candidates = agents.filter((agent) => !agent.installed && agent.platform.supported && agent.install.available);
+    const connected = (agent: MachineAgent) => agent.signIn.connectedServices.some((service) => service.connected && service.healthy);
+    const ranked = [...candidates.filter(connected), ...candidates.filter((agent) => !connected(agent))];
+    return { choices: ranked.slice(0, FIRST_AGENT_CHOICES), more: Math.max(0, ranked.length - FIRST_AGENT_CHOICES) };
+}
+
+/**
+ * Home offers "Set up your first agent" only while the composer's machine is known to have no agent at
+ * all (lab H1): facts are in (fresh or last known), there are agents it could run, and none is installed.
+ */
+export function shouldOfferFirstAgentSetup(inventory: Readonly<{ status: 'loading' | 'ready' | 'offline' | 'error'; agents: readonly MachineAgent[] }>): boolean {
+    return (inventory.status === 'ready' || inventory.status === 'offline')
+        && inventory.agents.length > 0
+        && !inventory.agents.some((agent) => agent.installed);
+}

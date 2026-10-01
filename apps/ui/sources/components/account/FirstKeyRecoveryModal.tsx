@@ -176,6 +176,8 @@ export function FirstKeyRecoveryModal(
                 <Text
                     style={styles.description}
                     testID="first-key-recovery-error"
+                    accessibilityRole="alert"
+                    accessibilityLiveRegion="assertive"
                 >
                     {tLoose(
                         'settingsAccount.firstKeyRecovery.failed',

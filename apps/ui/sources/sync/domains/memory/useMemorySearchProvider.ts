@@ -103,7 +103,9 @@ export function resolveHomeMemorySearchReadiness(capability: unknown): HomeMemor
  */
 export function useMemorySearchProvider(
     target: MemorySearchProviderTarget = { kind: 'ambient' },
+    options: Readonly<{ enabled?: boolean }> = {},
 ): MemorySearchProvider {
+    const enabled = options.enabled !== false;
     const activeServer = useActiveServerSnapshot();
     const requestedServerId = target.kind === 'exact'
         ? resolveServerProfileScopeIdForIdentifier(target.serverId)
@@ -127,8 +129,9 @@ export function useMemorySearchProvider(
         : '');
     // Daemon memory search targets the explicitly selected usable machine, never an
     // arbitrary first machine and never an automatic all-machine fanout.
-    const daemonTargetSelection = useDaemonMemorySearchTargetSelection();
-    const daemonTarget = daemonMemorySearchEnabled && !isExplicitNone
+    const daemonTargetEnabled = enabled && daemonMemorySearchEnabled && !isExplicitNone;
+    const daemonTargetSelection = useDaemonMemorySearchTargetSelection(daemonTargetEnabled);
+    const daemonTarget = daemonTargetEnabled
         ? requestedServerId
             ? target.kind === 'exact' && target.machineId
                 ? resolveDaemonMemorySearchTarget(
@@ -147,7 +150,7 @@ export function useMemorySearchProvider(
     const daemonMachineId = daemonTarget?.machineId ?? null;
 
     return React.useMemo(() => {
-        if (isExplicitNone) return NO_MEMORY_SEARCH_PROVIDER;
+        if (!enabled || isExplicitNone) return NO_MEMORY_SEARCH_PROVIDER;
         const effectiveFeaturesSnapshot = requestedServerId ? scopedFeaturesSnapshot : featuresSnapshot;
         const capability = effectiveFeaturesSnapshot.status === 'ready'
             ? effectiveFeaturesSnapshot.features.capabilities.homeSearch
@@ -198,6 +201,7 @@ export function useMemorySearchProvider(
         }
         return NO_MEMORY_SEARCH_PROVIDER;
     }, [
+        enabled,
         activeServerId,
         daemonMachineId,
         daemonMemorySearchEnabled,

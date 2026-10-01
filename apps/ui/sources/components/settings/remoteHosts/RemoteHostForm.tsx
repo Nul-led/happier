@@ -1,21 +1,17 @@
 import * as React from 'react';
 import { View } from 'react-native';
-import { useUnistyles } from 'react-native-unistyles';
 
-import type { CustomModalInjectedProps } from '@/modal/types';
-import { ItemList } from '@/components/ui/lists/ItemList';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
 import { Item } from '@/components/ui/lists/Item';
 import { Switch } from '@/components/ui/forms/Switch';
-import { Text } from '@/components/ui/text/Text';
+import { FieldTextInput } from '@/components/ui/forms/FieldTextInput';
 import { t } from '@/text';
 import { sync } from '@/sync/sync';
 import { randomUUID } from '@/platform/randomUUID';
 import { parseSshTarget, buildSshTarget } from '@happier-dev/protocol';
 
-import { MachineSetupTextField } from '@/components/ui/forms/MachineSetupTextField';
 import { SshCredentialsFields, type SshCredentialsDraft } from '@/components/ssh/SshCredentialsFields';
-import { applyConfiguredSshHostSuggestionToDraft, createDefaultSshCredentialsDraft, parseSshPortNumber } from '@/components/ssh/sshCredentialsDraft';
+import { applyConfiguredSshHostSuggestionToDraft, createDefaultSshCredentialsDraft, isSshCredentialsDraftReady, parseSshPortNumber } from '@/components/ssh/sshCredentialsDraft';
 import { SshConfiguredHostPicker } from '@/components/ssh/SshConfiguredHostPicker';
 import { filterConfiguredSshHostSuggestions, type SshConfiguredHostSuggestion } from '@/components/ssh/filterConfiguredSshHostSuggestions';
 import { useConfiguredSshHostSuggestions } from '@/components/ssh/useConfiguredSshHostSuggestions';
@@ -23,10 +19,6 @@ import type { SystemTaskRunner } from '@/components/systemTasks/types';
 
 import type { RemoteHost, RemoteHostAuthMode } from '@/sync/domains/remoteHosts/remoteHostModel';
 import type { RemoteHostLocalOverrides } from '@/sync/domains/remoteHosts/remoteHostLocalOverrides';
-
-function nowMs(): number {
-    return Date.now();
-}
 
 function toSshDraft(remoteHost: RemoteHost | null, overrides: RemoteHostLocalOverrides | null): SshCredentialsDraft {
     if (!remoteHost) return createDefaultSshCredentialsDraft();
@@ -49,84 +41,67 @@ function normalizeRemoteHostAuthMode(value: SshCredentialsDraft['authMode']): Re
     return 'agent';
 }
 
-export const RemoteHostForm = React.memo(function RemoteHostForm(props: CustomModalInjectedProps & Readonly<{
+type RemoteHostDraftState = Readonly<{
+    name: string;
+    sshDraft: SshCredentialsDraft;
+    sshConfigFilePath: string;
+    savePassword: boolean;
+    savePrivateKeyMaterial: boolean;
+    privateKeyMaterialDraft: string;
+}>;
+
+function initialDraftState(remoteHost: RemoteHost | null, overrides: RemoteHostLocalOverrides | null): RemoteHostDraftState {
+    return {
+        name: remoteHost?.name ?? '',
+        sshDraft: toSshDraft(remoteHost, overrides),
+        sshConfigFilePath: overrides?.sshConfigFilePath ?? '',
+        savePassword: Boolean(remoteHost?.ssh.passwordEnc),
+        savePrivateKeyMaterial: Boolean(remoteHost?.ssh.identityPrivateKeyEnc),
+        privateKeyMaterialDraft: '',
+    };
+}
+
+export type RemoteHostSavePayload = Readonly<{ remoteHost: RemoteHost; localOverrides: RemoteHostLocalOverrides | null }>;
+
+/**
+ * The one editor of a remote host, for a new host (draft) and a saved one: its name, how to reach it
+ * over SSH, and which secrets this Account stores for it. The host's page renders its sections and
+ * owns Save; secrets typed here are encrypted only when saved.
+ */
+export function useRemoteHostEditor(props: Readonly<{
     remoteHost: RemoteHost | null;
     localOverrides: RemoteHostLocalOverrides | null;
-    savedRemoteHosts?: readonly RemoteHost[];
-    systemTaskRunner?: SystemTaskRunner;
     secretMaterialAllowed: boolean;
-    remoteMaintenanceSupported?: boolean;
-    onSave: (payload: Readonly<{ remoteHost: RemoteHost; localOverrides: RemoteHostLocalOverrides | null }>) => void;
-    onDelete: (remoteHostId: string) => void;
-    onTestConnection: (remoteHost: RemoteHost) => void;
 }>) {
-    const { theme } = useUnistyles();
-    const editing = Boolean(props.remoteHost);
     const existing = props.remoteHost;
-    const remoteMaintenanceSupported = props.remoteMaintenanceSupported !== false;
-    const existingPasswordEnc = existing?.ssh.passwordEnc ?? null;
-    const existingIdentityPrivateKeyEnc = existing?.ssh.identityPrivateKeyEnc ?? null;
-    const [name, setName] = React.useState(() => existing?.name ?? '');
-    const [sshDraft, setSshDraft] = React.useState<SshCredentialsDraft>(() => toSshDraft(existing ?? null, props.localOverrides));
-    const [sshConfigFilePath, setSshConfigFilePath] = React.useState(() => props.localOverrides?.sshConfigFilePath ?? '');
-    const [savePassword, setSavePassword] = React.useState(() => Boolean(existingPasswordEnc));
-    const [savePrivateKeyMaterial, setSavePrivateKeyMaterial] = React.useState(() => Boolean(existingIdentityPrivateKeyEnc));
-    const [privateKeyMaterialDraft, setPrivateKeyMaterialDraft] = React.useState('');
-    const configuredHostSuggestions = useConfiguredSshHostSuggestions({
-        ...(props.systemTaskRunner ? { runner: props.systemTaskRunner } : {}),
-    });
-    const filteredConfiguredHostSuggestions = React.useMemo(() => filterConfiguredSshHostSuggestions({
-        suggestions: configuredHostSuggestions.suggestions,
-        remoteHosts: (props.savedRemoteHosts ?? []).filter((host) => host.id !== existing?.id),
-    }), [configuredHostSuggestions.suggestions, existing?.id, props.savedRemoteHosts]);
+    const [state, setState] = React.useState<RemoteHostDraftState>(() => initialDraftState(existing, props.localOverrides));
+    const [baseline, setBaseline] = React.useState<RemoteHostDraftState>(() => initialDraftState(existing, props.localOverrides));
+    const dirty = JSON.stringify(state) !== JSON.stringify(baseline);
+    const valid = state.name.trim().length > 0 && isSshCredentialsDraftReady(state.sshDraft);
 
-    const effectiveSecretMaterialAllowed = props.secretMaterialAllowed === true;
-
-    React.useEffect(() => {
-        props.setChrome?.({
-            kind: 'card',
-            title: editing ? t('settings.remoteHostsEditHostTitle') : t('settings.remoteHostsAddHostTitle'),
-            closeButtonTestID: 'remote-host-form-close',
-        });
-    }, [editing, props]);
-
-    const handleDelete = React.useCallback(async () => {
-        if (!existing) return;
-        props.onDelete(existing.id);
-        props.onClose();
-    }, [existing, props]);
-
-    const handleSave = React.useCallback(() => {
-        const trimmedName = String(name ?? '').trim();
-        if (!trimmedName) {
-            return;
-        }
-
-        const sshAuthMode = normalizeRemoteHostAuthMode(sshDraft.authMode);
-        const target = buildSshTarget({ username: sshDraft.username.trim(), host: sshDraft.host.trim() });
-
-        const passwordRaw = String(sshDraft.password ?? '').trim();
-        const privateKeyRaw = String(privateKeyMaterialDraft ?? '').trim();
-
-        const passwordEnc = effectiveSecretMaterialAllowed && savePassword
-            ? (passwordRaw
-                ? sync.encryptSecretValue(passwordRaw)
-                : (existingPasswordEnc ?? null))
+    const buildSavePayload = React.useCallback((): RemoteHostSavePayload | null => {
+        const trimmedName = state.name.trim();
+        if (!trimmedName || !valid) return null;
+        const effectiveSecretMaterialAllowed = props.secretMaterialAllowed === true;
+        const existingPasswordEnc = existing?.ssh.passwordEnc ?? null;
+        const existingIdentityPrivateKeyEnc = existing?.ssh.identityPrivateKeyEnc ?? null;
+        const sshAuthMode = normalizeRemoteHostAuthMode(state.sshDraft.authMode);
+        const target = buildSshTarget({ username: state.sshDraft.username.trim(), host: state.sshDraft.host.trim() });
+        const passwordRaw = String(state.sshDraft.password ?? '').trim();
+        const privateKeyRaw = String(state.privateKeyMaterialDraft ?? '').trim();
+        const passwordEnc = effectiveSecretMaterialAllowed && state.savePassword
+            ? (passwordRaw ? sync.encryptSecretValue(passwordRaw) : existingPasswordEnc)
             : null;
-
-        const identityPrivateKeyEnc = effectiveSecretMaterialAllowed && savePrivateKeyMaterial && sshAuthMode === 'keyfile'
-            ? (privateKeyRaw
-                ? sync.encryptSecretValue(privateKeyRaw)
-                : (existingIdentityPrivateKeyEnc ?? null))
+        const identityPrivateKeyEnc = effectiveSecretMaterialAllowed && state.savePrivateKeyMaterial && sshAuthMode === 'keyfile'
+            ? (privateKeyRaw ? sync.encryptSecretValue(privateKeyRaw) : existingIdentityPrivateKeyEnc)
             : null;
-
-        const now = nowMs();
+        const now = Date.now();
         const remoteHost: RemoteHost = {
             id: existing?.id ?? randomUUID(),
             name: trimmedName,
             ssh: {
                 target,
-                port: parseSshPortNumber(sshDraft.port),
+                port: parseSshPortNumber(state.sshDraft.port),
                 authMode: sshAuthMode,
                 ...(effectiveSecretMaterialAllowed
                     ? {
@@ -141,62 +116,85 @@ export const RemoteHostForm = React.memo(function RemoteHostForm(props: CustomMo
             linkedMachineId: existing?.linkedMachineId ?? null,
             linkedRelayProfileId: existing?.linkedRelayProfileId ?? null,
         };
-
-        const identityFilePath = String(sshDraft.identityFilePath ?? '').trim();
-        const nextSshConfigFilePath = String(sshConfigFilePath ?? '').trim();
+        const identityFilePath = String(state.sshDraft.identityFilePath ?? '').trim();
+        const nextSshConfigFilePath = String(state.sshConfigFilePath ?? '').trim();
         const localOverrides: RemoteHostLocalOverrides | null = identityFilePath || nextSshConfigFilePath
             ? {
                 ...(nextSshConfigFilePath ? { sshConfigFilePath: nextSshConfigFilePath } : {}),
                 ...(identityFilePath ? { identityFilePath } : {}),
             }
             : null;
+        return { remoteHost, localOverrides };
+    }, [existing, props.secretMaterialAllowed, state, valid]);
 
-        props.onSave({ remoteHost, localOverrides });
-        props.onClose();
-    }, [
-        effectiveSecretMaterialAllowed,
-        existing,
-        existingIdentityPrivateKeyEnc,
-        existingPasswordEnc,
-        name,
-        privateKeyMaterialDraft,
-        props,
-        savePassword,
-        savePrivateKeyMaterial,
-        sshDraft,
-        sshConfigFilePath,
-    ]);
+    /** Marks the current draft saved: typed secrets leave state once they are encrypted. */
+    const markSaved = React.useCallback(() => {
+        const next = { ...state, privateKeyMaterialDraft: '', sshDraft: { ...state.sshDraft, password: '' } };
+        setState(next);
+        setBaseline(next);
+    }, [state]);
+    const discard = React.useCallback(() => setState(baseline), [baseline]);
 
-    const handleTestConnection = React.useCallback(() => {
-        if (!existing) return;
-        props.onTestConnection(existing);
-        props.onClose();
-    }, [existing, props]);
+    return { state, setState, dirty, valid, buildSavePayload, markSaved, discard } as const;
+}
 
+export type RemoteHostEditorState = ReturnType<typeof useRemoteHostEditor>;
+
+/** The editor's sections: Host (its name), SSH (how to reach it) and, per auth mode, stored secrets. */
+export const RemoteHostEditorSections = React.memo(function RemoteHostEditorSections(props: Readonly<{
+    editor: RemoteHostEditorState;
+    remoteHost: RemoteHost | null;
+    savedRemoteHosts: readonly RemoteHost[];
+    systemTaskRunner?: SystemTaskRunner;
+    secretMaterialAllowed: boolean;
+}>) {
+    const { state, setState } = props.editor;
+    const existing = props.remoteHost;
+    const configuredHostSuggestions = useConfiguredSshHostSuggestions({
+        ...(props.systemTaskRunner ? { runner: props.systemTaskRunner } : {}),
+    });
+    const filteredConfiguredHostSuggestions = React.useMemo(() => filterConfiguredSshHostSuggestions({
+        suggestions: configuredHostSuggestions.suggestions,
+        remoteHosts: props.savedRemoteHosts.filter((host) => host.id !== existing?.id),
+    }), [configuredHostSuggestions.suggestions, existing?.id, props.savedRemoteHosts]);
     const handleSelectConfiguredHost = React.useCallback((suggestion: SshConfiguredHostSuggestion) => {
-        setSshDraft((current) => applyConfiguredSshHostSuggestionToDraft(current, suggestion));
-        if (suggestion.source === 'ssh-config' && suggestion.sourcePath) {
-            setSshConfigFilePath(suggestion.sourcePath);
-        }
-    }, []);
+        setState((current) => ({
+            ...current,
+            sshDraft: applyConfiguredSshHostSuggestionToDraft(current.sshDraft, suggestion),
+            ...(suggestion.source === 'ssh-config' && suggestion.sourcePath ? { sshConfigFilePath: suggestion.sourcePath } : {}),
+        }));
+    }, [setState]);
 
-    const showSecretControls = effectiveSecretMaterialAllowed;
-    const showStoredPasswordHint = showSecretControls && savePassword && existingPasswordEnc != null;
-    const showStoredKeyHint = showSecretControls && savePrivateKeyMaterial && existingIdentityPrivateKeyEnc != null;
+    const showSecretControls = props.secretMaterialAllowed === true;
+    const showStoredPasswordHint = showSecretControls && state.savePassword && existing?.ssh.passwordEnc != null;
+    const showStoredKeyHint = showSecretControls && state.savePrivateKeyMaterial && existing?.ssh.identityPrivateKeyEnc != null;
+    const secretMaterialDisabledRow = (
+        <Item
+            title={t('settings.remoteHostsSecretMaterialDisabledTitle')}
+            subtitle={t('settings.remoteHostsSecretMaterialDisabledSubtitle')}
+            subtitleLines={0}
+            mode="info"
+            showChevron={false}
+        />
+    );
 
     return (
-        <ItemList testID="remote-host-form">
+        <>
             <ItemGroup title={t('settings.remoteHostsHostGroupTitle')}>
-                <View style={{ paddingHorizontal: theme.margins.lg, paddingVertical: theme.margins.sm, gap: theme.margins.sm }}>
-                    <MachineSetupTextField
-                        testID="remote-host-form-name"
-                        label={t('common.name')}
-                        value={name}
-                        autoCapitalize="words"
-                        autoCorrect={false}
-                        onChangeText={setName}
-                    />
-                </View>
+                <Item
+                    title={t('common.name')}
+                    showChevron={false}
+                    accessoryLayout="adaptive"
+                    rightElement={(
+                        <FieldTextInput
+                            testID="remote-host-form-name"
+                            accessibilityLabel={t('common.name')}
+                            value={state.name}
+                            autoCapitalize="words"
+                            onChangeText={(name) => setState((current) => ({ ...current, name }))}
+                        />
+                    )}
+                />
             </ItemGroup>
 
             <ItemGroup title={t('settings.remoteHostsSshGroupTitle')}>
@@ -212,21 +210,21 @@ export const RemoteHostForm = React.memo(function RemoteHostForm(props: CustomMo
                 />
                 <SshCredentialsFields
                     testIDPrefix="remote-host-form-ssh"
-                    value={sshDraft}
-                    onChange={setSshDraft}
+                    value={state.sshDraft}
+                    onChange={(sshDraft) => setState((current) => ({ ...current, sshDraft }))}
                     layoutVariant="settings"
                 />
             </ItemGroup>
 
-            {sshDraft.authMode === 'password' ? (
+            {state.sshDraft.authMode === 'password' ? (
                 <ItemGroup title={t('settings.remoteHostsSecretMaterialGroupTitle')}>
                     {showSecretControls ? (
                         <>
                             <Item
                                 title={t('settings.remoteHostsSavePasswordLabel')}
                                 showChevron={false}
-                                onPress={() => setSavePassword((current) => !current)}
-                                rightElement={<Switch value={savePassword} onValueChange={setSavePassword} />}
+                                onPress={() => setState((current) => ({ ...current, savePassword: !current.savePassword }))}
+                                rightElement={<Switch value={state.savePassword} onValueChange={(savePassword) => setState((current) => ({ ...current, savePassword }))} />}
                             />
                             {showStoredPasswordHint ? (
                                 <Item
@@ -237,77 +235,45 @@ export const RemoteHostForm = React.memo(function RemoteHostForm(props: CustomMo
                                 />
                             ) : null}
                         </>
-                    ) : (
-                        <Item
-                            title={t('settings.remoteHostsSecretMaterialDisabledTitle')}
-                            subtitle={t('settings.remoteHostsSecretMaterialDisabledSubtitle')}
-                            mode="info"
-                            showChevron={false}
-                        />
-                    )}
+                    ) : secretMaterialDisabledRow}
                 </ItemGroup>
             ) : null}
 
-            {sshDraft.authMode === 'keyfile' ? (
+            {state.sshDraft.authMode === 'keyfile' ? (
                 <ItemGroup title={t('settings.remoteHostsSecretMaterialGroupTitle')}>
                     {showSecretControls ? (
                         <>
                             <Item
                                 title={t('settings.remoteHostsStorePrivateKeyLabel')}
                                 showChevron={false}
-                                onPress={() => setSavePrivateKeyMaterial((current) => !current)}
-                                rightElement={<Switch value={savePrivateKeyMaterial} onValueChange={setSavePrivateKeyMaterial} />}
+                                onPress={() => setState((current) => ({ ...current, savePrivateKeyMaterial: !current.savePrivateKeyMaterial }))}
+                                rightElement={<Switch value={state.savePrivateKeyMaterial} onValueChange={(savePrivateKeyMaterial) => setState((current) => ({ ...current, savePrivateKeyMaterial }))} />}
                             />
-                            {savePrivateKeyMaterial ? (
-                                <View style={{ paddingHorizontal: theme.margins.lg, paddingVertical: theme.margins.sm, gap: theme.margins.sm }}>
-                                    <MachineSetupTextField
-                                        testID="remote-host-form-private-key"
-                                        label={t('settings.remoteHostsPrivateKeyLabel')}
-                                        value={privateKeyMaterialDraft}
-                                        multiline
-                                        autoCapitalize="none"
-                                        autoCorrect={false}
-                                        onChangeText={setPrivateKeyMaterialDraft}
-                                    />
-                                    {showStoredKeyHint ? (
-                                        <Text style={{ color: theme.colors.text.secondary }}>
-                                            {t('settings.remoteHostsPrivateKeySavedHint')}
-                                        </Text>
-                                    ) : null}
-                                </View>
+                            {state.savePrivateKeyMaterial ? (
+                                <Item
+                                    title={t('settings.remoteHostsPrivateKeyLabel')}
+                                    subtitle={showStoredKeyHint ? t('settings.remoteHostsPrivateKeySavedHint') : undefined}
+                                    subtitleLines={0}
+                                    showChevron={false}
+                                    accessoryLayout="stacked"
+                                    rightElement={(
+                                        <View style={{ width: '100%' }}>
+                                            <FieldTextInput
+                                                testID="remote-host-form-private-key"
+                                                accessibilityLabel={t('settings.remoteHostsPrivateKeyLabel')}
+                                                value={state.privateKeyMaterialDraft}
+                                                multiline
+                                                monospace
+                                                onChangeText={(privateKeyMaterialDraft) => setState((current) => ({ ...current, privateKeyMaterialDraft }))}
+                                            />
+                                        </View>
+                                    )}
+                                />
                             ) : null}
                         </>
-                    ) : (
-                        <Item
-                            title={t('settings.remoteHostsSecretMaterialDisabledTitle')}
-                            subtitle={t('settings.remoteHostsSecretMaterialDisabledSubtitle')}
-                            mode="info"
-                            showChevron={false}
-                        />
-                    )}
+                    ) : secretMaterialDisabledRow}
                 </ItemGroup>
             ) : null}
-
-            <ItemGroup title={t('common.actions')}>
-                {existing && remoteMaintenanceSupported ? (
-                    <Item
-                        title={t('settings.remoteHostsTestConnectionTitle')}
-                        onPress={handleTestConnection}
-                    />
-                ) : null}
-                <Item
-                    title={t('common.save')}
-                    disabled={!name.trim() || !sshDraft.username.trim() || !sshDraft.host.trim()}
-                    onPress={handleSave}
-                />
-                {existing ? (
-                    <Item
-                        title={t('common.delete')}
-                        destructive
-                        onPress={handleDelete}
-                    />
-                ) : null}
-            </ItemGroup>
-        </ItemList>
+        </>
     );
 });

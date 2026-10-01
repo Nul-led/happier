@@ -128,7 +128,7 @@ describe('installed public voice model-pack lifecycle', () => {
         ...boundSource,
         artifactBinding: Object.freeze({
           kind: 'materialization' as const,
-          immutableGenerationId: 'generation-local-2',
+          sourceCustody: { kind: 'development' as const, registeredRootId: 'development-root-2' },
         }),
       },
     })).toMatchObject({

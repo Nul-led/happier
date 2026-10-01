@@ -23,6 +23,11 @@ import { installSettingsViewCommonModuleMocks } from '../../settingsViewTestHelp
 const groupRouterPush = vi.hoisted(() => vi.fn());
 const modalConfirm = vi.hoisted(() => ({ spy: null as null | { mock: { calls: unknown[][] } } }));
 
+vi.mock('@react-navigation/native', async () => {
+    const { createReactNavigationNativeMock } = await import('@/dev/testkit/mocks/reactNavigation');
+    return createReactNavigationNativeMock();
+});
+
 const GROUP_DETAIL_RENDERED_ROW_WINDOW = 20;
 const groupDetailLegendListState = vi.hoisted(() => ({
     mock: null as { state: { props: Record<string, unknown> | null; reset: () => void } } | null,
@@ -148,6 +153,27 @@ afterEach(() => {
 });
 
 describe('TeamGroupDetailScreen', () => {
+    it('UX keeps dirty Group metadata when navigation is canceled', async () => {
+        const serverId = await addManagedHome();
+        harness.answer(serverId, GROUP_GET_PATH, { body: teamGroupFixture({ capabilities: MANAGED_GROUP_CAPABILITIES }) });
+        harness.answer(serverId, GROUP_MEMBERS_LIST_PATH, { body: { items: [], nextCursor: null } });
+        const screen = await renderGroupDetail(serverId);
+        await waitForTestId(screen, 'team-group-name');
+        act(() => screen.changeTextByTestId('team-group-name', 'Unfinished'));
+        const { Modal } = await import('@/modal');
+        vi.mocked(Modal.alert).mockImplementation((_title, _message, buttons) => {
+            buttons?.find((button) => button.style === 'cancel')?.onPress?.();
+        });
+        const { runGuardedNavigation } = await import('@/utils/navigation/runGuardedNavigation');
+        const leave = vi.fn();
+        let departed: boolean | undefined;
+        await act(async () => { departed = await runGuardedNavigation(leave); });
+        expect(departed).toBe(false);
+        expect(leave).not.toHaveBeenCalled();
+        expect(screen.findByTestId('team-group-name')?.props.value).toBe('Unfinished');
+        expect(harness.requestsFor(GROUP_UPDATE_PATH)).toHaveLength(0);
+    });
+
     it('starts only one metadata save when pressed twice before React renders busy state', async () => {
         let releaseUpdate = (): void => {};
         const respondAfter = new Promise<void>((resolve) => { releaseUpdate = resolve; });
@@ -244,14 +270,14 @@ describe('TeamGroupDetailScreen', () => {
         harness.answer(serverId, GROUP_GET_PATH, { status: 503, body: { error: 'unavailable' } });
 
         const screen = await renderGroupDetail(serverId);
-        await waitForTestId(screen, 'team-group-retry');
+        await waitForTestId(screen, 'team-group-unavailable-action');
         expect(screen.getTextContent()).toContain('teams.unavailable.offline');
 
         harness.answer(serverId, GROUP_GET_PATH, {
             body: teamGroupFixture({ capabilities: MANAGED_GROUP_CAPABILITIES }),
         });
         harness.answer(serverId, GROUP_MEMBERS_LIST_PATH, { body: { items: [], nextCursor: null } });
-        await screen.pressByTestIdAsync('team-group-retry');
+        await screen.pressByTestIdAsync('team-group-unavailable-action');
         await waitForTestId(screen, 'team-group-save');
     });
 
@@ -261,7 +287,7 @@ describe('TeamGroupDetailScreen', () => {
 
         const screen = await renderGroupDetail(serverId);
         await waitForTestId(screen, 'team-group-unavailable');
-        expect(collectRenderedTestIds(screen.tree.toJSON())).not.toContain('team-group-retry');
+        expect(collectRenderedTestIds(screen.tree.toJSON())).not.toContain('team-group-unavailable-action');
         expect(screen.getTextContent()).toContain('teams.errors.forbidden');
     });
 
@@ -295,8 +321,9 @@ describe('TeamGroupDetailScreen', () => {
 
         const screen = await renderGroupDetail(serverId);
         await vi.waitFor(() => {
-            expect(screen.findByTestId('team-group-member-count-value')?.props.children)
-                .toBe('teams.groups.memberCount(count=1)');
+            // The count is a fact on the Group's page header.
+            expect(collectRenderedTestIds(screen.tree.toJSON())).toContain('team-group-member-count');
+            expect(screen.getTextContent()).toContain('teams.groups.memberCount(count=1)');
         });
         const requestsBefore = harness.requestsFor(GROUP_GET_PATH).length;
 
@@ -315,8 +342,9 @@ describe('TeamGroupDetailScreen', () => {
 
         await vi.waitFor(() => {
             expect(harness.requestsFor(GROUP_GET_PATH).length).toBeGreaterThan(requestsBefore);
-            expect(screen.findByTestId('team-group-member-count-value')?.props.children)
-                .toBe('teams.groups.memberCount(count=2)');
+            // The count is a fact on the Group's page header.
+            expect(collectRenderedTestIds(screen.tree.toJSON())).toContain('team-group-member-count');
+            expect(screen.getTextContent()).toContain('teams.groups.memberCount(count=2)');
             expect(collectRenderedTestIds(screen.tree.toJSON())).not.toContain('team-group-add-member');
         });
     });

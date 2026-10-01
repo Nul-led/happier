@@ -1,3 +1,4 @@
+import { ItemLoadStateRows } from '@/components/ui/lists/ItemLoadStateRows';
 import React from 'react';
 import { Linking } from 'react-native';
 import { useRouter } from 'expo-router';
@@ -5,6 +6,7 @@ import { Image } from 'expo-image';
 import { useUnistyles } from 'react-native-unistyles';
 
 import { Item } from '@/components/ui/lists/Item';
+import { RoundButton } from '@/components/ui/buttons/RoundButton';
 import { SafeIonicons } from '@/components/ui/icons/SafeIonicons';
 import { Switch } from '@/components/ui/forms/Switch';
 import type { Profile } from '@/sync/domains/profiles/profile';
@@ -52,6 +54,12 @@ type ProviderCatalogState =
     | Readonly<{ kind: 'legacy' }>
     | Readonly<{ kind: 'current'; descriptors: readonly ProviderDescriptor[] }>
     | Readonly<{ kind: 'unavailable' }>;
+
+type ProviderCatalogSnapshot = Readonly<{
+    targetKey: string;
+    catalog: ProviderCatalogState;
+    requestStatus: 'loading' | 'ready' | 'failed' | 'retrying';
+}>;
 
 function mapIdentityErrorToMessage(error: unknown, providerDisplayName: string): string {
     if (!(error instanceof HappyError)) return t('errors.operationFailed');
@@ -225,11 +233,22 @@ function ProviderIdentityItem(props: Readonly<{
                         ? t('friends.providerGate.notConfigured', { provider: providerDisplayName })
                         : t('friends.providerGate.title', { provider: providerDisplayName })
                 }
-                onPress={connectAvailable === true ? connect : undefined}
-                disabled={connectAvailable !== true || connecting}
-                loading={connecting || connectAvailable == null}
+                mode="info"
                 showChevron={false}
                 icon={icon}
+                rightElementOutsidePressable
+                rightElement={connectAvailable === false ? undefined : (
+                    <RoundButton
+                        testID={`settings-account-identity-${providerId ?? props.provider.id}-connect`}
+                        size="small"
+                        display="secondary"
+                        title={t('settingsAccount.connect')}
+                        accessibilityLabel={t('friends.providerGate.connect', { provider: providerDisplayName })}
+                        onPress={connect}
+                        disabled={connectAvailable !== true || connecting}
+                        loading={connecting || connectAvailable == null}
+                    />
+                )}
             />
         );
     }
@@ -240,7 +259,7 @@ function ProviderIdentityItem(props: Readonly<{
                 title={providerDisplayName}
                 detail={identity.login ? `@${identity.login}` : identity.displayName ?? undefined}
                 subtitle={canDisconnect
-                    ? t('settingsAccount.tapToDisconnect')
+                    ? undefined
                     : props.management?.managedBy?.kind === 'team'
                         ? t('teams.groups.managedBy', { source: props.management.managedBy.team.name })
                         : props.management?.managedBy?.kind === 'home'
@@ -250,10 +269,22 @@ function ProviderIdentityItem(props: Readonly<{
                                     source: props.management.requiredByTeams.map((team) => team.name).join(', '),
                                 })
                                 : undefined}
-                onPress={canDisconnect ? disconnect : props.managedTeamAddress ? openManagedTeam : undefined}
-                loading={disconnecting}
+                onPress={!canDisconnect && props.managedTeamAddress ? openManagedTeam : undefined}
+                mode={!canDisconnect && props.managedTeamAddress ? 'interactive' : 'info'}
                 showChevron={!canDisconnect && props.managedTeamAddress !== undefined}
                 icon={icon}
+                rightElementOutsidePressable
+                rightElement={canDisconnect ? (
+                    <RoundButton
+                        testID={`settings-account-identity-${providerId ?? props.provider.id}-disconnect`}
+                        size="small"
+                        display="secondary"
+                        title={t('modals.disconnect')}
+                        accessibilityLabel={t('modals.disconnectService', { service: providerDisplayName })}
+                        onPress={disconnect}
+                        loading={disconnecting}
+                    />
+                ) : undefined}
             />
             {canPublishProfile ? (
                 <Item
@@ -277,25 +308,46 @@ function ProviderIdentityItem(props: Readonly<{
 export const ProviderIdentityItems = React.memo((props: ProviderIdentityItemsProps) => {
     const activeServer = useActiveServerSnapshot();
     const featuresSnapshot = useServerFeaturesRuntimeSnapshot();
-    const [catalog, setCatalog] = React.useState<ProviderCatalogState>({ kind: 'loading' });
-    const catalogTargetRef = React.useRef<string | null>(null);
+    const targetKey = `${activeServer.serverId}\u0000${activeServer.serverUrl}`;
+    const [catalogSnapshot, setCatalogSnapshot] = React.useState<ProviderCatalogSnapshot>(() => ({
+        targetKey,
+        catalog: { kind: 'loading' },
+        requestStatus: 'loading',
+    }));
+    const [retryAttempt, setRetryAttempt] = React.useState(0);
+    const catalog: ProviderCatalogState = catalogSnapshot.targetKey === targetKey
+        ? catalogSnapshot.catalog
+        : { kind: 'loading' };
+    const requestStatus = catalogSnapshot.targetKey === targetKey ? catalogSnapshot.requestStatus : 'loading';
 
     React.useEffect(() => {
         const abortController = new AbortController();
-        const targetKey = `${activeServer.serverId}\u0000${activeServer.serverUrl}`;
-        if (catalogTargetRef.current !== targetKey) {
-            catalogTargetRef.current = targetKey;
-            setCatalog({ kind: 'loading' });
-        }
+        setCatalogSnapshot((previous) => ({
+            targetKey,
+            catalog: previous.targetKey === targetKey ? previous.catalog : { kind: 'loading' },
+            requestStatus: previous.targetKey === targetKey && (previous.requestStatus === 'failed' || previous.requestStatus === 'retrying')
+                ? 'retrying'
+                : 'loading',
+        }));
+        const fail = (retainCatalog: boolean) => {
+            if (abortController.signal.aborted) return;
+            setCatalogSnapshot((previous) => ({
+                targetKey,
+                catalog: retainCatalog && previous.targetKey === targetKey && previous.catalog.kind !== 'loading'
+                    ? previous.catalog
+                    : { kind: 'unavailable' },
+                requestStatus: 'failed',
+            }));
+        };
         void fetchHomeAuthEntry({ signal: abortController.signal })
             .then((result) => {
                 if (abortController.signal.aborted) return;
                 if (result.kind === 'unsupported') {
-                    setCatalog({ kind: 'legacy' });
+                    setCatalogSnapshot({ targetKey, catalog: { kind: 'legacy' }, requestStatus: 'ready' });
                     return;
                 }
                 if (result.kind !== 'ready' || result.projection.state !== 'ready') {
-                    setCatalog({ kind: 'unavailable' });
+                    fail(result.kind === 'unavailable');
                     return;
                 }
 
@@ -313,13 +365,15 @@ export const ProviderIdentityItems = React.memo((props: ProviderIdentityItemsPro
                         canConnect: method.enabledActions.some((action) => action.id === 'connect'),
                     });
                 }
-                setCatalog({ kind: 'current', descriptors: [...descriptors.values()] });
+                setCatalogSnapshot({
+                    targetKey,
+                    catalog: { kind: 'current', descriptors: [...descriptors.values()] },
+                    requestStatus: 'ready',
+                });
             })
-            .catch(() => {
-                if (!abortController.signal.aborted) setCatalog({ kind: 'unavailable' });
-            });
+            .catch(() => fail(true));
         return () => abortController.abort();
-    }, [activeServer.generation, activeServer.serverId, activeServer.serverUrl]);
+    }, [activeServer.generation, targetKey, retryAttempt]);
 
     const rows = React.useMemo(() => {
         const byId = new Map<string, Readonly<{
@@ -327,17 +381,15 @@ export const ProviderIdentityItems = React.memo((props: ProviderIdentityItemsPro
             connectAvailable?: boolean | null;
             management: NonNullable<Profile['linkedIdentityManagementV1']>[number] | null;
         }>>();
-        if (catalog.kind === 'legacy' || catalog.kind === 'loading') {
+        // While the catalog loads nothing is guessed from the registry: a guessed row would vanish
+        // or change on arrival. The loading line below holds the place instead.
+        if (catalog.kind === 'legacy') {
             for (const provider of authProviderRegistry) {
                 const id = normalizeProviderId(provider.id);
                 if (!id) continue;
-                byId.set(id, {
-                    provider,
-                    management: null,
-                    ...(catalog.kind === 'loading' ? { connectAvailable: null } : {}),
-                });
+                byId.set(id, { provider, management: null });
             }
-            if (catalog.kind === 'legacy' && featuresSnapshot.status === 'ready') {
+            if (featuresSnapshot.status === 'ready') {
                 for (const [rawId, descriptor] of Object.entries(featuresSnapshot.features.capabilities.auth.providers)) {
                     const id = normalizeProviderId(rawId);
                     if (!id || !descriptor.enabled || !descriptor.configured) continue;
@@ -398,8 +450,36 @@ export const ProviderIdentityItems = React.memo((props: ProviderIdentityItemsPro
 
     const releasedControls = releasedIdentityControlsApply(catalog);
 
+    // Retry stays pending (and not pressable again) until the retried read settles.
+    const retrySettledRef = React.useRef<(() => void) | null>(null);
+    React.useEffect(() => {
+        if (requestStatus === 'retrying') return;
+        retrySettledRef.current?.();
+        retrySettledRef.current = null;
+    }, [requestStatus]);
+    const retryCatalog = React.useCallback(() => new Promise<void>((resolve) => {
+        retrySettledRef.current = resolve;
+        setRetryAttempt((attempt) => attempt + 1);
+    }), []);
+
     return (
         <>
+            {/* The connections line is held while the catalog loads, and a failed read takes that
+                same line with Retry: the sheet never gains or loses a row on arrival. */}
+            {requestStatus !== 'ready' ? (
+                <ItemLoadStateRows
+                    testID="settings-account-identity-catalog"
+                    state={requestStatus === 'loading'
+                        ? { kind: 'loading' }
+                        : {
+                            kind: 'failed',
+                            reason: t('settingsAccount.providerCatalogUnavailable'),
+                            onRetry: retryCatalog,
+                        }}
+                    rows={1}
+                    lines={2}
+                />
+            ) : null}
             {rows.map(({ provider, connectAvailable, management }) => (
                 <ProviderIdentityItem
                     key={provider.id}

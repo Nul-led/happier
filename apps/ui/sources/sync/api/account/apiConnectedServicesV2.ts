@@ -1,5 +1,5 @@
 import type { AuthCredentials } from '@/auth/storage/tokenStorage';
-import { serverFetch } from '@/sync/http/client';
+import { serverFetch, type ServerFetch } from '@/sync/http/client';
 import { HappyError } from '@/utils/errors/errors';
 import { backoff } from '@/utils/timing/time';
 import { z } from 'zod';
@@ -36,14 +36,15 @@ function extractErrorCode(json: unknown): string | null {
 }
 
 export async function getConnectedServiceCredentialSealed(
-  credentials: AuthCredentials,
-  params: Readonly<{ serviceId: ConnectedServiceId; profileId: string }>,
+    credentials: AuthCredentials,
+    params: Readonly<{ serviceId: ConnectedServiceId; profileId: string }>,
+    options: Readonly<{ request?: ServerFetch }> = {},
 ): Promise<Readonly<{
   sealed: SealedConnectedServiceCredentialV1;
   metadata: ConnectedServiceCredentialMetadataInput;
 }> & ConnectedServiceCredentialRevisionBoundaryV1> {
   return await backoff(async () => {
-    const response = await serverFetch(
+    const response = await (options.request ?? serverFetch)(
       `/v2/connect/${encodeURIComponent(params.serviceId)}/profiles/${encodeURIComponent(params.profileId)}/credential`,
       {
         method: 'GET',

@@ -1,12 +1,15 @@
 import * as React from 'react';
-import { Pressable, View } from 'react-native';
+import { View } from 'react-native';
+import { useUnistyles } from 'react-native-unistyles';
+import { HappierPressable } from '@happier-dev/plugin-ui/presentation';
 
 import { Icon } from '@/components/ui/icons/Icon';
 import { Popover } from '@/components/ui/popover/Popover';
+import { MODAL_AWARE_FLOATING_POPOVER_PORTAL_OPTIONS } from '@/components/ui/popover/modalAwareFloatingPopoverPortalOptions';
 import { Text } from '@/components/ui/text/Text';
 import { t } from '@/text';
 
-import { workflowEditorStyles } from './workflowEditorStyles';
+import { workflowEditorStyles, workflowPressFeedbackStyle } from './workflowEditorStyles';
 
 /**
  * Per-block overflow actions.
@@ -28,6 +31,7 @@ export function WorkflowBlockActionsMenu(props: Readonly<{
     actions: readonly WorkflowBlockAction[];
     testID?: string;
 }>): React.ReactElement | null {
+    const { theme } = useUnistyles();
     const anchorRef = React.useRef<View>(null);
     const [open, setOpen] = React.useState(false);
 
@@ -35,8 +39,8 @@ export function WorkflowBlockActionsMenu(props: Readonly<{
 
     return (
         <>
-            <Pressable
-                ref={anchorRef as unknown as React.Ref<View>}
+            <View ref={anchorRef} collapsable={false}>
+            <HappierPressable
                 testID={props.testID}
                 accessibilityRole="button"
                 // This is the block's overflow menu, not Add. Announcing "Add a
@@ -45,21 +49,29 @@ export function WorkflowBlockActionsMenu(props: Readonly<{
                 accessibilityLabel={t('common.moreActions')}
                 accessibilityHint={props.blockLabel}
                 onPress={() => setOpen((value) => !value)}
-                style={workflowEditorStyles.actionTarget}
+                expanded={open}
+                hasPopup="menu"
+                style={(state) => [
+                    workflowEditorStyles.actionTarget,
+                    workflowEditorStyles.iconTarget,
+                    workflowPressFeedbackStyle(state, theme.colors.border.focus),
+                ]}
             >
-                <Icon name="dots-three" size={18} />
-            </Pressable>
+                <Icon name="dots-three" size={18} color={theme.colors.text.secondary} />
+            </HappierPressable>
+            </View>
             <Popover
                 open={open}
                 anchorRef={anchorRef}
                 onRequestClose={() => setOpen(false)}
                 placement="auto"
                 closeOnAnchorPress
+                portal={MODAL_AWARE_FLOATING_POPOVER_PORTAL_OPTIONS}
             >
                 {() => (
                     <View style={workflowEditorStyles.menuSurface} accessibilityRole="menu">
                         {props.actions.map((action) => (
-                            <Pressable
+                            <HappierPressable
                                 key={action.id}
                                 testID={props.testID === undefined ? undefined : `${props.testID}-${action.id}`}
                                 accessibilityRole="menuitem"
@@ -68,13 +80,18 @@ export function WorkflowBlockActionsMenu(props: Readonly<{
                                     setOpen(false);
                                     action.onSelect();
                                 }}
-                                style={({ pressed }) => [
+                                style={(state) => [
                                     workflowEditorStyles.menuRow,
-                                    pressed ? workflowEditorStyles.menuRowPressed : null,
+                                    workflowPressFeedbackStyle(state, theme.colors.border.focus),
                                 ]}
                             >
-                                <Text style={workflowEditorStyles.menuRowLabel}>{action.label}</Text>
-                            </Pressable>
+                                <Text style={action.destructive === true
+                                    ? workflowEditorStyles.menuRowLabelDestructive
+                                    : workflowEditorStyles.menuRowLabel}
+                                >
+                                    {action.label}
+                                </Text>
+                            </HappierPressable>
                         ))}
                     </View>
                 )}

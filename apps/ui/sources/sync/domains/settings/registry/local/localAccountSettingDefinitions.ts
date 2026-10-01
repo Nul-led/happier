@@ -1,6 +1,7 @@
 import {
     BackendTargetKeyV2Schema,
     ClientEncryptionRequirementSchema,
+    MachineAdministrationTargetsV1Schema,
     BackendTargetRefV2InputSchema,
     PersistedAgentTargetRefV1Schema,
     PersistedBackendTargetRefV2Schema,
@@ -13,6 +14,7 @@ import {
 import { z } from 'zod';
 
 import { normalizeAccountSettingsServerSelection } from '@/sync/domains/settings/parse/accountSettingsServerSelectionNormalization';
+import { SessionSplitCanvasLayoutsSchema } from '@/sync/domains/session/sessionSplitCanvasPersistence';
 
 const NewSessionAgentPickerViewV1BackendSchema = z.object({
     kind: z.literal('backend'),
@@ -80,6 +82,18 @@ export const ServerSelectionGroupSchema = z.object({
  * be emitted by account-settings writers.
  */
 export const LOCAL_ACCOUNT_SETTING_DEFINITIONS = defineSettingDefinitions({
+    sessionSplitCanvasLayoutsV1: {
+        schema: SessionSplitCanvasLayoutsSchema,
+        default: {},
+        description: 'Session split geometry on this device, scoped to the Account and Home',
+        storageScope: 'local',
+    },
+    machineAdministrationTargetsLocalV1: {
+        schema: MachineAdministrationTargetsV1Schema,
+        default: {},
+        description: 'Remembered Administration targets on this device, scoped to the Account and Home',
+        storageScope: 'local',
+    },
     lastUsedAgent: {
         schema: z.string().nullable(),
         default: null,
@@ -139,6 +153,8 @@ export const LOCAL_ACCOUNT_SETTING_DEFINITIONS = defineSettingDefinitions({
 export const LOCAL_ACCOUNT_SETTING_ARTIFACTS = buildSettingArtifacts(LOCAL_ACCOUNT_SETTING_DEFINITIONS);
 
 export const LOCAL_ACCOUNT_SETTING_KEYS = [
+    'sessionSplitCanvasLayoutsV1',
+    'machineAdministrationTargetsLocalV1',
     'lastUsedAgent',
     'lastUsedBackendTarget',
     'lastNewSessionAgentPickerViewV1',
@@ -168,6 +184,8 @@ export function parseLocalAccountSettings(input: unknown): LocalAccountSettings 
         : {};
     const definitions = LOCAL_ACCOUNT_SETTING_DEFINITIONS;
     const parsed = {
+        sessionSplitCanvasLayoutsV1: parseLocalSetting(definitions.sessionSplitCanvasLayoutsV1, record.sessionSplitCanvasLayoutsV1),
+        machineAdministrationTargetsLocalV1: parseLocalSetting(definitions.machineAdministrationTargetsLocalV1, record.machineAdministrationTargetsLocalV1),
         lastUsedAgent: parseLocalSetting(definitions.lastUsedAgent, record.lastUsedAgent),
         lastUsedBackendTarget: parseLocalSetting(definitions.lastUsedBackendTarget, record.lastUsedBackendTarget),
         lastNewSessionAgentPickerViewV1: parseLocalSetting(definitions.lastNewSessionAgentPickerViewV1, record.lastNewSessionAgentPickerViewV1),

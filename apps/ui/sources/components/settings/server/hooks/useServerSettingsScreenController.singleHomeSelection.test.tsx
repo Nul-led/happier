@@ -24,6 +24,7 @@ const useSettingMutableMock = ((key: string) => [
 ]) as typeof import('@/sync/domains/state/storage')['useSettingMutable'];
 
 const routerReplaceMock = vi.fn();
+const activeServerSnapshot = { serverId: 'server-a', serverUrl: 'https://a.example.test', generation: 1 } as const;
 
 vi.mock('@/auth/context/AuthContext', () => ({
     useAuth: () => ({ refreshFromActiveServer: vi.fn(async () => {}) }),
@@ -47,10 +48,15 @@ installServerSettingsHooksCommonModuleMocks({
 
 vi.mock('@/sync/runtime/orchestration/connectionManager', () => ({
     switchConnectionToActiveServer: vi.fn(async () => {}),
+    getAppliedActiveServerSnapshot: () => activeServerSnapshot,
+    isAppliedActiveServerRuntimeAvailable: () => true,
+    subscribeAppliedActiveServer: () => () => {},
+    subscribeAppliedActiveServerRuntimeAvailability: () => () => {},
+    subscribeApplyingActiveServer: () => () => {},
 }));
 
 vi.mock('@/sync/domains/server/serverProfiles', () => ({
-    getActiveServerSnapshot: () => ({ serverId: 'server-a', serverUrl: 'https://a.example.test', generation: 1 }),
+    getActiveServerSnapshot: () => activeServerSnapshot,
     listServerProfiles: () => ([
         { id: 'server-a', name: 'A', serverUrl: 'https://a.example.test', lastUsedAt: 0, createdAt: 0, updatedAt: 0 },
         { id: 'server-b', name: 'B', serverUrl: 'https://b.example.test', lastUsedAt: 0, createdAt: 0, updatedAt: 0 },
@@ -158,5 +164,8 @@ describe('useServerSettingsScreenController single-Home selection', () => {
 
         expect(storageState.serverSelectionActiveTargetKind).toBe('server');
         expect(storageState.serverSelectionActiveTargetId).toBe('server-a');
+        // Switching settles on the Homes page inside the settings layout, not the full-screen entry.
+        expect(routerReplaceMock).toHaveBeenCalledWith('/settings/server');
+        expect(routerReplaceMock).not.toHaveBeenCalledWith('/server');
     });
 });

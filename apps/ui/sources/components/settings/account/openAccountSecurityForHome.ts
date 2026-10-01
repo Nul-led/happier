@@ -1,4 +1,4 @@
-import { useRouter } from 'expo-router';
+import { useRouter } from '@/components/appShell/workspace/destinationRoute';
 
 import { SETTINGS_ROUTES } from '@/components/settings/catalog/routes';
 import { focusExactHomeAndRefresh } from '@/sync/domains/server/focusExactHome';

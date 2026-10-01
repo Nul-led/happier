@@ -18,10 +18,7 @@ type TestStoreState = {
     machineListByServerId: Record<string, TestMachine[]>;
     machineListStatusByServerId: Record<string, 'idle' | 'loading' | 'signedOut' | 'error'>;
     settings: {
-        machineAdministrationSelectionsV1: {
-            targetsByKey: Record<string, { serverIdentityId: string; machineId: string }>;
-            pluginExecutionOriginsByPluginId: Record<string, never>;
-        };
+        machineAdministrationTargetsLocalV1: Record<string, { serverIdentityId: string; machineId: string }>;
     };
 };
 
@@ -82,8 +79,7 @@ vi.mock('@/sync/store/hooks', () => ({
     useMachineRecordValues: () => [],
     useProfile: () => ({ id: 'account-1' }),
     useActiveServerAccountScope: () => ({ serverId: runtime.activeServerId, accountId: 'account-1' }),
-    useSettingMutable: () => [{ targetsByKey: {}, pluginExecutionOriginsByPluginId: {} }, vi.fn()],
-    useSetting: () => ({ targetsByKey: {}, pluginExecutionOriginsByPluginId: {} }),
+    useSetting: () => ({}),
 }));
 
 vi.mock('@/hooks/server/useActiveServerSnapshot', () => ({
@@ -132,10 +128,7 @@ describe('resolveFreshMachineAdministrationExecutionTarget', () => {
             },
             machineListStatusByServerId: { 'srv_server_b': 'idle' },
             settings: {
-                machineAdministrationSelectionsV1: {
-                    targetsByKey: {},
-                    pluginExecutionOriginsByPluginId: {},
-                },
+                machineAdministrationTargetsLocalV1: {},
             },
         };
     });

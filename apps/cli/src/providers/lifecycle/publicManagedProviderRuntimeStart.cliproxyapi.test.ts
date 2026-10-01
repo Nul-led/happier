@@ -19,6 +19,7 @@ import {
 } from '@happier-dev/plugins-cliproxyapi';
 
 import type { ResolvedManagedProviderRuntime } from '@/plugins/projection/registry/types';
+import { createManagedPluginSourceCustody } from '@/plugins/runtime/lifecycle/contributions/runtimeIdentity.testkit';
 
 import { createProviderLaunchResourceScope } from './resourceScope';
 import { startPublicManagedProviderRuntime } from './publicManagedProviderRuntimeStart';
@@ -128,6 +129,7 @@ function healthyIdentityFor(boundPurposes: readonly ManagedPurpose[]) {
       purpose: family.purpose,
     })),
     modelListEnabled: true,
+    sourceClass: 'connected_account',
   });
 }
 
@@ -153,8 +155,8 @@ describe('CLIProxyAPI composed public managed Provider start', () => {
     const runtime = await captureCliProxyApiRuntime();
     const resolved = Object.freeze({
       runtime,
-      activationGeneration: 'activation-cliproxyapi',
-      immutableGenerationId: 'immutable-cliproxyapi',
+      activationOccurrenceId: 'activation-cliproxyapi',
+      sourceCustody: createManagedPluginSourceCustody('immutable-cliproxyapi'),
       isCurrent: () => true,
     }) satisfies ResolvedManagedProviderRuntime;
     const projectEndpointAccess = vi.fn();
@@ -220,8 +222,8 @@ describe('CLIProxyAPI composed public managed Provider start', () => {
     const runtime = await captureCliProxyApiRuntime();
     const resolved = Object.freeze({
       runtime,
-      activationGeneration: 'activation-cliproxyapi',
-      immutableGenerationId: 'immutable-cliproxyapi',
+      activationOccurrenceId: 'activation-cliproxyapi',
+      sourceCustody: createManagedPluginSourceCustody('immutable-cliproxyapi'),
       isCurrent: () => true,
     }) satisfies ResolvedManagedProviderRuntime;
     const projectEndpointAccess = vi.fn(async () => Object.freeze({
@@ -279,8 +281,8 @@ describe('CLIProxyAPI composed public managed Provider start', () => {
     const runtime = await captureCliProxyApiRuntime();
     const resolved = Object.freeze({
       runtime,
-      activationGeneration: 'activation-cliproxyapi',
-      immutableGenerationId: 'immutable-cliproxyapi',
+      activationOccurrenceId: 'activation-cliproxyapi',
+      sourceCustody: createManagedPluginSourceCustody('immutable-cliproxyapi'),
       isCurrent: () => true,
     }) satisfies ResolvedManagedProviderRuntime;
 

@@ -3,6 +3,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { HappyMcpSessionClient } from '@/mcp/startHappyServer';
 import { logger } from '@/ui/logger';
 import type { Metadata } from '@/api/types';
+import type { RpcLocalActionContext } from '@/api/rpc/types';
 
 import { registerHappierMcpResources } from '@/mcp/resources/registerHappierMcpResources';
 import { createActionToolExecutorBridge } from '@/agent/tools/happierTools/createActionToolExecutorBridge';
@@ -28,6 +29,7 @@ import {
   type SessionTransportEncryptionMaterial,
 } from '@/session/transport/encryption/sessionEncryptionContext';
 import { resolvePermissionIntentFromMetadataSnapshot } from '@/agent/runtime/permissions/modeFromMetadata';
+import { resolveExecutionRunPublicBackendId } from '@/agent/runtime/bridges/executionRun/backendTargets';
 import {
   PromptRegistryInstallRequestV1Schema,
   PromptRegistryInstallResponseV1Schema,
@@ -176,14 +178,13 @@ export function createHappierMcpServer(
   const readActionsSettings = () => actionSettingsProvider.getActionsSettings();
   const readSessionAgentSpawnPolicyV1 = () =>
     actionSettingsProvider.getAccountSettings?.()?.sessionAgentSpawnPolicyV1;
-  const isActionEnabledByRuntime = createMcpActionEnablementWithServerFeatureAvailability({
+  const isActionEnabled = createMcpActionEnablementWithServerFeatureAvailability({
     actionSettingsProvider,
     surface: toolSurface,
     hasAuthenticatedRuntime: sessionCredentials !== null,
+    authorityScope: opts?.authorityScope,
     readServerFeaturesSnapshot: () => client.getServerFeaturesSnapshot?.(),
   });
-  const isActionEnabled = (id: ActionId) => isActionEnabledByRuntime(id)
-    && (opts?.authorityScope !== 'session' || getActionSpec(id).executionPlacement === 'session');
   const isActionApprovalRequired = createMcpActionApprovalRequirement({
     actionSettingsProvider,
     surface: toolSurface,
@@ -258,11 +259,7 @@ export function createHappierMcpServer(
   const executionRuns = {
     start: async (
       request: unknown,
-      localActionContext?: Readonly<{
-        surface: 'agent';
-        callerPermissionMode: string | null;
-        causalPermissionAuthority: unknown;
-      }>,
+      localActionContext?: RpcLocalActionContext,
     ) =>
       normalizeExecutionRunRpcPayload(
         await (localActionContext
@@ -315,29 +312,59 @@ export function createHappierMcpServer(
       sessionId,
       async () => await executionRuns.start(
         request,
-        hasCausalPermissionAuthority
+        hasCausalPermissionAuthority || actionOptions?.workDepth !== undefined || actionOptions?.workspaceWrites !== undefined
           ? {
               surface: toolSurface,
               callerPermissionMode: resolveAgentCallerPermissionMode(),
               causalPermissionAuthority: actionOptions?.causalPermissionAuthority ?? null,
+              ...(actionOptions?.agentStartContext ? { agentStartContext: actionOptions.agentStartContext } : {}),
+              ...(actionOptions?.workDepth !== undefined ? { agentStartWorkDepth: actionOptions.workDepth } : {}),
+              ...(actionOptions?.workspaceWrites !== undefined ? { agentStartWorkspaceWrites: actionOptions.workspaceWrites } : {}),
+              ...(actionOptions?.sessionAgentSpawnPolicyV1 !== undefined ? { sessionAgentSpawnPolicyV1: actionOptions.sessionAgentSpawnPolicyV1 } : {}),
             }
           : undefined,
       ),
     );
   };
 
+  const machineAdmissionTransport = client.getMachineAdmissionTransport?.();
   const harness = createCliActionExecutorHarness(
     {
       actionsSettingsProvider: actionSettingsProvider,
       token: sessionCredentials?.token ?? '',
       ...(credentials ? { credentials } : {}),
       sessionId: client.sessionId,
+      ...(client.enqueueSessionEventCommitted ? {
+        publishWorkerReport: (summary: string) => client.enqueueSessionEventCommitted!({ type: 'worker-report', summary }),
+      } : {}),
       ...cryptoContext,
       rawSession,
       getCurrentSessionBackendTarget: () => resolveLiveClientBackendTarget(client),
+      getCurrentSessionMetadata: () => client.getMetadataSnapshot?.() ?? null,
+      ...(client.getCurrentResolvedRoles ? { getCurrentResolvedRoles: () => client.getCurrentResolvedRoles!() } : {}),
+      ...(client.readRoleSources ? { readRoleSources: (signal) => client.readRoleSources!(signal) } : {}),
+      ...(client.getCurrentWorkspaceWrites ? { getCurrentWorkspaceWrites: () => client.getCurrentWorkspaceWrites!() } : {}),
+      ...(client.prepareWorkspaceWritesPolicy ? { prepareWorkspaceWritesPolicy: (workspaceWrites, context) => client.prepareWorkspaceWritesPolicy!(workspaceWrites, context) } : {}),
+      ...(client.enqueueRegisteredSessionStateFieldMutation ? {
+        stageSessionStateMutation: async (mutation) => { await client.enqueueRegisteredSessionStateFieldMutation!(mutation); },
+      } : {}),
+      getCurrentSessionWorkDepth: () => client.getWorkDepth?.(),
+      ...(client.getAgentStartRunCaller ? { getAgentStartRunCaller: () => client.getAgentStartRunCaller!() } : {}),
+      // U6 owns the exact active SessionTurn facts; read by witness identity, never mutable metadata.
+      getCurrentTurnWorkDepth: (expectedTurnId) => {
+        const witness = resolveLiveClientActiveTurnPermissionWitness(client);
+        if (witness && typeof witness === 'object' && 'turnId' in witness && typeof witness.turnId === 'string') {
+          if (expectedTurnId !== undefined && witness.turnId !== expectedTurnId) return undefined;
+          const depth = client.getHostTurnWorkDepth?.(witness.turnId);
+          if (depth !== undefined) return depth;
+        } else if (expectedTurnId !== undefined) return undefined;
+        return witness && typeof witness === 'object' && 'workDepth' in witness && typeof witness.workDepth === 'number'
+          ? witness.workDepth : undefined;
+      },
       serverId,
       ...(serverIdentityId ? { serverIdentityId } : {}),
       serverHttpBaseUrl,
+      ...(machineAdmissionTransport ? { machineAdmissionTransport } : {}),
       ...(client.getServerFeaturesSnapshot
         ? { resolveServerFeaturesSnapshot: () => client.getServerFeaturesSnapshot?.() }
         : {}),
@@ -542,6 +569,7 @@ export function createHappierMcpServer(
 
   const actionToolBridge = createActionToolExecutorBridge({
     executor,
+    resolveSessionListAccess: () => credentials ? 'led_subtree' : 'current_session',
     isActionEnabled: (id) => {
       const spec = getActionSpec(id as any);
       return isActionSpecSurfacedOn(spec, toolSurface) && isActionEnabled(id as any);
@@ -551,9 +579,17 @@ export function createHappierMcpServer(
     getActionsSettings: readActionsSettings,
     resolveCallerPermissionMode: resolveAgentCallerPermissionMode,
     resolveActiveTurnPermissionWitness: () => resolveLiveClientActiveTurnPermissionWitness(client),
+    resolveReviewCommentActor: () => {
+      const target = resolveLiveClientBackendTarget(client);
+      return target ? { kind: 'agent', agentId: resolveExecutionRunPublicBackendId(target), sessionId: client.sessionId } : null;
+    },
     sessionInputVia: opts?.sessionInputVia ?? 'mcp',
     sessionAgentSpawnPolicyV1: readSessionAgentSpawnPolicyV1(),
     getSessionAgentSpawnPolicyV1: readSessionAgentSpawnPolicyV1,
+    resolveRuntimeRunId: () => {
+      const caller = client.getAgentStartRunCaller?.();
+      return caller && 'callingRunId' in caller ? caller.callingRunId : client.getSessionActionConfirmationBinding?.()?.run?.runId;
+    },
     pluginToolCatalog: opts?.pluginToolCatalog,
     requiredDirectActionIds: opts?.requiredDirectActionIds,
     defaultSessionMachineId: sessionLocation?.machineId ?? null,
@@ -571,6 +607,7 @@ export function createHappierMcpServer(
   };
   const { toolNames } = registerHappierMcpBuiltInTools(mcp as any, {
     sessionId: client.sessionId,
+    workingDirectory: sessionLocation?.path,
     sessionMachineId: sessionLocation?.machineId ?? null,
     surface: toolSurface,
     actionsSettings: readActionsSettings(),

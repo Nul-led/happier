@@ -165,18 +165,17 @@ describe('SettingsSidebar', () => {
         expect(rail.indexOf('item.appearance')).toBeLessThan(rail.indexOf('section.groupAiAndAgents'));
     });
 
-    it('seats the whole rail on the tinted inset plane (paper shell), scroller included', async () => {
+    it('lies on its host column\'s plane: neither the rail nor its scroller paints a ground of its own', async () => {
         const { SettingsSidebar } = await import('./SettingsSidebar');
         const screen = await renderScreen(React.createElement(SettingsSidebar));
 
+        // The column (the app shell's, or the settings shell's own) owns the one plane; a rail that
+        // painted it too would be a second owner, and `ItemList`'s default canvas would split the column.
         const root: any = screen.findByTestId('settings-sidebar');
-        expect(flattenStyle(root.props.style).backgroundColor).toBe(lightTheme.colors.surface.inset);
-
-        // `ItemList` paints the canvas plane by default and covers the rail below the search
-        // field, so the caller override is what actually makes the rail white.
+        expect(flattenStyle(root.props.style).backgroundColor).toBeUndefined();
         const scroller: any = screen.findAllByType('ScrollView')[0];
         expect(scroller).toBeTruthy();
-        expect(flattenStyle(scroller.props.style).backgroundColor).toBe(lightTheme.colors.surface.inset);
+        expect(flattenStyle(scroller.props.style).backgroundColor).toBe('transparent');
     });
 
     it('reveals the canonical scroll-edge affordances once the rail overflows', async () => {

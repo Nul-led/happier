@@ -6,8 +6,8 @@ import { logger } from '@/ui/logger';
 
 import type { RuntimeInstallableAdapter, RuntimeInstallableLaunchResolution } from './registry';
 
-export async function detectGhLaunchResolution(): Promise<RuntimeInstallableLaunchResolution> {
-  const status = await getGhDepStatus();
+export async function detectGhLaunchResolution(params: Readonly<{ env?: NodeJS.ProcessEnv }> = {}): Promise<RuntimeInstallableLaunchResolution> {
+  const status = await getGhDepStatus(params);
   return {
     availability: status.installed && status.authenticated
       ? { ok: true }

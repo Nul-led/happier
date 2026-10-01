@@ -546,7 +546,7 @@ describe('provider spawn runtime catalog bridge', () => {
         v: 1,
         updatedAt: 1,
         ref: {
-          agentTargetKey: 'backend:codex',
+          agentTargetKey: 'agent:happier.agent.codex/codex',
           providerConnectionId: authorizedResolution.record.connectionId,
           modelId: 'managed-model',
         },
@@ -580,7 +580,7 @@ describe('provider spawn runtime catalog bridge', () => {
         v: 1,
         updatedAt: 1,
         ref: {
-          agentTargetKey: 'backend:codex',
+          agentTargetKey: 'agent:happier.agent.codex/codex',
           providerConnectionId: authorizedResolution.record.connectionId,
           modelId: 'managed-model',
         },

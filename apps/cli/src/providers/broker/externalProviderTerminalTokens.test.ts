@@ -21,7 +21,8 @@ function observe(input: Readonly<{
     for (let offset = 0; offset < bytes.byteLength; offset += size) {
         reader.push(bytes.slice(offset, offset + size));
     }
-    return reader.read();
+    const { actualModelId, tokens } = reader.read();
+    return { actualModelId, tokens };
 }
 
 describe('external Provider terminal token observation', () => {
@@ -31,6 +32,8 @@ describe('external Provider terminal token observation', () => {
             contentType: 'application/json',
             body: JSON.stringify({
                 id: 'msg_1',
+                type: 'message',
+                stop_reason: 'end_turn',
                 model: 'claude-sonnet-4-5-20250929',
                 usage: {
                     input_tokens: 100,
@@ -50,6 +53,7 @@ describe('external Provider terminal token observation', () => {
             contentType: 'application/json',
             body: JSON.stringify({
                 id: 'resp_1',
+                status: 'completed',
                 model: 'gpt-5-2025-11-01',
                 usage: {
                     input_tokens: 120,
@@ -71,6 +75,7 @@ describe('external Provider terminal token observation', () => {
             body: JSON.stringify({
                 id: 'chatcmpl_1',
                 model: 'gpt-5-mini',
+                choices: [{ finish_reason: 'stop' }],
                 usage: {
                     prompt_tokens: 60,
                     prompt_tokens_details: { cached_tokens: 20 },
@@ -150,6 +155,7 @@ describe('external Provider terminal token observation', () => {
             '{"model":"gpt-5","usage":{}}',
             '{"model":"gpt-5","usage":{"input_tokens":-3}}',
             '{"model":"gpt-5","usage":{"input_tokens":1.5}}',
+            '{"model":"gpt-5","status":"completed","usage":{"input_tokens":3}}',
             'not json at all',
             '',
         ]) {
@@ -169,6 +175,48 @@ describe('external Provider terminal token observation', () => {
         })).toEqual({ actualModelId: null, tokens: null });
     });
 
+    it.each([
+        ['anthropic_messages', 'data: {"type":"message_start","message":{"model":"claude","usage":{"input_tokens":25,"output_tokens":1}}}\n\n'],
+        ['anthropic_messages', 'data: {"type":"message_delta","usage":{"output_tokens":3}}\n\ndata: {"type":"message_stop"}\n\n'],
+        ['openai_responses', 'data: {"type":"response.incomplete","response":{"status":"incomplete","usage":{"input_tokens":3,"output_tokens":2,"total_tokens":5}}}\n\n'],
+        ['openai_chat_completions', 'data: {"model":"gpt-5","choices":[],"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}}\n\n'],
+    ] as const)('does not report partial or unsuccessful %s stream usage', (routeKind, body) => {
+        expect(observe({ routeKind, contentType: 'text/event-stream', body }).tokens).toBeNull();
+    });
+
+    it('keeps an error authoritative even after an earlier completion-shaped payload', () => {
+        const reader = createExternalProviderTerminalTokenReader({
+            routeKind: 'openai_responses', contentType: 'text/event-stream',
+        });
+        reader.push(encoder.encode('data: {"type":"response.completed","response":{"usage":{"input_tokens":3,"output_tokens":2,"total_tokens":5}}}\n\n'
+            + 'data: {"type":"error","message":"Provider failed"}\n\n'));
+        expect(reader.read()).toMatchObject({ outcome: 'failed', tokens: null });
+    });
+
+    it.each([
+        ['invalid JSON', 'not json'],
+        ['empty response', ''],
+        ['nonterminal Responses object', '{"status":"in_progress","usage":{"input_tokens":3,"output_tokens":2,"total_tokens":5}}'],
+    ])('does not turn %s at HTTP EOF into successful terminal evidence', (_name, body) => {
+        const reader = createExternalProviderTerminalTokenReader({ routeKind: 'openai_responses', contentType: 'application/json' });
+        reader.push(encoder.encode(body));
+        expect(reader.read()).toEqual({ outcome: 'failed', actualModelId: null, tokens: null });
+    });
+
+    it('leaves a proven completed response without usage successful but unmeasured', () => {
+        const reader = createExternalProviderTerminalTokenReader({ routeKind: 'openai_responses', contentType: 'application/json' });
+        reader.push(encoder.encode('{"status":"completed","model":"gpt-5"}'));
+        expect(reader.read()).toEqual({ outcome: 'succeeded', actualModelId: 'gpt-5', tokens: null });
+    });
+
+    it('does not certify a stream whose unobserved oversized event hid its terminal outcome', () => {
+        const reader = createExternalProviderTerminalTokenReader({ routeKind: 'anthropic_messages', contentType: 'text/event-stream' });
+        reader.push(encoder.encode('data: {"type":"message_start","message":{"usage":{"input_tokens":25,"output_tokens":1}}}\n\n'));
+        reader.push(encoder.encode('data: ' + 'x'.repeat(PROVIDER_ENDPOINT_SAFETY_LIMITS.maxDecodedBodyBytes + 1)));
+        reader.push(encoder.encode('\n\ndata: {"type":"message_stop"}\n\n'));
+        expect(reader.read()).toEqual({ outcome: 'failed', actualModelId: null, tokens: null });
+    });
+
     it('keeps observing a long stream whose total size exceeds the budget', () => {
         // A stream is observed one event at a time, so only an unterminated
         // event is held. A long answer made of small deltas must still report
@@ -183,7 +231,8 @@ describe('external Provider terminal token observation', () => {
             body: 'event: message_start\ndata: {"type":"message_start","message":{"model":"claude-opus-4-6",'
                 + '"usage":{"input_tokens":12,"output_tokens":1}}}\n\n'
                 + deltas
-                + 'event: message_delta\ndata: {"type":"message_delta","usage":{"output_tokens":4000}}\n\n',
+                + 'event: message_delta\ndata: {"type":"message_delta","usage":{"output_tokens":4000}}\n\n'
+                + 'event: message_stop\ndata: {"type":"message_stop"}\n\n',
         })).toEqual({
             actualModelId: 'claude-opus-4-6',
             tokens: { input: 12, output: 4000, reasoning: 0, cacheRead: 0, cacheWrite: 0, total: 4012 },

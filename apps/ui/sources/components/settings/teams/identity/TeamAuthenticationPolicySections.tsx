@@ -13,6 +13,7 @@ import {
 
 import { Item } from '@/components/ui/lists/Item';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
+import { SettingAnchor, SettingSection } from '@/components/settings/shell/SettingRow';
 import { setTeamPolicy } from '@/sync/ops/teams/teamOperations';
 import { isTeamActionApprovalPendingError } from '@/sync/ops/teams/teamActionClient';
 import { t } from '@/text';
@@ -20,12 +21,19 @@ import { t } from '@/text';
 import type { TeamSectionContext } from '../teamSectionContext';
 import { teamMutationFailureLabel } from '../teamMutationPresentation';
 import { identityConnectionDiscriminator } from './identityAdministrationPresentation';
+import { TEAM_AUTHENTICATION_SETTINGS } from './teamAuthenticationSettings';
 
 const ADMISSION_MODES: readonly TeamAdmissionModeV1[] = Object.freeze([
     'invite_only',
     'provisioned',
     'jit',
 ]);
+
+const ADMISSION_SETTINGS = {
+    invite_only: TEAM_AUTHENTICATION_SETTINGS.settings.admissionInviteOnly,
+    provisioned: TEAM_AUTHENTICATION_SETTINGS.settings.admissionProvisioned,
+    jit: TEAM_AUTHENTICATION_SETTINGS.settings.admissionJit,
+};
 
 function admissionModeLabel(mode: TeamAdmissionModeV1): string {
     switch (mode) {
@@ -107,7 +115,7 @@ function policyFailureLabel(failure: Readonly<{ code: string | null; details?: u
  *
  * Both arms of the OR are authored here: this Team's own connections and the
  * Home sign-in methods the Home already advertises publicly. The Home methods
- * arrive from the one canonical capability projector its own sign-in page uses,
+ * arrive from the one canonical auth-entry projection its own sign-in page uses,
  * so nothing about Home configuration is disclosed that a visitor could not
  * already see and no second Home-method owner exists. A stored `home_method`
  * the Home no longer offers is still shown and preserved rather than silently
@@ -122,7 +130,7 @@ export const TeamAuthenticationPolicySections = React.memo(function TeamAuthenti
         admissionModeApplicability: TeamAdmissionModeApplicabilityV1 | null;
         /** Home sign-in methods that can currently log somebody in, as the Home advertises them. */
         homeMethods: readonly Readonly<{ methodId: string; displayName: string }>[];
-        /** False while the Home capability projection has not answered. */
+        /** False while the Home auth-entry projection has not answered. */
         homeMethodsCurrent: boolean;
     }>,
 ) {
@@ -358,17 +366,16 @@ export const TeamAuthenticationPolicySections = React.memo(function TeamAuthenti
 
     return (
         <>
-            <ItemGroup
+            <SettingSection section={TEAM_AUTHENTICATION_SETTINGS.sectionRefs.admission}><ItemGroup
                 title={t('teams.authentication.policy.admissionSection')}
-                footer={admissionFooter}
+                description={admissionFooter}
                 accessibilityRole="radiogroup"
                 accessibilityLabel={t('teams.authentication.policy.admissionSection')}
             >
                 {ADMISSION_MODES.map((mode) => {
                     const availability = admissionModeApplicability?.modes[mode] ?? null;
                     const available = availability?.status === 'available';
-                    return <Item
-                        key={mode}
+                    return <SettingAnchor key={mode} setting={ADMISSION_SETTINGS[mode]}><Item
                         testID={`team-admission-mode:${mode}`}
                         title={admissionModeLabel(mode)}
                         accessibilityRole="radio"
@@ -384,7 +391,7 @@ export const TeamAuthenticationPolicySections = React.memo(function TeamAuthenti
                             ? () => { void chooseAdmission(mode); }
                             : undefined}
                         showChevron={false}
-                    />;
+                    /></SettingAnchor>;
                 })}
                 {admissionNotice ? (
                     <Item
@@ -401,11 +408,11 @@ export const TeamAuthenticationPolicySections = React.memo(function TeamAuthenti
                         showChevron={false}
                     />
                 ) : null}
-            </ItemGroup>
+            </ItemGroup></SettingSection>
 
-            <ItemGroup
+            <SettingSection section={TEAM_AUTHENTICATION_SETTINGS.sectionRefs.accepted}><ItemGroup
                 title={t('teams.authentication.policy.acceptedSection')}
-                footer={error ?? t('teams.authentication.policy.acceptedHelp')}
+                description={error ?? t('teams.authentication.policy.acceptedHelp')}
                 accessibilityRole="radiogroup"
                 accessibilityLabel={t('teams.authentication.policy.acceptedSection')}
             >
@@ -418,7 +425,7 @@ export const TeamAuthenticationPolicySections = React.memo(function TeamAuthenti
                         showChevron={false}
                     />
                 ) : null}
-                <Item
+                <SettingAnchor setting={TEAM_AUTHENTICATION_SETTINGS.settings.acceptedInherit}><Item
                     testID="team-authentication-policy-mode:inherit"
                     title={t('teams.authentication.policy.acceptedInherit')}
                     accessibilityRole="radio"
@@ -428,8 +435,8 @@ export const TeamAuthenticationPolicySections = React.memo(function TeamAuthenti
                     disabled={!editable}
                     onPress={editable ? () => chooseMode('inherit') : undefined}
                     showChevron={false}
-                />
-                <Item
+                /></SettingAnchor>
+                <SettingAnchor setting={TEAM_AUTHENTICATION_SETTINGS.settings.acceptedRestricted}><Item
                     testID="team-authentication-policy-mode:restricted"
                     title={t('teams.authentication.policy.acceptedRestricted')}
                     accessibilityRole="radio"
@@ -439,13 +446,13 @@ export const TeamAuthenticationPolicySections = React.memo(function TeamAuthenti
                     disabled={!editable || !connectionsCurrent}
                     onPress={editable && connectionsCurrent ? () => chooseMode('restricted') : undefined}
                     showChevron={false}
-                />
-            </ItemGroup>
+                /></SettingAnchor>
+            </ItemGroup></SettingSection>
 
             {selectedMode === 'restricted' ? (
-                <ItemGroup
+                <SettingAnchor setting={TEAM_AUTHENTICATION_SETTINGS.settings.acceptedMethods}><ItemGroup
                     title={t('teams.authentication.policy.connectionsSection')}
-                    footer={restrictedWithoutReferences
+                    description={restrictedWithoutReferences
                         ? t('teams.authentication.policy.connectionsEmpty')
                         : t('teams.authentication.policy.acceptedHelp')}
                 >
@@ -536,7 +543,7 @@ export const TeamAuthenticationPolicySections = React.memo(function TeamAuthenti
                             showChevron={false}
                         />
                     ) : null}
-                </ItemGroup>
+                </ItemGroup></SettingAnchor>
             ) : null}
 
             {draft !== null ? (
@@ -565,14 +572,14 @@ export const TeamAuthenticationPolicySections = React.memo(function TeamAuthenti
                             showChevron={false}
                         />
                     ) : null}
-                    <Item
+                    <SettingAnchor setting={TEAM_AUTHENTICATION_SETTINGS.settings.save}><Item
                         testID="team-authentication-policy-save"
                         title={t('common.save')}
                         loading={saving}
                         disabled={!canApply}
                         onPress={canApply ? () => { void submitPolicy(); } : undefined}
                         showChevron={false}
-                    />
+                    /></SettingAnchor>
                     <Item
                         testID="team-authentication-policy-cancel"
                         title={t('common.cancel')}

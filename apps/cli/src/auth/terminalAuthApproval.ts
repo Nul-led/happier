@@ -16,7 +16,7 @@ import { configuration } from '@/configuration';
 import { readStoredCredentials, readStoredCredentialsForServerId, type StoredCredentials } from '@/persistence';
 import { getServerProfile } from '@/server/serverProfiles';
 import { acquireTerminalAuthEnrollmentRuntime } from '@/auth/terminalAuthEnrollmentRuntime';
-import { verifyTerminalAuthEnrollmentRuntime } from '@/auth/terminalAuthEnrollmentClient';
+import { readTerminalAuthHomeIdentity, verifyTerminalAuthEnrollmentRuntime } from '@/auth/terminalAuthEnrollmentClient';
 import {
   fetchServerFeaturesSnapshot,
   observeServerFeaturesSnapshot,
@@ -303,11 +303,7 @@ export async function approveTerminalAuthRequest(params: Readonly<{
     }
     if (params.target?.authority === 'manual_url' && targetCredentials?.observedHomeServerIdentityId) {
       const authenticatedSnapshot = await observeServerFeaturesSnapshot({ serverUrl: runtimeOrigin, token: creds.token, ...(params.signal ? { signal: params.signal } : {}) });
-      const authenticatedIdentity = authenticatedSnapshot.status === 'ready'
-        ? normalizeServerIdentityIdCapability(
-            authenticatedSnapshot.features.capabilities.serverIdentity?.serverIdentityId,
-          )
-        : null;
+      const authenticatedIdentity = readTerminalAuthHomeIdentity(authenticatedSnapshot);
       if (authenticatedIdentity !== targetCredentials.observedHomeServerIdentityId) {
         throw new Error('The explicit remote Home route changed identity before approval. No approval was sent.');
       }
@@ -387,9 +383,7 @@ async function resolveCredentialsForApprovalTarget(
       serverUrl: target.applicationUrl,
       ...(signal ? { signal } : {}),
     });
-    const observedHomeServerIdentityId = snapshot.status === 'ready'
-      ? normalizeServerIdentityIdCapability(snapshot.features.capabilities.serverIdentity?.serverIdentityId)
-      : null;
+    const observedHomeServerIdentityId = readTerminalAuthHomeIdentity(snapshot);
     if (!observedHomeServerIdentityId) {
       throw new Error('Unable to verify the explicit remote Home route. No approval was sent.');
     }

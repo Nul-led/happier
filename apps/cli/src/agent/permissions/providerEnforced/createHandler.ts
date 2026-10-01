@@ -10,6 +10,7 @@ export function createProviderEnforcedPermissionHandler(params: {
   logPrefix: string;
   pushSender?: PermissionRequestPushSender | null;
   getAccountSettings?: (() => AccountSettings | null) | null;
+  getWorkspaceWrites?: (() => 'allow' | 'deny' | undefined) | null;
   getAccountSettingsSecretsReadKeys?: (() => ReadonlyArray<Uint8Array | null | undefined>) | null;
   onAbortRequested?: (() => void | Promise<void>) | null;
   toolTrace?: { protocol: ToolTraceProtocol; provider: string } | null;
@@ -24,6 +25,7 @@ export function createProviderEnforcedPermissionHandler(params: {
     logPrefix: params.logPrefix,
     pushSender: params.pushSender ?? null,
     getAccountSettings: params.getAccountSettings ?? null,
+    getWorkspaceWrites: params.getWorkspaceWrites ?? null,
     getAccountSettingsSecretsReadKeys: params.getAccountSettingsSecretsReadKeys ?? null,
     onAbortRequested: params.onAbortRequested ?? null,
     toolTrace: params.toolTrace ?? null,

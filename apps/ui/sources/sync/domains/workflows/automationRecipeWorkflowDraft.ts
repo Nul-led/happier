@@ -1,6 +1,10 @@
 import {
     automationRunExecutionTargetDeliversComposerReferencesV1,
+    LEGACY_AUTOMATION_WORKFLOW_STEP_ID,
     pluginJsonValuesEqual,
+    buildWorkflowSelectionFromServerStartSpawnDraftV1,
+    buildBackendTargetKeyV2,
+    SessionPermissionModeInputSchema,
     SessionServerStartSpawnDraftV1Schema,
     type AutomationRunExecutionTargetV1,
     type AutomationRunTemplateV1,
@@ -9,13 +13,12 @@ import {
 import type { WorkflowProjectTargetV1 } from '@happier-dev/protocol/workflows';
 import type {
     WorkflowSessionAuthoringSelection,
-    WorkflowStep,
+    WorkflowDefinitionV1,
     WorkflowStepExecutionSelection,
 } from '@happier-dev/protocol/workflows/workflowV1';
 
 import {
     applyWorkflowSelectionToServerStartSpawnDraftV1,
-    buildWorkflowSelectionFromServerStartSpawnDraftV1,
 } from '@/components/sessions/authoring/draft/sessionAuthoringDraftAdapters';
 
 import type { OpenedAutomationWorkflowDefinition } from './automationWorkflowRecipe';
@@ -23,15 +26,17 @@ import {
     buildWorkflowEditorDraftFromDefinition,
     resolveEffectiveWorkflowStepExecution,
 } from './workflowAuthoring';
-import { createWorkflowEditorDraft, type WorkflowEditorDraft } from './workflowEditorDraft';
+import type { WorkflowEditorDraft } from './workflowEditorDraft';
+import type { WorkflowAuthoringTarget } from './workflowProjectTarget';
 
 /**
  * The one seam between a saved Automation's stored recipe and the shared
  * Workflow editor.
  *
- * Both recipe epochs open in the same editor body: the released one-shot recipe
+ * Both current recipe kinds open in the same editor body: the one-shot recipe
  * (`v: 1`) is adapted into the canonical one-step Workflow definition, and the
- * managed workflow recipe (`v: 2`) already is one. This module owns only that
+ * workflow recipe (`v: 2`) supplies inline content or a caller-resolved live
+ * definition. This module owns only that
  * projection — it decrypts nothing, validates nothing and writes nothing. The
  * Account envelope stays with `automationRecipeAuthoring.ts` /
  * `automationWorkflowRecipe.ts`, definition validation stays with the canonical
@@ -50,63 +55,62 @@ export type AutomationWorkflowEditorOrigin =
     | Readonly<{
         kind: 'workflow';
         project: WorkflowProjectTargetV1;
-        source?: OpenedAutomationWorkflowDefinition['source'];
+        workflowDefinitionId: string | null;
     }>;
 
 export type AutomationWorkflowEditorProjection = Readonly<{
     draft: WorkflowEditorDraft;
     origin: AutomationWorkflowEditorOrigin;
     /** The exact placement the recipe already records, when it records one. */
-    project: WorkflowProjectTargetV1 | null;
+    project: WorkflowAuthoringTarget | null;
 }>;
 
 /** The single step id an adapted one-shot recipe uses, matching editor-created ids. */
-export const LEGACY_AUTOMATION_WORKFLOW_STEP_ID = 'step-1';
-
-function legacyDefaults(
-    target: AutomationRunExecutionTargetV1,
-    machineId: string | null,
-): WorkflowStepExecutionSelection {
-    switch (target.kind) {
-        case 'newSession':
-            return {
-                ...buildWorkflowSelectionFromServerStartSpawnDraftV1(target.spawn),
-                // Each occurrence spawns its own Session, which is exactly the
-                // workflow vocabulary's fresh conversation.
-                conversation: { kind: 'fresh' },
-            };
-        case 'existingSession':
-            // The conversation schema binds the Session to its exact machine.
-            // Without a resolved assignment the selection stays unstated rather
-            // than inventing a placement the recipe never recorded.
-            return machineId === null
-                ? {}
-                : { conversation: { kind: 'existing_session', sessionId: target.sessionId, machineId } };
-        case 'executionRun':
-            // The detached request carries a backend target and permission
-            // mode that have no authored Session-selection equivalent; they are
-            // retained verbatim and are not re-expressed as workflow defaults.
-            return {};
-    }
-}
+export { LEGACY_AUTOMATION_WORKFLOW_STEP_ID };
 
 function legacyProject(
     target: AutomationRunExecutionTargetV1,
     machineId: string | null,
-): WorkflowProjectTargetV1 | null {
+): WorkflowAuthoringTarget | null {
     if (target.kind === 'newSession') {
         return {
             machineId: target.spawn.executionTarget.machineId,
-            directory: target.spawn.directory,
+            directory: target.spawn.directory.kind === 'path' ? target.spawn.directory.path : target.spawn.directory,
         };
     }
-    // These arms record no project directory. The assignment still names the
-    // exact machine, and the editor shows the directory as visibly unresolved
-    // rather than inventing a checkout path the Automation never had.
-    return machineId === null ? null : { machineId, directory: '' };
+    return target.kind === 'executionRun' && machineId !== null && target.request.cwd
+        ? { machineId, directory: target.request.cwd }
+        : null;
 }
 
-/** Opens a released one-shot recipe as the canonical one-step Workflow draft. */
+/** Presentation of current one-shot targets, not retained-0.2 conversion authority. */
+function oneShotExecutionSelection(
+    target: AutomationRunExecutionTargetV1,
+    machineId: string | null,
+): WorkflowStepExecutionSelection {
+    if (target.kind === 'existingSession') {
+        return machineId === null ? {} : { conversation: { kind: 'existing_session', sessionId: target.sessionId, machineId } };
+    }
+    if (target.kind === 'newSession') {
+        return { ...buildWorkflowSelectionFromServerStartSpawnDraftV1(target.spawn), conversation: { kind: 'fresh' } };
+    }
+    const request = target.request;
+    return {
+        agentTarget: request.backendTarget,
+        permissionMode: SessionPermissionModeInputSchema.parse(request.permissionMode),
+        ...(request.modelSelection ? { modelSelection: { v: 1, ref: request.modelSelection, updatedAt: 0 } }
+            : request.modelId ? { modelSelection: { v: 1, ref: {
+            agentTargetKey: buildBackendTargetKeyV2(request.backendTarget), providerConnectionId: null, modelId: request.modelId,
+        }, updatedAt: 0 } } : {}),
+        ...(request.sessionConfigOptionOverrides === undefined ? {} : { sessionConfigOptionOverrides: request.sessionConfigOptionOverrides }),
+        ...(request.mcpSelection === undefined ? {} : { mcpSelection: request.mcpSelection }),
+        ...(request.connectedServices === undefined ? {} : { connectedServices: request.connectedServices }),
+        ...(request.profileId === undefined ? {} : { profileId: request.profileId }),
+        conversation: { kind: 'fresh' },
+    };
+}
+
+/** Opens a current one-shot recipe as the canonical one-step Workflow draft. */
 export function projectLegacyAutomationRecipeToEditorDraft(params: Readonly<{
     draftId: string;
     name: string;
@@ -115,47 +119,46 @@ export function projectLegacyAutomationRecipeToEditorDraft(params: Readonly<{
     /** The Automation's enabled assignment, used only where the target omits one. */
     machineId: string | null;
 }>): AutomationWorkflowEditorProjection {
-    const step: WorkflowStep = {
-        kind: 'step',
-        id: LEGACY_AUTOMATION_WORKFLOW_STEP_ID,
-        document: {
-            text: params.program.prompt,
-            references: [...(params.program.mentions ?? [])],
-            attachments: [],
-        },
-        input: [],
-        result: { kind: 'text' },
-    };
     return {
-        draft: createWorkflowEditorDraft({
+        draft: buildWorkflowEditorDraftFromDefinition({
             draftId: params.draftId,
             name: params.name,
-            defaults: legacyDefaults(params.target, params.machineId),
-            blocks: [step],
+            definition: { version: 1, inputs: [], defaults: oneShotExecutionSelection(params.target, params.machineId),
+                blocks: [{ kind: 'step', id: LEGACY_AUTOMATION_WORKFLOW_STEP_ID,
+                    document: { text: params.program.prompt, references: [...(params.program.mentions ?? [])], attachments: [] },
+                    input: [], result: { kind: 'text' } }] },
         }),
         origin: { kind: 'legacy', target: params.target },
         project: legacyProject(params.target, params.machineId),
     };
 }
 
-/** Opens a frozen managed workflow recipe in the same editor body. */
+/** Opens inline content or the caller's live-resolved Workflow reference. */
 export function projectAutomationWorkflowRecipeToEditorDraft(params: Readonly<{
     draftId: string;
     name: string;
     stored: OpenedAutomationWorkflowDefinition;
+    machineId: string;
+    workflowDefinitionId: string | null;
+    resolvedDefinition?: WorkflowDefinitionV1;
 }>): AutomationWorkflowEditorProjection {
+    const definition = params.workflowDefinitionId === null
+        ? params.stored.inlineDefinition
+        : params.resolvedDefinition;
+    if (!definition) throw new Error('Automation workflow definition is unavailable');
+    const project = { machineId: params.machineId, ...params.stored.workspace };
     return {
         draft: buildWorkflowEditorDraftFromDefinition({
             draftId: params.draftId,
             name: params.name,
-            definition: params.stored.definition,
+            definition,
         }),
         origin: {
             kind: 'workflow',
-            project: params.stored.project,
-            ...(params.stored.source === undefined ? {} : { source: params.stored.source }),
+            project,
+            workflowDefinitionId: params.workflowDefinitionId,
         },
-        project: params.stored.project,
+        project,
     };
 }
 
@@ -208,7 +211,7 @@ function conversationIsRepresentable(
 }
 
 /**
- * Projects a newly authored one-step draft onto the released one-shot recipe.
+ * Projects a newly authored one-step draft onto the current one-shot recipe.
  *
  * A one-prompt Automation stays a one-prompt Automation: creation only reaches
  * the managed workflow recipe when the author actually wrote something the
@@ -217,7 +220,7 @@ function conversationIsRepresentable(
  */
 export function projectEditorDraftToNewSessionAutomationRecipe(params: Readonly<{
     draft: WorkflowEditorDraft;
-    project: WorkflowProjectTargetV1;
+    project: WorkflowAuthoringTarget;
     serverId: string;
     configurationUpdatedAtMs: number;
 }>): LegacyAutomationRecipeWriteBack {
@@ -226,7 +229,7 @@ export function projectEditorDraftToNewSessionAutomationRecipe(params: Readonly<
     if (!agentTarget) return { kind: 'unavailable', reason: 'agent_target_required' };
     const base = SessionServerStartSpawnDraftV1Schema.safeParse({
         executionTarget: { serverId: params.serverId, machineId: params.project.machineId },
-        directory: params.project.directory,
+        directory: typeof params.project.directory === 'string' ? { kind: 'path', path: params.project.directory } : params.project.directory,
         agentTarget,
         permissionMode: defaults.permissionMode ?? 'default',
     });
@@ -239,7 +242,7 @@ export function projectEditorDraftToNewSessionAutomationRecipe(params: Readonly<
 }
 
 /**
- * Projects the edited one-step draft back onto its released one-shot recipe.
+ * Projects the edited one-step draft back onto its current one-shot recipe.
  *
  * A one-step draft has no inheritance to preserve — its effective execution is
  * what the single occurrence runs with — so the effective selection is written
@@ -249,6 +252,7 @@ export function projectEditorDraftToNewSessionAutomationRecipe(params: Readonly<
 export function projectEditorDraftToLegacyAutomationRecipe(params: Readonly<{
     draft: WorkflowEditorDraft;
     target: AutomationRunExecutionTargetV1;
+    project?: WorkflowAuthoringTarget | null;
     configurationUpdatedAtMs: number;
 }>): LegacyAutomationRecipeWriteBack {
     const blocks = params.draft.blocks;
@@ -290,15 +294,30 @@ export function projectEditorDraftToLegacyAutomationRecipe(params: Readonly<{
     const selection = selectionWithoutContinuity(effective);
     if (params.target.kind !== 'newSession') {
         const retained = selectionWithoutContinuity(
-            legacyDefaults(params.target, null),
+            oneShotExecutionSelection(params.target, null),
         );
         return pluginJsonValuesEqual(selection, retained)
             ? { kind: 'available', prompt, mentions: references, target: params.target }
             : { kind: 'unavailable', reason: 'settings_unrepresentable' };
     }
 
+    const retainedSpawn = params.target.spawn;
+    const directory = params.project
+        ? typeof params.project.directory === 'string'
+            ? { kind: 'path' as const, path: params.project.directory }
+            : params.project.directory
+        : retainedSpawn.directory;
+    const placementChanged = params.project !== undefined && params.project !== null && (
+        params.project.machineId !== retainedSpawn.executionTarget.machineId
+        || !pluginJsonValuesEqual(directory, retainedSpawn.directory)
+    );
     const spawn = applyWorkflowSelectionToServerStartSpawnDraftV1({
-        spawn: params.target.spawn,
+        spawn: params.project ? {
+            ...retainedSpawn,
+            executionTarget: { ...retainedSpawn.executionTarget, machineId: params.project.machineId },
+            directory,
+            ...(placementChanged || directory.kind === 'managed' ? { checkoutCreationDraft: null } : {}),
+        } : retainedSpawn,
         selection,
         configurationUpdatedAtMs: params.configurationUpdatedAtMs,
     });

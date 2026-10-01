@@ -4,6 +4,9 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { localSettingsDefaults, type LocalSettings } from '@/sync/domains/settings/localSettings';
 import { settingsDefaults, type Settings } from '@/sync/domains/settings/settings';
+import { storage } from '@/sync/domains/state/storageStore';
+import { getPersistenceStorage } from '@/sync/domains/state/persistenceStorage';
+import * as accountSnapshots from './buildAccountSettingsSnapshot';
 
 const { trackingMock, analyticsRuntimeState } = vi.hoisted(() => ({
     trackingMock: {
@@ -29,15 +32,6 @@ let trackingAnonymousUserId = 'anon-user';
 vi.mock('@/track/tracking', () => ({
     tracking: trackingMock,
 }));
-
-vi.mock('@/sync/store/hooks', async (importOriginal) => {
-    const actual = await importOriginal<typeof import('@/sync/store/hooks')>();
-    return {
-        ...actual,
-        useSettings: () => analyticsRuntimeState.settings,
-        useLocalSettings: () => analyticsRuntimeState.localSettings,
-    };
-});
 
 vi.mock('@/hooks/server/useEffectiveServerSelection', () => ({
     useEffectiveServerSelection: () => ({ serverIds: [] }),
@@ -70,7 +64,8 @@ import { renderScreen } from '@/dev/testkit';
 
 
 describe('SettingsAnalyticsRuntime', () => {
-    beforeEach(() => {
+    beforeEach(async () => {
+        getPersistenceStorage().clearAll();
         trackingAnonymousUserId = 'anon-user';
         trackingIdentityListeners.clear();
         analyticsRuntimeState.settings = {
@@ -94,6 +89,9 @@ describe('SettingsAnalyticsRuntime', () => {
             serverIds: [],
             snapshotsByServerId: {},
         };
+        await storage.getState().activateSettingsScope({ serverId: 'analytics-home', accountId: 'analytics-account' });
+        storage.getState().applySettings(analyticsRuntimeState.settings, 1);
+        storage.getState().applyLocalSettings(analyticsRuntimeState.localSettings, { persist: false });
     });
 
     it('syncs account properties to the person and local properties to the device_user group', async () => {
@@ -145,12 +143,40 @@ describe('SettingsAnalyticsRuntime', () => {
         };
 
         await act(async () => {
+            storage.getState().applySettings(analyticsRuntimeState.settings!, 2);
+            storage.getState().applyLocalSettings(analyticsRuntimeState.localSettings!, { persist: false });
             tree!.update(<SettingsAnalyticsRuntime />);
         });
 
         expect(trackingMock.identify).toHaveBeenCalledTimes(1);
         expect(trackingMock.group).toHaveBeenCalledTimes(1);
         expect(trackingMock.flush).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not render for untracked account state and updates tracked preferences', async () => {
+        const commits = vi.fn();
+        const buildSnapshot = vi.spyOn(accountSnapshots, 'buildAccountSettingsSnapshot');
+        trackingMock.identify.mockClear();
+        await renderScreen(
+            <React.Profiler id="settings-analytics" onRender={commits}>
+                <SettingsAnalyticsRuntime />
+            </React.Profiler>,
+        );
+        const baseline = commits.mock.calls.length;
+        const computationBaseline = buildSnapshot.mock.calls.length;
+        await act(async () => {
+            storage.getState().applySettingsLocal({ sessionTmuxSessionName: 'analytics-test' });
+        });
+        expect(commits.mock.calls.length).toBe(baseline);
+        expect(buildSnapshot.mock.calls.length).toBe(computationBaseline);
+        await act(async () => {
+            storage.getState().applySettingsLocal({ sessionListDensity: 'narrow' });
+        });
+        expect(commits.mock.calls.length).toBe(baseline + 1);
+        expect(buildSnapshot.mock.calls.length).toBe(computationBaseline + 1);
+        expect(trackingMock.identify).toHaveBeenLastCalledWith('anon-user', expect.objectContaining({
+            acct_setting__sessionListDensity: 'narrow',
+        }));
     });
 
     it('resets cached snapshots when the tracking identity changes', async () => {

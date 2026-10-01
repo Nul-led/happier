@@ -4,6 +4,7 @@ import { WorkflowDefinitionV1Schema } from '@happier-dev/protocol';
 import type { WorkflowProgressEnvelopeV1 } from '@happier-dev/protocol';
 
 import { createWorkflowInvocationIndexFixture } from '@/dev/testkit/fixtures/workflowRunFixtures';
+import { summarizeWorkflowInvocationCoverage } from '@/components/workflows/presentation/workflowLifecyclePresentation';
 
 import { projectWorkflowInvocationStructure } from './workflowInvocationStructure';
 
@@ -47,8 +48,8 @@ describe('projectWorkflowInvocationStructure', () => {
             ],
         });
 
-        expect(structure.get('root')).toMatchObject({ blockId: '$root', nodeId: null, isFrame: true });
-        expect(structure.get('a')).toMatchObject({ blockId: 'analyze', nodeId: 'analyze', isFrame: false, occurrence: [] });
+        expect(structure.get('root')).toMatchObject({ blockId: '$root', nodeId: null, isFrame: true, coverageKind: 'structural' });
+        expect(structure.get('a')).toMatchObject({ blockId: 'analyze', nodeId: 'analyze', isFrame: false, occurrence: [], coverageKind: 'executable' });
         expect(structure.get('b')).toMatchObject({ blockId: 'implement', nodeId: 'implement', isFrame: false });
     });
 
@@ -74,8 +75,8 @@ describe('projectWorkflowInvocationStructure', () => {
             ],
         });
 
-        expect(structure.get('checks')).toMatchObject({ nodeId: 'checks', blockId: 'checks', isFrame: false });
-        expect(structure.get('frame-left')).toMatchObject({ nodeId: 'checks#left', isFrame: true });
+        expect(structure.get('checks')).toMatchObject({ nodeId: 'checks', blockId: 'checks', isFrame: false, coverageKind: 'structural' });
+        expect(structure.get('frame-left')).toMatchObject({ nodeId: 'checks#left', isFrame: true, coverageKind: 'structural' });
         expect(structure.get('lint-row')).toMatchObject({
             nodeId: 'lint',
             occurrence: [{ kind: 'branch', blockId: 'checks', branchId: 'left' }],
@@ -83,6 +84,54 @@ describe('projectWorkflowInvocationStructure', () => {
         expect(structure.get('types-row')).toMatchObject({
             nodeId: 'types',
             occurrence: [{ kind: 'branch', blockId: 'checks', branchId: 'right' }],
+        });
+    });
+
+    it('counts Agent, Action and Wait steps without counting a nested Workflow container', () => {
+        const definition = definitionOf([
+            step('agent'),
+            { kind: 'action', id: 'action', actionId: 'session.message.send', input: {} },
+            { kind: 'workflow', id: 'nested', workflowRef: 'builtin:review', input: {} },
+            { kind: 'wait', id: 'wait', document: { text: 'Continue?', references: [], attachments: [] } },
+        ]);
+        const invocations = [root, ...definition.blocks.map((block, ordinal) => child({
+            id: block.id, parentRecordId: 'root', memberOrdinal: String(ordinal), sequence: String(ordinal + 1),
+        }))].map((invocation) => ({ ...invocation, lifecycle: 'completed' as const }));
+        const structure = projectWorkflowInvocationStructure({ definition, invocations });
+
+        expect(structure.get('root')?.coverageKind).toBe('structural');
+        for (const block of definition.blocks) {
+            expect(structure.get(block.id)).toMatchObject({ blockId: block.id, nodeId: block.id,
+                coverageKind: block.kind === 'workflow' ? 'structural' : 'executable' });
+        }
+        expect(summarizeWorkflowInvocationCoverage(invocations, {
+            kindsByInvocationId: new Map([...structure].map(([id, entry]) => [id, entry.coverageKind])),
+            historyComplete: false,
+        })).toEqual({ observedLeafCounts: { completed: 3, failed: 0, attention: 0 }, coverage: 'partial', knownFailure: false });
+    });
+
+    it('uses the opened child kind and scope without mistaking a same-id parent block for its Flow node', () => {
+        const definition = definitionOf([
+            { kind: 'workflow', id: 'nested', workflowRef: 'builtin:review', input: {} },
+        ]);
+        const progress: WorkflowProgressEnvelopeV1 = {
+            kind: 'happier.workflow-progress.v1',
+            invocationPath: { blockId: 'nested', scope: [{ kind: 'workflow', blockId: 'nested' }] },
+            blockKind: 'step',
+            attempt: '0',
+            logicalInvocationRecordId: 'nested-row',
+        };
+        const structure = projectWorkflowInvocationStructure({
+            definition,
+            invocations: [root, child({ id: 'nested-row', parentRecordId: 'unloaded-frame', memberOrdinal: '0', sequence: '2' })],
+            progressByInvocationId: new Map([['nested-row', progress]]),
+        });
+
+        expect(structure.get('nested-row')).toMatchObject({
+            blockId: 'nested',
+            nodeId: null,
+            occurrence: [{ kind: 'workflow', blockId: 'nested' }],
+            coverageKind: 'executable',
         });
     });
 
@@ -152,7 +201,7 @@ describe('projectWorkflowInvocationStructure', () => {
         });
 
         expect(structure.get('gate')).toMatchObject({ nodeId: 'gate' });
-        expect(structure.get('selected')).toMatchObject({ nodeId: null, blockId: null });
+        expect(structure.get('selected')).toMatchObject({ nodeId: null, blockId: null, coverageKind: 'unknown' });
     });
 
     it('prefers the authoritative opened path over derivation and uses it to resolve the ambiguous branch', () => {

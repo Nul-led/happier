@@ -50,6 +50,29 @@ class FakeSession {
 }
 
 describe('BasePermissionHandler permission-response routing (gap 28/29)', () => {
+  it('rejects unknown permission RPC fields before settling the pending request', async () => {
+    const session = new FakeSession();
+    const handler = new CodexLikePermissionHandler({ session: session as never, logPrefix: '[Test]' });
+    handler.setPermissionMode('safe-yolo');
+    const pending = handler.handleToolCall('contradictory-request', 'Write', { path: '/tmp/x', content: 'hi' });
+    const rpc = session.rpcHandlerManager.handlers.get('session.permission.respond')!;
+    const result = await rpc({ id: 'contradictory-request', approved: true, decision: 'approved', actor: 'forged' });
+    expect(result).toMatchObject({ ok: false, errorCode: 'permission_response_invalid' });
+    expect(session.agentState.requests['contradictory-request']).toBeDefined();
+    const canceled = expect(pending).rejects.toThrow('Session reset');
+    await handler.reset();
+    await canceled;
+  });
+  it('keeps predecessor scalar question answers on the legacy permission route', async () => {
+    const session = new FakeSession();
+    const handler = new CodexLikePermissionHandler({ session: session as never, logPrefix: '[Test]' });
+    const pending = handler.handleToolCall('legacy-question', 'AskUserQuestion', {
+      questions: [{ question: 'Choose?', options: [{ label: 'Yes', description: 'Continue' }], multiSelect: false }],
+    });
+    const rpc = session.rpcHandlerManager.handlers.get('permission')!;
+    await expect(rpc({ id: 'legacy-question', approved: true, answers: { 'Choose?': 'Yes' } })).resolves.toBeUndefined();
+    await expect(pending).resolves.toMatchObject({ decision: 'approved', answers: { 'Choose?': ['Yes'] } });
+  });
   it.each(['approve', 'reset'] as const)('preserves live Action confirmation delivery after handler replacement: %s', async (completion) => {
     const session = new FakeSession();
     const initialHandler = new CodexLikePermissionHandler({ session: session as never, logPrefix: '[Initial]' });

@@ -60,8 +60,6 @@ describe('SettingsSessionsBehaviorSection external sessions entry', () => {
                 automationsNeedLocalEnablement={false}
                 router={{ push } as never}
                 showAutomations={false}
-                terminalUseTmux={false}
-                theme={{ colors: { accent: { blue: '#00f', indigo: '#50f', orange: '#f80' } } } as never}
             />,
         );
 
@@ -78,8 +76,6 @@ describe('SettingsSessionsBehaviorSection external sessions entry', () => {
                 automationsNeedLocalEnablement={false}
                 router={{ push: vi.fn() } as never}
                 showAutomations={false}
-                terminalUseTmux={false}
-                theme={{ colors: { accent: { blue: '#00f', indigo: '#50f', orange: '#f80' } } } as never}
             />,
         );
 

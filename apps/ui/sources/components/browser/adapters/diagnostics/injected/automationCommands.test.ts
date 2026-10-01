@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { INJECTED_ELEMENTS_RUNTIME } from './elements';
 
@@ -19,11 +19,14 @@ type AutomationEnvelope = Readonly<{
     ok: boolean;
     errorCode?: string;
     data: Record<string, unknown>;
+    phase?: string;
+    activeTarget?: Readonly<{ x: number; y: number; width: number; height: number; label?: string }>;
 }>;
 
 type AutomationHarness = Readonly<{
     run: (commandName: string, payload?: Record<string, unknown>) => AutomationEnvelope;
     selectedElementPayload: (node: Element) => Record<string, unknown>;
+    progress: () => readonly AutomationEnvelope[];
 }>;
 
 const CONFIG = {
@@ -181,15 +184,48 @@ function createHarness(overrides: HarnessOverrides = {}): AutomationHarness {
                 commandName,
                 payload,
             });
-            const envelope = instance.envelopes.find((entry) => entry.commandId === commandId);
+            const envelope = instance.envelopes.find((entry) => entry.commandId === commandId && entry.phase !== 'target');
             if (!envelope) throw new Error(`no automation result posted for ${commandName}`);
             return envelope;
         },
         selectedElementPayload: instance.selectedElementPayload,
+        progress: () => instance.envelopes.filter(entry => entry.phase === 'target'),
     };
 }
 
 describe('injected automation command router', () => {
+    it('publishes normalized element geometry and its accessible label before completing a click', () => {
+        document.body.innerHTML = '<button id="go">Sign in</button>';
+        const button = document.querySelector('#go')!;
+        const spy = vi.spyOn(button, 'getBoundingClientRect').mockReturnValue({
+            x: 100, y: 50, left: 100, top: 50, right: 300, bottom: 150, width: 200, height: 100, toJSON: () => ({}),
+        });
+        try {
+            const harness = createHarness();
+            expect(harness.run('click', { locator: { kind: 'css', value: '#go' } })).toMatchObject({ ok: true });
+            expect(harness.progress()).toMatchObject([{ activeTarget: {
+                x: 200 / window.innerWidth, y: 100 / window.innerHeight,
+                width: 200 / window.innerWidth, height: 100 / window.innerHeight,
+                label: 'Sign in',
+            } }]);
+        } finally { spy.mockRestore(); }
+    });
+    it.each(['<textarea id="field">private-value</textarea>', '<input id="field" type="password" value="private-value">', '<div id="field" contenteditable="true">private-value</div>'])(
+        'never publishes editable content or typed input as a target label: %s', (html) => {
+            document.body.innerHTML = html;
+            const element = document.querySelector('#field')!;
+            const spy = vi.spyOn(element, 'getBoundingClientRect').mockReturnValue({
+                x: 100, y: 50, left: 100, top: 50, right: 300, bottom: 150, width: 200, height: 100, toJSON: () => ({}),
+            });
+            try {
+                const harness = createHarness();
+                harness.run('type', { locator: { kind: 'css', value: '#field' }, text: 'typed-secret' });
+                expect(harness.progress()).toHaveLength(1);
+                expect(JSON.stringify(harness.progress())).not.toContain('private-value');
+                expect(JSON.stringify(harness.progress())).not.toContain('typed-secret');
+            } finally { spy.mockRestore(); }
+        },
+    );
     it('performs a hover, a focus and a key press rather than reporting unsupported_action', () => {
         document.body.innerHTML = '<button id="go">Go</button><input id="field" />';
         const harness = createHarness();

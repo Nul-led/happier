@@ -1,6 +1,6 @@
 import * as React from 'react';
-import { useNavigation } from '@react-navigation/native';
-import { useRouter } from 'expo-router';
+import { useNavigation } from '@/components/appShell/workspace/destinationRoute';
+import { useRouter } from '@/components/appShell/workspace/destinationRoute';
 import {
     type TeamCredentialExternalApiKeySummaryV1,
 } from '@happier-dev/protocol/teams';
@@ -12,12 +12,16 @@ import {
 } from '@/components/settings/apiTokens/apiTokenSettingsController';
 import { Item } from '@/components/ui/lists/Item';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
-import { TextInput } from '@/components/ui/text/Text';
+import { RoundButton } from '@/components/ui/buttons/RoundButton';
+import { SectionButtonRow } from '@/components/ui/lists/SectionButtonRow';
+import { FieldTextInput } from '@/components/ui/forms/FieldTextInput';
+import { SectionContentRow } from '@/components/ui/lists/SectionContentRow';
 import { useTeamMembersRoster } from '@/hooks/teams/useTeamMembersRoster';
 import { Modal } from '@/modal';
 import { formatAccountDisplayName } from '@/sync/domains/account/formatAccountDisplayName';
 import { isTeamActionApprovalPendingError } from '@/sync/ops/teams/teamActionClient';
 import {
+    authorizeTeamCredentialExternalApiKey,
     createTeamCredentialExternalApiKey,
     listTeamCredentialExternalApiKeys,
     revokeAllTeamCredentialExternalApiKeys,
@@ -60,6 +64,11 @@ type Reveal = Readonly<{ token: string; replacedKey: TeamCredentialExternalApiKe
  */
 function keyStatusLine(key: TeamCredentialExternalApiKeySummaryV1, now: number): string {
     const parts: string[] = [];
+    if (key.authenticationStatus === 'authentication_required') {
+        parts.push(t('teams.credentials.externalApi.authenticationRequired'));
+    } else if (key.authenticationStatus === 'unavailable') {
+        parts.push(t('teams.credentials.externalApi.authenticationUnavailable'));
+    }
     const used = key.lastUsedAt === null ? null : Date.parse(key.lastUsedAt);
     parts.push(used === null || Number.isNaN(used)
         ? t('teams.credentials.externalApi.neverUsed')
@@ -83,6 +92,7 @@ const ExternalApiContent = React.memo(function ExternalApiContent(props: Readonl
 }>) {
     const { context, resourceId } = props;
     const view = useTeamCredentialResourceView({ context, resourceId });
+    const canReadKeys = view.canManage || view.catalogResource?.mayBroker === true;
     const availability = useTeamCredentialExternalApiAvailability(context.scope.serverId);
     const roster = useTeamMembersRoster({
         scope: context.scope,
@@ -246,11 +256,11 @@ const ExternalApiContent = React.memo(function ExternalApiContent(props: Readonl
     }, [reload]);
 
     React.useEffect(() => {
-        if (!availability.available || !view.canManage) return;
+        if (!availability.available || !canReadKeys) return;
         if (acceptedTarget.current.key !== targetKey || initialListTargetKey.current === targetKey) return;
         initialListTargetKey.current = targetKey;
         void reload();
-    }, [availability.available, view.canManage, reload, targetKey]);
+    }, [availability.available, canReadKeys, reload, targetKey]);
 
     const clearReveal = React.useCallback(() => {
         if (!reveal) return;
@@ -265,7 +275,7 @@ const ExternalApiContent = React.memo(function ExternalApiContent(props: Readonl
 
     if (!view.featureEnabled) {
         return (
-            <ItemGroup footer={t('teams.credentials.externalApi.unavailable')}>
+            <ItemGroup description={t('teams.credentials.externalApi.unavailable')}>
                 <Item
                     testID="team-credential-external-unavailable"
                     title={t('teams.credentials.externalApi.title')}
@@ -274,16 +284,16 @@ const ExternalApiContent = React.memo(function ExternalApiContent(props: Readonl
             </ItemGroup>
         );
     }
-    if (view.resolved && (!view.resource || !view.canManage)) {
+    if (view.resolved && !canReadKeys) {
         return (
-            <ItemGroup footer={view.resource ? t('teams.credentials.forbidden') : t('teams.credentials.detail.notFound')}>
+            <ItemGroup description={view.resource ? t('teams.credentials.forbidden') : t('teams.credentials.detail.notFound')}>
                 <Item testID="team-credential-external-forbidden" title={t('homeGovernance.forbiddenTitle')} showChevron={false} />
             </ItemGroup>
         );
     }
-    if (view.resource === null) {
+    if (view.resource === null && view.catalogResource === null) {
         return (
-            <ItemGroup footer={view.error ? credentialFailureMessage(view.error) : undefined}>
+            <ItemGroup description={view.error ? credentialFailureMessage(view.error) : undefined}>
                 <Item
                     testID={view.error
                         ? 'team-credential-external-resource-retry'
@@ -301,7 +311,7 @@ const ExternalApiContent = React.memo(function ExternalApiContent(props: Readonl
             ? t('teams.credentials.externalApi.publicHttpsRequired')
             : t('teams.credentials.externalApi.unavailable');
         return (
-            <ItemGroup footer={unavailable}>
+            <ItemGroup description={unavailable}>
                 <Item
                     testID="team-credential-external-unavailable"
                     title={t('teams.credentials.externalApi.title')}
@@ -325,6 +335,37 @@ const ExternalApiContent = React.memo(function ExternalApiContent(props: Readonl
     // unknown. Previously acknowledged rows remain visible below for recovery.
     const keyListTrusted = resolved && !listError;
     const memberNames = new Map(roster.rows.map((member) => [member.id, formatAccountDisplayName(member.account)]));
+
+    async function authorizeKey(key: TeamCredentialExternalApiKeySummaryV1) {
+        if (operationBusy || !key.canAuthorize) return;
+        const requestedTargetKey = targetKey;
+        const applyAuthorizedKey = (value: Readonly<{ key: TeamCredentialExternalApiKeySummaryV1 }>) => {
+            if (currentTargetKey.current !== requestedTargetKey) return;
+            setKeys((current) => current.map((entry) => entry.keyId === value.key.keyId ? value.key : entry));
+        };
+        setBusy(true);
+        setNotice(null);
+        try {
+            const outcome = await authorizeTeamCredentialExternalApiKey({
+                scope: context.scope, resourceId, keyId: key.keyId,
+                handlers: {
+                    onApprovalSucceeded: applyAuthorizedKey,
+                    onApprovalFailed: (code) => {
+                        if (currentTargetKey.current === requestedTargetKey) setNotice(credentialApprovalFailureMessage(code));
+                    },
+                },
+            });
+            if (currentTargetKey.current !== requestedTargetKey) return;
+            if (outcome.kind === 'succeeded') applyAuthorizedKey(outcome.value);
+            else applyMutationFailure(outcome.failure);
+        } catch (cause) {
+            if (currentTargetKey.current !== requestedTargetKey) return;
+            if (isTeamActionApprovalPendingError(cause)) context.requestApproval(cause.registration);
+            else setNotice(t('teams.errors.generic'));
+        } finally {
+            if (currentTargetKey.current === requestedTargetKey) setBusy(false);
+        }
+    }
 
     async function revokeKey(key: TeamCredentialExternalApiKeySummaryV1, requireConfirmation = true) {
         if (operationBusy) return;
@@ -390,7 +431,7 @@ const ExternalApiContent = React.memo(function ExternalApiContent(props: Readonl
     const revealGroup = reveal === null ? null : (
         <ItemGroup
             title={t('teams.credentials.externalApi.revealTitle')}
-            footer={t('teams.credentials.externalApi.revealBody')}
+            description={t('teams.credentials.externalApi.revealBody')}
         >
             {revealValues.map((item) => (
                 <Item
@@ -434,7 +475,7 @@ const ExternalApiContent = React.memo(function ExternalApiContent(props: Readonl
 
     return (
         <>
-            <ItemGroup footer={t('teams.credentials.externalApi.subtitle')}>
+            <ItemGroup description={t('teams.credentials.externalApi.subtitle')}>
                 <Item
                     testID="team-credential-external-private"
                     title={t('teams.credentials.externalApi.privateTitle')}
@@ -460,7 +501,7 @@ const ExternalApiContent = React.memo(function ExternalApiContent(props: Readonl
 
             {revealGroup}
 
-            <ItemGroup title={t('common.create')} footer={notice ?? undefined}>
+            {view.canManage ? <ItemGroup title={t('common.create')} description={notice ?? undefined}>
                 {/*
                   * Replace stages a target that changes what the next Create does:
                   * it offers to revoke that exact key afterwards. Staging it
@@ -484,15 +525,18 @@ const ExternalApiContent = React.memo(function ExternalApiContent(props: Readonl
                         showChevron={false}
                     />
                 ) : null}
-                <TextInput
-                    testID="team-credential-external-label"
-                    value={label}
-                    onChangeText={setLabel}
-                    placeholder={t('teams.credentials.externalApi.labelPlaceholder')}
-                    accessibilityLabel={t('teams.credentials.externalApi.labelPlaceholder')}
-                    editable={!operationBusy && keyListTrusted}
-                    maxLength={KEY_LABEL_MAX_LENGTH}
-                />
+                <SectionContentRow>
+                    <FieldTextInput
+                        testID="team-credential-external-label"
+                        value={label}
+                        onChangeText={setLabel}
+                        placeholder={t('teams.credentials.externalApi.labelPlaceholder')}
+                        accessibilityLabel={t('teams.credentials.externalApi.labelPlaceholder')}
+                        editable={!operationBusy && keyListTrusted}
+                        maxLength={KEY_LABEL_MAX_LENGTH}
+                        autoCapitalize="sentences"
+                    />
+                </SectionContentRow>
                 {membershipId ? (
                     <Item
                         testID={`team-credential-external-member:${membershipId}`}
@@ -599,9 +643,11 @@ const ExternalApiContent = React.memo(function ExternalApiContent(props: Readonl
                 />
             </ItemGroup>
 
+            : null}
+
             <ItemGroup
                 title={t('teams.credentials.externalApi.keysTitle')}
-                footer={keyListTrusted && keys.length === 0
+                description={!view.canManage && notice ? notice : view.canManage && keyListTrusted && keys.length === 0
                     ? t('teams.credentials.externalApi.keysEmptyBody')
                     : undefined}
             >
@@ -621,13 +667,24 @@ const ExternalApiContent = React.memo(function ExternalApiContent(props: Readonl
                         // The safe prefix is the only part of a key that may be
                         // shown again; it is enough to tell two keys apart.
                         subtitle={`${key.displayPrefix} · ${keyStatusLine(key, now)}`}
-                        detail={`${t('teams.credentials.externalApi.assignLabel')} ${memberNames.get(key.teamMembershipId) ?? t('teams.credentials.limits.unknownSubject')}`}
-                        accessibilityLabel={[key.label, keyStatusLine(key, now), memberNames.get(key.teamMembershipId) ?? t('teams.credentials.limits.unknownSubject')].join(', ')}
+                        detail={view.canManage ? `${t('teams.credentials.externalApi.assignLabel')} ${memberNames.get(key.teamMembershipId) ?? t('teams.credentials.limits.unknownSubject')}` : undefined}
+                        accessibilityLabel={[key.label, keyStatusLine(key, now), ...(view.canManage ? [memberNames.get(key.teamMembershipId) ?? t('teams.credentials.limits.unknownSubject')] : [])].join(', ')}
                         disabled={operationBusy}
                         showChevron={false}
                     />
                 ))}
-                {keys.flatMap((key) => [
+                {keys.filter((key) => key.canAuthorize && key.authenticationStatus === 'authentication_required').map((key) => (
+                    <Item
+                        key={`authorize:${key.keyId}`}
+                        testID={`team-credential-external-authorize:${key.keyId}`}
+                        title={t('teams.credentials.externalApi.authorize')}
+                        subtitle={key.label}
+                        disabled={operationBusy || !keyListTrusted || !context.canMutate}
+                        onPress={() => void authorizeKey(key)}
+                        showChevron={false}
+                    />
+                ))}
+                {view.canManage ? keys.flatMap((key) => [
                     <Item
                         key={`replace:${key.keyId}`}
                         testID={`team-credential-external-replace:${key.keyId}`}
@@ -650,7 +707,7 @@ const ExternalApiContent = React.memo(function ExternalApiContent(props: Readonl
                         onPress={() => void revokeKey(key)}
                         showChevron={false}
                     />,
-                ])}
+                ]) : null}
                 {listError ? <Item
                     testID="team-credential-external-retry"
                     title={t('teams.credentials.externalApi.keysRetry')}
@@ -661,8 +718,8 @@ const ExternalApiContent = React.memo(function ExternalApiContent(props: Readonl
                 /> : null}
             </ItemGroup>
 
-            {view.error ? (
-                <ItemGroup footer={credentialFailureMessage(view.error)}>
+            {view.resource !== null && view.error ? (
+                <ItemGroup description={credentialFailureMessage(view.error)}>
                     <Item
                         testID="team-credential-external-resource-retry"
                         title={t('teams.unavailable.retry')}
@@ -672,12 +729,16 @@ const ExternalApiContent = React.memo(function ExternalApiContent(props: Readonl
                 </ItemGroup>
             ) : null}
 
-            {keys.length > 0 ? (
-                <ItemGroup>
-                    <Item
+            {view.canManage && keys.length > 0 ? (
+                // Revoking every key turns external access off: the page's closing quiet button row.
+                <ItemGroup surface="none">
+                    <SectionButtonRow>
+                    <RoundButton
                         testID="team-credential-external-revoke-all"
+                        size="small"
+                        display="destructive"
                         title={t('teams.credentials.externalApi.revokeAll')}
-                        destructive
+                        loading={operationBusy}
                         disabled={operationBusy}
                         onPress={async () => {
                             if (operationBusy) return;
@@ -717,8 +778,8 @@ const ExternalApiContent = React.memo(function ExternalApiContent(props: Readonl
                                 if (currentTargetKey.current === requestedTargetKey) setBusy(false);
                             }
                         }}
-                        showChevron={false}
                     />
+                    </SectionButtonRow>
                 </ItemGroup>
             ) : null}
         </>
@@ -728,7 +789,7 @@ const ExternalApiContent = React.memo(function ExternalApiContent(props: Readonl
 export const TeamCredentialExternalApiScreen = React.memo(function TeamCredentialExternalApiScreen(props: Readonly<{
     serverId: string; teamId: string; resourceId: string;
 }>) {
-    return <TeamSection serverId={props.serverId} teamId={props.teamId} title={t('teams.credentials.externalApi.title')}>
+    return <TeamSection serverId={props.serverId} teamId={props.teamId} title={t('teams.credentials.externalApi.title')} description={t('teams.pages.credentialExternalApi')}>
         {(context) => <ExternalApiContent context={context} resourceId={props.resourceId} />}
     </TeamSection>;
 });

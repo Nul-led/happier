@@ -5,8 +5,10 @@ import type { McpValueRefV1, SavedSecretCatalogEntryV1 } from '@happier-dev/prot
 
 import { Item } from '@/components/ui/lists/Item';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
+import { useListPresentation } from '@/components/ui/lists/listPresentation';
 import { Modal } from '@/modal';
 import type { SavedSecret } from '@/sync/domains/settings/savedSecretTypes';
+import { SectionActionButton } from '@/components/ui/lists/SectionActionButton';
 import { t } from '@/text';
 
 import { ValueRefEditorModal, getValueRefEditorModalTitle } from '@/components/ui/forms/valueRefs/ValueRefEditorModal';
@@ -36,6 +38,8 @@ function describeValueRef(
 export const McpValueRefMapEditor = React.memo(function McpValueRefMapEditor(props: Readonly<{
     kind: ValueRefKind;
     title: string;
+    /** Section description on configuration pages (page presentation). */
+    description?: string;
     iconName: IconName;
     entries: Record<string, McpValueRefV1>;
     secrets: SavedSecret[];
@@ -49,6 +53,8 @@ export const McpValueRefMapEditor = React.memo(function McpValueRefMapEditor(pro
 }>) {
     const { theme } = useUnistyles();
     const catalog = useSavedSecretCatalog();
+    // On a configuration page the rows carry no decorative icon and "add" is the section's action.
+    const page = useListPresentation() === 'page';
 
     const rows = React.useMemo(() => {
         return Object.entries(props.entries)
@@ -99,15 +105,26 @@ export const McpValueRefMapEditor = React.memo(function McpValueRefMapEditor(pro
         });
     }, [openEditor, props.entries, props.onChangeEntries]);
 
+    const addAction = page ? (
+        <SectionActionButton
+            testID={`${props.testIdPrefix}.add`}
+            icon="plus"
+            title={props.addRowTitle}
+            onPress={handleAdd}
+        />
+    ) : undefined;
+
     return (
         <>
-            <ItemGroup title={props.title}>
+            <ItemGroup title={props.title} description={page ? props.description : undefined} action={addAction}>
                 {rows.length === 0 ? (
                     <Item
                         testID={`${props.testIdPrefix}.empty`}
                         title={props.emptyTitle}
                         subtitle={props.emptySubtitle}
-                        icon={<Icon name={props.iconName} size={29} color={theme.colors.text.secondary} />}
+                        icon={page ? undefined : <Icon name={props.iconName} size={29} color={theme.colors.text.secondary} />}
+                        mode={page ? 'info' : undefined}
+                        subtitleLines={page ? 0 : undefined}
                         showChevron={false}
                     />
                 ) : null}
@@ -118,7 +135,7 @@ export const McpValueRefMapEditor = React.memo(function McpValueRefMapEditor(pro
                         testID={`${props.testIdPrefix}.row.${idx}`}
                         title={key}
                         subtitle={describeValueRef(valueRef, props.secrets, catalog.entries)}
-                        icon={<Icon name={props.iconName} size={29} color={theme.colors.accent.purple} />}
+                        icon={page ? undefined : <Icon name={props.iconName} size={29} color={theme.colors.accent.purple} />}
                         onPress={() => {
                             openEditor({
                                 mode: 'edit',
@@ -146,15 +163,16 @@ export const McpValueRefMapEditor = React.memo(function McpValueRefMapEditor(pro
                 ))}
             </ItemGroup>
 
-            <ItemGroup>
-                <Item
-                    testID={`${props.testIdPrefix}.add`}
-                    title={props.addRowTitle}
-                    subtitle={props.addRowSubtitle}
-                    icon={<Icon name="plus-circle" size={29} color={theme.colors.state.success.foreground} />}
-                    onPress={handleAdd}
-                />
-            </ItemGroup>
+            {page ? null : (
+                <ItemGroup>
+                    <Item
+                        testID={`${props.testIdPrefix}.add`}
+                        title={props.addRowTitle}
+                        subtitle={props.addRowSubtitle}
+                        onPress={handleAdd}
+                    />
+                </ItemGroup>
+            )}
         </>
     );
 });

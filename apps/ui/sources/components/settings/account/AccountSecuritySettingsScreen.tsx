@@ -1,27 +1,26 @@
 import React from 'react';
-import { Pressable } from 'react-native';
-import { useLocalSearchParams, useRouter } from 'expo-router';
-import { useUnistyles } from 'react-native-unistyles';
+import type { Pressable } from 'react-native';
+import { useLocalSearchParams, useRouter } from '@/components/appShell/workspace/destinationRoute';
 
 import { useAuth } from '@/auth/context/AuthContext';
-import { isLegacyAuthCredentials, TokenStorage } from '@/auth/storage/tokenStorage';
-import { SecretKeyBackupModal } from '@/components/account/SecretKeyBackupModal';
-import { RecoveryKeyUnlockModal } from '@/components/account/RecoveryKeyUnlockModal';
 import { Item } from '@/components/ui/lists/Item';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
+import { ItemLoadStateRows } from '@/components/ui/lists/ItemLoadStateRows';
 import { ItemList } from '@/components/ui/lists/ItemList';
-import { Icon } from '@/components/ui/icons/Icon';
 import { SurfaceStateCard } from '@/components/ui/surfaces/SurfaceStateCard';
 import { SettingsCatalogPageChildren } from '@/components/settings/SettingsCatalogOverviewGroup';
-import { Modal } from '@/modal';
-import type { AccountSecurityGetResponseV1 } from '@happier-dev/protocol';
 import { t } from '@/text';
 import { AccountEmailPasswordSection } from './AccountEmailPasswordSection';
 import { AccountEncryptionSettingsSection } from './AccountEncryptionSettingsSection';
 import { AccountSessionSecuritySection } from './AccountSessionSecuritySection';
 import { createAccountSecurityActionClient } from './accountSecurityActionClient';
-import { captureActiveServerAccountScopeCurrentness } from '@/sync/domains/scope/activeServerAccountScope';
-import { serverFetch } from '@/sync/http/client';
+import { useRecoveryKeyDisclosure } from './useRecoveryKeyDisclosure';
+import { accountSecurityProjectionScopeKey } from './accountSecurityProjectionStore';
+import { useScopedAccountSecurityProjection } from './useAccountSecurityProjection';
+import { useProfile } from '@/sync/domains/state/storage';
+import { SettingsPageHeader } from '@/components/settings/shell/SettingsPageHeader';
+import { SettingRow, SettingSection } from '@/components/settings/shell/SettingRow';
+import { ACCOUNT_SECURITY_SETTINGS } from './accountSecuritySettings';
 import { useActiveServerSnapshot } from '@/hooks/server/useActiveServerSnapshot';
 import { areServerProfileIdentifiersEquivalent } from '@/sync/domains/server/serverProfiles';
 import { useServerCredentialAccountScopeResolution } from '@/sync/domains/scope/useServerCredentialAccountScopes';
@@ -30,6 +29,7 @@ import {
     ACCOUNT_SECURITY_EMAIL_PASSWORD_CONNECT_INTENT,
     openAccountSecurityForHome,
 } from './openAccountSecurityForHome';
+import { Icon } from '@/components/ui/icons/Icon';
 
 export const AccountSecuritySettingsScreen = React.memo(function AccountSecuritySettingsScreen() {
     const auth = useAuth();
@@ -58,18 +58,24 @@ export const AccountSecuritySettingsScreen = React.memo(function AccountSecurity
     const authenticatedAccountId = auth.credentials ? parseToken(auth.credentials.token) : null;
     const routeTargetsActiveAccount = targetAccountScope.kind === 'bound'
         && targetAccountScope.scope.accountId === authenticatedAccountId;
-    const { theme } = useUnistyles();
-    const recoveryKeyTriggerRef = React.useRef<React.ComponentRef<typeof Pressable> | null>(null);
     const securityClient = React.useMemo(() => createAccountSecurityActionClient({
         resolveServerId: () => routeServerId ?? activeServer.serverId,
     }), [activeServer.serverId, routeServerId]);
     // One reader owns this projection: the mounted email/password section
     // publishes what it already read, so this route never issues a competing
     // Account Security request or drifts from the section's retry state.
-    const [projection, setProjection] = React.useState<AccountSecurityGetResponseV1 | null>(null);
+    const profile = useProfile();
+    const securityAccountId = authenticatedAccountId ?? profile.id;
+    // Begin from the last projection read for this Account and Home (the Account overview's), so the
+    // recovery-key row does not arrive after first paint and push the page.
+    const { state: projectionState, publishProjection } = useScopedAccountSecurityProjection(
+        auth.credentials
+            ? accountSecurityProjectionScopeKey(activeServer.serverId, securityAccountId)
+            : null,
+    );
+    const projection = projectionState.kind === 'ready' ? projectionState.projection : null;
     const recoveryEmail = projection?.nativeEmail ?? null;
     const recoveryApplicable = projection?.encryptionMode === 'e2ee';
-    const secret = auth.credentials && isLegacyAuthCredentials(auth.credentials) ? auth.credentials.secret : null;
     const targetServerId = routeServerId ?? activeServer.serverId;
     const targetKey = `${targetServerId}\u0000${routeIntent ?? ''}\u0000${verificationToken ?? ''}`;
     const [switchAttempt, setSwitchAttempt] = React.useState(0);
@@ -107,53 +113,8 @@ export const AccountSecuritySettingsScreen = React.memo(function AccountSecurity
         setSwitchAttempt((attempt) => attempt + 1);
     }, [targetKey]);
 
-    const showDisclosure = React.useCallback((value: string | Uint8Array) => {
-        Modal.show({
-            component: SecretKeyBackupModal,
-            props: {
-                secret: value,
-                onSaved: async () => { await TokenStorage.setRecoveryKeyReminderDismissed(true); },
-            },
-            focusReturnRef: recoveryKeyTriggerRef,
-        });
-    }, []);
-
-    const openRecoveryKey = React.useCallback(() => {
-        if (secret) {
-            showDisclosure(secret);
-            return;
-        }
-        if (!recoveryEmail) {
-            // No local recovery secret and no native sign-in email means there is
-            // no password envelope to open here. Say so instead of leaving an
-            // inert row: the key must come from a device that already holds it.
-            Modal.alert(t('settingsAccount.secretKey'), t('settingsAccount.secretKeyMissing'));
-            return;
-        }
-        const lifetime = captureActiveServerAccountScopeCurrentness();
-        const controller = new AbortController();
-        const retirement = lifetime.onRetire(() => controller.abort());
-        const request = async (...args: Parameters<typeof serverFetch>) => {
-            if (!lifetime.isCurrent() || controller.signal.aborted) throw new Error('action_account_scope_changed');
-            const [path, init, options] = args;
-            const response = await serverFetch(path, { ...init, signal: controller.signal }, options);
-            if (!lifetime.isCurrent() || controller.signal.aborted) throw new Error('action_account_scope_changed');
-            return response;
-        };
-        Modal.show({
-            component: RecoveryKeyUnlockModal,
-            props: {
-                email: recoveryEmail,
-                request,
-                onUnlocked: async (recovered) => showDisclosure(recovered.slice()),
-            },
-            focusReturnRef: recoveryKeyTriggerRef,
-            onHostUnmount: () => {
-                controller.abort();
-                retirement.dispose();
-            },
-        });
-    }, [recoveryEmail, secret, showDisclosure]);
+    const recoveryKeyTriggerRef = React.useRef<React.ComponentRef<typeof Pressable> | null>(null);
+    const { open: openRecoveryKey } = useRecoveryKeyDisclosure(recoveryEmail, recoveryKeyTriggerRef);
 
     // A mailbox bearer addressed to Home A must never reach Home B while the
     // explicit focus handoff is still publishing. Mounting no Account Security
@@ -175,39 +136,87 @@ export const AccountSecuritySettingsScreen = React.memo(function AccountSecurity
                 />
             );
         }
+        // The page keeps its header and reserves its rows while the Home switch lands.
         return (
-            <SurfaceStateCard
-                testID="settings-account-security-home-switching"
-                kind="loading"
-                title={t('common.loading')}
-                accessibilitySemantics="status"
-            />
+            <ItemList style={{ paddingTop: 0 }} presentation="page">
+                <SettingsPageHeader description={t('settingsAccount.securityPageDescription')} />
+                <ItemGroup>
+                    <ItemLoadStateRows
+                        testID="settings-account-security-home-switching"
+                        state={{ kind: 'loading' }}
+                        rows={3}
+                        accessibilityLabel={t('settingsAccount.securityPageDescription')}
+                    />
+                </ItemGroup>
+            </ItemList>
         );
     }
 
     return (
-        <ItemList>
-            <AccountEmailPasswordSection
-                client={securityClient}
-                verificationToken={verificationToken}
-                connectIntent={connectIntent}
-                onProjection={setProjection}
-            />
+        <ItemList style={{ paddingTop: 0 }} presentation="page">
+            <SettingsPageHeader description={t('settingsAccount.securityPageDescription')} />
+            {/* While sign-in facts are unavailable the section's own state row answers for its rows. */}
+            <SettingSection section={ACCOUNT_SECURITY_SETTINGS.sectionRefs.emailPassword}>
+                <AccountEmailPasswordSection
+                    client={securityClient}
+                    accountId={securityAccountId}
+                    verificationToken={verificationToken}
+                    connectIntent={connectIntent}
+                    onProjection={publishProjection}
+                />
+            </SettingSection>
+            {/* A plaintext Account has no recovery key; its Backup section says so rather than vanishing. */}
+            <SettingSection section={ACCOUNT_SECURITY_SETTINGS.sectionRefs.backup}>
             {recoveryApplicable ? (
                 <ItemGroup title={t('settingsAccount.backup')}>
-                    <Item
+                    <SettingRow
+                        setting={ACCOUNT_SECURITY_SETTINGS.settings.recoveryKey}
                         testID="settings-account-recovery-key"
-                        title={t('settingsAccount.secretKey')}
-                        subtitle={t('settingsAccount.backupDescription')}
+                        icon={<Icon name="key" />}
                         pressableRef={recoveryKeyTriggerRef}
-                        icon={<Icon name="key" size={24} color={theme.colors.accent.orange} />}
                         onPress={openRecoveryKey}
                     />
                 </ItemGroup>
-            ) : null}
-            <AccountSessionSecuritySection />
-            <SettingsCatalogPageChildren parentPageId="accountSecurity" router={router} theme={theme} />
+            ) : projectionState.kind === 'loading' ? (
+                <ItemGroup title={t('settingsAccount.backup')}>
+                    <ItemLoadStateRows
+                        testID="settings-account-recovery-key-loading"
+                        state={{ kind: 'loading' }}
+                        rows={1}
+                        accessibilityLabel={t('settingsAccount.secretKey')}
+                    />
+                </ItemGroup>
+            ) : projectionState.kind !== 'ready' ? (
+                <ItemGroup title={t('settingsAccount.backup')}>
+                    <Item
+                        testID="settings-account-recovery-key-unavailable"
+                        title={t('settingsAccount.secretKey')}
+                        // Its own fact: the sign-in section above carries the one Retry for this read.
+                        subtitle={t('settingsAccount.nativePassword.securityFactUnavailable')}
+                        mode="info"
+                        showChevron={false}
+                    />
+                </ItemGroup>
+            ) : (
+                <ItemGroup title={t('settingsAccount.backup')}>
+                    <Item
+                        testID="settings-account-recovery-key-not-applicable"
+                        title={t('settingsAccount.secretKey')}
+                        subtitle={t('settingsAccount.notEndToEndEncrypted')}
+                        mode="info"
+                        showChevron={false}
+                    />
+                </ItemGroup>
+            )}
+            </SettingSection>
+            <SettingsCatalogPageChildren
+                parentPageId="accountSecurity"
+                title={t('settingsAccount.apiAccessSectionTitle')}
+                router={router}
+            />
             <AccountEncryptionSettingsSection />
+            {/* Leaving closes the page. */}
+            <AccountSessionSecuritySection />
         </ItemList>
     );
 });

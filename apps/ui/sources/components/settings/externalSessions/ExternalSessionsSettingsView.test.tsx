@@ -8,7 +8,8 @@ import { createMachineFixture } from '@/dev/testkit/fixtures/machineFixtures';
 import { createDeferred, createModalModuleMock, flushHookEffects } from '@/dev/testkit';
 import { readExternalSessionFollowPolicy } from '@/sync/domains/session/external/externalSessionFollowMetadata';
 import { readExternalSessionLink } from '@/sync/domains/session/external/readExternalSessionLink';
-import type { Machine, Metadata, Session } from '@/sync/domains/state/storageTypes';
+import type { Machine, Session } from '@/sync/domains/state/storageTypes';
+import type { Metadata } from '@happier-dev/session-core/state';
 
 const modalMock = createModalModuleMock();
 const accountCurrentnessState = vi.hoisted(() => ({ current: true }));

@@ -5,12 +5,12 @@ import { StyleSheet } from 'react-native-unistyles';
 import { RoundButton } from '@/components/ui/buttons/RoundButton';
 import { Text } from '@/components/ui/text/Text';
 import { t } from '@/text';
-import type { ActionOperationProjection } from '@/sync/domains/actionOperations/actionOperationSelectors';
+import type { ActionOperationStopTarget } from './requestActionOperationStop';
 
 import { useActionOperationStopControl } from './useActionOperationStopControl';
 
 export function ActionOperationDetailControls(props: Readonly<{
-    operation?: ActionOperationProjection;
+    operation?: ActionOperationStopTarget;
     terminal: boolean;
     canCancel: boolean;
     onClose: () => void;

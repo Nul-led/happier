@@ -14,7 +14,18 @@ import {
 } from '@happier-dev/protocol/installables';
 import { CODEX_ACP_INSTALLABLE_DESCRIPTOR } from '@happier-dev/plugins-codex/agent/installables/codexAcp';
 
-import { getRuntimeInstallableAdapter } from './registry';
+import { getArchiveDownloadInstallableAdapter, getRuntimeInstallableAdapter } from './registry';
+
+describe('managed native computer driver', () => {
+  it('resolves the pinned native source and refuses unsupported platform installation', async () => {
+    const adapter = getArchiveDownloadInstallableAdapter('computer-cua-driver');
+    expect(adapter).not.toBeNull();
+    if (!adapter) return;
+    const result = await adapter.installOrUpgrade({ platform: 'linux', arch: 'riscv64' });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.errorMessage).toMatch(/unsupported/i);
+  });
+});
 
 describe('getRuntimeInstallableAdapter', () => {
   it('resolves gh through the generic installables registry', async () => {

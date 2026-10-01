@@ -2,9 +2,12 @@ import * as React from 'react';
 import { File } from 'expo-file-system';
 import type { TeamLogoSourceV1, TeamSummaryV1 } from '@happier-dev/protocol/teams';
 
+import { View } from 'react-native';
+import { useUnistyles } from 'react-native-unistyles';
+
 import { Avatar } from '@/components/ui/avatar/Avatar';
+import { RoundButton } from '@/components/ui/buttons/RoundButton';
 import { Item } from '@/components/ui/lists/Item';
-import { ItemGroup } from '@/components/ui/lists/ItemGroup';
 import {
     TEAM_LOGO_ACCEPTED_MIME_TYPES,
     createTeamLogoSource,
@@ -12,7 +15,7 @@ import {
 import { t } from '@/text';
 import { nativePickImages } from '@/utils/files/nativePickImages';
 
-const LOGO_PREVIEW_SIZE = 64;
+const LOGO_PREVIEW_SIZE = 44;
 
 /**
  * The accepted formats as a person recognises them, read from the media
@@ -53,6 +56,9 @@ function sourceUri(source: TeamLogoSourceV1): string {
  * square center-cover Avatar presentation used after publication, and only the
  * explicit Use action asks the caller to commit them. A failed commit keeps the
  * local candidate so retry never asks the person to pick the file again.
+ *
+ * It is one row — the preview, what it shows, and its actions — that the caller places in its
+ * section; a refusal replaces the row's description until the next pick.
  */
 export const TeamLogoPicker = React.memo(function TeamLogoPicker(props: Readonly<{
     identityId: string;
@@ -60,8 +66,14 @@ export const TeamLogoPicker = React.memo(function TeamLogoPicker(props: Readonly
     currentLogo: TeamSummaryV1['logo'];
     selectedSource?: TeamLogoSourceV1 | null;
     disabled: boolean;
-    onUse: (source: TeamLogoSourceV1) => Promise<LogoCommitResult>;
+    onUse: (
+        source: TeamLogoSourceV1,
+        onSettled: (result: LogoCommitResult) => void,
+    ) => Promise<LogoCommitResult | Readonly<{ kind: 'pending' }>>;
+    /** Removes the published logo (settings); offered while no new image is being chosen. */
+    remove?: Readonly<{ onPress: () => void; busy: boolean; disabled: boolean; error: string | null }>;
 }>) {
+    const { theme } = useUnistyles();
     const [candidate, setCandidate] = React.useState<TeamLogoSourceV1 | null>(null);
     const [busy, setBusy] = React.useState(false);
     const [error, setError] = React.useState<string | null>(null);
@@ -92,14 +104,19 @@ export const TeamLogoPicker = React.memo(function TeamLogoPicker(props: Readonly
     }, []);
 
     const use = React.useCallback(async () => {
-        if (!candidate || useInFlightRef.current) return;
+        if (!candidate || props.disabled || useInFlightRef.current) return;
         useInFlightRef.current = true;
         setBusy(true);
         setError(null);
         try {
-            const result = await props.onUse(candidate);
-            if (result.kind === 'succeeded') setCandidate(null);
-            else setError(result.message);
+            const settle = (result: LogoCommitResult) => {
+                if (result.kind === 'succeeded') {
+                    setCandidate(null);
+                    setError(null);
+                } else setError(result.message);
+            };
+            const result = await props.onUse(candidate, settle);
+            if (result.kind !== 'pending') settle(result);
         } catch {
             setError(t('teams.logo.failed'));
         } finally {
@@ -112,49 +129,70 @@ export const TeamLogoPicker = React.memo(function TeamLogoPicker(props: Readonly
     const imageUrl = previewSource ? sourceUri(previewSource) : props.currentLogo?.url ?? null;
     const thumbhash = previewSource ? null : props.currentLogo?.thumbhash ?? null;
 
-    return (
-        <ItemGroup title={t('teams.settings.logoSection')} footer={error ?? undefined}>
-            <Item
-                testID={`${props.testIDPrefix}-logo-preview`}
-                title={imageUrl ? t('teams.logo.previewLabel') : t('teams.logo.monogramLabel')}
-                leftElement={(
-                    <Avatar
-                        id={props.identityId}
-                        square
-                        size={LOGO_PREVIEW_SIZE}
-                        imageUrl={imageUrl}
-                        thumbhash={thumbhash}
-                    />
-                )}
-                showChevron={false}
+    const actions = candidate ? (
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+            <RoundButton
+                testID={`${props.testIDPrefix}-logo-cancel`}
+                size="small"
+                display="inverted"
+                title={t('common.cancel')}
+                disabled={props.disabled || busy}
+                onPress={() => { setCandidate(null); setError(null); }}
             />
-            {candidate ? (
-                <>
-                    <Item
-                        testID={`${props.testIDPrefix}-logo-use`}
-                        title={error ? t('teams.logo.retry') : t('teams.logo.useAsLogo')}
-                        loading={busy}
-                        disabled={props.disabled || busy}
-                        onPress={() => void use()}
-                        showChevron={false}
-                    />
-                    <Item
-                        testID={`${props.testIDPrefix}-logo-cancel`}
-                        title={t('common.cancel')}
-                        disabled={busy}
-                        onPress={() => { setCandidate(null); setError(null); }}
-                        showChevron={false}
-                    />
-                </>
-            ) : (
-                <Item
-                    testID={`${props.testIDPrefix}-logo-set`}
-                    title={imageUrl ? t('teams.logo.replace') : t('teams.logo.add')}
-                    disabled={props.disabled || busy}
-                    onPress={() => void pick()}
-                    showChevron={false}
+            <RoundButton
+                testID={`${props.testIDPrefix}-logo-use`}
+                size="small"
+                display="secondary"
+                title={error ? t('teams.logo.retry') : t('teams.logo.useAsLogo')}
+                loading={busy}
+                disabled={props.disabled || busy}
+                onPress={() => void use()}
+            />
+        </View>
+    ) : (
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+            {props.remove && props.currentLogo ? (
+                <RoundButton
+                    testID={`${props.testIDPrefix}-logo-remove`}
+                    size="small"
+                    display="inverted"
+                    title={t('teams.logo.remove')}
+                    loading={props.remove.busy}
+                    disabled={props.remove.disabled}
+                    onPress={props.remove.onPress}
+                />
+            ) : null}
+            <RoundButton
+                testID={`${props.testIDPrefix}-logo-set`}
+                size="small"
+                display="secondary"
+                title={imageUrl ? t('teams.logo.replace') : t('teams.logo.add')}
+                disabled={props.disabled || busy}
+                onPress={() => void pick()}
+            />
+        </View>
+    );
+    const shownError = error ?? props.remove?.error ?? null;
+
+    return (
+        <Item
+            testID={`${props.testIDPrefix}-logo-preview`}
+            title={t('teams.settings.logoSection')}
+            subtitle={shownError ?? (imageUrl ? t('teams.logo.previewLabel') : t('teams.logo.monogramLabel'))}
+            subtitleStyle={shownError ? { color: theme.colors.state.danger.foreground } : undefined}
+            subtitleLines={0}
+            leftElement={(
+                <Avatar
+                    id={props.identityId}
+                    square
+                    size={LOGO_PREVIEW_SIZE}
+                    imageUrl={imageUrl}
+                    thumbhash={thumbhash}
                 />
             )}
-        </ItemGroup>
+            accessoryLayout="adaptive"
+            rightElement={actions}
+            showChevron={false}
+        />
     );
 });

@@ -9,6 +9,8 @@ describe('isSafeExternalAuthUrl', () => {
 
     it('accepts localhost http for local development', () => {
         expect(isSafeExternalAuthUrl('http://localhost:3005/oauth')).toBe(true);
+        expect(isSafeExternalAuthUrl('http://127.0.0.2:3005/oauth')).toBe(true);
+        expect(isSafeExternalAuthUrl('http://auth.localhost:3005/oauth')).toBe(true);
     });
 
     it('accepts bracketed IPv6 localhost for local development', () => {

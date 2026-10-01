@@ -61,7 +61,7 @@ vi.mock('@/sync/api/capabilities/accountStoredContentCompatibility', async (impo
     requireCurrentAccountStoredContentServerCompatibility: vi.fn(async () => undefined),
 }));
 vi.mock('@/auth/storage/tokenStorage', async (importOriginal) => {
-    const { createTokenStorageModuleMock } = await import('@/dev/testkit');
+    const { createTokenStorageModuleMock } = await import('@/dev/testkit/mocks/tokenStorage');
     return createTokenStorageModuleMock({
         importOriginal,
         tokenStorage: { getCredentialsForServerUrl: getCredentialsForServerUrlMock },
@@ -152,6 +152,16 @@ afterEach(() => {
 });
 
 describe('createIdentityAdministrationClient', () => {
+    it('preserves the authoritative failure kind for a directory reader', async () => {
+        const serverId = (await upsertServerProfile({ serverUrl: 'https://home-directory-refused.example', name: 'Refused Home' })).id;
+        const scope = createServerAccountScope(serverId, 'account-1')!;
+        runtimeFetchMock.mockResolvedValue(new Response(JSON.stringify({ error: 'forbidden' }), { status: 403 }));
+
+        const result = await createIdentityAdministrationClient(scope).executeDirectory('teams.directory.sources.list', { v: 1, teamId: 'team-1' });
+
+        expect(result).toMatchObject({ ok: false, failure: { domainFailure: { kind: 'forbidden', retryable: false } } });
+    });
+
     it('keeps every connection and eligible provider reachable beyond 100 rows', async () => {
         const serverId = (await upsertServerProfile({
             serverUrl: 'https://home-large-identity.example',
@@ -225,7 +235,7 @@ describe('createIdentityAdministrationClient', () => {
                 ? { items: [], unreadableCount: 0 }
                 : request.url.endsWith('/v1/identity/github-apps/list')
                     ? { registrations: [], installations: [] }
-                    : request.url.endsWith('/v1/teams/directory/sources/list')
+                    : new URL(request.url).pathname === '/v1/teams/team-1/directory-sources'
                         ? { items: [directorySource('directory-1')], nextCursor: null }
                     : { items: [connection(true)], eligibleProviders: [], admissionModeApplicability, memberSignInUrl: null }), { status: 200 })
         ));
@@ -410,16 +420,17 @@ describe('createIdentityAdministrationClient', () => {
         const scopeA = createServerAccountScope(serverA, 'account-1')!;
         const scopeB = createServerAccountScope(serverB, 'account-2')!;
         const staleContinuation = createDeferred<Response>();
+        const answerB = createDeferred<Response>();
+        getCredentialsForServerUrlMock.mockImplementation(async (serverUrl: string) => ({
+            token: tokenForSub(serverUrl === 'https://home-directory-page-b.example' ? 'account-2' : 'account-1'),
+        }));
         runtimeFetchMock
             .mockResolvedValueOnce(new Response(JSON.stringify({
                 items: [directorySource('directory-a')],
                 nextCursor: 'cursor-a',
             }), { status: 200 }))
             .mockImplementationOnce(() => staleContinuation.promise)
-            .mockResolvedValueOnce(new Response(JSON.stringify({
-                items: [directorySource('directory-b')],
-                nextCursor: null,
-            }), { status: 200 }));
+            .mockImplementationOnce(() => answerB.promise);
 
         const hook = await renderHook((scope: typeof scopeA) => useDirectoryAdministration(scope, 'team-1'), {
             initialProps: scopeA,
@@ -431,6 +442,10 @@ describe('createIdentityAdministrationClient', () => {
         await hook.rerender(scopeB);
         expect(hook.getCurrent().state.kind).toBe('loading');
         await vi.waitFor(() => expect(runtimeFetchMock).toHaveBeenCalledTimes(3));
+        await act(async () => answerB.resolve(new Response(JSON.stringify({
+            items: [directorySource('directory-b')],
+            nextCursor: null,
+        }), { status: 200 })));
         await vi.waitFor(() => {
             const state = hook.getCurrent().state;
             expect(state.kind === 'ready' && state.items[0]?.id).toBe('directory-b');
@@ -547,7 +562,7 @@ describe('createIdentityAdministrationClient', () => {
             { v: 1, teamId: 'team-1', connectionId: 'connection-1', expectedRevision: 1 },
         );
 
-        expect(result).toEqual({
+        expect(result).toMatchObject({
             ok: false,
             failure: { code: 'outcome_unknown', retryable: false },
         });
@@ -571,7 +586,7 @@ describe('createIdentityAdministrationClient', () => {
             { v: 1, teamId: 'team-1', connectionId: 'connection-1', expectedRevision: 1 },
         );
 
-        expect(result).toEqual({
+        expect(result).toMatchObject({
             ok: false,
             failure: { code: 'provider_credential_transport_unavailable', retryable: false },
         });

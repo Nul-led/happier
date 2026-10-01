@@ -10,8 +10,38 @@ import {
     stripLocalOnlyAccountSettings,
 } from '@/sync/domains/settings/localOnlyAccountSettings';
 import { LOCAL_ACCOUNT_SETTING_DEFINITIONS } from '@/sync/domains/settings/registry/local/localAccountSettingDefinitions';
+import { normalizeAccountSettingsForLocalStorage } from './accountSettingsNormalization';
 
 describe('localOnlyAccountSettings', () => {
+    it('keeps device layout and Administration memory out of Account writes without changing execution-origin policy', () => {
+        const input = JSON.parse(JSON.stringify({
+            sessionSplitCanvasLayoutsV1: {},
+            machineAdministrationTargetsLocalV1: {},
+            machineAdministrationSelectionsV1: { v: 1, pluginExecutionOriginsByPluginId: {} },
+        }));
+        expect(stripLocalOnlyAccountSettings(input)).toEqual({
+            machineAdministrationSelectionsV1: input.machineAdministrationSelectionsV1,
+        });
+    });
+
+    it('preserves a deliberately cleared local target map across remote settings hydration', () => {
+        const hydrated = normalizeAccountSettingsForLocalStorage({
+            mode: 'plain', settingsSecretsKey: null,
+            raw: { machineAdministrationSelectionsV1: {
+                v: 1, pluginExecutionOriginsByPluginId: { 'acme.plugin': {
+                    serverIdentityId: 'srv_one', materializationRef: {
+                        machineId: 'remote', materializationId: 'materialization', pluginId: 'acme.plugin',
+                    },
+                } },
+            } },
+            localSettings: { machineAdministrationTargetsLocalV1: {}, sessionSplitCanvasLayoutsV1: {} },
+        });
+        expect(pickLocalOnlyAccountSettings(hydrated)).toMatchObject({
+            machineAdministrationTargetsLocalV1: {}, sessionSplitCanvasLayoutsV1: {},
+        });
+        expect(hydrated.machineAdministrationSelectionsV1.pluginExecutionOriginsByPluginId['acme.plugin']?.materializationRef.machineId).toBe('remote');
+    });
+
     it('strips UI-local lastUsedAgent from server-synced settings', () => {
         const stripped = stripLocalOnlyAccountSettings({
             lastUsedAgent: 'codex',
@@ -71,6 +101,8 @@ describe('localOnlyAccountSettings', () => {
 
     it('keeps every device-local Account setting out of the Protocol persistence catalog', () => {
         const localOnlyKeys = [
+            'sessionSplitCanvasLayoutsV1',
+            'machineAdministrationTargetsLocalV1',
             'lastUsedAgent',
             'lastUsedBackendTarget',
             'lastNewSessionAgentPickerViewV1',

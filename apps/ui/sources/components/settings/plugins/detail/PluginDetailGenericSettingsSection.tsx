@@ -1,7 +1,7 @@
 import * as React from 'react';
-import { Platform, View } from 'react-native';
+import { View } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
-import { useRouter } from 'expo-router';
+import { useRouter } from '@/components/appShell/workspace/destinationRoute';
 
 import { createPluginAgentSettingsRoute } from '@/agents/catalog/agentSettingsRoutes';
 import { readManagedServiceEndpointUrl } from '@happier-dev/protocol';
@@ -21,8 +21,8 @@ import { SavedSecretPickerModal } from '@/components/ui/forms/valueRefs/SavedSec
 import { Switch } from '@/components/ui/forms/Switch';
 import { Item } from '@/components/ui/lists/Item';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
-import { Text, TextInput } from '@/components/ui/text/Text';
-import { resolveMinimumInteractiveTargetSize } from '@/components/ui/interactiveTargetSize';
+import { Text } from '@/components/ui/text/Text';
+import { FieldTextInput } from '@/components/ui/forms/FieldTextInput';
 import { Typography } from '@/constants/Typography';
 import { Modal } from '@/modal';
 import { t } from '@/text';
@@ -83,20 +83,6 @@ const stylesheet = StyleSheet.create((theme) => ({
         lineHeight: 18,
         marginBottom: 8,
     },
-    textInput: {
-        ...Typography.default(),
-        minHeight: 44,
-        borderRadius: 10,
-        borderCurve: 'continuous',
-        borderWidth: 1,
-        paddingHorizontal: 12,
-        paddingVertical: 10,
-        fontSize: 14,
-    },
-    textAreaInput: {
-        minHeight: 88,
-        textAlignVertical: 'top',
-    },
     fieldActions: {
         alignItems: 'flex-end',
         flexDirection: 'row',
@@ -156,10 +142,9 @@ function isDaemonCustodiedSecretField(field: PluginProjectionEditableSettingFiel
 }
 
 /**
- * A raw secret draft belongs to one current daemon generation or one current
- * Account-release declaration. A legacy projection without an immutable
- * generation still retains its declared numeric/label generation when one is
- * available; field-declaration identity supplies the remaining local fence.
+ * A raw secret draft belongs to one current daemon plugin occurrence or one
+ * current Account-release declaration. Snapshot and managed-package generations
+ * are not physical lifetimes and cannot retire an unchanged plugin's draft.
  */
 function settingsSourceLifetimeIdentity(params: Readonly<{
     projection: PluginProjectionEntry | null;
@@ -167,16 +152,7 @@ function settingsSourceLifetimeIdentity(params: Readonly<{
 }>): string {
     const projection = params.projection;
     if (projection) {
-        if (typeof projection.immutableGenerationId === 'string') {
-            return `daemon-generation:${projection.immutableGenerationId}`;
-        }
-        if (typeof projection.generation === 'number') {
-            return `daemon-generation:${projection.generation}`;
-        }
-        if (projection.generationLabel !== null) {
-            return `daemon-generation-label:${projection.generationLabel}`;
-        }
-        return 'daemon-generation:unavailable';
+        return `daemon-occurrence:${projection.occurrenceId ?? 'unavailable'}`;
     }
     const declaration = params.accountSettingsDeclaration;
     return declaration
@@ -267,7 +243,6 @@ export function PluginSettingTextField(props: Readonly<{
     const styles = stylesheet;
     const isSecret = isRedactedField(props.field);
     const multiline = props.field.control === 'textarea';
-    const minimumInteractiveTargetSize = resolveMinimumInteractiveTargetSize(Platform.OS);
     const testID = `settings.plugins.detail.${props.pluginId}.settings.${props.group.id}.${props.field.key}.input`;
     const saveLabel = t(props.saveFailed ? 'common.retry' : 'common.save');
     const placeholder = localizedPresentationText(props.field.presentation?.placeholder) || undefined;
@@ -299,7 +274,7 @@ export function PluginSettingTextField(props: Readonly<{
                     {props.disabledReason}
                 </Text>
             ) : null}
-            <TextInput
+            <FieldTextInput
                 testID={testID}
                 accessibilityLabel={props.field.title}
                 accessibilityHint={props.disabledReason ?? props.status ?? undefined}
@@ -316,19 +291,6 @@ export function PluginSettingTextField(props: Readonly<{
                 editable={!props.persistenceDisabled}
                 secureTextEntry={isSecret}
                 multiline={multiline}
-                autoCapitalize="none"
-                autoCorrect={false}
-                placeholderTextColor={theme.colors.input.placeholder}
-                style={[
-                    styles.textInput,
-                    multiline ? styles.textAreaInput : undefined,
-                    { minHeight: minimumInteractiveTargetSize },
-                    {
-                        color: theme.colors.input.text,
-                        backgroundColor: theme.colors.input.background,
-                        borderColor: theme.colors.border.default,
-                    },
-                ]}
             />
             {props.status ? (
                 <Text
@@ -692,9 +654,9 @@ type ManagedServiceSecretPresentationState =
  * field remains the UI-only endpoint relation; status/set/delete travel to
  * the one declaration-aware daemon secret owner with that exact origin.
  */
-function PluginSettingDaemonSecretField(props: Readonly<{
+export function PluginSettingDaemonSecretField(props: Readonly<{
     pluginId: string;
-    group: PluginProjectionEditableSettingsGroup;
+    group?: PluginProjectionEditableSettingsGroup;
     field: PluginProjectionEditableSettingField;
     values?: Readonly<Record<string, unknown>>;
     perActiveServerIdentityId?: string | null;
@@ -707,9 +669,21 @@ function PluginSettingDaemonSecretField(props: Readonly<{
     isDaemonTargetCurrent?: (target: ScopedPluginSettingsDaemonTarget) => boolean;
     /** Current generation/declaration boundary for presentation-local bytes. */
     lifetimeIdentity: string;
+    renderField?: (state: Readonly<{
+        value: string;
+        dirty: boolean;
+        saving: boolean;
+        configured: boolean;
+        disabled: boolean;
+        saveFailed: boolean;
+        saveOutcomeUnknown: boolean;
+        onChangeText: (value: string) => void;
+        onCommit: () => void;
+        onDelete?: () => void;
+    }>) => React.ReactNode;
 }>) {
     const hasManagedServiceOrigin = Boolean(props.field.managedServiceOrigin);
-    const canonicalOrigin = React.useMemo(() => hasManagedServiceOrigin
+    const canonicalOrigin = React.useMemo(() => hasManagedServiceOrigin && props.group
         ? readManagedServiceSecretCanonicalOrigin({
             group: props.group,
             field: props.field,
@@ -963,6 +937,29 @@ function PluginSettingDaemonSecretField(props: Readonly<{
         || !targetIsCurrent(props.target)
         || !secretUsable;
 
+    const onChangeText = (value: string) => {
+        draftVersionRef.current += 1;
+        setDraft(value);
+        setDirty(true);
+        setSaveFailed(false);
+        setSaveOutcomeUnknown(false);
+    };
+    const onDelete = secretConfigured ? () => commit('delete') : undefined;
+    if (props.renderField) {
+        return props.renderField({
+            value: draft,
+            dirty,
+            saving,
+            configured: secretConfigured,
+            disabled: persistenceDisabled,
+            saveFailed,
+            saveOutcomeUnknown,
+            onChangeText,
+            onCommit: () => commit('set'),
+            onDelete,
+        });
+    }
+    if (!props.group) return null;
     return (
         <PluginSettingTextField
             pluginId={props.pluginId}
@@ -983,15 +980,9 @@ function PluginSettingDaemonSecretField(props: Readonly<{
                 : hasManagedServiceOrigin && !canonicalOrigin && !endpointSettingsLoading
                     ? t('settingsPlugins.genericSettingsUnavailable')
                     : null}
-            onChangeText={(value) => {
-                draftVersionRef.current += 1;
-                setDraft(value);
-                setDirty(true);
-                setSaveFailed(false);
-                setSaveOutcomeUnknown(false);
-            }}
+            onChangeText={onChangeText}
             onCommit={() => commit('set')}
-            onDelete={secretConfigured ? () => commit('delete') : undefined}
+            onDelete={onDelete}
         />
     );
 }
@@ -1131,6 +1122,8 @@ function PluginDetailScopedSettingsSection(props: PluginDetailGenericSettingsSec
     const scopedOperationsAvailable = props.scope.kind === 'account'
         ? accountScopeCurrent && props.accountOperationsAvailable !== false
         : props.daemonOperationsAvailable;
+    const scopedOperationsAvailableRef = React.useRef(scopedOperationsAvailable);
+    scopedOperationsAvailableRef.current = scopedOperationsAvailable;
     const scopedSettings = useScopedPluginSettingsProjection({
         pluginId: props.pluginId,
         scope: props.scope,
@@ -1140,7 +1133,10 @@ function PluginDetailScopedSettingsSection(props: PluginDetailGenericSettingsSec
         declaredFields: ordinaryFields,
         sourceLifetimeIdentity: props.sourceLifetimeIdentity,
         perActiveServerIdentityId: props.perActiveServerIdentityId ?? null,
-        enabled: scopedOperationsAvailable,
+        // Loss of operation reachability retires in-flight authority while
+        // the canonical record store retains its LKG snapshot and drafts for
+        // inert presentation until reconnect.
+        enabled: scopedOperationsAvailable && props.target !== null,
         adapter: scopedPluginSettingsAdapter,
     });
     const loading = scopedSettings.state.loading;
@@ -1186,8 +1182,9 @@ function PluginDetailScopedSettingsSection(props: PluginDetailGenericSettingsSec
         draft?: unknown;
     }>) => {
         const daemonTarget = props.target?.kind === 'daemon' ? props.target : null;
-        const isCurrent = daemonTarget && props.isDaemonTargetCurrent
-            ? () => props.isDaemonTargetCurrent!(daemonTarget)
+        const isCurrent = daemonTarget
+            ? () => scopedOperationsAvailableRef.current
+                && (props.isDaemonTargetCurrent?.(daemonTarget) ?? true)
             : undefined;
         const previousValue = params.model.value;
         void params.model.commit({
@@ -1245,7 +1242,6 @@ function PluginDetailScopedSettingsSection(props: PluginDetailGenericSettingsSec
                 <Item
                     testID={`settings.plugins.detail.${props.pluginId}.settings.loading`}
                     title={t('settingsPlugins.genericSettingsLoading')}
-                    icon={<Icon name="arrows-clockwise" size={29} color={theme.colors.text.secondary} />}
                     showChevron={false}
                     mode="info"
                 />
@@ -1269,9 +1265,13 @@ function PluginDetailScopedSettingsSection(props: PluginDetailGenericSettingsSec
         );
     }
 
+    // A group with nothing the user can set is not a section: a plugin without editable settings
+    // simply has none on its page. A read failure still shows, with its Retry, in the first group.
+    const groupsWithFields = visibleGroups.filter((group) => group.fields.length > 0);
+    const shownGroups = groupsWithFields.length === 0 && loadError ? visibleGroups.slice(0, 1) : groupsWithFields;
     return (
         <>
-            {visibleGroups.map((group, groupIndex) => {
+            {shownGroups.map((group, groupIndex) => {
                 const fields = [...group.fields].sort(compareSettingsFields);
                 const groupOutcomeUnknown = fields.some(
                     (field) => fieldModelByKey.get(field.key)?.error === 'outcomeUnknown',
@@ -1284,7 +1284,7 @@ function PluginDetailScopedSettingsSection(props: PluginDetailGenericSettingsSec
                     <ItemGroup
                         key={group.id}
                         title={group.title}
-                        footer={groupOutcomeUnknown
+                        description={groupOutcomeUnknown
                             ? t('settingsProviders.errors.mutationOutcomeUnknownDescription')
                             : groupHasSaveError
                                 ? t('settingsPlugins.genericSettingsSaveError')
@@ -1303,15 +1303,7 @@ function PluginDetailScopedSettingsSection(props: PluginDetailGenericSettingsSec
                                 showChevron
                             />
                         ) : null}
-                        {fields.length === 0 ? (
-                            <Item
-                                testID={`settings.plugins.detail.${props.pluginId}.settings.${group.id}.empty`}
-                                title={t('settingsPlugins.genericSettingsEmpty')}
-                                icon={<Icon name="sliders-horizontal" size={29} color={theme.colors.text.secondary} />}
-                                showChevron={false}
-                                mode="info"
-                            />
-                        ) : fields.map((field) => {
+                        {fields.map((field) => {
                             const policy = evaluatePluginUiPolicy(
                                 { availability: field.availability },
                                 { ...props.policyContext, data: values },
@@ -1452,20 +1444,21 @@ function PluginDetailScopedSettingsSection(props: PluginDetailGenericSettingsSec
                     <ItemGroup
                         key={`${group.id}/subagents/${section.id}`}
                         title={localizedPresentationText(section.title)}
-                        footer={localizedPresentationText(section.description) || undefined}
+                        description={localizedPresentationText(section.description) || undefined}
                     >
                         {section.items.map((item) => (
                             <Item
                                 key={item.id}
                                 title={localizedPresentationText(item.title)}
                                 subtitle={localizedPresentationText(item.description) || undefined}
-                                icon={(
+                                // The plugin's own declared mark stays; with none, no generic glyph.
+                                icon={item.iconIonName ? (
                                     <Icon
-                                        name={(item.iconIonName ?? 'git-branch') as never}
+                                        name={item.iconIonName as never}
                                         size={29}
                                         color={theme.colors.text.secondary}
                                     />
-                                )}
+                                ) : undefined}
                                 onPress={() => router.push(agentSettingsRoute as never)}
                             />
                         ))}

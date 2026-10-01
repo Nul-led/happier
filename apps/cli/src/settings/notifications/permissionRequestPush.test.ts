@@ -1,4 +1,6 @@
 import * as pinnedHttp from '@/network/pinnedHttp';
+import { createSessionNotificationContextFixture } from '@/testkit/backends/sessionFixtures';
+
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { accountSettingsParse, type LiveActivityRemoteUpdateRequestV1 } from '@happier-dev/protocol';
@@ -12,6 +14,8 @@ import {
   sendPermissionRequestPushNotificationAsync,
   sendPermissionRequestPushNotificationForActiveAccount,
 } from './permissionRequestPush';
+
+const fetchSessionNotificationContext = async (sessionId: string) => createSessionNotificationContextFixture(sessionId);
 
 describe('sendPermissionRequestPushNotificationAsync', () => {
   afterEach(() => {
@@ -28,7 +32,7 @@ describe('sendPermissionRequestPushNotificationAsync', () => {
     });
 
     await sendPermissionRequestPushNotificationAsync({
-      pushSender: { sendToAllDevicesAsync },
+      pushSender: { fetchSessionNotificationContext, sendToAllDevicesAsync },
       sessionId: 's1',
       sessionTitle: 'Fix prod issue',
       agentDisplayName: 'Claude',
@@ -56,7 +60,7 @@ describe('sendPermissionRequestPushNotificationAsync', () => {
     });
 
     await sendPermissionRequestPushNotificationAsync({
-      pushSender: { sendToAllDevicesAsync },
+      pushSender: { fetchSessionNotificationContext, sendToAllDevicesAsync },
       sessionId: 's1',
       sessionTitle: 'Fix prod issue',
       agentDisplayName: 'Claude',
@@ -75,7 +79,7 @@ describe('sendPermissionRequestPushNotificationAsync', () => {
     });
 
     await sendPermissionRequestPushNotificationAsync({
-      pushSender: { sendToAllDevicesAsync },
+      pushSender: { fetchSessionNotificationContext, sendToAllDevicesAsync },
       sessionId: 's1',
       sessionTitle: 'Fix prod issue',
       agentDisplayName: 'Claude',
@@ -107,7 +111,7 @@ describe('sendPermissionRequestPushNotificationAsync', () => {
     });
 
     sendPermissionRequestPushNotificationForActiveAccount({
-      pushSender: { sendToAllDevicesAsync },
+      pushSender: { fetchSessionNotificationContext, sendToAllDevicesAsync },
       sessionId: 's-auto',
       permissionId: 'p-auto',
       toolName: 'Read',
@@ -134,7 +138,7 @@ describe('sendPermissionRequestPushNotificationAsync', () => {
     });
 
     await expect(sendPermissionRequestPushNotificationAsync({
-      pushSender: {
+      pushSender: { fetchSessionNotificationContext,
         serverId: 'server-a',
         sendToAllDevicesAsync,
         sendLiveActivityRemoteUpdateAsync,
@@ -177,7 +181,7 @@ describe('sendPermissionRequestPushNotificationAsync', () => {
     try {
       await expect(
         sendPermissionRequestPushNotificationAsync({
-          pushSender: { sendToAllDevicesAsync },
+          pushSender: { fetchSessionNotificationContext, sendToAllDevicesAsync },
           sessionId: 's1',
           permissionId: 'p1',
           toolName: 'Read',
@@ -239,7 +243,7 @@ describe('sendPermissionRequestPushNotificationAsync', () => {
     });
 
     await expect(sendPermissionRequestPushNotificationAsync({
-      pushSender: { sendToAllDevicesAsync },
+      pushSender: { fetchSessionNotificationContext, sendToAllDevicesAsync },
       sessionId: 's1',
       permissionId: 'p1',
       toolName: 'Read',
@@ -261,7 +265,7 @@ describe('sendPermissionRequestPushNotificationAsync', () => {
 
     await expect(
       sendPermissionRequestPushNotificationAsync({
-        pushSender: { sendToAllDevicesAsync },
+        pushSender: { fetchSessionNotificationContext, sendToAllDevicesAsync },
         sessionId: 's1',
         permissionId: 'p1',
         toolName: 'Read',

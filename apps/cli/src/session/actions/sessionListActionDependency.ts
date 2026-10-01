@@ -46,6 +46,9 @@ export function createRestrictedCurrentSessionListActionDependency(params: Reado
   material: SessionTransportEncryptionMaterial;
 }>): ActionExecutorDeps['sessionList'] {
   return async (input) => {
+    if (input.query?.underSessionId !== undefined) {
+      return unsupportedSessionListQueryArmsResult(['underSessionId']);
+    }
     if (
       input.context.serverId !== undefined
       && input.context.serverId !== params.serverId

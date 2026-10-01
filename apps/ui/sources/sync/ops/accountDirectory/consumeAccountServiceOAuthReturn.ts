@@ -2,7 +2,7 @@ import { accountDirectoryAuthClient, acquireAccountServiceAuthTransport, createV
 import { parseAccountServiceRouteInput } from '@/auth/accountDirectory/accountDirectoryNavigation';
 import { TokenStorage } from '@/auth/storage/tokenStorage';
 import { AccountDirectorySession } from '@/sync/domains/accountDirectory/accountDirectorySession';
-import { HappyError } from '@/utils/errors/errors';
+import { isExplicitlyRetryableError } from '@/sync/runtime/connectivity/transientConnectivityErrors';
 import { isServerFeaturesProbeRetryable } from '@/sync/api/capabilities/serverFeaturesClient';
 import { completeAccountServicePostAuth, completeAccountServiceHomeAuthentication, type AccountPostAuthInput, type AccountPostAuthResult } from './completeAccountServicePostAuth';
 
@@ -73,7 +73,7 @@ export async function consumeAccountServiceOAuthReturn(
         options.signal.removeEventListener('abort', release);
         await close().catch(() => {});
         if (adoptedInput) throw error;
-        if (!options.signal.aborted && (error instanceof TypeError || error instanceof HappyError && error.canTryAgain)) return { kind: 'retryable' };
+        if (!options.signal.aborted && isExplicitlyRetryableError(error)) return { kind: 'retryable' };
         return { kind: 'invalid' };
     }
 }

@@ -20,11 +20,19 @@ describe('account-connect approval guidance', () => {
 
         const { promptAccountConnectApprovalRequired } = await import('./accountConnectApprovalGuidance');
 
-        await expect(promptAccountConnectApprovalRequired()).resolves.toBe('showQr');
+        await expect(promptAccountConnectApprovalRequired({ showQr: true })).resolves.toBe('showQr');
         expect(alertAsyncSpy).toHaveBeenCalledWith(
             'connect.restoreAccount',
             'connect.legacyAccountQrUnavailable',
             expect.any(Array),
         );
+    });
+
+    it('offers "Show QR instead" only when the caller can act on it', async () => {
+        const { promptAccountConnectApprovalRequired } = await import('./accountConnectApprovalGuidance');
+
+        await expect(promptAccountConnectApprovalRequired({ showQr: false })).resolves.toBe('dismiss');
+        const buttons = alertAsyncSpy.mock.calls.at(-1)?.[2] as Array<{ text?: string }> | undefined;
+        expect(buttons?.map((button) => button.text)).toEqual(['common.ok']);
     });
 });

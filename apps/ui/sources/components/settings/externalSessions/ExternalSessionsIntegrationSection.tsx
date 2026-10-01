@@ -6,6 +6,7 @@ import { useUnistyles } from 'react-native-unistyles';
 import { Switch } from '@/components/ui/forms/Switch';
 import { Item } from '@/components/ui/lists/Item';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
+import { useListPresentation } from '@/components/ui/lists/listPresentation';
 import { VirtualizedList } from '@/components/ui/lists/virtualized';
 import { PluginDiagnosticsSection } from '@/components/settings/plugins/diagnostics/PluginDiagnosticsSection';
 import { Modal } from '@/modal';
@@ -13,7 +14,6 @@ import { t } from '@/text';
 import { restoreFocusToBestTarget } from '@/keyboard/focusReturn';
 import type { PluginDiagnosticDataV1 } from '@happier-dev/protocol';
 import type { PluginSessionHookInstallPreviewV1 } from '@happier-dev/protocol';
-import { Icon } from '@/components/ui/icons/Icon';
 import { announceAccessibilityMessage } from '@/components/ui/accessibility/announceAccessibilityMessage';
 
 import {
@@ -159,21 +159,6 @@ function resolveActionTitle(action: ExternalSessionsIntegrationAction): string {
     }
 }
 
-function resolveActionIcon(action: ExternalSessionsIntegrationAction): string {
-    switch (action) {
-        case 'review_install':
-            return 'document-text-outline';
-        case 'disable':
-            return 'pause-circle-outline';
-        case 'enable':
-            return 'play-circle-outline';
-        case 'uninstall':
-            return 'trash-outline';
-        case 'check_again':
-            return 'refresh-outline';
-    }
-}
-
 function resolveActionOperation(
     action: Exclude<ExternalSessionsIntegrationAction, 'review_install'>,
     operations: ExternalSessionsIntegrationOperations,
@@ -220,6 +205,7 @@ export const ExternalSessionsIntegrationSection = React.memo(function ExternalSe
     }>,
 ) {
     const { theme } = useUnistyles();
+    const listPresentation = useListPresentation();
     const integrations = React.useMemo(
         () => props.integrations == null
             ? null
@@ -590,7 +576,7 @@ export const ExternalSessionsIntegrationSection = React.memo(function ExternalSe
             return (
                 <ItemGroup
                     title={t('externalSessions.settingsIntegrationsGroupTitle')}
-                    footer={item.last ? t('externalSessions.settingsIntegrationsFooter') : undefined}
+                    description={item.last ? t('externalSessions.settingsIntegrationsFooter') : undefined}
                     virtualizedSegment={{ first: true, last: item.last }}
                 >
                     <Item
@@ -598,7 +584,6 @@ export const ExternalSessionsIntegrationSection = React.memo(function ExternalSe
                         mode="info"
                         title={t('externalSessions.settingsIntegrationsUnavailableTitle')}
                         subtitle={t('externalSessions.settingsIntegrationsUnavailableSubtitle')}
-                        icon={<Icon name="puzzle-piece" size={29} color={theme.colors.text.secondary} />}
                         showChevron={false}
                     />
                 </ItemGroup>
@@ -607,7 +592,7 @@ export const ExternalSessionsIntegrationSection = React.memo(function ExternalSe
         if (item.kind === 'inventory_continuation') {
             return (
                 <ItemGroup
-                    footer={t('externalSessions.settingsIntegrationsFooter')}
+                    description={t('externalSessions.settingsIntegrationsFooter')}
                     virtualizedSegment={{ first: false, last: true }}
                 >
                     <Item
@@ -619,7 +604,6 @@ export const ExternalSessionsIntegrationSection = React.memo(function ExternalSe
                             ? t('externalSessions.settingsIntegrationInventoryLoadingTitle')
                             : t('externalSessions.browseLoadMore')}
                         subtitle={t('externalSessions.settingsIntegrationInventoryLoadingSubtitle')}
-                        icon={<Icon name="arrow-clockwise" size={29} color={theme.colors.text.secondary} />}
                         loading={props.loadingMoreInventory}
                         showChevron={false}
                         onPress={!props.loadingMoreInventory && props.onLoadMoreInventory
@@ -637,7 +621,6 @@ export const ExternalSessionsIntegrationSection = React.memo(function ExternalSe
                         mode="info"
                         title={t('externalSessions.settingsPrivacyTitle')}
                         subtitle={t('externalSessions.settingsPrivacySubtitle')}
-                        icon={<Icon name="lock" size={29} color={theme.colors.text.secondary} />}
                         showChevron={false}
                     />
                 </ItemGroup>
@@ -661,7 +644,7 @@ export const ExternalSessionsIntegrationSection = React.memo(function ExternalSe
             return (
                 <ItemGroup
                     title={item.first ? t('externalSessions.settingsAutoLinkGroupTitle') : undefined}
-                    footer={item.last ? t('externalSessions.settingsAutoLinkGroupFooter') : undefined}
+                    description={item.last ? t('externalSessions.settingsAutoLinkGroupFooter') : undefined}
                     virtualizedSegment={{ first: item.first, last: item.last }}
                 >
                     {item.sources.map((source) => {
@@ -678,7 +661,6 @@ export const ExternalSessionsIntegrationSection = React.memo(function ExternalSe
                                 subtitle={source.sourceDisplayLabel
                                     ? `${source.sourceDisplayLabel} · ${t('externalSessions.settingsAutoLinkSubtitle')}`
                                     : t('externalSessions.settingsAutoLinkSubtitle')}
-                                icon={<Icon name="plus-circle" size={29} color={theme.colors.accent.blue} />}
                                 loading={pending}
                                 disabled={!source.canChange || pending}
                                 rightElement={(
@@ -708,7 +690,7 @@ export const ExternalSessionsIntegrationSection = React.memo(function ExternalSe
         return (
             <ItemGroup
                 title={item.first ? t('externalSessions.settingsIntegrationsGroupTitle') : undefined}
-                footer={item.last ? t('externalSessions.settingsIntegrationsFooter') : undefined}
+                description={item.last ? t('externalSessions.settingsIntegrationsFooter') : undefined}
                 virtualizedSegment={{ first: item.first, last: item.last }}
             >
                 {item.integrations.flatMap((integration) => {
@@ -722,7 +704,6 @@ export const ExternalSessionsIntegrationSection = React.memo(function ExternalSe
                             subtitle={integration.detail
                                 ? `${resolveStatusTitle(integration.state)} · ${integration.detail}`
                                 : resolveStatusTitle(integration.state)}
-                            icon={<Icon name="graph" size={29} color={theme.colors.text.secondary} />}
                             showChevron={false}
                         />
                     ), ...actions.map((action) => {
@@ -734,13 +715,6 @@ export const ExternalSessionsIntegrationSection = React.memo(function ExternalSe
                             subtitleTestID={`settings-external-sessions-action-row-${action}`}
                             title={resolveActionTitle(action)}
                             accessibilityLabel={`${integration.agentTitle}, ${resolveActionTitle(action)}`}
-                            icon={<Icon
-                                name={resolveActionIcon(action) as never}
-                                size={29}
-                                color={action === 'uninstall'
-                                    ? theme.colors.state.danger.foreground
-                                    : theme.colors.accent.blue}
-                            />}
                             loading={actionPending}
                             disabled={inventoryActionsDisabled || pendingKeysRef.current.has(integration.key)}
                             destructive={action === 'uninstall'}
@@ -792,7 +766,6 @@ export const ExternalSessionsIntegrationSection = React.memo(function ExternalSe
                                 : 'info'}
                             title={inventoryTitle ?? t('externalSessions.settingsIntegrationInventoryErrorTitle')}
                             subtitle={inventorySubtitle ?? t('externalSessions.settingsIntegrationInventoryErrorSubtitle')}
-                            icon={<Icon name="arrow-clockwise" size={29} color={theme.colors.text.secondary} />}
                             loading={props.inventoryState.status === 'loading'}
                             showChevron={false}
                             onPress={props.inventoryState.status !== 'loading' && props.onRetryInventory
@@ -831,7 +804,7 @@ export const ExternalSessionsIntegrationSection = React.memo(function ExternalSe
                     renderItem={renderVirtualizedRow}
                     style={{
                         flex: 1,
-                        backgroundColor: theme.colors.background.canvas,
+                        backgroundColor: listPresentation === 'page' ? theme.colors.surface.base : theme.colors.background.canvas,
                         ...(Platform.OS === 'web' ? { minHeight: 0 } : {}),
                     }}
                     contentContainerStyle={{ paddingBottom: Platform.OS === 'ios' ? 34 : 16 }}
@@ -897,7 +870,6 @@ export const ExternalSessionsIntegrationSection = React.memo(function ExternalSe
                                 }
                                 title={inventoryTitle ?? t('externalSessions.settingsIntegrationInventoryErrorTitle')}
                                 subtitle={inventorySubtitle ?? t('externalSessions.settingsIntegrationInventoryErrorSubtitle')}
-                                icon={<Icon name="arrow-clockwise" size={29} color={theme.colors.text.secondary} />}
                                 loading={props.inventoryState.status === 'loading'}
                                 showChevron={false}
                                 onPress={
@@ -914,7 +886,7 @@ export const ExternalSessionsIntegrationSection = React.memo(function ExternalSe
             {integrations === null ? null : (
                 <ItemGroup
                     title={t('externalSessions.settingsIntegrationsGroupTitle')}
-                    footer={t('externalSessions.settingsIntegrationsFooter')}
+                    description={t('externalSessions.settingsIntegrationsFooter')}
                 >
                     {integrations.length === 0 && inventoryComplete ? (
                         <Item
@@ -922,7 +894,6 @@ export const ExternalSessionsIntegrationSection = React.memo(function ExternalSe
                             mode="info"
                             title={t('externalSessions.settingsIntegrationsUnavailableTitle')}
                             subtitle={t('externalSessions.settingsIntegrationsUnavailableSubtitle')}
-                            icon={<Icon name="puzzle-piece" size={29} color={theme.colors.text.secondary} />}
                             showChevron={false}
                         />
                     ) : integrations.map((integration) => {
@@ -939,8 +910,7 @@ export const ExternalSessionsIntegrationSection = React.memo(function ExternalSe
                                     subtitle={integration.detail
                                         ? `${resolveStatusTitle(integration.state)} · ${integration.detail}`
                                         : resolveStatusTitle(integration.state)}
-                                    icon={<Icon name="graph" size={29} color={theme.colors.text.secondary} />}
-                                    showChevron={false}
+                                            showChevron={false}
                                 />
                                 {actions.map((resolvedAction) => {
                                     const action = resolvedAction;
@@ -952,15 +922,6 @@ export const ExternalSessionsIntegrationSection = React.memo(function ExternalSe
                                             subtitleTestID={`settings-external-sessions-action-row-${action}`}
                                             title={resolveActionTitle(action)}
                                             accessibilityLabel={`${integration.agentTitle}, ${resolveActionTitle(action)}`}
-                                            icon={(
-                                                <Icon
-                                                    name={resolveActionIcon(action) as never}
-                                                    size={29}
-                                                    color={action === 'uninstall'
-                                                        ? theme.colors.state.danger.foreground
-                                                        : theme.colors.accent.blue}
-                                                />
-                                            )}
                                             loading={actionPending}
                                             disabled={inventoryActionsDisabled || pendingKeysRef.current.has(integration.key)}
                                             destructive={action === 'uninstall'}
@@ -989,7 +950,6 @@ export const ExternalSessionsIntegrationSection = React.memo(function ExternalSe
                                 ? t('externalSessions.settingsIntegrationInventoryLoadingTitle')
                                 : t('externalSessions.browseLoadMore')}
                             subtitle={t('externalSessions.settingsIntegrationInventoryLoadingSubtitle')}
-                            icon={<Icon name="arrow-clockwise" size={29} color={theme.colors.text.secondary} />}
                             loading={props.loadingMoreInventory}
                             showChevron={false}
                             onPress={!props.loadingMoreInventory && props.onLoadMoreInventory
@@ -1017,7 +977,7 @@ export const ExternalSessionsIntegrationSection = React.memo(function ExternalSe
             {autoLinkSources && autoLinkSources.length > 0 ? (
                 <ItemGroup
                     title={t('externalSessions.settingsAutoLinkGroupTitle')}
-                    footer={t('externalSessions.settingsAutoLinkGroupFooter')}
+                    description={t('externalSessions.settingsAutoLinkGroupFooter')}
                 >
                     {autoLinkSources.map((source) => {
                         const sourceKey = autoLinkSourceKey(source);
@@ -1034,7 +994,6 @@ export const ExternalSessionsIntegrationSection = React.memo(function ExternalSe
                                 subtitle={source.sourceDisplayLabel
                                     ? `${source.sourceDisplayLabel} · ${t('externalSessions.settingsAutoLinkSubtitle')}`
                                     : t('externalSessions.settingsAutoLinkSubtitle')}
-                                icon={<Icon name="plus-circle" size={29} color={theme.colors.accent.blue} />}
                                 loading={pending}
                                 disabled={!source.canChange || pending}
                                 rightElement={(
@@ -1066,7 +1025,6 @@ export const ExternalSessionsIntegrationSection = React.memo(function ExternalSe
                     mode="info"
                     title={t('externalSessions.settingsPrivacyTitle')}
                     subtitle={t('externalSessions.settingsPrivacySubtitle')}
-                    icon={<Icon name="lock" size={29} color={theme.colors.text.secondary} />}
                     showChevron={false}
                 />
             </ItemGroup>

@@ -1,6 +1,6 @@
 import * as React from 'react';
-import { Pressable, View } from 'react-native';
-import { StyleSheet, useUnistyles } from 'react-native-unistyles';
+import { View } from 'react-native';
+import { StyleSheet } from 'react-native-unistyles';
 
 import {
     buildInjectedBrowserDiagnosticsElementPickerCommandScript,
@@ -13,9 +13,9 @@ import {
     parseInjectedBrowserDiagnosticsMessage,
 } from '@/components/browser/adapters/diagnostics';
 import { BrowserFrameUnavailable } from '@/components/browser/frame/BrowserFrameUnavailable';
-import { browserFrameStyles } from '@/components/browser/frame/styles';
-import { Text } from '@/components/ui/text/Text';
+import { SurfaceStateCard } from '@/components/ui/surfaces/SurfaceStateCard';
 import type {
+    BrowserAutomationEngineBridgeConfig,
     BrowserDiagnosticsEngineBridgeConfig,
     BrowserFrameNavigationCommand,
 } from '@/components/browser/frame/types';
@@ -41,13 +41,13 @@ import {
 } from '@/sync/domains/browser/adapters/desktopWebViewBridge';
 import {
     WEBVIEW_LOAD_FAILED_ERROR_CODE,
-    type BrowserControlViewState,
     type BrowserViewLifecycleEmitter,
     type BrowserViewLifecycleSignal,
-} from '@/sync/domains/browser/control';
+} from '@/sync/domains/browser/control/lifecycle';
+import type { BrowserControlViewState } from '@/sync/domains/browser/control/state';
 import type { DesktopBrowserPageInfo } from '@/sync/domains/browser/adapters/desktopWebViewBridge';
 import { t } from '@/text';
-import { Icon } from '@/components/ui/icons/Icon';
+import { createInjectedPageAutomationOwner } from '@/components/browser/adapters/automation/injectedPageRuntime';
 
 import {
     useDesktopWebViewSurfaceSync,
@@ -61,8 +61,8 @@ type DesktopWebViewInjectedNavigationKind = 'reload' | 'stop';
 export type DesktopWebViewNavigationDispatchRequest = Readonly<{
     browserSessionId: string;
     viewId: string;
-    kind: DesktopWebViewInjectedNavigationKind;
-    script: string;
+    kind: 'goBack' | 'goForward' | DesktopWebViewInjectedNavigationKind;
+    script?: string;
 }>;
 
 export type DesktopWebViewEngineBridge = Readonly<{
@@ -75,14 +75,10 @@ export type DesktopWebViewEngineBridge = Readonly<{
     readPageInfo: (request: Omit<DesktopBrowserViewCommandRequest, 'url'>) => Promise<DesktopBrowserPageInfoResult>;
     /** Drains the native ipc buffer of injected-collector envelopes posted by the page since the last drain. */
     drainDiagnostics: (request: Omit<DesktopBrowserViewCommandRequest, 'url'>) => Promise<DesktopBrowserDrainDiagnosticsResult>;
-    /** Evaluates a canonical injected diagnostics COMMAND script (eval/getProperties/release/picker) in the page; its result returns over the ipc/drain channel. */
+    /** Evaluates canonical diagnostics/automation commands; results return over the ipc/drain channel. */
     evalScript: (request: Readonly<{ browserSessionId: string; viewId: string; script: string }>) => Promise<DesktopBrowserCommandResult>;
     /**
-     * Injects a fixed `location.reload()` / `window.stop()` script into the Wry child view
-     * through the trusted native seam (never a user-eval surface). Shipped now per TRACKING
-     * §12 Q3, but kept dormant in product until the `DesktopBrowserSupport.reload/stop`
-     * capability bits flip (gated on the §5 Wry-honors-injection verification) — the toolbar
-     * stays disabled, so this is never dispatched before the proof lands.
+     * Native Back/Forward and trusted fixed reload/stop dispatch, never caller-supplied evaluation.
      */
     dispatchNavigation: (request: DesktopWebViewNavigationDispatchRequest) => Promise<DesktopBrowserCommandResult>;
 }>;
@@ -111,26 +107,6 @@ const stylesheet = StyleSheet.create((theme) => ({
         minHeight: 0,
         overflow: 'hidden',
         backgroundColor: theme.colors.surface.base,
-    },
-    crashedContainer: {
-        flex: 1,
-        minHeight: 0,
-        alignItems: 'center',
-        justifyContent: 'center',
-        gap: 12,
-        padding: 24,
-        backgroundColor: theme.colors.surface.base,
-    },
-    crashedReloadButton: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        gap: 8,
-        paddingVertical: 8,
-        paddingHorizontal: 16,
-        borderRadius: 8,
-        borderWidth: 1,
-        borderColor: theme.colors.border.default,
-        backgroundColor: theme.colors.surface.elevated,
     },
 }));
 
@@ -177,9 +153,12 @@ function desktopPageInfoLifecycleSignal(pageInfo: DesktopBrowserPageInfo): Brows
 
 export function DesktopWebViewEngine(props: Readonly<{
     view: BrowserControlViewState;
+    /** Viewer-local URL supplied by the target's access owner. */
+    url?: string | null;
     profileId: string;
     testID: string;
     diagnostics?: BrowserDiagnosticsEngineBridgeConfig | null;
+    automation?: BrowserAutomationEngineBridgeConfig;
     bridge?: DesktopWebViewEngineBridge;
     pageInfoPollIntervalMs?: number | null;
     /**
@@ -194,10 +173,7 @@ export function DesktopWebViewEngine(props: Readonly<{
     /** Pane/sidebar resize-drag signal; pointer passthrough engages while it is active. */
     dragSignal?: DesktopWebViewDragSignal;
     /**
-     * Latest reload/stop navigation command from the toolbar (same seam as the web/native
-     * engines). Each new `commandId` injects the fixed `location.reload()` / `window.stop()`
-     * script through the trusted native dispatch. Dormant in product until the reload/stop
-     * capability bits flip (the toolbar enables the buttons only then).
+     * Latest toolbar navigation command; Back/Forward use the real native history owner.
      */
     navigationCommand?: BrowserFrameNavigationCommand;
     /**
@@ -214,11 +190,10 @@ export function DesktopWebViewEngine(props: Readonly<{
     onOpenInSystemBrowser?: () => void;
     nowMs?: () => number;
 }>): React.ReactElement {
-    const { theme } = useUnistyles();
     const bridge = props.bridge ?? defaultBridge;
     const onLifecycleRef = React.useRef<BrowserViewLifecycleEmitter | undefined>(props.onLifecycle);
     onLifecycleRef.current = props.onLifecycle;
-    const desiredUrl = resolveViewUrl(props.view);
+    const desiredUrl = props.url === undefined ? resolveViewUrl(props.view) : props.url;
     const commandTarget = React.useMemo(() => ({
         browserSessionId: props.view.browserSessionId,
         viewId: props.view.viewId,
@@ -253,6 +228,7 @@ export function DesktopWebViewEngine(props: Readonly<{
     // identity lets the drain accept generation N AND N-1 during the navigation window instead of
     // dropping those early events as `collector_mismatch`. Reset on a fresh open (no prior window).
     const priorInjectedDiagnosticsRef = React.useRef<BrowserDiagnosticsEngineBridgeConfig | null>(null);
+    const automationMessageListenersRef = React.useRef(new Set<(raw: string) => void>());
 
     const buildDiagnosticsInitScript = React.useCallback((diagnostics: BrowserDiagnosticsEngineBridgeConfig): string => (
         buildInjectedBrowserDiagnosticsScript({
@@ -294,6 +270,8 @@ export function DesktopWebViewEngine(props: Readonly<{
             valueCapture: diagnostics.valueCapture === true,
         };
         for (const message of result.messages) {
+            // Automation results share the existing IPC receipt; its canonical owner validates identity.
+            for (const listener of automationMessageListenersRef.current) listener(message);
             let parsed = parseInjectedBrowserDiagnosticsMessage(message, identity, sanitizeOptions);
             if (!parsed.ok && priorIdentity) {
                 parsed = parseInjectedBrowserDiagnosticsMessage(message, priorIdentity, sanitizeOptions);
@@ -362,6 +340,18 @@ export function DesktopWebViewEngine(props: Readonly<{
         const lifecycleSignal = desktopPageInfoLifecycleSignal(result.pageInfo);
         if (lifecycleSignal) {
             onLifecycleRef.current?.(lifecycleSignal);
+        }
+        // Like native WebView callbacks, only successful/in-progress loads project navigation state:
+        // a ready snapshot after loadFailed would resurrect a failed or crashed page in the reducer.
+        if (result.pageInfo.loadingState === 'loading' || result.pageInfo.loadingState === 'finished') {
+            onLifecycleRef.current?.({
+                kind: 'navigationStateChanged',
+                url: result.pageInfo.currentUrl ?? result.pageInfo.requestedUrl,
+                title: result.pageInfo.title,
+                loading: isPageInfoLoading(result.pageInfo.loadingState),
+                canGoBack: result.pageInfo.canGoBack,
+                canGoForward: result.pageInfo.canGoForward,
+            });
         }
         if (!diagnostics) return;
         if (
@@ -511,6 +501,47 @@ export function DesktopWebViewEngine(props: Readonly<{
         void bridge.evalScript({ ...commandTarget, script: buildDiagnosticsInitScript(diagnostics) });
     }, [bridge, buildDiagnosticsInitScript, commandTarget, desiredUrl, props.diagnostics, unavailableReason]);
 
+    const automationRef = React.useRef(props.automation);
+    automationRef.current = props.automation;
+    const supportedActionsKey = JSON.stringify(props.automation?.supportedActions ?? []);
+    React.useEffect(() => {
+        const automation = automationRef.current;
+        if (!automation || !props.diagnostics || !desiredUrl || unavailableReason || crashedUrl) return;
+        if (automation.supportedActions.length === 0) return;
+        const ownerId = [
+            'browser_automation_owner', automation.browserSessionId, automation.viewId,
+            automation.navigationGeneration, 'desktopWebView',
+        ].join(':');
+        const owner = createInjectedPageAutomationOwner({
+            ...automation,
+            ownerId,
+            nowMs: automation.nowMs ?? Date.now,
+            transport: {
+                async sendCommand(_command, script) {
+                    const result = await bridge.evalScript({ ...commandTarget, script });
+                    if (!result.ok) throw new Error('runtime_unavailable');
+                    await drainInjectedDiagnosticsRef.current();
+                },
+                subscribeToResults(listener) {
+                    automationMessageListenersRef.current.add(listener);
+                    return () => { automationMessageListenersRef.current.delete(listener); };
+                },
+            },
+        });
+        const registration = automation.controlService.registerOwner(owner);
+        if (!registration.ok) {
+            automation.onRegistrationRejected?.(registration.reasonCode);
+            return;
+        }
+        return () => {
+            automation.controlService.unregisterOwner({ ownerId, reasonCode: 'owner_disconnected' });
+        };
+    }, [bridge, commandTarget, crashedUrl, desiredUrl, !!props.diagnostics, unavailableReason,
+        props.automation?.browserSessionId, props.automation?.viewId, props.automation?.navigationGeneration,
+        props.automation?.collectorId, props.automation?.nonce, props.automation?.capabilityVersion,
+        props.automation?.adapterKind, props.automation?.sourceOrigin, props.automation?.controlService,
+        props.automation?.nowMs, supportedActionsKey]);
+
     // Interactive eval REPL: push the canonical eval command script into the page; its result returns
     // over the ipc/drain channel and is dispatched to `onEvalResult` by `drainInjectedDiagnostics`.
     const evalRequest = props.diagnostics?.evalRequest;
@@ -580,21 +611,20 @@ export function DesktopWebViewEngine(props: Readonly<{
     // held in refs and read by a SINGLE stable callback, so a later bridge/target change is always
     // picked up (the previous code rebuilt the ref's closure on every render — wasteful, and the
     // initially-stored closure was dead). The stable identity also keeps the dispatch effect keyed
-    // purely on the command id/kind, so unrelated re-renders never re-fire it (goBack/goForward are
-    // not injection-reachable for the desktop engine and stay out of scope here).
+    // purely on the command id/kind, so unrelated re-renders never re-fire it.
     const bridgeRef = React.useRef(bridge);
     bridgeRef.current = bridge;
     const dispatchNavigationCommandTargetRef = React.useRef(commandTarget);
     dispatchNavigationCommandTargetRef.current = commandTarget;
-    const dispatchNavigation = React.useCallback((kind: 'reload' | 'stop') => {
+    const dispatchNavigation = React.useCallback((kind: DesktopWebViewNavigationDispatchRequest['kind']) => {
         void bridgeRef.current.dispatchNavigation({
             ...dispatchNavigationCommandTargetRef.current,
             kind,
-            script: buildInjectedNavigationScript(kind),
+            ...(kind === 'reload' || kind === 'stop' ? { script: buildInjectedNavigationScript(kind) } : {}),
         });
     }, []);
     React.useEffect(() => {
-        if (!navigationCommandId || (navigationCommandKind !== 'reload' && navigationCommandKind !== 'stop')) {
+        if (!navigationCommandId || !navigationCommandKind) {
             return;
         }
         dispatchNavigation(navigationCommandKind);
@@ -678,28 +708,15 @@ export function DesktopWebViewEngine(props: Readonly<{
     }
 
     if (crashedUrl) {
+        // The canonical recoverable-frame state, as the other frame engines render it: what happened in
+        // words and the one way back, never a hand-built button.
         return (
-            <View testID={`${props.testID}-crashed`} style={stylesheet.crashedContainer}>
-                <Text style={browserFrameStyles.statusText}>
-                    {t('browserShell.status.crashed')}
-                </Text>
-                <Pressable
-                    testID={`${props.testID}-crashed-reload`}
-                    accessibilityRole="button"
-                    accessibilityLabel={t('browserShell.toolbar.reloadAfterCrash')}
-                    onPress={reloadAfterCrash}
-                    style={stylesheet.crashedReloadButton}
-                >
-                    <Icon
-                        name="arrow-clockwise"
-                        size={16}
-                        color={theme.colors.text.primary}
-                    />
-                    <Text style={browserFrameStyles.statusText}>
-                        {t('browserShell.toolbar.reloadAfterCrash')}
-                    </Text>
-                </Pressable>
-            </View>
+            <SurfaceStateCard
+                testID={`${props.testID}-crashed`}
+                kind="error"
+                title={t('browserShell.status.crashed')}
+                action={{ label: t('browserShell.toolbar.reloadAfterCrash'), onPress: reloadAfterCrash }}
+            />
         );
     }
 

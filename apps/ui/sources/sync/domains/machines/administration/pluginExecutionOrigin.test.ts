@@ -178,6 +178,35 @@ describe('resolvePluginMachineExecutionOriginState', () => {
         })[0]?.validation).toEqual({ kind: 'rejected', reason: 'untrusted' });
     });
 
+    it('does not call a materialization\'s machine missing while its Home\'s machine list is unread', () => {
+        const base = candidate({ serverIdentityId: 'srv_one', machineId: 'machine-a', materializationId: 'mat-a' }).materialization;
+        const classifyRelease = () => ({ releaseContent: 'matched' as const, validation: { kind: 'admitted' as const } });
+        const unread = [{ kind: 'unknown' as const, profileId: 'local-one', serverIdentityId: 'srv_one', serverName: 'Server One', machines: [] }];
+        expect(buildPluginMachineExecutionOriginCandidates({
+            pluginId: 'acme.plugin',
+            materializations: [base],
+            machineSnapshots: unread,
+            classifyRelease,
+        })[0]?.validation).toEqual({ kind: 'rejected', reason: 'unknown' });
+        // A read list that lacks the machine: now it has really left.
+        const read = [{ kind: 'resolved' as const, profileId: 'local-one', serverIdentityId: 'srv_one', serverName: 'Server One', observation: 'live' as const, settled: true as const, machines: [] }];
+        expect(buildPluginMachineExecutionOriginCandidates({
+            pluginId: 'acme.plugin',
+            materializations: [base],
+            machineSnapshots: read,
+            classifyRelease,
+        })[0]?.validation).toEqual({ kind: 'rejected', reason: 'missing' });
+    });
+
+    it('says a plugin included with Happier needs no chosen machine when none reports it', () => {
+        expect(resolvePluginMachineExecutionOriginState({
+            pluginId: 'happier.claude',
+            storedOrigin: null,
+            candidates: [],
+            includedWithHappier: true,
+        })).toEqual({ kind: 'unavailable', storedOrigin: null, candidates: [], reasons: ['included_with_happier'] });
+    });
+
     it('reports unavailable for zero candidates and structurally selects the sole admitted origin', () => {
         expect(resolvePluginMachineExecutionOriginState({
             pluginId: 'acme.plugin',

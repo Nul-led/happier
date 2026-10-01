@@ -146,6 +146,23 @@ describe('saveAutomationEditorDraft', () => {
         vi.mocked(fetchAccountEncryptionMode).mockResolvedValue({ mode: 'plain', updatedAt: 1 });
     });
 
+    it('writes the live workflow binding in the same recipe reconciliation', async () => {
+        vi.mocked(reconcileAutomationDefinition).mockResolvedValue(detail([]));
+        await saveAutomationEditorDraft({ credentials, draft: draft({
+            workflowDefinitionId: '11111111-1111-4111-8111-111111111111',
+            scopeSessionId: null,
+            recipeDirty: true,
+            executionRecipe: { v: 2, templateVersion: 5, workflow: { t: 'plain', v: {
+                workspace: { directory: '/repo' }, executionTarget: { kind: 'session' },
+            } }, triggerEvidence: null },
+        }) });
+        expect(reconcileAutomationDefinition).toHaveBeenCalledWith(credentials, 'automation-1', expect.objectContaining({
+            workflowDefinitionId: '11111111-1111-4111-8111-111111111111', scopeSessionId: null,
+            executionRecipe: expect.objectContaining({ v: 2, templateVersion: 5 }),
+        }), undefined);
+        expect(createAutomationDefinition).not.toHaveBeenCalled();
+    });
+
     it('creates a valid manual-only Automation with an explicit empty trigger set', async () => {
         const created = detail([]);
         vi.mocked(createAutomationDefinition).mockResolvedValue(created);
@@ -159,7 +176,7 @@ describe('saveAutomationEditorDraft', () => {
             automationId: 'automation-new',
             name: 'Review work',
             triggers: [],
-        }));
+        }), undefined);
         expect(reconcileAutomationDefinition).not.toHaveBeenCalled();
     });
 
@@ -197,7 +214,7 @@ describe('saveAutomationEditorDraft', () => {
                 { kind: 'new', triggerId: 'new-turn-row', trigger: lifecycleDefinition },
             ],
             removedTriggers: [{ triggerId: 'turn-1', expectedRevision: 5 }],
-        }));
+        }), undefined);
     });
 
     it('keeps two stable trigger ids across one edit/disable/remove save and the reload that follows it', async () => {
@@ -276,7 +293,7 @@ describe('saveAutomationEditorDraft', () => {
             expectedTemplateVersion: 4,
             description: 'Updated description',
             triggers: [{ kind: 'existing', triggerId: 'schedule-1', expectedRevision: 2 }],
-        }));
+        }), undefined);
         expect(vi.mocked(reconcileAutomationDefinition).mock.calls[0]?.[2]).not.toHaveProperty('executionRecipe');
     });
 
@@ -317,7 +334,7 @@ describe('saveAutomationEditorDraft', () => {
         expect(reconcileAutomationDefinition).toHaveBeenCalledWith(credentials, 'automation-1', expect.objectContaining({
             expectedTemplateVersion: 4,
             executionRecipe: nextRecipe,
-        }));
+        }), undefined);
     });
 
     it('seals Event private source facts to the client-stable create identity for E2EE', async () => {
@@ -384,7 +401,7 @@ describe('saveAutomationEditorDraft', () => {
                     triggerDefinitionEnvelope: { t: 'encrypted', c: 'opaque-trigger-definition' },
                 }),
             }],
-        }));
+        }), undefined);
         const request = vi.mocked(createAutomationDefinition).mock.calls[0]?.[1];
         expect(JSON.stringify(request)).not.toContain('repository-42');
         expect(JSON.stringify(request)).not.toContain('happier-dev/happier');
@@ -432,7 +449,7 @@ describe('saveAutomationEditorDraft', () => {
         expect(seal).not.toHaveBeenCalled();
         expect(createAutomationDefinition).toHaveBeenCalledWith(credentials, expect.objectContaining({
             triggers: [{ triggerId: 'event-trigger-new', trigger: eventDefinition }],
-        }));
+        }), undefined);
     });
 
     it('binds an E2EE Event edit to the exact next trigger revision', async () => {
@@ -549,7 +566,7 @@ describe('saveAutomationEditorDraft', () => {
                 enabled: false,
                 triggerDefinitionEnvelope: { t: 'encrypted', c: 'enable-only-next-revision' },
             }],
-        }));
+        }), undefined);
     });
 
     it('surfaces a server-owned stale recipe conflict without a client-side authority read', async () => {

@@ -1,7 +1,5 @@
 import * as React from 'react';
-import { useUnistyles } from 'react-native-unistyles';
 
-import { Icon } from '@/components/ui/icons/Icon';
 import { Modal } from '@/modal';
 import { t } from '@/text';
 
@@ -23,12 +21,15 @@ export type PoolMembersSelectFieldProps = Readonly<{
     onCommit: (nextSelectedAccountIds: ReadonlyArray<string>) => void;
     disabled?: boolean;
     testID?: string;
+    open?: boolean;
+    onOpenChange?: (open: boolean) => void;
+    renderTrigger?: React.ComponentProps<typeof PoolMultiSelectField>['renderTrigger'];
+    searchPlaceholder?: string;
 }>;
 
 export const PoolMembersSelectField = React.memo(function PoolMembersSelectField(
     props: PoolMembersSelectFieldProps,
 ) {
-    const { theme } = useUnistyles();
     const { candidates, onCommit, selectedAccountIds } = props;
     const commitDraft = React.useCallback(async (nextSelectedAccountIds: ReadonlyArray<string>) => {
         const { toAdd, toRemove } = computePoolMembershipDiff(
@@ -75,11 +76,14 @@ export const PoolMembersSelectField = React.memo(function PoolMembersSelectField
                 { count, total },
             )}
             emptySubtitle={t('connectedServices.detail.profiles.empty')}
-            searchPlaceholder={t('connectedServices.detail.groupActions.searchMembersPlaceholder')}
+            searchPlaceholder={props.searchPlaceholder ?? t('connectedServices.detail.groupActions.searchMembersPlaceholder')}
             optionTestIDPrefix="qualified-connected-account-group:members:option"
-            icon={<Icon name="users" size={20} color={theme.colors.accent.blue} />}
             disabled={props.disabled}
             testID={props.testID}
+            searchable
+            open={props.open}
+            onOpenChange={props.onOpenChange}
+            renderTrigger={props.renderTrigger}
         />
     );
 });

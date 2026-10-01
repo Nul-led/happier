@@ -384,6 +384,7 @@ async function createTrustedLocalLinkInstall(params: Readonly<{
 async function createPublicAuthoringRuntimeRegistry(): Promise<Readonly<{
   runtimeRegistry: ResolvedExecutablePluginRuntimeRegistry;
   immutableGenerationId: string;
+  occurrenceId: string;
   manifestId: string;
   dispose: () => Promise<void>;
 }>> {
@@ -431,9 +432,12 @@ async function createPublicAuthoringRuntimeRegistry(): Promise<Readonly<{
       happyHomeDir,
       generation: 1,
     });
+    const occurrenceId = runtimeRegistry.readPluginOccurrenceId?.(COMPANION_PLUGIN_ID);
+    if (!occurrenceId) throw new Error('missing_companion_plugin_occurrence');
     return Object.freeze({
       runtimeRegistry,
       immutableGenerationId: fixture.immutableGenerationId,
+      occurrenceId,
       manifestId: evaluated.manifest.id,
       dispose: async () => {
         await runtimeRegistry?.dispose();
@@ -731,7 +735,7 @@ describe('startHappyServer Agent composition turn', () => {
     }
   }, 120_000);
 
-  it('keeps generation G bound in-flight and admits a canonical public-authoring generation H on the next turn', async () => {
+  it('keeps occurrence G bound in-flight and admits the replacement occurrence H on the next turn', async () => {
     const runtimeG = await createPublicAuthoringRuntimeRegistry();
     try {
       expect(runtimeG.manifestId).toBe(COMPANION_PLUGIN_ID);
@@ -827,7 +831,7 @@ describe('startHappyServer Agent composition turn', () => {
               ]);
             },
             onProviderSend: async () => await callTool(server.url, COMPANION_TOOL_NAME, {
-              transcript: 'Summarize the selected generation.',
+              transcript: 'Summarize the selected occurrence.',
             }),
           });
           expect(selectedTurnG.resolution.managedPluginIds).toEqual([COMPANION_PLUGIN_ID]);
@@ -840,7 +844,7 @@ describe('startHappyServer Agent composition turn', () => {
               toolId: `${COMPANION_PLUGIN_ID}/${COMPANION_TOOL_ID}`,
               name: COMPANION_TOOL_NAME,
             }),
-            expectedContributorImmutableGenerationId: runtimeG.immutableGenerationId,
+            expectedContributorOccurrenceId: runtimeG.occurrenceId,
           })]);
           expect(selectedTurnG.namesDuringProviderSend).toContain(COMPANION_TOOL_NAME);
           expect(selectedTurnG.namesDuringProviderSend).toContain(UNMANAGED_TOOL_NAME);
@@ -850,7 +854,7 @@ describe('startHappyServer Agent composition turn', () => {
           }));
           expect(daemonCatalogBoundary.execute).toHaveBeenNthCalledWith(1, expect.objectContaining({
             actionId: 'review-summary',
-            expectedContributorImmutableGenerationId: runtimeG.immutableGenerationId,
+            expectedContributorOccurrenceId: runtimeG.occurrenceId,
           }));
           expect(selection.current).toBeNull();
 
@@ -866,7 +870,7 @@ describe('startHappyServer Agent composition turn', () => {
             serverUrl: server.url,
             selection,
             onProviderSend: async () => await callTool(server.url, COMPANION_TOOL_NAME, {
-              transcript: 'Summarize the reloaded generation.',
+              transcript: 'Summarize the reloaded occurrence.',
             }),
           });
           expect(selectedTurnH.resolution.selectedToolBindings).toEqual([expect.objectContaining({
@@ -874,7 +878,7 @@ describe('startHappyServer Agent composition turn', () => {
               toolId: `${COMPANION_PLUGIN_ID}/${COMPANION_TOOL_ID}`,
               name: COMPANION_TOOL_NAME,
             }),
-            expectedContributorImmutableGenerationId: runtimeH.immutableGenerationId,
+            expectedContributorOccurrenceId: runtimeH.occurrenceId,
           })]);
           expect(selectedTurnH.namesDuringProviderSend).toContain(COMPANION_TOOL_NAME);
           expect(selectedTurnH.namesDuringProviderSend).toContain(UNMANAGED_TOOL_NAME);
@@ -883,7 +887,7 @@ describe('startHappyServer Agent composition turn', () => {
           }));
           expect(daemonCatalogBoundary.execute).toHaveBeenNthCalledWith(2, expect.objectContaining({
             actionId: 'review-summary',
-            expectedContributorImmutableGenerationId: runtimeH.immutableGenerationId,
+            expectedContributorOccurrenceId: runtimeH.occurrenceId,
           }));
           expect(selection.current).toBeNull();
 
@@ -895,7 +899,7 @@ describe('startHappyServer Agent composition turn', () => {
             abortOnCompletion: true,
           });
           expect(cancelledTurnH.resolution.selectedToolBindings).toEqual([expect.objectContaining({
-            expectedContributorImmutableGenerationId: runtimeH.immutableGenerationId,
+            expectedContributorOccurrenceId: runtimeH.occurrenceId,
           })]);
           expect(cancelledTurnH.namesDuringProviderSend).toContain(COMPANION_TOOL_NAME);
           expect(cancelledTurnH.namesDuringProviderSend).toContain(UNMANAGED_TOOL_NAME);

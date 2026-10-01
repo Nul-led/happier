@@ -90,7 +90,7 @@ describe('AccountServiceAuthenticationFlow', () => {
 
     it('preserves exact catalog method/action order and dispatches the tuple mode', async () => {
         authClient.startOAuth.mockResolvedValue(startResult);
-        const screen = await renderScreen(<AccountServiceAuthenticationFlow service={service} intent={intent}
+        const screen = await renderScreen(<AccountServiceAuthenticationFlow service={service} intent={intent} onPostAuthContinuation={() => {}}
             returnTo="/setup/wizard" onResult={vi.fn()} onExternalAuthStarted={vi.fn()} onBack={vi.fn()} />);
         expect([
             screen.findByTestId('account-service-auth-github-provision-either')?.props.testID,
@@ -111,7 +111,7 @@ describe('AccountServiceAuthenticationFlow', () => {
     });
 
     it('starts generated-key provisioning without opening the key-entry form', async () => {
-        const screen = await renderScreen(<AccountServiceAuthenticationFlow service={service} intent={intent}
+        const screen = await renderScreen(<AccountServiceAuthenticationFlow service={service} intent={intent} onPostAuthContinuation={() => {}}
             returnTo="/setup/wizard" onResult={vi.fn()} onExternalAuthStarted={vi.fn()} onBack={vi.fn()} />);
 
         await screen.pressByTestIdAsync('account-service-auth-key_challenge-provision-keyed');
@@ -122,7 +122,7 @@ describe('AccountServiceAuthenticationFlow', () => {
     it('admits one sibling ceremony and releases the guard after a failed launch', async () => {
         let reject!: (error: Error) => void;
         authClient.startOAuth.mockReturnValue(new Promise((_resolve, rejectPromise) => { reject = rejectPromise; }));
-        const screen = await renderScreen(<AccountServiceAuthenticationFlow service={service} intent={intent}
+        const screen = await renderScreen(<AccountServiceAuthenticationFlow service={service} intent={intent} onPostAuthContinuation={() => {}}
             returnTo="/setup/wizard" onResult={vi.fn()} onExternalAuthStarted={vi.fn()} onBack={vi.fn()} />);
         const first = screen.findByTestId('account-service-auth-github-provision-either');
         const sibling = screen.findByTestId('account-service-auth-github-login-keyless');
@@ -143,7 +143,7 @@ describe('AccountServiceAuthenticationFlow', () => {
         let resolve!: (result: typeof startResult) => void;
         let current = true;
         authClient.startOAuth.mockReturnValue(new Promise((resolvePromise) => { resolve = resolvePromise; }));
-        const screen = await renderScreen(<AccountServiceAuthenticationFlow service={service} intent={intent}
+        const screen = await renderScreen(<AccountServiceAuthenticationFlow service={service} intent={intent} onPostAuthContinuation={() => {}}
             returnTo="/setup/wizard" onResult={vi.fn()} onExternalAuthStarted={vi.fn()} onBack={vi.fn()}
             isCurrent={() => current} />);
 
@@ -166,7 +166,7 @@ describe('AccountServiceAuthenticationFlow', () => {
         let resolve!: (result: typeof startResult) => void;
         authClient.startOAuth.mockReturnValue(new Promise((resolvePromise) => { resolve = resolvePromise; }));
         const controller = new AbortController();
-        const screen = await renderScreen(<AccountServiceAuthenticationFlow service={service} intent={intent}
+        const screen = await renderScreen(<AccountServiceAuthenticationFlow service={service} intent={intent} onPostAuthContinuation={() => {}}
             returnTo="/setup/wizard" onResult={vi.fn()} onExternalAuthStarted={vi.fn()} onBack={vi.fn()}
             signal={controller.signal} />);
 

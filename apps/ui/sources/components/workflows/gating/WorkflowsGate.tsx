@@ -1,15 +1,31 @@
 import * as React from 'react';
 
+import { useRouter } from '@/components/appShell/workspace/destinationRoute';
+import { resolveFeatureToggleHref } from '@/components/settings/features/featuresSettings';
 import { SurfaceStateCard } from '@/components/ui/surfaces/SurfaceStateCard';
 import { resolveWorkflowsUnavailablePresentation } from '@/components/workflows/presentation/workflowProblemPresentation';
+import { useSetting } from '@/sync/domains/state/storage';
 import { t } from '@/text';
 
-import { useWorkflowsAvailability } from './workflowsAvailability';
+import { useWorkflowsDestinationAccess } from './workflowsDestinationAccess';
 
-export function WorkflowsGate(props: Readonly<{ children: React.ReactNode }>): React.ReactElement {
-    const workflows = useWorkflowsAvailability();
+/**
+ * Mounts Workflow content only on the canonical enabled decision (FIN 07 S21). Loading keeps a
+ * stable shell; a local-policy disablement names its repair (**Open Settings**); a hard denial says
+ * Workflows are unavailable here and offers nothing it cannot deliver.
+ *
+ * `surface="destination"` is the Workflows home, which also governs triggers, so its local copy
+ * speaks of Automations; every other Workflow route says what Workflows need.
+ */
+export function WorkflowsGate(props: Readonly<{
+    children: React.ReactNode;
+    surface?: 'destination' | 'workflow';
+}>): React.ReactElement {
+    const access = useWorkflowsDestinationAccess();
+    const router = useRouter();
+    const experimentsEnabled = useSetting('experiments') === true;
 
-    if (workflows.resolving) {
+    if (access.kind === 'resolving') {
         return (
             <SurfaceStateCard
                 testID="workflows-gate-loading"
@@ -20,10 +36,29 @@ export function WorkflowsGate(props: Readonly<{ children: React.ReactNode }>): R
         );
     }
 
-    if (!workflows.available) {
-        // An unavailable capability is not a failed read: the canonical Workflow
-        // problem mapping owns that state, its copy and the fact that there is
-        // no repair to offer here.
+    if (access.kind === 'locallyDisabled') {
+        const destination = props.surface === 'destination';
+        const settingHref = resolveFeatureToggleHref('automations', experimentsEnabled);
+        return (
+            <SurfaceStateCard
+                testID="workflows-gate-local"
+                kind="unavailable"
+                title={t(destination ? 'workflows.destination.gate.localTitle' : 'workflows.destination.gate.dependencyTitle')}
+                reason={t(destination ? 'workflows.destination.gate.localBody' : 'workflows.destination.gate.dependencyBody')}
+                {...(settingHref === undefined ? {} : {
+                    action: {
+                        label: t('workflows.destination.gate.openSettings'),
+                        onPress: () => router.push(settingHref as never),
+                    },
+                })}
+                accessibilitySemantics="status"
+            />
+        );
+    }
+
+    if (access.kind !== 'workflows') {
+        // An unavailable capability is not a failed read: the canonical Workflow problem mapping
+        // owns this state, its copy and the fact that there is no repair to offer here.
         const unavailable = resolveWorkflowsUnavailablePresentation();
         return (
             <SurfaceStateCard

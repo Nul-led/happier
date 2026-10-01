@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { usePathname } from 'expo-router';
+import { usePathname } from '@/components/appShell/workspace/destinationRoute';
 
 import type {
   AgentConnectedAccountPurposeTeamResourceDefault,
@@ -25,7 +25,8 @@ import { resolveConnectedAccountUiNegotiation } from '@/sync/domains/connectedSe
 import { useServerFeaturesRuntimeSnapshot } from '@/sync/domains/features/featureDecisionRuntime';
 import { useActiveServerAccountScope, useProfile, useSettings } from '@/sync/store/hooks';
 import type { HomeTeamCredentialModelCatalog } from '@/hooks/teams/useHomeTeamCredentialModelCatalog';
-import { t } from '@/text';
+import { getPreferredLanguage, t } from '@/text';
+import { useConnectedAccountIdentityPrivacy } from '@/hooks/ui/useConnectedAccountIdentityPrivacy';
 
 import {
   buildConnectedAccountPurposeTargetChoices,
@@ -103,6 +104,8 @@ export function ConnectedAccountPurposeTargetChooser(props: Readonly<{
   >;
 }>) {
   const profile = useProfile();
+  const { present } = useConnectedAccountIdentityPrivacy();
+  const locale = getPreferredLanguage();
   const settings = useSettings();
   const pathname = usePathname();
   const registry = useProjectedConnectedServicesRegistry();
@@ -130,11 +133,7 @@ export function ConnectedAccountPurposeTargetChooser(props: Readonly<{
     : EMPTY_GROUPS;
   const teamCatalog = props.teamCredentialCatalog;
   const teamResources = React.useMemo(() => (
-    teamCatalog
-      ? teamCatalog.resources.filter((resource) => (
-          teamCatalog.currentResourceKeys.has(`${resource.teamId}:${resource.id}`)
-        ))
-      : EMPTY_TEAM_RESOURCES
+    teamCatalog ? teamCatalog.resources : EMPTY_TEAM_RESOURCES
   ), [teamCatalog]);
   const serviceTitle = React.useMemo(() => {
     return resolveQualifiedConnectedServiceRegistryDisplayName(
@@ -143,7 +142,7 @@ export function ConnectedAccountPurposeTargetChooser(props: Readonly<{
       t,
       localizePluginText,
     );
-  }, [localizePluginText, props.declaration.service, registry.entries]);
+  }, [localizePluginText, locale, props.declaration.service, registry.entries]);
   const choices = React.useMemo(() => buildConnectedAccountPurposeTargetChoices({
     declaration: { ...props.declaration, required: props.declaration.required === true },
     selectedTarget: props.value,
@@ -153,8 +152,10 @@ export function ConnectedAccountPurposeTargetChooser(props: Readonly<{
     labelsByKey: settings.connectedServicesProfileLabelByKey,
     serviceTitle,
     sourceNegotiation: effectiveAccountTransport,
+    presentIdentity: present,
     resolveAuthentication: getConnectedAccountAuthentication,
     teamResources,
+    teamResourceCurrentKeys: teamCatalog?.currentResourceKeys,
     ...(teamCatalog ? { teamNameById: teamCatalog.teamNameById } : {}),
   }), [
     accounts,
@@ -162,6 +163,7 @@ export function ConnectedAccountPurposeTargetChooser(props: Readonly<{
     teamResources,
     teamCatalog,
     effectiveAccountTransport,
+    present,
     props.declaration,
     props.value,
     props.teamResourceValue,
@@ -218,7 +220,7 @@ export function ConnectedAccountPurposeTargetChooser(props: Readonly<{
         disabled: !choice.selectable,
       })),
     }],
-  }), [choices, props.testID]);
+  }), [choices, locale, props.testID]);
   const closePicker = React.useCallback(() => {
     if (!pickerModalIdRef.current) return;
     Modal.hide(pickerModalIdRef.current);

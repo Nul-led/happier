@@ -1,5 +1,5 @@
 import { spawn as spawnChild } from 'node:child_process';
-import { lstatSync, readFileSync, realpathSync, statSync } from 'node:fs';
+import { existsSync, lstatSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { lstat, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
@@ -17,7 +17,6 @@ import {
 } from '@/packagedRuntime/js/managedJavaScriptRuntime';
 import {
   resolveAuthoritativePackagedRuntimeProjectRoot,
-  type AuthoritativePackagedRuntimeProjectRoot,
 } from '@/packagedRuntime/resolvePackagedRuntimeEntrypoint';
 import { isCanonicalAbsolutePathInsideRoot } from '@/utils/path/expandHomeDirPath';
 import { resolveWindowsCommandInvocation } from '@happier-dev/cli-common/process';
@@ -27,7 +26,6 @@ import {
   readBundledWorkspacePackageNames,
   resolveWorkspaceBundlesFromPackageJson,
 } from '@happier-dev/cli-common/workspaces';
-import { BUILD_CONFIG_BASENAMES } from '@happier-dev/plugin-sdk/ui/build';
 import { isLoopbackHostname } from '@happier-dev/protocol';
 
 import { readPluginManifest } from '@/plugins/manifest/read';
@@ -38,14 +36,27 @@ import {
 import { PLUGIN_MANIFEST_RELATIVE_PATH } from '@/plugins/store/paths';
 import {
   bundlePluginDaemonRuntime,
+  GENERATED_PLUGIN_MANIFEST_RELATIVE_PATH,
   PluginAuthorBundlerUnavailableError,
 } from './bundleDaemonRuntime';
 import {
   cleanupPluginAuthorActionContracts,
   generatePluginActionContracts,
 } from './actionContracts';
-import { cleanupPluginDaemonOutputManifest } from './daemonOutputManifest';
-import { resolveSameInstallNodeModulesRoot } from './packageInstallationRoot';
+import {
+  cleanupPluginDaemonOutputManifest,
+  PLUGIN_DAEMON_OUTPUT_MANIFEST_RELATIVE_PATH,
+  readPluginDaemonOutputManifest,
+} from './daemonOutputManifest';
+import {
+  assertPluginAuthorPrepublicationRuntimeDeclarations,
+  PLUGIN_SDK_PACKAGE_NAME,
+  isSourceRuntimeAuthority,
+  readRuntimePackageJson,
+  resolvePackagedCliBundledWorkspacePackageRoot,
+  resolvePhysicalBundledWorkspacePackageRoot,
+  type RuntimePackageJson,
+} from './hostSdkResolution';
 
 export type PluginAuthorToolchainOperation = 'install' | 'typecheck' | 'build' | 'test';
 
@@ -140,7 +151,6 @@ function resolveProjectRoot(pathLike: string): string {
   return resolve(trimmed);
 }
 
-const PLUGIN_SDK_PACKAGE_NAME = '@happier-dev/plugin-sdk';
 const PREPUBLICATION_AUTHOR_PACKAGE_VERSION = '0.0.0';
 const TRANSIENT_PNPM_WORKSPACE_FILE_NAME = 'pnpm-workspace.yaml';
 const PLUGIN_AUTHOR_TYPECHECK_BUILD_INFO_PATH =
@@ -155,113 +165,8 @@ export type PluginAuthorBundledPrepublicationMaterialization = Readonly<{
   cleanup: () => Promise<void>;
 }>;
 
-type RuntimePackageJson = Readonly<{
-  name?: unknown;
-  dependencies?: unknown;
-  optionalDependencies?: unknown;
-  bundleDependencies?: unknown;
-  bundledDependencies?: unknown;
-}>;
-
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
-}
-
-function readPackageJsonRecord(packageJsonPath: string, description: string): Record<string, unknown> {
-  const parsed: unknown = JSON.parse(readFileSync(packageJsonPath, 'utf8'));
-  if (!isRecord(parsed)) {
-    throw new Error(`${description} must be a JSON object`);
-  }
-  return parsed;
-}
-
-function isSourceRuntimeAuthority(authority: AuthoritativePackagedRuntimeProjectRoot): boolean {
-  return authority.provenance === 'source-module' || authority.provenance === 'source-snapshot';
-}
-
-function readRuntimePackageJson(runtimeRoot: string): RuntimePackageJson {
-  const packageJsonPath = realpathSync(join(runtimeRoot, 'package.json'));
-  if (!isCanonicalAbsolutePathInsideRoot(runtimeRoot, packageJsonPath)) {
-    throw new Error('The running Happier CLI package manifest escapes its runtime root');
-  }
-  return readPackageJsonRecord(packageJsonPath, 'The running Happier CLI package manifest');
-}
-
-export function assertPluginAuthorPrepublicationRuntimeDeclarations(
-  runtimeRoot: string,
-  packageNames: readonly string[] = [PLUGIN_SDK_PACKAGE_NAME],
-): void {
-  const packageJson = readRuntimePackageJson(runtimeRoot);
-  const dependencies = packageJson.dependencies;
-  const declaredDependencies = dependencies
-    && typeof dependencies === 'object'
-    && !Array.isArray(dependencies)
-    ? (dependencies as Record<string, unknown>)
-    : {};
-  const bundledDependencies = new Set(
-    Array.isArray(packageJson.bundledDependencies)
-      ? packageJson.bundledDependencies.filter((value): value is string => typeof value === 'string')
-      : [],
-  );
-  if (packageJson.name !== '@happier-dev/cli') {
-    throw new Error('The running Happier CLI package manifest is invalid');
-  }
-  for (const packageName of packageNames) {
-    const declaredVersion = declaredDependencies[packageName];
-    if (
-      (typeof declaredVersion !== 'string' || declaredVersion.trim().length === 0)
-      && !bundledDependencies.has(packageName)
-    ) {
-      throw new Error(`The running Happier CLI does not declare its '${packageName}' runtime dependency`);
-    }
-  }
-}
-
-function resolvePhysicalBundledWorkspacePackageRoot(params: Readonly<{
-  candidatePath: string;
-  allowedRootPath: string;
-  packageName: string;
-}>): string | null {
-  try {
-    const candidateStats = lstatSync(params.candidatePath);
-    if (!candidateStats.isDirectory() || candidateStats.isSymbolicLink()) return null;
-    const physicalPackageRoot = realpathSync(params.candidatePath);
-    const physicalAllowedRoot = realpathSync(params.allowedRootPath);
-    if (!isCanonicalAbsolutePathInsideRoot(physicalAllowedRoot, physicalPackageRoot)) return null;
-    const packageJsonPath = realpathSync(join(physicalPackageRoot, 'package.json'));
-    if (!isCanonicalAbsolutePathInsideRoot(physicalPackageRoot, packageJsonPath) || !statSync(packageJsonPath).isFile()) {
-      return null;
-    }
-    const packageJson = readPackageJsonRecord(
-      packageJsonPath,
-      `Bundled workspace package '${params.packageName}' manifest`,
-    );
-    return packageJson.name === params.packageName ? physicalPackageRoot : null;
-  } catch {
-    return null;
-  }
-}
-
-function resolvePackagedCliBundledWorkspacePackageRoot(
-  runtimeRoot: string,
-  packageName: string,
-): string {
-  const candidateRoots: Array<Readonly<{ candidatePath: string; allowedRootPath: string }>> = [{
-    candidatePath: join(runtimeRoot, 'node_modules', ...packageName.split('/')),
-    allowedRootPath: runtimeRoot,
-  }];
-  const sameInstallNodeModulesRoot = resolveSameInstallNodeModulesRoot(runtimeRoot);
-  if (sameInstallNodeModulesRoot) {
-    candidateRoots.push({
-      candidatePath: join(sameInstallNodeModulesRoot, ...packageName.split('/')),
-      allowedRootPath: sameInstallNodeModulesRoot,
-    });
-  }
-  for (const candidate of candidateRoots) {
-    const packageRoot = resolvePhysicalBundledWorkspacePackageRoot({ ...candidate, packageName });
-    if (packageRoot) return packageRoot;
-  }
-  throw new Error(`The running Happier CLI has no physical bundled '${packageName}' dependency`);
 }
 
 type PrepublicationWorkspaceBundle = Parameters<
@@ -561,19 +466,16 @@ export function resolveNativeTypeScriptBin(projectRoot: string): string {
 
 export function resolvePluginUiBuildBin(projectRoot: string): string | null {
   const resolvedProjectRoot = realpathSync(projectRoot);
-  const hasUiBuildConfig = BUILD_CONFIG_BASENAMES.some((basename) => {
-    try {
-      statSync(join(resolvedProjectRoot, basename));
-      return true;
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException | null)?.code === 'ENOENT') return false;
-      throw error;
-    }
-  });
-  if (!hasUiBuildConfig) {
+  const projectPackageJson = JSON.parse(readFileSync(join(resolvedProjectRoot, 'package.json'), 'utf8')) as {
+    dependencies?: Record<string, unknown>;
+    devDependencies?: Record<string, unknown>;
+  };
+  if (
+    typeof projectPackageJson.dependencies?.[PLUGIN_SDK_PACKAGE_NAME] !== 'string'
+    && typeof projectPackageJson.devDependencies?.[PLUGIN_SDK_PACKAGE_NAME] !== 'string'
+  ) {
     return null;
   }
-
   const projectNodeModulesRoot = realpathSync(join(resolvedProjectRoot, 'node_modules'));
   const packageJsonPath = realpathSync(join(
     resolvedProjectRoot,
@@ -948,6 +850,12 @@ export async function cleanupPluginAuthorGeneratedArtifacts(projectRoot: string)
 export async function classifyPluginAuthorDaemonBuild(
   projectRoot: string,
 ): Promise<PluginAuthorDaemonBuildClassification> {
+  const priorGeneratedOutputs = existsSync(join(projectRoot, PLUGIN_DAEMON_OUTPUT_MANIFEST_RELATIVE_PATH))
+    ? await readPluginDaemonOutputManifest(projectRoot)
+    : null;
+  if (priorGeneratedOutputs?.outputs.includes(GENERATED_PLUGIN_MANIFEST_RELATIVE_PATH)) {
+    return 'required';
+  }
   const manifestPath = join(projectRoot, PLUGIN_MANIFEST_RELATIVE_PATH);
   const manifestAuthority = 'external' as const;
   const manifestRead = await readPluginManifest({ manifestPath, manifestAuthority, sourceProvenance: 'localSource' });
@@ -979,7 +887,7 @@ export type PluginUiArtifactBuildResult =
   | Readonly<{
       ok: true;
       projectRoot: string;
-      /** False when the project declares no plugin UI build config: nothing to build. */
+      /** False only when an injected test boundary explicitly reports no build. */
       built: boolean;
     }>
   | Readonly<{
@@ -1219,6 +1127,7 @@ export async function runPluginAuthorToolchain(
             }),
           });
         }
+        await bundlePluginDaemonRuntimeIfRequired(projectRoot, deps, daemonBuildClassification);
         const uiBuildResult = await runPluginUiArtifactBuild({
           projectRoot,
           ...(params.signal ? { signal: params.signal } : {}),
@@ -1231,7 +1140,6 @@ export async function runPluginAuthorToolchain(
             diagnostics: uiBuildResult.diagnostics,
           };
         }
-        await bundlePluginDaemonRuntimeIfRequired(projectRoot, deps, daemonBuildClassification);
         invocation = {
           command: runtimeCommand,
           args: ['--test', 'test/index.test.mjs'],
@@ -1278,6 +1186,7 @@ export async function runPluginAuthorToolchain(
         // pack may rerun this same owner against its evaluated value.
         await deps.generatePluginActionContracts({ projectRoot });
       }
+      await bundlePluginDaemonRuntimeIfRequired(projectRoot, deps, buildClassification);
       const uiBuildResult = await runPluginUiArtifactBuild({
         projectRoot,
         ...(params.signal ? { signal: params.signal } : {}),
@@ -1290,7 +1199,6 @@ export async function runPluginAuthorToolchain(
           diagnostics: uiBuildResult.diagnostics,
         };
       }
-      await bundlePluginDaemonRuntimeIfRequired(projectRoot, deps, buildClassification);
     }
     return { ok: true, operation: params.operation, projectRoot };
   } catch (error) {

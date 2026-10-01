@@ -10,6 +10,7 @@ import {
     encodePlainMachineStoredContent,
     isPlainArtifactDataKeyMarker,
     isPlainMachineDataKeyMarker,
+    prepareArtifactRecipientKeyEnvelopesV1,
     openSessionOwnerMetadataEnvelopeV1,
     sealSessionOwnerMetadataEnvelopeV1,
     AccountEncryptionMigrateReviewCommentsDirectiveSchema,
@@ -19,8 +20,14 @@ import {
     type AccountEncryptionMigrateSessionsDirective,
     type AccountEncryptionMigrateSessionOrganizationDirective,
     type AccountEncryptionMigrateTodosDirective,
+    type AccountEncryptionMigrateWorkspaceDirective,
+    WorkspaceTabsV1Schema,
+    classifyAccountJsonKvKey,
     type ReviewCommentAccountEncryptionMigrationInventoryResponseV1,
     type SessionOrganizationAccountEncryptionMigrationInventory,
+    type AccountEncryptionMigrateAutomationsDirective,
+    type AccountEncryptionMigrateAutomationsInventoryResponse,
+    type ArtifactAccessRecipientCensusResponseV1,
 } from '@happier-dev/protocol';
 
 import type { AuthCredentials } from '@/auth/storage/tokenStorage';
@@ -43,8 +50,14 @@ import type { Encryption } from '@/sync/encryption/encryption';
 import { normalizeSessionAccessProjection } from '@/sync/engine/sessions/normalizeSessionAccessProjection';
 import { readSessionLayout1OwnerMetadata } from '@/sync/engine/sessions/readSessionLayout1OwnerProjection';
 import { resolveAccountScopedCryptoMaterialFromCredentials } from '@/sync/domains/connectedServices/resolveAccountScopedCryptoMaterialFromCredentials';
+import {
+    assertAccountEncryptionMigrationScopeCurrent,
+    type AccountEncryptionMigrationScope,
+} from '@/sync/domains/settings/scope/accountSettingsScope';
 import { buildReviewCommentAccountEncryptionMigrationDirective } from '@/sync/domains/reviews/comments/accountEncryptionMigration';
 import { buildSessionOrganizationAccountEncryptionMigrationDirective } from '@/sync/ops/sessionOrganization/sessionOrganizationDisplayEnvelope';
+import { buildAccountEncryptionMigrationAutomations } from './buildAccountEncryptionMigrationAutomations';
+import { decodeAccountStoredJsonContent, encodeAccountStoredJsonContent } from '@/sync/encryption/accountStoredJsonContent';
 
 export type AccountEncryptionMigrationMachineRow = Readonly<{
     id: string;
@@ -55,7 +68,7 @@ export type AccountEncryptionMigrationMachineRow = Readonly<{
     dataEncryptionKey?: string | null;
 }>;
 
-export type AccountEncryptionMigrationTodoRow = Readonly<{
+export type AccountEncryptionMigrationKvRow = Readonly<{
     key: string;
     value: string;
     version: number;
@@ -79,8 +92,10 @@ export type AccountEncryptionMigrationSessionRow = Readonly<{
 }>;
 
 export type AccountEncryptionMigrationStorageDirectives = Readonly<{
+    automations?: AccountEncryptionMigrateAutomationsDirective;
     machines: AccountEncryptionMigrateMachinesDirective;
     todos: AccountEncryptionMigrateTodosDirective;
+    workspace?: AccountEncryptionMigrateWorkspaceDirective;
     artifacts: AccountEncryptionMigrateArtifactsDirective;
     sessions: AccountEncryptionMigrateSessionsDirective;
     reviewComments: AccountEncryptionMigrateReviewCommentsDirective;
@@ -272,7 +287,7 @@ async function buildMachineDirective(params: Readonly<{
 async function buildTodoDirective(params: Readonly<{
     fromMode: 'plain' | 'e2ee';
     toMode: 'plain' | 'e2ee';
-    rows: readonly AccountEncryptionMigrationTodoRow[];
+    rows: readonly AccountEncryptionMigrationKvRow[];
     sourceEncryption: Encryption | null;
     targetEncryption: Encryption | null;
 }>): Promise<AccountEncryptionMigrateTodosDirective> {
@@ -294,6 +309,26 @@ async function buildTodoDirective(params: Readonly<{
                 value: content.value,
                 encryption: params.targetEncryption,
             }),
+        });
+    }
+    return { action: 'migrate', items };
+}
+
+async function buildWorkspaceDirective(params: Readonly<{
+    fromMode: 'plain' | 'e2ee';
+    toMode: 'plain' | 'e2ee';
+    rows: readonly AccountEncryptionMigrationKvRow[];
+    sourceEncryption: Encryption | null;
+    targetEncryption: Encryption | null;
+}>): Promise<AccountEncryptionMigrateWorkspaceDirective> {
+    if (params.rows.length === 0) return { action: 'assert_empty' };
+    const items = [];
+    for (const row of params.rows) {
+        if (classifyAccountJsonKvKey(row.key) !== 'workspace') throw new Error('Invalid Workspace migration key');
+        const value = await decodeAccountStoredJsonContent({ encoded: row.value, expectedMode: params.fromMode, encryption: params.sourceEncryption });
+        if (row.key === 'workspace:tabs:v1' || row.key.startsWith('workspace:handoff-tabs:v1:')) WorkspaceTabsV1Schema.parse(value);
+        items.push({ key: row.key, expectedVersion: row.version,
+            value: await encodeAccountStoredJsonContent({ mode: params.toMode, value, encryption: params.targetEncryption }),
         });
     }
     return { action: 'migrate', items };
@@ -340,6 +375,8 @@ async function buildArtifactDirective(params: Readonly<{
     rows: readonly AccountEncryptionMigrationArtifactRow[];
     sourceEncryption: Encryption | null;
     targetEncryption: Encryption | null;
+    readRecipients?: (artifactId: string) => Promise<ArtifactAccessRecipientCensusResponseV1>;
+    scope: AccountEncryptionMigrationScope;
 }>): Promise<AccountEncryptionMigrateArtifactsDirective> {
     if (params.rows.length === 0) return { action: 'assert_empty' };
     const items = [];
@@ -353,6 +390,8 @@ async function buildArtifactDirective(params: Readonly<{
                 artifactId: row.id,
                 expectedHeaderVersion: row.headerVersion,
                 expectedBodyVersion: row.bodyVersion,
+                expectedDataEncryptionKey: row.dataEncryptionKey,
+                recipientKeyEnvelopes: [],
                 header: encodePlainArtifactStoredContent(opened.header),
                 body: encodePlainArtifactStoredContent(opened.body),
                 dataEncryptionKey: ARTIFACT_PLAIN_DATA_KEY_MARKER,
@@ -363,12 +402,24 @@ async function buildArtifactDirective(params: Readonly<{
             params.targetEncryption,
             'target Artifact storage',
         );
+        if (!params.readRecipients) throw new Error('Artifact migration recipient census is unavailable');
+        const census = await params.readRecipients(row.id);
+        assertAccountEncryptionMigrationScopeCurrent(params.scope);
+        if (census.artifactId !== row.id || census.ownerAccountId !== params.scope.scope.accountId
+            || census.access !== 'owner' || census.encryptionMode !== (isPlainArtifactDataKeyMarker(row.dataEncryptionKey) ? 'plain' : 'e2ee')
+            || (census.dataEncryptionKey ?? ARTIFACT_PLAIN_DATA_KEY_MARKER) !== row.dataEncryptionKey) {
+            throw new Error('Artifact migration recipient census changed');
+        }
         const dataKey = ArtifactEncryption.generateDataEncryptionKey();
         const artifactEncryption = new ArtifactEncryption(dataKey);
         items.push({
             artifactId: row.id,
             expectedHeaderVersion: row.headerVersion,
             expectedBodyVersion: row.bodyVersion,
+            expectedDataEncryptionKey: row.dataEncryptionKey,
+            recipientKeyEnvelopes: prepareArtifactRecipientKeyEnvelopesV1({ dataKey,
+                recipients: census.recipients.filter(recipient => recipient.recipientAccountId !== census.ownerAccountId),
+                randomBytes: getRandomBytes, replaceExisting: true }),
             header: await artifactEncryption.encryptHeader(opened.header),
             body: await artifactEncryption.encryptBody(opened.body),
             dataEncryptionKey: encodeBase64(
@@ -504,23 +555,30 @@ export async function buildAccountEncryptionMigrationStorageDirectives(
         sourceEncryption: Encryption | null;
         targetEncryption: Encryption | null;
         machines: readonly AccountEncryptionMigrationMachineRow[];
-        todos: readonly AccountEncryptionMigrationTodoRow[];
+        todos: readonly AccountEncryptionMigrationKvRow[];
+        workspace?: readonly AccountEncryptionMigrationKvRow[];
         artifacts: readonly AccountEncryptionMigrationArtifactRow[];
         sessions: readonly AccountEncryptionMigrationSessionRow[];
         reviewCommentsInventory:
             ReviewCommentAccountEncryptionMigrationInventoryResponseV1;
         sessionOrganizationInventory:
             SessionOrganizationAccountEncryptionMigrationInventory;
+        automationsInventory?: AccountEncryptionMigrateAutomationsInventoryResponse;
         sessionSourceCredentials: AuthCredentials;
         sessionTargetCredentials: AuthCredentials | null;
+        scope: AccountEncryptionMigrationScope;
+        /** The network reader captured for this exact Home/Account transition. */
+        readArtifactRecipients?: (artifactId: string) => Promise<ArtifactAccessRecipientCensusResponseV1>;
     }>,
 ): Promise<AccountEncryptionMigrationStorageDirectives> {
+    assertAccountEncryptionMigrationScopeCurrent(params.scope);
     const machines = await buildMachineDirective({
         toMode: params.toMode,
         rows: params.machines,
         sourceEncryption: params.sourceEncryption,
         targetEncryption: params.targetEncryption,
     });
+    assertAccountEncryptionMigrationScopeCurrent(params.scope);
     const todos = await buildTodoDirective({
         fromMode: params.fromMode,
         toMode: params.toMode,
@@ -528,12 +586,21 @@ export async function buildAccountEncryptionMigrationStorageDirectives(
         sourceEncryption: params.sourceEncryption,
         targetEncryption: params.targetEncryption,
     });
+    assertAccountEncryptionMigrationScopeCurrent(params.scope);
+    const workspace = params.workspace === undefined ? undefined : await buildWorkspaceDirective({
+        fromMode: params.fromMode, toMode: params.toMode, rows: params.workspace,
+        sourceEncryption: params.sourceEncryption, targetEncryption: params.targetEncryption,
+    });
+    assertAccountEncryptionMigrationScopeCurrent(params.scope);
     const artifacts = await buildArtifactDirective({
         toMode: params.toMode,
         rows: params.artifacts,
         sourceEncryption: params.sourceEncryption,
         targetEncryption: params.targetEncryption,
+        readRecipients: params.readArtifactRecipients,
+        scope: params.scope,
     });
+    assertAccountEncryptionMigrationScopeCurrent(params.scope);
     const sessions = buildSessionDirective({
         fromMode: params.fromMode,
         toMode: params.toMode,
@@ -568,6 +635,7 @@ export async function buildAccountEncryptionMigrationStorageDirectives(
                 randomBytes: getRandomBytes,
             }),
         );
+    assertAccountEncryptionMigrationScopeCurrent(params.scope);
     const sessionOrganization =
         await buildSessionOrganizationAccountEncryptionMigrationDirective({
             toMode: params.toMode,
@@ -575,9 +643,19 @@ export async function buildAccountEncryptionMigrationStorageDirectives(
             sourceCredentials: params.sessionSourceCredentials,
             targetCredentials: params.sessionTargetCredentials,
         });
+    assertAccountEncryptionMigrationScopeCurrent(params.scope);
+    const automations = params.automationsInventory
+        ? await buildAccountEncryptionMigrationAutomations({ accountId: params.scope.scope.accountId,
+            fromMode: params.fromMode, toMode: params.toMode, inventory: params.automationsInventory,
+            sourceCredentials: params.sessionSourceCredentials, targetCredentials: params.sessionTargetCredentials,
+            sourceEncryption: params.sourceEncryption, targetEncryption: params.targetEncryption })
+        : undefined;
+    assertAccountEncryptionMigrationScopeCurrent(params.scope);
     return {
+        ...(automations ? { automations } : {}),
         machines,
         todos,
+        ...(workspace ? { workspace } : {}),
         artifacts,
         sessions,
         reviewComments,

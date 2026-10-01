@@ -1,17 +1,15 @@
 import * as React from 'react';
-import { useUnistyles } from 'react-native-unistyles';
 
 import type { MemorySettingsV1, MemoryStatusV1 } from '@happier-dev/protocol';
 
-import { Icon } from '@/components/ui/icons/Icon';
-import { Item } from '@/components/ui/lists/Item';
-import { ItemGroup } from '@/components/ui/lists/ItemGroup';
 import { Switch } from '@/components/ui/forms/Switch';
 import {
     resolveArchivedMemoryEligibilityControl,
     type ArchivedMemoryStatusRequestState,
 } from '@/sync/domains/memory/resolveArchivedMemoryEligibilityControl';
 import { t } from '@/text';
+import { SettingRow } from '@/components/settings/shell/SettingRow';
+import { MEMORY_SETTINGS } from '@/components/settings/memory/memorySettings';
 
 /**
  * Opt-in archived eligibility for daemon-local memory.
@@ -21,13 +19,14 @@ import { t } from '@/text';
  * older daemon echoes the stored setting while ignoring it, so this surface
  * says "update needed" rather than pretending the change took effect.
  */
-export const MemorySettingsArchivedSection = React.memo(function MemorySettingsArchivedSection(props: Readonly<{
+export const MemorySettingsArchivedRow = React.memo(function MemorySettingsArchivedRow(props: Readonly<{
     settings: MemorySettingsV1;
     status: MemoryStatusV1 | null;
     statusRequestState: ArchivedMemoryStatusRequestState;
     writeSettings: (next: MemorySettingsV1) => void | Promise<void>;
+    /** Set by the enclosing `ItemGroup`. */
+    showDivider?: boolean;
 }>) {
-    const { theme } = useUnistyles();
     const control = resolveArchivedMemoryEligibilityControl({
         status: props.status,
         statusRequestState: props.statusRequestState,
@@ -40,37 +39,29 @@ export const MemorySettingsArchivedSection = React.memo(function MemorySettingsA
             : t('memorySearchSettings.archived.unsupportedSubtitle');
 
     return (
-        <ItemGroup
-            title={t('memorySearchSettings.archived.groupTitle')}
-            footer={control.state === 'supported'
-                ? t('memorySearchSettings.archived.groupFooter')
-                : control.state === 'unsupported'
-                    ? t('memorySearchSettings.archived.unsupportedFooter')
-                    : unavailableCopy}
-        >
-            <Item
-                testID="memory-settings-include-archived-item"
-                title={t('memorySearchSettings.archived.includeTitle')}
-                subtitle={control.supported
-                    ? t('memorySearchSettings.archived.includeSubtitle')
-                    : unavailableCopy}
-                icon={<Icon name="archive" size={29} color={theme.colors.accent.purple} />}
-                rightElement={(
-                    <Switch
-                        testID="memory-settings-include-archived"
-                        value={control.value}
-                        disabled={!control.supported}
-                        onValueChange={(value) => {
-                            if (!control.supported) return;
-                            void props.writeSettings({
-                                ...props.settings,
-                                includeArchivedSessions: Boolean(value),
-                            });
-                        }}
-                    />
-                )}
-                showChevron={false}
-            />
-        </ItemGroup>
+        <SettingRow
+            testID="memory-settings-include-archived-item"
+            setting={MEMORY_SETTINGS.settings.include}
+            showDivider={props.showDivider}
+            subtitle={control.supported
+                ? t('memorySearchSettings.archived.includeSubtitle')
+                : unavailableCopy}
+            subtitleLines={0}
+            rightElement={(
+                <Switch
+                    testID="memory-settings-include-archived"
+                    value={control.value}
+                    disabled={!control.supported}
+                    onValueChange={(value) => {
+                        if (!control.supported) return;
+                        void props.writeSettings({
+                            ...props.settings,
+                            includeArchivedSessions: Boolean(value),
+                        });
+                    }}
+                />
+            )}
+            showChevron={false}
+        />
     );
 });

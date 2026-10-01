@@ -9,6 +9,10 @@
 
 import { randomUUID } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
+import { z } from 'zod';
+import { resolveBackendTargetFromSessionMetadata } from '@/session/backendTargets/resolveBackendTargetFromSessionMetadata';
+import { resolvePermissionIntentFromMetadataSnapshot } from '@/agent/runtime/permissions/modeFromMetadata';
+import { isApprovalReviewerModelEligible } from './approvalReviewerEligibility';
 import { logger } from "@/ui/logger";
 import type { ApiSessionClient } from "@/api/session/sessionClient";
 import { AgentState } from "@/api/types";
@@ -18,8 +22,15 @@ import { applyAllowedToolsToAllowlist, applyUpdatedPermissionsToAllowlist } from
 import { recordToolTraceEvent, type ToolTraceProtocol } from '@/agent/tools/trace/toolTrace';
 import {
     PluginContributionLocalIdSchema,
+    buildBackendTargetKeyV2,
+    parseBackendTargetKeyV2,
+    readSessionRolesV1,
+    resolveRoleSelectionV1,
+    ExecutionRunStartResponseSchema,
+    ExecutionRunWaitResultSchema,
     PluginIdSchema,
     SessionPermissionExternalHumanDecisionActorV1Schema,
+    SessionPermissionRespondRpcParamsV1Schema,
     SessionInputCausalPermissionAuthorityV1Schema,
     SessionPermissionRemoteRespondInputV1Schema,
     SessionUserActionRemoteAnswerInputV1Schema,
@@ -91,6 +102,8 @@ import type {
     PermissionMediationRecordWrite,
 } from './mediation/permissionMediationRecordStore';
 import { createPermissionMediationRecordStore } from './mediation/permissionMediationRecordStore';
+import { readSessionWorkspaceWritesV1 } from '@happier-dev/protocol';
+import { isWorkspaceWriteDeniedByRole } from './workspaceWritePolicy';
 
 type AgentStateRequestStoreBindableSession = Readonly<{
     bindAgentStateRequestStore?: (store: AgentStateRequestStore) => void;
@@ -101,6 +114,11 @@ type AgentStateRequestStoreBindableSession = Readonly<{
 }>;
 
 export type PermissionRequestPushSender = PermissionRequestPushSenderFromSettings;
+
+const ApprovalReviewerAnswerSchema = z.object({
+    decision: z.enum(['allow_once', 'escalate']),
+    reason: z.string().optional(),
+}).strict();
 
 /**
  * Permission response from the mobile app.
@@ -665,6 +683,7 @@ export abstract class BasePermissionHandler {
     private readonly requestCoordinator: PermissionRequestCoordinator<PermissionResult>;
     private readonly onAbortRequested: (() => void | Promise<void>) | null;
     private readonly getAccountSettingsSnapshotFn: () => AccountSettings | null;
+    private readonly getWorkspaceWrites: (() => 'allow' | 'deny' | undefined) | null;
     private readonly toolTrace: { protocol: ToolTraceProtocol; provider: string } | null;
     private readonly triggerAbortCallbackOnAbortDecision: boolean;
     /** Runtime-registry currentness for a mediator whose grant may have survived admission. */
@@ -704,6 +723,136 @@ export abstract class BasePermissionHandler {
      * Returns the log prefix for this handler.
      */
     protected abstract getLogPrefix(): string;
+
+    /** Re-evaluated for pending responses as well as fresh calls, before YOLO or grants. */
+    protected resolveWorkspaceWriteDecision(toolName: string, input: unknown): PermissionResult | null {
+        const workspaceWrites = this.getWorkspaceWrites ? this.getWorkspaceWrites() : readSessionWorkspaceWritesV1(this.session.getMetadataSnapshot(), {
+            settingsOverrides: this.getAccountSettingsSnapshot()?.rolesV1.overrides,
+        });
+        return isWorkspaceWriteDeniedByRole({ workspaceWrites, toolName, toolInput: input }) ? { decision: 'denied' } : null;
+    }
+
+    private readonly approvalReviews = new Map<string, Promise<'allow_once' | 'escalate'>>();
+
+    protected getApprovalReviewerPermissionMode(): string {
+        const metadata = this.session.getMetadataSnapshot();
+        const intent = resolvePermissionIntentFromMetadataSnapshot({ metadata })?.intent;
+        if (intent) return intent;
+        // Absence is the fresh-session default; an unknown explicit mode is not.
+        return metadata && Object.prototype.hasOwnProperty.call(metadata, 'permissionMode') ? 'unavailable' : 'default';
+    }
+
+    private isApprovalReviewerEnabled(): boolean {
+        const metadata = this.session.getMetadataSnapshot();
+        const enabled = metadata && Object.prototype.hasOwnProperty.call(metadata, 'approvalReviewerEnabled')
+            ? metadata.approvalReviewerEnabled === true
+            : this.getAccountSettingsSnapshot()?.approvalReviewerEnabled === true;
+        const mode = this.getApprovalReviewerPermissionMode();
+        // The permission owner normalizes legacy Accept edits to safe-yolo.
+        // Preserve that explicit spelling for this opt-in; safe-yolo itself is not in scope.
+        const acceptEdits = mode === 'acceptEdits'
+            || (mode === 'safe-yolo' && metadata?.permissionMode === 'acceptEdits');
+        return enabled && (mode === 'default' || acceptEdits);
+    }
+
+    /** Model work never holds the durable claim or delays publication/human notification. */
+    respondAsApprovalReviewer(requestId: string): Promise<'allow_once' | 'escalate'> {
+        const existing = this.approvalReviews.get(requestId);
+        if (existing) return existing;
+        const review = this.reviewPermissionRequest(requestId).catch((error: unknown) => {
+            logger.debug(`${this.getLogPrefix()} Approval reviewer unavailable; request remains pending`, error);
+            return 'escalate' as const;
+        }).finally(() => {
+            if (this.approvalReviews.get(requestId) === review) this.approvalReviews.delete(requestId);
+        });
+        this.approvalReviews.set(requestId, review);
+        return review;
+    }
+
+    private async reviewPermissionRequest(requestId: string): Promise<'allow_once' | 'escalate'> {
+        const context = this.requestCoordinator.getResponseContext(requestId);
+        const pending = this.pendingRequests.get(requestId);
+        const currentDecision = pending?.resolveCurrentPermissionDecision?.();
+        if (!context || !pending?.coordinatorManaged || !this.isApprovalReviewerEnabled() || context.source === HAPPIER_ACTION_REQUEST_SOURCE
+            || context.kind === 'user_action' || resolveAgentRequestKind(context.toolName) !== 'permission'
+            || currentDecision?.decision === 'denied' || currentDecision?.decision === 'abort') return 'escalate';
+        // Compare against the reviewed value, not a provider-owned mutable argument reference.
+        const reviewedInput: unknown = structuredClone(context.toolInput);
+        const metadata = this.session.getMetadataSnapshot();
+        if (!await isApprovalReviewerModelEligible(context.toolName, reviewedInput, metadata?.path ?? '')) return 'escalate';
+        const backend = resolveBackendTargetFromSessionMetadata(metadata);
+        if (!backend) return 'escalate';
+        const role = resolveRoleSelectionV1({
+            roleId: 'approval_reviewer',
+            settingsOverrides: this.getAccountSettingsSnapshot()?.rolesV1.overrides,
+            sessionRoles: readSessionRolesV1(metadata) ?? undefined,
+            defaultEngine: { agentTargetKey: buildBackendTargetKeyV2(backend) },
+        });
+        if (!role.ok || !role.selection.engine) return 'escalate';
+        const projection = projectRemoteMediatedRequestSummary({ kind: 'permission', toolName: context.toolName, toolInput: reviewedInput });
+        if (!projection || !this.isApprovalReviewerEnabled()) return 'escalate';
+        const start = await this.session.executionRuns.start({
+            roleId: 'approval_reviewer', intent: 'task',
+            backendTarget: parseBackendTargetKeyV2(role.selection.engine.agentTargetKey),
+            ...(role.selection.engine.modelId ? { modelId: role.selection.engine.modelId } : {}),
+            ...(role.selection.engine.effort ? { sessionConfigOptionOverrides: {
+                v: 1, updatedAt: 0, overrides: { effort: { value: role.selection.engine.effort, updatedAt: 0 } },
+            } } : {}),
+            ...(role.selection.profileId && !role.selection.profileUnavailable ? { profileId: role.selection.profileId } : {}),
+            permissionMode: 'no_tools', retentionPolicy: 'ephemeral', runClass: 'bounded', ioMode: 'request_response',
+            instructions: role.selection.instructions,
+            intentInput: { input: projection, resultSchema: {
+                type: 'object', properties: { decision: { type: 'string', enum: ['allow_once', 'escalate'] }, reason: { type: 'string' } },
+                required: ['decision'], additionalProperties: false,
+            } },
+        });
+        if (!start.ok) return 'escalate';
+        const started = ExecutionRunStartResponseSchema.safeParse(start.data);
+        if (!started.success) return 'escalate';
+        // Observation timeouts are not decision deadlines. Continue on the same run handle.
+        let observed = started.data.wait;
+        while (!observed || (observed.ok && observed.status === 'running')) {
+            if (!this.isApprovalReviewerEnabled() || !this.requestCoordinator.getResponseContext(requestId)) return 'escalate';
+            const waitRun = this.session.executionRuns.wait;
+            if (!waitRun) return 'escalate';
+            const wait = await waitRun({ runId: started.data.runId });
+            if (!wait.ok) return 'escalate';
+            const parsed = ExecutionRunWaitResultSchema.safeParse('data' in wait ? wait.data : wait);
+            if (!parsed.success) return 'escalate';
+            observed = parsed.data;
+        }
+        if (!observed.ok || observed.status !== 'succeeded' || observed.result.run.runId !== started.data.runId) return 'escalate';
+        const answer = ApprovalReviewerAnswerSchema.safeParse(observed.result.latestToolResult);
+        if (!answer.success || answer.data.decision !== 'allow_once') return 'escalate';
+        return this.requestCoordinator.withResponseClaim(requestId, async () => {
+            const current = this.requestCoordinator.getResponseContext(requestId);
+            const eligible = () => {
+                const decision = this.pendingRequests.get(requestId)?.resolveCurrentPermissionDecision?.()
+                    ?? (current ? this.resolveCurrentPermissionDecisionForOutstandingRequest(current) : null);
+                return this.pendingRequests.get(requestId) === pending
+                    && isDeepStrictEqual(pending.input, reviewedInput)
+                    && this.isApprovalReviewerEnabled() && decision?.decision !== 'denied' && decision?.decision !== 'abort';
+            };
+            if (!current || this.pendingRequests.get(requestId) !== pending || !eligible() || current.turnId !== context.turnId
+                || current.toolName !== context.toolName || !isDeepStrictEqual(current.toolInput, reviewedInput)) return 'escalate';
+            const claim: PermissionResponseClaim = { version: 1, origin: 'approvalReviewer',
+                ...(current.turnId ? { turnId: current.turnId } : {}), decision: 'approved', scope: 'request' };
+            const acquired = await this.requestCoordinator.acquireResponseClaim({ requestId, claim });
+            if (acquired.status !== 'acquired') return 'escalate';
+            let completed = false;
+            try {
+                if (this.pendingRequests.get(requestId) !== pending || !eligible()) return 'escalate';
+                completed = await this.completePendingPermissionRequest(requestId, current, { decision: 'approved' }, {
+                    status: 'approved', decision: 'approved',
+                    isCurrent: () => this.pendingRequests.get(requestId) === pending && eligible(),
+                    extraCompletedFields: { permissionDecisionClaimV1: claim, permissionDecisionActorV1: { kind: 'approvalReviewer' } },
+                });
+                return completed ? 'allow_once' : 'escalate';
+            } finally {
+                if (!completed) await this.requestCoordinator.releaseResponseClaim({ requestId, claim });
+            }
+        });
+    }
 
     /**
      * The concrete permission-policy owner rechecks a remote allow against
@@ -760,6 +909,8 @@ export abstract class BasePermissionHandler {
         opts?: {
             pushSender?: PermissionRequestPushSender | null;
             getAccountSettings?: (() => AccountSettings | null) | null;
+            /** Canonical host resolution includes Artifact/plugin and workflow role layers. */
+            getWorkspaceWrites?: (() => 'allow' | 'deny' | undefined) | null;
             getAccountSettingsSecretsReadKeys?: (() => ReadonlyArray<Uint8Array | null | undefined>) | null;
             onAbortRequested?: (() => void | Promise<void>) | null;
             toolTrace?: { protocol: ToolTraceProtocol; provider: string } | null;
@@ -774,6 +925,7 @@ export abstract class BasePermissionHandler {
     ) {
         this.session = session;
         this.getAccountSettingsSnapshotFn = typeof opts?.getAccountSettings === 'function' ? opts.getAccountSettings : (() => null);
+        this.getWorkspaceWrites = opts?.getWorkspaceWrites ?? null;
         // A remote grant is an external authorization effect. A host runtime
         // that has not supplied the registry-owned lifecycle read must not
         // continue using it after mediator state changes.
@@ -1517,6 +1669,33 @@ export abstract class BasePermissionHandler {
      * Setup RPC handler for permission responses.
      */
     protected setupRpcHandler(): void {
+        const parsePermissionResponse = (input: unknown, legacy = false): PermissionResponse | null => {
+            let candidate = input;
+            if (legacy && input && typeof input === 'object' && !Array.isArray(input)) {
+                const { allowTools, allowedTools, answers, ...rest } = input as Record<string, unknown>;
+                if (allowTools !== undefined && allowedTools !== undefined && !isDeepStrictEqual(allowTools, allowedTools)) {
+                    return null;
+                }
+                // The inspected 0.2 predecessor sends scalar answers over `permission`.
+                // Translate that historical carrier, then use the same strict current parser.
+                const normalizedAnswers = answers && typeof answers === 'object' && !Array.isArray(answers)
+                    && Object.values(answers).every((value) => typeof value === 'string')
+                    ? Object.fromEntries(Object.entries(answers).map(([question, value]) => [question, [value]]))
+                    : answers;
+                candidate = {
+                    ...rest,
+                    ...(allowedTools === undefined && allowTools === undefined ? {} : { allowedTools: allowedTools ?? allowTools }),
+                    ...(answers === undefined ? {} : { answers: normalizedAnswers }),
+                };
+            }
+            const parsed = SessionPermissionRespondRpcParamsV1Schema.safeParse(candidate);
+            return parsed.success ? parsed.data : null;
+        };
+        const invalidResponse = (input: unknown): PermissionRespondRpcResult => ({
+            ok: false,
+            errorCode: 'permission_response_invalid',
+            requestId: input && typeof input === 'object' && 'id' in input && typeof input.id === 'string' ? input.id : '',
+        });
         const requestIdFor = (response: PermissionResponse): string => (
             typeof response?.id === 'string' ? response.id : ''
         );
@@ -1585,21 +1764,30 @@ export abstract class BasePermissionHandler {
             }
             return undefined;
         };
-        this.session.rpcHandlerManager.registerHandler<PermissionResponse, PermissionRespondRpcResult>(
+        this.session.rpcHandlerManager.registerHandler<unknown, PermissionRespondRpcResult>(
             'session.permission.respond',
-            (response, rpcContext) => handleAttributedPermissionResponse(response, rpcContext, 'permission'),
+            (input, rpcContext) => {
+                const response = parsePermissionResponse(input);
+                return response ? handleAttributedPermissionResponse(response, rpcContext, 'permission') : invalidResponse(input);
+            },
         );
-        this.session.rpcHandlerManager.registerHandler<PermissionResponse, PermissionRespondRpcResult>(
+        this.session.rpcHandlerManager.registerHandler<unknown, PermissionRespondRpcResult>(
             'session.user_action.answer',
-            handleUserActionAnswer,
+            (input) => {
+                const response = parsePermissionResponse(input);
+                return response ? handleUserActionAnswer(response) : invalidResponse(input);
+            },
         );
-        this.session.rpcHandlerManager.registerHandler<PermissionResponse, PermissionRespondRpcResult>(
+        this.session.rpcHandlerManager.registerHandler<unknown, PermissionRespondRpcResult>(
             'permission',
             // Compatibility adapter for released clients that used this one
             // legacy RPC for both permission and structured-question answers.
             // It has no independent completion logic and still requires the
             // server-derived actor before it can resolve either request shape.
-            handleAttributedPermissionResponse,
+            (input, rpcContext) => {
+                const response = parsePermissionResponse(input, true);
+                return response ? handleAttributedPermissionResponse(response, rpcContext) : invalidResponse(input);
+            },
         );
     }
 
@@ -3696,6 +3884,8 @@ export abstract class BasePermissionHandler {
             ...(source ? { source } : {}),
             ...(owner ? { owner } : {}),
         }, { signal: options?.signal });
+
+        if (ownsPendingRecord) void this.respondAsApprovalReviewer(toolCallId);
 
         return pending.finally(() => {
             if (ownsPendingRecord && this.pendingRequests.get(toolCallId) === pendingRecord) {

@@ -1,0 +1,157 @@
+import { describe, expect, it } from 'vitest';
+
+import type { ResolvedAgentCatalogEntry } from '@/agents/backendCatalog/agentCatalogProjection';
+import type { MachineAgent } from '@/agents/machineAgents/machineAgentTypes';
+import { projectMachineAgent } from '@/agents/machineAgents/machineAgentModel';
+
+import {
+    buildAgentCollection,
+    resolveAgentCollectionLandingId,
+    resolveSelectedAgentCollectionId,
+} from './agentCollectionModel';
+
+function entry(agentId: string, overrides: Partial<ResolvedAgentCatalogEntry> = {}): ResolvedAgentCatalogEntry {
+    return {
+        agentId,
+        qualifiedId: agentId,
+        identity: null,
+        installedPackage: null,
+        projectionGeneration: null,
+        catalogAgentId: null,
+        iconAgentId: null,
+        backendTargetKey: null,
+        title: agentId.charAt(0).toUpperCase() + agentId.slice(1),
+        subtitle: null,
+        iconName: 'code',
+        channel: 'stable',
+        enabled: true,
+        isBuiltIn: true,
+        descriptor: null,
+        behavior: null,
+        authPlugin: null,
+        cli: { executable: { binaryName: agentId, sourcePreference: 'system-first' } } as ResolvedAgentCatalogEntry['cli'],
+        cliAuthBackgroundCheckSafe: true,
+        connectedAccounts: [],
+        ...overrides,
+    };
+}
+
+function agent(agentId: string, state: MachineAgent['state'], overrides: Partial<MachineAgent> = {}): MachineAgent {
+    return {
+        ...projectMachineAgent({ agentId, title: agentId, facts: null, checking: false, stale: false, connectedServices: [], job: null }),
+        installed: state !== 'notInstalled' && state !== 'unsupported',
+        state,
+        ...overrides,
+    };
+}
+
+describe('buildAgentCollection', () => {
+    it('groups agents by what the selected machine reports: detected CLIs on the machine, missing ones available to install', () => {
+        const collection = buildAgentCollection({
+            entries: [entry('claude'), entry('cursor'), entry('codex'), entry('helper', { cli: null })],
+            agents: [agent('claude', 'ready'), agent('cursor', 'notInstalled'), agent('codex', 'checking')],
+            query: '',
+        });
+
+        // An agent whose CLI is still being detected, or that has no CLI at all, is not "missing".
+        expect(collection.onMachine.map((row) => row.entry.agentId)).toEqual(['claude', 'codex', 'helper']);
+        expect(collection.available.map((row) => row.entry.agentId)).toEqual(['cursor']);
+        expect(collection.available[0]?.status).toBe('notInstalled');
+        expect(collection.total).toBe(4);
+    });
+
+    it('flags only a signed-out installed agent as trouble and keeps healthy and disabled rows quiet', () => {
+        const collection = buildAgentCollection({
+            entries: [entry('claude'), entry('opencode'), entry('codex', { enabled: false }), entry('gemini')],
+            agents: [agent('claude', 'ready'), agent('opencode', 'needsSignIn'), agent('codex', 'needsSignIn'), agent('gemini', 'updateAvailable')],
+            query: '',
+        });
+
+        const byId = Object.fromEntries(collection.onMachine.map((row) => [row.entry.agentId, row]));
+        expect(byId.claude).toMatchObject({ status: 'ready', trouble: false });
+        expect(byId.opencode).toMatchObject({ status: 'needsSignIn', trouble: true });
+        // Turning an agent off is a choice, not a problem to fix.
+        expect(byId.codex).toMatchObject({ status: 'disabled', trouble: false });
+        expect(byId.gemini).toMatchObject({ status: 'updateAvailable', trouble: false });
+    });
+
+    it('claims no status for an agent the machine has not reported on yet, instead of a guessed one', () => {
+        const collection = buildAgentCollection({
+            entries: [entry('codex'), entry('helper', { cli: null })],
+            agents: [],
+            query: '',
+        });
+
+        expect(collection.onMachine.map((row) => row.status)).toEqual(['unknown', 'unknown']);
+    });
+
+    it('filters both groups by name without changing the total', () => {
+        const collection = buildAgentCollection({
+            entries: [entry('claude'), entry('cursor'), entry('codex')],
+            agents: [agent('claude', 'ready'), agent('cursor', 'notInstalled'), agent('codex', 'ready')],
+            query: '  CU ',
+        });
+
+        expect(collection.onMachine).toEqual([]);
+        expect(collection.available.map((row) => row.entry.agentId)).toEqual(['cursor']);
+        expect(collection.total).toBe(3);
+    });
+
+    it('retains canonical unsupported and job states, and does not flag stale sign-in facts as trouble', () => {
+        const collection = buildAgentCollection({
+            entries: [entry('antigravity'), entry('claude'), entry('codex'), entry('gemini')],
+            agents: [agent('antigravity', 'unsupported'), agent('claude', 'installing'), agent('codex', 'failed'), agent('gemini', 'needsSignIn', { stale: true })],
+            query: '',
+        });
+        expect(collection.available.map((row) => row.status)).toEqual(['unsupported']);
+        expect(collection.onMachine.map((row) => [row.status, row.trouble])).toEqual([
+            ['installing', false], ['failed', false], ['needsSignIn', false],
+        ]);
+    });
+});
+
+describe('resolveSelectedAgentCollectionId', () => {
+    const entries = [
+        entry('codex'),
+        entry('acme.review/provider', { identity: { pluginId: 'acme.review', localId: 'provider' } }),
+        entry('provider'),
+    ];
+
+    it('selects the agent the detail route addresses, keeping a plugin agent distinct from a same-named built-in', () => {
+        expect(resolveSelectedAgentCollectionId(entries, { agentId: 'codex', pluginId: null })).toBe('codex');
+        expect(resolveSelectedAgentCollectionId(entries, { agentId: 'provider', pluginId: 'acme.review' }))
+            .toBe('acme.review/provider');
+        expect(resolveSelectedAgentCollectionId(entries, { agentId: 'provider', pluginId: null })).toBe('provider');
+    });
+
+    it('selects nothing on the collection index or for an unknown agent', () => {
+        expect(resolveSelectedAgentCollectionId(entries, { agentId: null, pluginId: null })).toBeNull();
+        expect(resolveSelectedAgentCollectionId(entries, { agentId: 'missing', pluginId: null })).toBeNull();
+        expect(resolveSelectedAgentCollectionId(entries, { agentId: 'provider', pluginId: 'other.plugin' })).toBeNull();
+    });
+});
+
+describe('resolveAgentCollectionLandingId', () => {
+    const collection = buildAgentCollection({
+        entries: [entry('cursor'), entry('claude'), entry('codex')],
+        agents: [agent('cursor', 'notInstalled'), agent('claude', 'ready'), agent('codex', 'ready')],
+        query: '',
+    });
+
+    it('returns to the agent visited last while it is still listed', () => {
+        expect(resolveAgentCollectionLandingId(collection, 'codex')).toBe('codex');
+        expect(resolveAgentCollectionLandingId(collection, 'cursor')).toBe('cursor');
+    });
+
+    it('otherwise opens the first agent on the machine, then the first listed', () => {
+        expect(resolveAgentCollectionLandingId(collection, 'gone')).toBe('claude');
+        expect(resolveAgentCollectionLandingId(collection, null)).toBe('claude');
+        const nothingInstalled = buildAgentCollection({
+            entries: [entry('cursor')],
+            agents: [agent('cursor', 'notInstalled')],
+            query: '',
+        });
+        expect(resolveAgentCollectionLandingId(nothingInstalled, null)).toBe('cursor');
+        expect(resolveAgentCollectionLandingId(buildAgentCollection({ entries: [], agents: [], query: '' }), null)).toBeNull();
+    });
+});

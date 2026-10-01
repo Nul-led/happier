@@ -65,6 +65,19 @@ describe('Team credential source snapshots', () => {
     })).toBeNull();
   });
 
+  it('does not reuse direct material when only private service configuration currentness changes', () => {
+    const snapshot = (serviceConfigurationFingerprint: string) => createConnectedAccountTeamCredentialSourceSnapshot({
+      source: accountSource,
+      material: { ...material, configurationRevision: null, serviceConfigurationFingerprint },
+      authenticationKind: 'manual',
+      isPersistedSourceCurrent: async () => true,
+    });
+    expect(snapshot('service-configuration-2')?.currentness.sourceVersion)
+      .not.toBe(snapshot('service-configuration-1')?.currentness.sourceVersion);
+    expect(snapshot('service-configuration-1')?.currentness.sourceVersion)
+      .toBe(snapshot('service-configuration-1')?.currentness.sourceVersion);
+  });
+
   it('binds Pool incarnation and enabled state without granting selection mutation', async () => {
     const parsedPoolSource = TeamCredentialSourceBindingV1Schema.parse({
       v: 1 as const,
@@ -118,7 +131,7 @@ describe('Team credential source snapshots', () => {
       connectionRevision: 3,
       endpointSetFingerprint: 'endpoint-set:v1:one',
       grantFingerprint: 'grant:v1:one',
-      runtimeRegistryGeneration: 9,
+      activationOccurrenceId: 'gateway-occurrence-9',
       endpoint: Object.freeze({
         endpointTemplateId: 'responses', normalizedUrl: 'https://example.test/v1',
         protocol: 'openai-responses' as const,

@@ -373,6 +373,54 @@ describe('acquirePortableHomeLinkTarget over an Iroh-only Home', () => {
 });
 
 /**
+ * A legacy link names a Home by identity alone. On a device that has not added
+ * that Home the answer is `unknown_home`, whose only remedy is adding it — so
+ * adding it must re-resolve the very link that is still open.
+ */
+describe('usePortableHomeLinkTarget when the missing Home is added', () => {
+    it('re-resolves the unchanged carrier through the profiles owner', async () => {
+        const harness = await renderHook(
+            (carrier: string | null) => usePortableHomeLinkTarget(carrier),
+            { initialProps: 'srv_added_later' as string | null },
+        );
+
+        expect(harness.getCurrent()).toEqual({
+            kind: 'unknown_home',
+            homeServerIdentityId: 'srv_added_later',
+        });
+
+        const added = await addHome('https://added-later.example', 'srv_added_later');
+        const resolved = await harness.rerender('srv_added_later');
+
+        expect(resolved).toEqual({
+            kind: 'resolved',
+            serverId: added.profileId,
+            target: { kind: 'saved_profile', profileRef: added.profileId },
+        });
+    });
+
+    it('keeps one resolution identity while unrelated Homes are added', async () => {
+        const added = await addHome('https://stable-home.example', 'srv_stable_home');
+        const harness = await renderHook(
+            (carrier: string | null) => usePortableHomeLinkTarget(carrier),
+            { initialProps: 'srv_stable_home' as string | null },
+        );
+        const first = harness.getCurrent();
+        expect(first).toEqual({
+            kind: 'resolved',
+            serverId: added.profileId,
+            target: { kind: 'saved_profile', profileRef: added.profileId },
+        });
+
+        await addHome('https://unrelated-home.example', 'srv_unrelated_home');
+
+        // Consumers key effects and requests off this value, so an answer that did
+        // not change must stay referentially identical.
+        expect(await harness.rerender('srv_stable_home')).toBe(first);
+    });
+});
+
+/**
  * A mounted portable-link route can receive a second link as an in-place param
  * update. The acquired target of the previous carrier must never be published
  * for the new one: consumers dispatch their bearer-carrying request from the

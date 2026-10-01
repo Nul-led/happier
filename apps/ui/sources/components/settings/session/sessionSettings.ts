@@ -10,7 +10,7 @@ export const SESSION_SETTINGS = defineSettingsPage({
         launchDefaults: {
             titleKey: 'settingsSession.rootGroups.launchDefaults.title',
             settings: {
-                startWith: {
+                startWith: { storage: { scope: 'account', key: 'useEnhancedSessionWizard', access: 'read_write' },
                     titleKey: 'settingsSession.sessionCreation.startWithTitle',
                     descriptionKey: 'settingsSession.sessionCreation.startWithDescription',
                     keywordKeys: [
@@ -22,8 +22,8 @@ export const SESSION_SETTINGS = defineSettingsPage({
                     titleKey: 'settingsSession.sessionCreation.wizardDispositionTitle',
                     descriptionKey: 'settingsSession.sessionCreation.wizardDispositionSubtitle',
                 },
-                rememberProjectSelections: { titleKey: 'settingsSession.sessionCreation.rememberLastProjectSelectionsTitle' },
-                rememberEngineSelections: { titleKey: 'settingsSession.sessionCreation.rememberLastEngineSelectionsTitle' },
+                rememberProjectSelections: { titleKey: 'settingsSession.sessionCreation.rememberLastProjectSelectionsTitle', storage: { scope: 'account', key: 'rememberLastProjectSessionSelections', access: 'read_write' } },
+                rememberEngineSelections: { titleKey: 'settingsSession.sessionCreation.rememberLastEngineSelectionsTitle', storage: { scope: 'account', key: 'rememberLastEngineSelectionsV1', access: 'read_write' } },
             },
         },
         listOrganization: {
@@ -32,6 +32,7 @@ export const SESSION_SETTINGS = defineSettingsPage({
                 listDensity: {
                     titleKey: 'settingsAppearance.sessionListDensity.title',
                     descriptionKey: 'settingsAppearance.sessionListDensity.subtitle',
+                    storage: { scope: 'account', key: 'sessionListDensity', access: 'read_write' },
                 },
                 ordering: {
                     titleKey: 'settingsSession.sessionList.orderingTitle',
@@ -57,54 +58,69 @@ export const SESSION_SETTINGS = defineSettingsPage({
                 hideInactive: {
                     titleKey: 'settingsFeatures.hideInactiveSessions',
                     descriptionKey: 'settingsFeatures.hideInactiveSessionsSubtitle',
+                    storage: { scope: 'account', key: 'hideInactiveSessions', access: 'read_write' },
                 },
                 rightPaneDefaultOpen: {
                     titleKey: 'settingsAppearance.sessionsRightPaneDefaultOpen',
                     descriptionKey: 'settingsAppearance.sessionsRightPaneDefaultOpenDescription',
+                    storage: { scope: 'local', key: 'sessionsRightPaneDefaultOpen', access: 'read_write' },
                 },
             },
         },
         rowDetails: {
             titleKey: 'settingsSession.rootGroups.rowDetails.title',
             settings: {
-                tags: { titleKey: 'settingsSession.sessionList.tagsTitle' },
+                tags: { titleKey: 'settingsSession.sessionList.tagsTitle', storage: { scope: 'account', key: 'sessionTagsEnabled', access: 'read_write' } },
                 identityDisplay: {
                     titleKey: 'settingsSession.sessionList.identityDisplayTitle',
                     descriptionKey: 'settingsSession.sessionList.identityDisplaySubtitle',
+                    storage: { scope: 'account', key: 'sessionListIdentityDisplay', access: 'read_write' },
                 },
                 headerIdentityDisplay: {
                     titleKey: 'settingsSession.sessionList.headerIdentityDisplayTitle',
                     descriptionKey: 'settingsSession.sessionList.headerIdentityDisplaySubtitle',
+                    storage: { scope: 'account', key: 'sessionHeaderIdentityDisplay', access: 'read_write' },
                 },
                 activeColor: {
                     titleKey: 'settingsSession.sessionList.activeColorTitle',
                     descriptionKey: 'settingsSession.sessionList.activeColorSubtitle',
+                    storage: { scope: 'account', key: 'sessionListActiveColorModeV1', access: 'read_write' },
                 },
-                workspacePathDisplay: { titleKey: 'settingsSession.sessionList.workspacePathDisplayTitle' },
-                workspaceFavicons: { titleKey: 'settingsSession.sessionList.workspaceFaviconsTitle' },
-                workspaceMachineSubtitles: { titleKey: 'settingsSession.sessionList.workspaceMachineSubtitlesTitle' },
+                workspacePathDisplay: { titleKey: 'settingsSession.sessionList.workspacePathDisplayTitle', storage: { scope: 'account', key: 'workspacePathDisplayModeV1', access: 'read_write' } },
+                workspaceFavicons: { titleKey: 'settingsSession.sessionList.workspaceFaviconsTitle', storage: { scope: 'account', key: 'workspaceFaviconsEnabled', access: 'read_write' } },
+                workspaceMachineSubtitles: { titleKey: 'settingsSession.sessionList.workspaceMachineSubtitlesTitle', storage: { scope: 'account', key: 'workspaceMachineSubtitlesEnabled', access: 'read_write' } },
             },
         },
         activitySignals: {
             titleKey: 'settingsSession.rootGroups.activitySignals.title',
             settings: {
-                workingStatusAnimatedText: { titleKey: 'settingsSession.sessionList.workingStatusAnimatedTextTitle' },
+                workingStatusAnimatedText: { titleKey: 'settingsSession.sessionList.workingStatusAnimatedTextTitle', storage: { scope: 'account', key: 'sessionListWorkingStatusAnimatedTextEnabled', access: 'read_write' } },
                 attentionPromotion: {
                     titleKey: 'settingsSession.sessionList.attentionPromotionModeTitle',
                     descriptionKey: 'settingsSession.sessionList.attentionPromotionModeSubtitle',
                 },
-                attentionStandingDefault: { titleKey: 'settingsSession.sessionList.attentionStandingDefaultTitle' },
+                attentionStandingDefault: { titleKey: 'settingsSession.sessionList.attentionStandingDefaultTitle', storage: { scope: 'account', key: 'sessionListAttentionStandingDefaultV1', access: 'read_write' } },
                 workingPlacement: {
                     titleKey: 'settingsSession.sessionList.workingPlacementModeTitle',
                     descriptionKey: 'settingsSession.sessionList.workingPlacementModeSubtitle',
                 },
-                workingIndicator: { titleKey: 'settingsSession.sessionList.workingIndicatorTitle' },
+                workingIndicator: { titleKey: 'settingsSession.sessionList.workingIndicatorTitle', storage: { scope: 'account', key: 'sessionListNarrowWorkingIndicatorStyle', access: 'read_write' } },
             },
         },
         mobileLayout: {
             titleKey: 'settingsSession.rootGroups.mobileLayout.title',
             settings: {
-                mobileWorkspaceExperience: { titleKey: 'settingsSession.mobileWorkspaceExperience.title' },
+                mobileWorkspaceExperience: { titleKey: 'settingsSession.mobileWorkspaceExperience.title', storage: { scope: 'account', key: 'mobileWorkspaceExperienceV1', access: 'read_write' } },
+            },
+        },
+        openTabs: {
+            titleKey: 'workspaceTabs.sectionTitle',
+            settings: {
+                syncOpenTabs: {
+                    titleKey: 'workspaceTabs.syncTitle',
+                    descriptionKey: 'workspaceTabs.syncDescription',
+                    storage: { scope: 'account', key: 'workspaceTabsSyncEnabled', access: 'read_write' },
+                },
             },
         },
         agentPersonalization: {

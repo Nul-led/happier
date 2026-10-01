@@ -1,5 +1,6 @@
 import * as React from 'react';
-import type { BrowserContextCapabilities, RuntimeActionExecute } from '@happier-dev/protocol';
+import type { BrowserContextCapabilities, BrowserEventV1, RuntimeActionExecute } from '@happier-dev/protocol';
+import type { BrowserDaemonControlCommandSender } from '@/sync/domains/browser/control/machineRpc';
 
 import type {
     AnnotationEditorMark,
@@ -27,6 +28,7 @@ import {
 } from '@/sync/domains/browser/context';
 import { resolveReasonCopy } from '@/sync/domains/surfaces/copy';
 import { t } from '@/text';
+import type { BrowserAnnotationMediaRegistrar } from '@/sync/domains/browser/context/captureProvider';
 
 /**
  * The browser-context / annotation half of the shell.
@@ -107,6 +109,12 @@ function buildAnnotationRuntimeActionInput(
 }
 
 export type BrowserShellContextState = Readonly<{
+    /** Session machine transport; controller state remains owned by the daemon. */
+    daemonControl?: Readonly<{
+        sendCommand: BrowserDaemonControlCommandSender;
+        subscribeBrowserEvents?: (listener: (event: BrowserEventV1) => void) => () => void;
+        receiveBrowserEvent?: (event: BrowserEventV1) => void;
+    }>;
     state: BrowserContextState;
     contextCapabilities: BrowserContextCapabilities;
     enabled?: boolean;
@@ -115,6 +123,7 @@ export type BrowserShellContextState = Readonly<{
     disabledReason?: string | null;
     annotationDraft?: BrowserAnnotationDraftInput | null;
     annotationCaptureProvider?: BrowserAnnotationCaptureProvider | null;
+    annotationMediaRegistrar?: BrowserAnnotationMediaRegistrar | null;
     /** True when `annotationCaptureProvider` is the daemon managed-Chromium CDP producer. */
     managedAnnotationCaptureProvider?: boolean;
     /**
@@ -218,9 +227,9 @@ export function useBrowserAnnotationController(input: Readonly<{
         && input.desktopWebViewAvailability.supports.capture,
     );
     const desktopCaptureProvider = React.useMemo<BrowserAnnotationCaptureProvider | null>(() => {
-        if (!desktopCaptureSupported) return null;
-        return createDesktopBrowserAnnotationCaptureProvider({ available: true });
-    }, [desktopCaptureSupported]);
+        if (!desktopCaptureSupported || !browserContext?.annotationMediaRegistrar) return null;
+        return createDesktopBrowserAnnotationCaptureProvider({ available: true, registerMedia: browserContext.annotationMediaRegistrar });
+    }, [desktopCaptureSupported, browserContext?.annotationMediaRegistrar]);
     const suppliedCaptureProvider = browserContext?.annotationCaptureProvider ?? null;
     const effectiveCaptureProvider = browserContext?.managedAnnotationCaptureProvider === true
         ? (activeView?.adapterKind === 'chromiumSidecar' ? suppliedCaptureProvider : desktopCaptureProvider)

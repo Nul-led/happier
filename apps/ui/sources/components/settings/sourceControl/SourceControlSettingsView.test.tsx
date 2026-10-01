@@ -62,10 +62,13 @@ let filesDiffPresentationStyleValue: FilesDiffPresentationStyleValue = 'split';
 let scmRemoteConfirmPolicyValue = 'always';
 let scmGitRepoPreferredBackendValue: 'git' | 'sapling' = 'git';
 let scmGitRepoPreferredBackendQualifiedIdValue: string | null = null;
+const searchParamsState = vi.hoisted(() => ({ value: {} as Record<string, string> }));
 
 installSettingsViewCommonModuleMocks({
     router: async () => ({
         useRouter: () => ({ push: routerPush }),
+        usePathname: () => '/settings/source-control',
+        useLocalSearchParams: () => searchParamsState.value,
     }),
     storage: async () => {
         const { createStorageModuleStub } = await import('@/dev/testkit/mocks/storage');
@@ -107,13 +110,18 @@ installSettingsViewCommonModuleMocks({
     },
 });
 
-vi.mock('@/agents/catalog/catalog', () => ({
+vi.mock('@/agents/catalog/catalog', async (importOriginal) => ({
+    ...(await importOriginal<typeof import('@/agents/catalog/catalog')>()),
     DEFAULT_AGENT_ID: 'codex',
 }));
 
-vi.mock('@/agents/registry/registryCore', () => ({
+vi.mock('@/agents/registry/registryCore', async (importOriginal) => ({
+    ...(await importOriginal<typeof import('@/agents/registry/registryCore')>()),
     DEFAULT_AGENT_ID: 'codex',
 }));
+
+// The segmented control is asserted through the props its row hands it.
+vi.mock('@/components/ui/navigation/SegmentedTabBar', () => ({ SegmentedTabBar: 'SegmentedTabBar' }));
 
 vi.mock('@/sync/store/settingsWriters', () => ({
     useApplySettings: () => applySettings,
@@ -173,6 +181,22 @@ vi.mock('@/components/ui/lists/Item', () => ({
     Item: (props: any) => React.createElement('Item', props),
 }));
 
+type SegmentedControlProps = Readonly<{
+    tabs: ReadonlyArray<Readonly<{ id: string; label: string }>>;
+    activeTabId: string;
+    disabled?: boolean;
+    onSelectTab: (id: string) => void;
+}>;
+
+/** The segmented control a page row carries (`SegmentedChoiceItem` renders it as the row's control). */
+function segmentedControl(row: { props: Record<string, any>; type?: unknown; findAll?: (predicate: (node: any) => boolean) => any[] } | null): SegmentedControlProps {
+    // The title lookup may land on the `SegmentedChoiceItem` wrapper; its rendered row carries the control.
+    const item = row && row.type !== 'Item' ? row.findAll?.((node) => node.type === 'Item')[0] ?? row : row;
+    const control = item?.props.rightElement?.props as SegmentedControlProps | undefined;
+    if (!control?.tabs) throw new Error('row has no segmented control');
+    return control;
+}
+
 describe('SourceControlSettingsView', () => {
     beforeEach(() => {
         daemonProjectionState.current = { phase: 'unsupported', inputs: null };
@@ -202,7 +226,6 @@ describe('SourceControlSettingsView', () => {
                     generation: 41,
                     installedPackagesById: {},
                     agentsById: {},
-                    backendsById: {},
                     actionsById: {},
                     toolsById: {},
                     commandsById: {},
@@ -274,16 +297,16 @@ describe('SourceControlSettingsView', () => {
         const { SourceControlSettingsView } = await import('./SourceControlSettingsView');
         const screen = await renderSettingsView(React.createElement(SourceControlSettingsView));
 
-        expect(screen.findRowByTitle('Acme Stacked SCM')).toBeTruthy();
-        expect(screen.findRowByTitle('settingsSourceControl.gitRoutingPreference.options.git.title')).toBeNull();
-        screen.pressRowByTitle('Acme Stacked SCM');
+        const routing = segmentedControl(screen.findRowByTitle('settingsSourceControl.page.routing.rowTitle'));
+        expect(routing.tabs.map((tab) => tab.label)).toEqual(['Acme Stacked SCM']);
+        act(() => routing.onSelectTab('acme.scm/stacked'));
         expect(applySettings).toHaveBeenCalledWith({
             scmGitRepoPreferredBackendQualifiedId: 'acme.scm/stacked',
         });
 
-        expect(screen.findRowByTitle(
-            'settingsSourceControl.backends.defaultDiffItemTitle:Acme Stacked SCM:settingsSourceControl.diffMode.pending',
-        )).toBeTruthy();
+        // A backend with a single diff mode states it rather than offering a one-option choice.
+        const defaultDiff = screen.findRow('settings.sourceControl.backend.acme.scm/stacked.defaultDiff');
+        expect(defaultDiff?.props.detail).toBe('settingsSourceControl.diffMode.pending');
 
         expect(screen.findRowByTitle('Acme Forge Enterprise')).toBeTruthy();
         screen.pressRowByTitle('Acme Forge Enterprise');
@@ -324,10 +347,10 @@ describe('SourceControlSettingsView', () => {
 
         const { SourceControlSettingsView } = await import('./SourceControlSettingsView');
         const screen = await renderSettingsView(React.createElement(SourceControlSettingsView));
-        const git = screen.findRowByTitle('Git');
+        const routing = segmentedControl(screen.findRowByTitle('settingsSourceControl.page.routing.rowTitle'));
 
-        expect(git).toBeTruthy();
-        expect(git!.props.rightElement).toBeTruthy();
+        expect(routing.tabs.map((tab) => tab.label)).toEqual(['Git']);
+        expect(routing.activeTabId).toBe('happier.scm.backend.git/git');
     });
 
     it('clears a qualified selection atomically when selecting a projected built-in backend', async () => {
@@ -367,12 +390,10 @@ describe('SourceControlSettingsView', () => {
 
         const { SourceControlSettingsView } = await import('./SourceControlSettingsView');
         const screen = await renderSettingsView(React.createElement(SourceControlSettingsView));
-        const external = screen.findRowByTitle('Acme Stacked SCM');
-        const git = screen.findRowByTitle('Git');
+        const routing = segmentedControl(screen.findRowByTitle('settingsSourceControl.page.routing.rowTitle'));
 
-        expect(external?.props.rightElement).toBeTruthy();
-        expect(git?.props.rightElement).toBeFalsy();
-        screen.pressRowByTitle('Git');
+        expect(routing.activeTabId).toBe('acme.scm/stacked');
+        act(() => routing.onSelectTab('happier.scm.backend.git/git'));
         expect(applySettings).toHaveBeenCalledWith({
             scmGitRepoPreferredBackend: 'git',
             scmGitRepoPreferredBackendQualifiedId: null,
@@ -410,12 +431,23 @@ describe('SourceControlSettingsView', () => {
         const { SourceControlSettingsView } = await import('./SourceControlSettingsView');
         const screen = await renderSettingsView(React.createElement(SourceControlSettingsView));
 
-        const retained = screen.findRowByTitle('Acme Stale SCM');
-        expect(retained?.props.disabled).toBe(true);
-        expect(retained?.props.onPress).toBeUndefined();
-        expect(retained?.props.subtitle).toBe('status.offline');
-        expect(screen.findRowByTitle('settingsSourceControl.gitRoutingPreference.options.git.title')).toBeNull();
-        expect(screen.findRowByTitle('settingsSourceControl.gitRoutingPreference.options.sapling.title')).toBeNull();
+        const retainedRow = screen.findRowByTitle('settingsSourceControl.page.routing.rowTitle');
+        const retained = segmentedControl(retainedRow);
+        expect(retained.tabs.map((tab) => tab.label)).toEqual(['Acme Stale SCM']);
+        expect(retained.disabled).toBe(true);
+        expect(retainedRow?.props.disabled).toBe(true);
+    });
+
+    it('says what the backend choice waits for instead of rendering an empty section', async () => {
+        daemonProjectionState.current = { phase: 'loading', inputs: null };
+
+        const { SourceControlSettingsView } = await import('./SourceControlSettingsView');
+        const screen = await renderSettingsView(React.createElement(SourceControlSettingsView));
+
+        expect(screen.findRowByTitle('settingsSourceControl.page.routing.rowTitle')).toBeNull();
+        const scopeState = screen.findRow('settings.sourceControl.routing.scopeState');
+        expect(scopeState?.props.title).toBe('settingsSourceControl.page.routing.waiting');
+        expect(scopeState?.props.subtitle).toBe('settingsSourceControl.page.routing.waitingDescription');
     });
 
     it('renders commit strategy options and updates setting when selected', async () => {
@@ -423,11 +455,13 @@ describe('SourceControlSettingsView', () => {
         const { SourceControlSettingsView } = await import('./SourceControlSettingsView');
         const screen = await renderSettingsView(React.createElement(SourceControlSettingsView));
 
-        expect(screen.findRowByTitle('settingsSourceControl.commitStrategy.options.gitStaging.title')).toBeTruthy();
-        expect(screen.findRowByTitle('settingsSourceControl.commitStrategy.options.atomic.title')).toBeTruthy();
-        expect(screen.findRowByTitle('settingsSourceControl.gitRoutingPreference.options.git.title')).toBeTruthy();
+        const strategy = segmentedControl(screen.findRowByTitle('settingsSourceControl.page.commitStrategy.title'));
+        expect(strategy.tabs.map((tab) => tab.id)).toEqual(['atomic', 'git_staging']);
+        expect(strategy.activeTabId).toBe('atomic');
+        const routing = segmentedControl(screen.findRowByTitle('settingsSourceControl.page.routing.rowTitle'));
+        expect(routing.tabs.map((tab) => tab.label)).toEqual(['settingsSourceControl.page.routing.git', 'settingsSourceControl.page.routing.sapling']);
         expect(screen.findRowByTitle('settingsSourceControl.remoteConfirmation.confirmBeforePulling.title')).toBeTruthy();
-        screen.pressRowByTitle('settingsSourceControl.commitStrategy.options.gitStaging.title');
+        act(() => strategy.onSelectTab('git_staging'));
         expect(setScmCommitStrategy).toHaveBeenCalledWith('git_staging');
     });
 
@@ -450,23 +484,35 @@ describe('SourceControlSettingsView', () => {
         filesDiffPresentationStyleValue = undefined;
         const { SourceControlSettingsView } = await import('./SourceControlSettingsView');
         const screen = await renderSettingsView(React.createElement(SourceControlSettingsView));
-        const unified = screen.findRowByTitle('settingsSourceControl.filesDisplay.diffPresentation.options.unified.title');
-        const split = screen.findRowByTitle('settingsSourceControl.filesDisplay.diffPresentation.options.split.title');
+        const layout = segmentedControl(screen.findRowByTitle('settingsSourceControl.page.files.layout'));
 
-        expect(unified).toBeTruthy();
-        expect(split).toBeTruthy();
-        expect(unified!.props.rightElement).toBeTruthy();
-        expect(split!.props.rightElement).toBeFalsy();
+        expect(layout.tabs.map((tab) => tab.id)).toEqual(['unified', 'split']);
+        expect(layout.activeTabId).toBe('unified');
+    });
+
+    it('marks one default-diff row when search opens it, however many backends show one', async () => {
+        searchParamsState.value = { setting: 'sourceControl.backendDefaultDiff' };
+        try {
+            const { SourceControlSettingsView } = await import('./SourceControlSettingsView');
+            const screen = await renderSettingsView(React.createElement(SourceControlSettingsView));
+            // Git and Sapling both render the row; only one carries the anchor.
+            expect(screen.findRow('settings.sourceControl.backend.git.defaultDiff')).toBeTruthy();
+            expect(screen.findRow('settings.sourceControl.backend.sapling.defaultDiff')).toBeTruthy();
+            expect(screen.findAllByTestId('setting-reveal.sourceControl.backendDefaultDiff').filter((node) => typeof node.type === 'string')).toHaveLength(1);
+        } finally {
+            searchParamsState.value = {};
+        }
     });
 
     it('only renders backend-supported default diff modes', async () => {
         const { SourceControlSettingsView } = await import('./SourceControlSettingsView');
         const screen = await renderSettingsView(React.createElement(SourceControlSettingsView));
-        expect(screen.findRowByTitle('settingsSourceControl.backends.defaultDiffItemTitle:Git:settingsSourceControl.diffMode.included')).toBeTruthy();
-        expect(screen.findRowByTitle('settingsSourceControl.backends.defaultDiffItemTitle:Sapling:settingsSourceControl.diffMode.pending')).toBeTruthy();
+        const git = segmentedControl(screen.findRow('settings.sourceControl.backend.git.defaultDiff'));
+        expect(git.tabs.map((tab) => tab.id)).toContain('included');
         // When no snapshot/capabilities are available yet, Sapling conservatively only advertises "pending".
-        expect(screen.findRowByTitle('settingsSourceControl.backends.defaultDiffItemTitle:Sapling:settingsSourceControl.diffMode.combined')).toBeNull();
-        expect(screen.findRowByTitle('settingsSourceControl.backends.defaultDiffItemTitle:Sapling:settingsSourceControl.diffMode.included')).toBeNull();
+        const sapling = screen.findRow('settings.sourceControl.backend.sapling.defaultDiff');
+        expect(sapling?.props.rightElement).toBeFalsy();
+        expect(sapling?.props.detail).toBe('settingsSourceControl.diffMode.pending');
     });
 
     it('allows updating diff syntax highlighting mode', async () => {
@@ -474,8 +520,9 @@ describe('SourceControlSettingsView', () => {
 
         const { SourceControlSettingsView } = await import('./SourceControlSettingsView');
         const screen = await renderSettingsView(React.createElement(SourceControlSettingsView));
-        expect(screen.findRowByTitle('settingsSourceControl.filesDisplay.syntaxHighlighting.options.simple.title')).toBeTruthy();
-        screen.pressRowByTitle('settingsSourceControl.filesDisplay.syntaxHighlighting.options.simple.title');
+        const control = segmentedControl(screen.findRowByTitle('settingsSourceControl.page.files.highlighting'));
+        expect(control.tabs.map((tab) => tab.id)).toContain('simple');
+        act(() => control.onSelectTab('simple'));
 
         expect(setFilesDiffSyntaxHighlightingMode).toHaveBeenCalledWith('simple');
     });
@@ -485,8 +532,9 @@ describe('SourceControlSettingsView', () => {
 
         const { SourceControlSettingsView } = await import('./SourceControlSettingsView');
         const screen = await renderSettingsView(React.createElement(SourceControlSettingsView));
-        expect(screen.findRowByTitle('settingsSourceControl.filesDisplay.diffRenderer.options.happier.title')).toBeTruthy();
-        screen.pressRowByTitle('settingsSourceControl.filesDisplay.diffRenderer.options.happier.title');
+        const control = segmentedControl(screen.findRowByTitle('settingsSourceControl.page.files.renderer'));
+        expect(control.tabs.map((tab) => tab.id)).toContain('happier');
+        act(() => control.onSelectTab('happier'));
 
         expect(setFilesDiffRendererMode).toHaveBeenCalledWith('happier');
     });
@@ -496,8 +544,9 @@ describe('SourceControlSettingsView', () => {
 
         const { SourceControlSettingsView } = await import('./SourceControlSettingsView');
         const screen = await renderSettingsView(React.createElement(SourceControlSettingsView));
-        expect(screen.findRowByTitle('settingsSourceControl.filesDisplay.diffPresentation.options.unified.title')).toBeTruthy();
-        screen.pressRowByTitle('settingsSourceControl.filesDisplay.diffPresentation.options.unified.title');
+        const control = segmentedControl(screen.findRowByTitle('settingsSourceControl.page.files.layout'));
+        expect(control.tabs.map((tab) => tab.id)).toContain('unified');
+        act(() => control.onSelectTab('unified'));
 
         expect(setFilesDiffPresentationStyle).toHaveBeenCalledWith('unified');
     });
@@ -507,8 +556,9 @@ describe('SourceControlSettingsView', () => {
 
         const { SourceControlSettingsView } = await import('./SourceControlSettingsView');
         const screen = await renderSettingsView(React.createElement(SourceControlSettingsView));
-        expect(screen.findRowByTitle('settingsSourceControl.filesDisplay.changedFilesDensity.options.compact.title')).toBeTruthy();
-        screen.pressRowByTitle('settingsSourceControl.filesDisplay.changedFilesDensity.options.compact.title');
+        const control = segmentedControl(screen.findRowByTitle('settingsSourceControl.page.files.density'));
+        expect(control.tabs.map((tab) => tab.id)).toContain('compact');
+        act(() => control.onSelectTab('compact'));
 
         expect(setFilesChangedFilesRowDensity).toHaveBeenCalledWith('compact');
     });
@@ -550,10 +600,8 @@ describe('SourceControlSettingsView', () => {
 
         const { SourceControlSettingsView } = await import('./SourceControlSettingsView');
         const screen = await renderSettingsView(React.createElement(SourceControlSettingsView));
-        const instructions = screen.findByProps({
-            placeholder: 'settingsSourceControl.commitMessageGenerator.instructionsPlaceholder',
-        });
-        expect(instructions).toBeTruthy();
+        const instructions = screen.findRowByTitle('settingsSourceControl.page.generator.instructionsTitle')?.props.rightElement;
+        expect(instructions?.props.placeholder).toBe('settingsSourceControl.commitMessageGenerator.instructionsPlaceholder');
 
         await act(async () => {
             instructions!.props.onChangeText?.('Use imperative mood');

@@ -15,6 +15,10 @@ vi.mock('@/sync/http/client', () => ({
     serverFetch: (path: string, init?: RequestInit) => boundary.request('ambient', path, init),
 }));
 vi.mock('expo-router', async () => (await import('@/dev/testkit/mocks/router')).createExpoRouterMock().module);
+// No AuthProvider is mounted; the continuation reads auth refresh from context.
+vi.mock('@/auth/context/AuthContext', () => ({
+    useAuth: () => ({ refreshFromActiveServer: async () => {} }),
+}));
 vi.mock('react-native-unistyles', async () => (await import('@/dev/testkit/mocks/unistyles')).createUnistylesMock());
 vi.mock('@expo/vector-icons', async () => (await import('@/dev/testkit/mocks/icons')).createExpoVectorIconsMock());
 vi.mock('@/modal', async () => {
@@ -84,4 +88,26 @@ it('authenticates a generated key and continues without an extra success tap', a
     expect(modalBoundary.show).not.toHaveBeenCalled();
     expect(screen.findByTestId('account-service-continuation-approval_required')).not.toBeNull();
     expect(boundary.request.mock.calls.every(([endpoint]) => endpoint === fixture.service.endpointUrl || endpoint === fixture.home.canonicalServerUrl)).toBe(true);
+});
+
+it('keeps an account-only success visible for the invoking surface to acknowledge', async () => {
+    const fixture = createDirectoryHttpFixture();
+    boundary.request.mockImplementation(async (endpoint: string, path: string, init?: RequestInit) => {
+        if (path === '/v1/auth/account-directory/challenge') return new Response(JSON.stringify({
+            challengeId: 'directory-challenge', nonce: 'nonce', issuedAt: new Date().toISOString(),
+            expiresAt: new Date(Date.now() + 60_000).toISOString(),
+            audience: { origin: fixture.service.canonicalServerUrl, serverIdentityId: fixture.service.serverIdentityId },
+        }));
+        if (path === '/v1/auth/account-directory') return new Response(JSON.stringify({ token: 'directory-token' }));
+        return fixture.request(endpoint, path, init);
+    });
+    const onResult = vi.fn();
+    screen = await renderScreen(<AccountDirectoryKeyLoginForm service={fixture.service} serviceName="Directory"
+        intent={{ kind: 'refresh' }} onBack={() => {}} onResult={onResult} />);
+
+    await act(async () => { screen!.findByTestId('restore-manual-secret-input')!.props.onChangeText('A'.repeat(43)); });
+    await screen.pressByTestIdAsync('restore-manual-submit');
+
+    await vi.waitFor(() => expect(onResult).toHaveBeenLastCalledWith({ kind: 'account_connected' }));
+    expect(screen.findByTestId('account-service-continuation-account_connected')).not.toBeNull();
 });

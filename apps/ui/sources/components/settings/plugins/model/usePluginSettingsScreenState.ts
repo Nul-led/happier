@@ -3,14 +3,11 @@ import * as React from 'react';
 import {
     getMachineCapabilitiesCacheState,
     prefetchMachineCapabilities,
-    useMachineCapabilitiesCache,
 } from '@/hooks/server/useMachineCapabilitiesCache';
 import { useMachineCapabilityInvokeWithAlerts } from '@/hooks/machine/useMachineCapabilityInvokeWithAlerts';
 import { useActiveServerSnapshot } from '@/hooks/server/useActiveServerSnapshot';
 import { useDaemonMergedProjectionInputs } from '@/agents/backendCatalog/useDaemonMergedProjectionInputs';
-import {
-    MACHINE_ADMINISTRATION_SELECTION_KEYS_V1,
-} from '@/sync/domains/machines/administration/selectionPreferences';
+import { MARKETPLACE_CAPABILITY_REQUEST, usePluginsAdministrationTarget } from './usePluginsAdministrationTarget';
 import {
     resolveMachineAdministrationTargetLabel,
 } from '@/sync/domains/machines/administration/targetSelection';
@@ -18,9 +15,6 @@ import type {
     FreshMachineAdministrationExecutionTargetV1,
     MachineAdministrationTargetSelectionV1,
 } from '@/sync/domains/machines/administration/useTargetSelection';
-import {
-    useScopedPluginSettingsDaemonTargetBinding,
-} from '@/sync/domains/machines/administration/scopedPluginSettingsTarget';
 import {
     publishMachineContributionRegistryProjectionInvalidation,
 } from '@/sync/ops/machineContributionRegistryProjection';
@@ -60,6 +54,7 @@ import {
     type MarketplaceSourceRegistryAdministrationV1,
 } from './useMarketplaceSourceRegistryAdministration';
 import {
+    buildDiscoverQueryFilters,
     MARKETPLACE_CAPABILITY_ID,
     readDevelopmentCreateAvailable,
     readDevelopmentSourceInstallAvailable,
@@ -127,6 +122,8 @@ type DiscoverQueryIntent = Readonly<{
     mode: 'refresh' | 'more';
     text: string;
     sourceId: string | null;
+    /** A listing page resolves exactly this source-qualified listing through the same query. */
+    pluginId?: string | null;
 }>;
 
 export type PluginRoutineOperationSettlement = Readonly<{
@@ -184,6 +181,10 @@ export type PluginSettingsScreenState = Readonly<{
     discoverError: string | null;
     /** Draft search text for the aggregate Discover query. */
     discoverSearchText: string;
+    /** The search text the shown Discover results answer (not the draft typed since). */
+    discoverResultsSearchText: string;
+    /** Empties the search and shows every listing again (the "no match" Clear). */
+    clearDiscoverSearch: () => void;
     canRefreshDiscover: boolean;
     canRunDiscoverActions: boolean;
     canRefreshInstalledPlugins: boolean;
@@ -237,6 +238,12 @@ export type PluginSettingsScreenState = Readonly<{
     pluginProjectionV2: PluginProjectionV2 | null;
     /** True only when the selected daemon has authoritatively answered both installed and projected plugin truth. */
     pluginTruthSettled: boolean;
+    /**
+     * Whether the selected machine has answered what it has installed. The Installed list waits on
+     * this read alone (not on the contribution projection, which only enriches a plugin's detail),
+     * so a slow or failed projection never leaves the list loading.
+     */
+    installedPluginsRead: boolean;
     registryDiagnostics: ReturnType<typeof useDaemonMergedProjectionInputs>['inputs'] extends infer TInputs
         ? TInputs extends { registryDiagnostics: infer TDiagnostics }
             ? TDiagnostics
@@ -257,6 +264,11 @@ export type PluginSettingsScreenState = Readonly<{
     setActiveView: (view: PluginSettingsViewId) => void;
     setDiscoverSearchText: (value: string) => void;
     setSelectedDiscoverSourceId: (sourceId: string | null) => void;
+    /**
+     * Acquires one exact source-qualified listing (a listing page, a deep link) through the one
+     * Discover query, so its Install acts under the same authority as a Browse card's.
+     */
+    openDiscoverListing: (listing: Readonly<{ sourceId: string; pluginId: string }>) => void;
     loadMoreDiscover: () => void;
     setMarketplaceSourceProfile: MarketplaceSourceRegistryAdministrationV1['setSourceRegistryProfile'];
 }>;
@@ -267,9 +279,14 @@ export function usePluginSettingsScreenState(params: Readonly<{ focused?: boolea
     // Settings/Secrets record target, and the single currentness fence every
     // asynchronous write re-checks — shared with the deep-linked Settings page
     // screen so the two cannot disagree about which machine is being edited.
-    const administration = useScopedPluginSettingsDaemonTargetBinding(
-        MACHINE_ADMINISTRATION_SELECTION_KEYS_V1.plugins,
-    );
+    const {
+        administration,
+        selectedMachineScopeKey,
+        daemonTransportOnline,
+        daemonCacheFreshnessKey,
+        machineCapabilities,
+    } = usePluginsAdministrationTarget();
+    const capabilityRequest = MARKETPLACE_CAPABILITY_REQUEST;
     const administrationTargetSelection = administration.selection;
     const accountServerIdentityId = React.useMemo(
         () => resolveScopedPluginSettingsServerIdentity(activeServer.serverId),
@@ -282,35 +299,6 @@ export function usePluginSettingsScreenState(params: Readonly<{ focused?: boolea
     const executionServerId = executionTarget?.serverId ?? null;
     const executionServerIdentityId = executionTarget?.target.serverIdentityId ?? null;
     const { invokeWithAlerts } = useMachineCapabilityInvokeWithAlerts();
-    /**
-     * This is a cache identity only. It deliberately uses the portable target,
-     * so an offline exact selection retains its own last-known snapshot without
-     * falling back to the active server or another machine.
-     */
-    const selectedMachineScopeKey = administrationTargetSelection.selectedTarget
-        ? `${administrationTargetSelection.selectedTarget.serverIdentityId}:${administrationTargetSelection.selectedTarget.machineId}`
-        : null;
-    const daemonTransportOnline = executionTarget !== null;
-    const [daemonReconnectFreshness, setDaemonReconnectFreshness] = React.useState(() => ({
-        scopeKey: selectedMachineScopeKey,
-        isOnline: daemonTransportOnline,
-        reconnectSequence: 0,
-    }));
-    if (
-        daemonReconnectFreshness.scopeKey !== selectedMachineScopeKey
-        || daemonReconnectFreshness.isOnline !== daemonTransportOnline
-    ) {
-        setDaemonReconnectFreshness({
-            scopeKey: selectedMachineScopeKey,
-            isOnline: daemonTransportOnline,
-            reconnectSequence: daemonReconnectFreshness.scopeKey !== selectedMachineScopeKey
-                ? 0
-                : !daemonReconnectFreshness.isOnline && daemonTransportOnline
-                    ? daemonReconnectFreshness.reconnectSequence + 1
-                    : daemonReconnectFreshness.reconnectSequence,
-        });
-    }
-    const daemonCacheFreshnessKey = `${executionTarget?.machine.daemonStateVersion ?? 0}:${daemonReconnectFreshness.reconnectSequence}`;
 
     /**
      * Every asynchronous daemon boundary re-resolves the portable target. A
@@ -372,18 +360,6 @@ export function usePluginSettingsScreenState(params: Readonly<{ focused?: boolea
         setRoutineOperationSettlement(null);
     }, [selectedMachineScopeKey]);
 
-    const capabilityRequest = React.useMemo(() => ({
-        requests: [{ id: MARKETPLACE_CAPABILITY_ID }],
-    }), []);
-
-    const machineCapabilities = useMachineCapabilitiesCache({
-        machineId: executionMachineId,
-        serverId: executionServerId,
-        cacheKeySalt: daemonCacheFreshnessKey,
-        enabled: executionTarget !== null,
-        request: capabilityRequest,
-        timeoutMs: 12_000,
-    });
     const daemonMergedProjection = useDaemonMergedProjectionInputs({
         machineId: executionMachineId,
         serverId: executionServerId,
@@ -547,6 +523,11 @@ export function usePluginSettingsScreenState(params: Readonly<{ focused?: boolea
         && daemonAdministrationAvailable
         && daemonMergedProjection.phase === 'ready'
     );
+    // The selection reads online but its live connection is not resolvable yet: checking, not away.
+    const targetResolving = administrationTargetSelection.state.kind === 'online' && executionTarget === null;
+    const installedPluginsRead = (executionTarget === null && !targetResolving) || (
+        machineCapabilities.state.status === 'loaded' && daemonAdministrationAvailable
+    );
     const registryDiagnostics = projectionInputs?.registryDiagnostics ?? [];
     const currentDiagnostics = React.useMemo(() => [
         ...registryDiagnostics,
@@ -562,6 +543,7 @@ export function usePluginSettingsScreenState(params: Readonly<{ focused?: boolea
         hasCatalog: discoverEntries.length > 0,
         hasMarketplaceSourceRegistry: marketplaceSourceRegistry !== null,
         hasProjectionInputs: projectionInputs !== null,
+        targetResolving,
         capabilityReadFailed: machineCapabilities.state.status === 'error'
             || machineCapabilities.state.status === 'not-supported'
             || (machineCapabilities.state.status === 'loaded'
@@ -1800,12 +1782,7 @@ export function usePluginSettingsScreenState(params: Readonly<{ focused?: boolea
                 text: trimmedText,
                 cursor: params.cursor,
                 limit: DISCOVER_PAGE_SIZE,
-                filters: {
-                    // All sends no source filter at all: the daemon aggregates
-                    // every enabled source. A chip narrows the same one query.
-                    ...(params.sourceId === null ? {} : { sourceIds: [params.sourceId] }),
-                    includeUnavailable: true,
-                },
+                filters: buildDiscoverQueryFilters(params),
             }, {
                 serverId: initialTarget.serverId,
                 timeoutMs: 130_000,
@@ -1904,6 +1881,30 @@ export function usePluginSettingsScreenState(params: Readonly<{ focused?: boolea
         });
     }, [discoverSearchText, runDiscoverQuery]);
 
+    const clearDiscoverSearch = React.useCallback(() => {
+        setDiscoverSearchText('');
+        setDiscoverNextCursor(null);
+        setDiscoverRevision(null);
+        void runDiscoverQuery({
+            cursor: null,
+            mode: 'refresh',
+            text: '',
+            sourceId: selectedDiscoverSourceId,
+        });
+    }, [runDiscoverQuery, selectedDiscoverSourceId]);
+
+    const openDiscoverListing = React.useCallback((listing: Readonly<{ sourceId: string; pluginId: string }>) => {
+        setDiscoverNextCursor(null);
+        setDiscoverRevision(null);
+        void runDiscoverQuery({
+            cursor: null,
+            mode: 'refresh',
+            text: '',
+            sourceId: listing.sourceId,
+            pluginId: listing.pluginId,
+        });
+    }, [runDiscoverQuery]);
+
     const loadMoreDiscover = React.useCallback(() => {
         if (!discoverNextCursor || loadingMoreDiscover || loadingDiscover) return;
         // Paging continues the query the shown list was acquired with, never
@@ -1956,6 +1957,8 @@ export function usePluginSettingsScreenState(params: Readonly<{ focused?: boolea
         loadingMoreDiscover,
         discoverError,
         discoverSearchText,
+        discoverResultsSearchText: acquiredDiscoverQuery?.text ?? '',
+        clearDiscoverSearch,
         canRefreshDiscover,
         canRunDiscoverActions,
         canRefreshInstalledPlugins,
@@ -1974,6 +1977,7 @@ export function usePluginSettingsScreenState(params: Readonly<{ focused?: boolea
         isPluginActionInFlight,
         refreshDiscover,
         loadMoreDiscover,
+        openDiscoverListing,
         loadingDiscover,
         marketplaceSourceRegistry,
         marketplaceSourceRegistryLoading: marketplaceSourceRegistryAdministration.loading,
@@ -1983,6 +1987,7 @@ export function usePluginSettingsScreenState(params: Readonly<{ focused?: boolea
         pluginProjectionById,
         pluginProjectionV2,
         pluginTruthSettled,
+        installedPluginsRead,
         registryDiagnostics,
         runCatalogAction,
         runDevelopmentCreate,

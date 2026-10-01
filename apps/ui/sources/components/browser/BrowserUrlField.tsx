@@ -1,11 +1,12 @@
 import * as React from 'react';
-import { Platform, View, type NativeSyntheticEvent, type TextInput as RNTextInput, type TextInputKeyPressEventData } from 'react-native';
+import { Platform, View, type NativeSyntheticEvent, type TextInput as RNTextInput, type TextInputKeyPressEventData, type ViewStyle } from 'react-native';
 import { StyleSheet } from 'react-native-unistyles';
 
 import { IconButton } from '@/components/ui/buttons/IconButton';
 import { CopiedPill } from '@/components/ui/copy/CopiedPill';
+import { motionTokens } from '@/components/ui/motion/motionTokens';
 import { useTemporaryCopyFeedback } from '@/components/ui/copy/useTemporaryCopyFeedback';
-import { resolveMinimumInteractiveTargetSize } from '@/components/ui/interactiveTargetSize';
+import { resolveTouchTargetFloorPx } from '@/components/ui/interactiveTargetSize';
 import { Text, TextInput } from '@/components/ui/text/Text';
 import { Typography } from '@/constants/Typography';
 import {
@@ -18,10 +19,11 @@ import { setClipboardStringSafe } from '@/utils/ui/clipboard';
 
 /**
  * How much room the field has. `toolbar` is the 34px chrome row above a rendered page; `panel` is
- * the 44px entry on the launchpad, where the field is the primary thing on screen and gets a real
- * touch target.
+ * the 44px entry on the launchpad (`toolbarPrecise` is the toolbar row under a precise pointer), where the field is the primary thing on screen and gets a real
+ * touch target; `capsule` is the phone's address (H-UX §5): a full capsule that, until tapped, names
+ * only the host, centred with its trust glyph — the path and the caret arrive with the tap.
  */
-export type BrowserUrlFieldDensity = 'toolbar' | 'panel';
+export type BrowserUrlFieldDensity = 'toolbar' | 'toolbarPrecise' | 'panel' | 'capsule';
 
 /**
  * The single trailing affordance inside the field. `copy` puts the authoritative URL on the
@@ -32,8 +34,15 @@ export type BrowserUrlFieldDensity = 'toolbar' | 'panel';
 export type BrowserUrlFieldTrailingAction = 'copy' | 'go' | 'none';
 
 const DENSITY = {
-    toolbar: { height: 34, radius: 8, paddingLeft: 10, paddingRight: 3, button: 28, iconSize: 15 },
-    panel: { height: 44, radius: 11, paddingLeft: 12, paddingRight: 6, button: 32, iconSize: 17 },
+    // The chrome's address field is a quiet filled capsule inside a quiet row (lab `browser` Q): no
+    // outline of its own, so the page stays the hero. The launchpad's entry box keeps its border —
+    // there the field IS the surface's one control.
+    toolbar: { height: 34, radius: 8, paddingLeft: 10, paddingRight: 3, button: 28, iconSize: 15, outlined: false },
+    // The same row under a precise pointer (desktop web, Tauri): the lab's 30 px field with a 24 px
+    // trailing control, chosen by the chrome metric owner (`resolveBrowserChromeControlMetrics`).
+    toolbarPrecise: { height: 30, radius: 9, paddingLeft: 10, paddingRight: 3, button: 24, iconSize: 14, outlined: false },
+    panel: { height: 44, radius: 11, paddingLeft: 12, paddingRight: 6, button: 32, iconSize: 17, outlined: true },
+    capsule: { height: 36, radius: 18, paddingLeft: 14, paddingRight: 4, button: 28, iconSize: 15, outlined: false },
 } as const satisfies Record<BrowserUrlFieldDensity, Readonly<{
     height: number;
     radius: number;
@@ -41,18 +50,27 @@ const DENSITY = {
     paddingRight: number;
     button: number;
     iconSize: number;
+    outlined: boolean;
 }>>;
 
 const NO_SELECTION = undefined;
+
+/**
+ * On the web the field's resting/focused swaps cross-fade (the capsule's centred face giving way to the
+ * full address, Copy surfacing in its slot) instead of switching in one frame. Native swaps at once.
+ */
+const FADE_ON_WEB: ViewStyle | null = Platform.OS === 'web'
+    ? {
+        transitionProperty: 'opacity, color',
+        transitionDuration: `${motionTokens.durationMs.fast}ms`,
+        transitionTimingFunction: motionTokens.easingCss.standard,
+    } as unknown as ViewStyle
+    : null;
 
 const stylesheet = StyleSheet.create((theme) => ({
     root: {
         minWidth: 0,
         gap: 4,
-    },
-    label: {
-        ...Typography.eyebrow(),
-        color: theme.colors.text.secondary,
     },
     fieldRow: {
         flexDirection: 'row',
@@ -62,18 +80,12 @@ const stylesheet = StyleSheet.create((theme) => ({
         borderColor: theme.colors.border.default,
         backgroundColor: theme.colors.surface.inset,
     },
-    // Focus-visible, through the theme's focus-indicator ROLE.
-    //
-    // The field used to track `focused` and draw nothing (U-3). The obvious fix was to copy
-    // `IconButton`'s `border.strong`, but Q2 measured that token at 1.37:1 light / 1.28:1 dark
-    // against `surface.inset` — SC 1.4.11 asks 3:1 for a state indicator, so it would have shipped a
-    // focus ring nobody can see. `border.focus` is the role Q2 added at the theme owner for exactly
-    // this; consuming it keeps one answer app-wide instead of a local colour choice here.
-    fieldRowFocused: {
-        borderColor: theme.colors.border.focus,
-    },
     fieldRowInvalid: {
         borderColor: theme.colors.status.error,
+    },
+    leading: {
+        flexShrink: 0,
+        marginLeft: -4,
     },
     input: {
         flex: 1,
@@ -93,6 +105,29 @@ const stylesheet = StyleSheet.create((theme) => ({
         // redundant cue rather than the only one.
         color: theme.colors.text.primary,
     },
+    // The capsule's resting face: the host and its trust glyph, centred. Drawn over the field (which
+    // keeps the focus, the label and the value for assistive technology) and never takes a touch.
+    capsuleFace: {
+        ...StyleSheet.absoluteFillObject,
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'center',
+        gap: 6,
+        paddingHorizontal: 14,
+        pointerEvents: 'none',
+    },
+    capsuleHost: {
+        ...Typography.rowTitle(),
+        color: theme.colors.text.primary,
+        flexShrink: 1,
+    },
+    inputResting: {
+        // The field's own text stays laid out (and readable to assistive technology) under the face.
+        color: 'transparent',
+    },
+    trailingResting: {
+        opacity: 0,
+    },
     copiedPill: {
         position: 'absolute',
         right: 0,
@@ -106,8 +141,6 @@ function messageForResult(result: BrowserAddressNormalizationResult): string | n
     switch (result.reasonCode) {
         case 'empty':
             return null;
-        case 'search_unconfigured':
-            return t('browserShell.address.searchUnconfigured');
         case 'invalid_url':
             // An existing, already-translated key rather than a new one: "This address can't be
             // opened." is exactly what happened, and the corridor does not need a second string
@@ -131,8 +164,6 @@ export type BrowserUrlFieldProps = Readonly<{
     value: string;
     disabled?: boolean;
     density?: BrowserUrlFieldDensity;
-    /** Optional eyebrow above the field (the launchpad names its entry box). */
-    label?: string;
     placeholder?: string;
     accessibilityLabel?: string;
     trailingAction?: BrowserUrlFieldTrailingAction;
@@ -144,6 +175,11 @@ export type BrowserUrlFieldProps = Readonly<{
     /** Clear the draft after a successful submit (a new-tab entry box, not an address bar). */
     clearOnSubmit?: boolean;
     searchUrlTemplate?: string;
+    /**
+     * The one mark that leads the field: the page's trust glyph (secure, local, insecure). Trust is
+     * part of the address, so it sits inside it rather than in a chip beside it.
+     */
+    leading?: React.ReactNode;
     onSubmitUrl: (url: string) => void;
 }>;
 
@@ -161,7 +197,8 @@ export type BrowserUrlFieldProps = Readonly<{
  * one focus ring, and one less pill in a toolbar that had six.
  */
 export function BrowserUrlField(props: BrowserUrlFieldProps): React.ReactElement {
-    const density = DENSITY[props.density ?? 'toolbar'];
+    const densityKey = props.density ?? 'toolbar';
+    const density = DENSITY[densityKey];
     const trailingAction = props.trailingAction ?? 'none';
     const inputRef = React.useRef<RNTextInput | null>(null);
     React.useImperativeHandle(props.focusRef, () => ({
@@ -172,6 +209,11 @@ export function BrowserUrlField(props: BrowserUrlFieldProps): React.ReactElement
     }), [props.disabled]);
     const copyFeedback = useTemporaryCopyFeedback();
     const [focused, setFocused] = React.useState(false);
+    // The address bar's Copy waits in its trailing slot until the field is hovered or focused (lab
+    // `browser` Q): at rest the field is only the trust glyph and the address. The slot keeps its
+    // place, so nothing shifts when it appears; keyboard focus on Copy itself reveals it.
+    const [hovered, setHovered] = React.useState(false);
+    const [trailingFocused, setTrailingFocused] = React.useState(false);
     const [message, setMessage] = React.useState<string | null>(null);
     const [rawDraft, setRawDraft] = React.useState(props.value);
     const [selection, setSelection] = React.useState<Readonly<{ start: number; end: number }> | undefined>(NO_SELECTION);
@@ -191,9 +233,11 @@ export function BrowserUrlField(props: BrowserUrlFieldProps): React.ReactElement
         }
     }, [focused, props.value]);
 
+    // The capsule at rest shows its face (host + trust glyph) instead of the field's own text.
+    const resting = densityKey === 'capsule' && !focused && props.value.length > 0;
     const displayValue = focused || props.formatWhileBlurred !== true
         ? rawDraft
-        : formatBrowserDisplayUrl(props.value);
+        : formatBrowserDisplayUrl(props.value, { hostOnly: densityKey === 'capsule' });
 
     const handleFocus = React.useCallback(() => {
         setFocused(true);
@@ -264,21 +308,23 @@ export function BrowserUrlField(props: BrowserUrlFieldProps): React.ReactElement
         paddingLeft: density.paddingLeft,
         paddingRight: density.paddingRight,
         gap: density.paddingRight,
+        ...(density.outlined ? {} : { borderColor: 'transparent' }),
     }), [density]);
 
+    const copyRevealed = focused || hovered || trailingFocused || copyFeedback.isCopied('url');
     return (
         <View style={stylesheet.root}>
-            {props.label ? (
-                <Text style={stylesheet.label}>{props.label}</Text>
-            ) : null}
             <View
+                testID={`${props.testID}-field-row`}
+                onPointerEnter={trailingAction === 'copy' ? () => setHovered(true) : undefined}
+                onPointerLeave={trailingAction === 'copy' ? () => setHovered(false) : undefined}
                 style={[
                     stylesheet.fieldRow,
                     fieldRowStyle,
-                    focused ? stylesheet.fieldRowFocused : null,
                     message ? stylesheet.fieldRowInvalid : null,
                 ]}
             >
+                {props.leading && !resting ? <View style={stylesheet.leading}>{props.leading}</View> : null}
                 <TextInput
                     ref={inputRef}
                     testID={props.testID}
@@ -297,22 +343,35 @@ export function BrowserUrlField(props: BrowserUrlFieldProps): React.ReactElement
                     autoCorrect={false}
                     inputMode="url"
                     returnKeyType="go"
-                    style={stylesheet.input}
+                    style={[stylesheet.input, FADE_ON_WEB, resting ? stylesheet.inputResting : null]}
                 />
+                {resting ? (
+                    <View testID={`${props.testID}-capsule-face`} style={stylesheet.capsuleFace} aria-hidden accessibilityElementsHidden importantForAccessibility="no-hide-descendants">
+                        {props.leading ?? null}
+                        <Text numberOfLines={1} style={stylesheet.capsuleHost}>{displayValue}</Text>
+                    </View>
+                ) : null}
                 {trailingAction === 'copy' ? (
-                    <IconButton
-                        testID={`${props.testID}-copy`}
-                        iconName="copy"
-                        accessibilityLabel={t('browserShell.address.copy')}
-                        tooltip={t('browserShell.address.copy')}
-                        variant="plain"
-                        size={density.button}
-                        iconSize={density.iconSize}
-                        minimumInteractiveTargetSize={resolveMinimumInteractiveTargetSize(Platform.OS)}
-                        interactiveTargetGapPx={density.paddingRight * 2}
-                        disabled={!props.value || props.disabled}
-                        onPress={handleCopyUrl}
-                    />
+                    <View
+                        testID={`${props.testID}-trailing`}
+                        style={[FADE_ON_WEB, copyRevealed ? null : stylesheet.trailingResting]}
+                        onFocus={() => setTrailingFocused(true)}
+                        onBlur={() => setTrailingFocused(false)}
+                    >
+                        <IconButton
+                            testID={`${props.testID}-copy`}
+                            iconName="copy"
+                            accessibilityLabel={t('browserShell.address.copy')}
+                            tooltip={t('browserShell.address.copy')}
+                            variant="plain"
+                            size={density.button}
+                            iconSize={density.iconSize}
+                            minimumInteractiveTargetSize={resolveTouchTargetFloorPx() ?? undefined}
+                            interactiveTargetGapPx={density.paddingRight * 2}
+                            disabled={!props.value || props.disabled}
+                            onPress={handleCopyUrl}
+                        />
+                    </View>
                 ) : null}
                 {trailingAction === 'go' ? (
                     <IconButton
@@ -323,7 +382,7 @@ export function BrowserUrlField(props: BrowserUrlFieldProps): React.ReactElement
                         tone="primary"
                         size={density.button}
                         iconSize={density.iconSize}
-                        minimumInteractiveTargetSize={resolveMinimumInteractiveTargetSize(Platform.OS)}
+                        minimumInteractiveTargetSize={resolveTouchTargetFloorPx() ?? undefined}
                         interactiveTargetGapPx={density.paddingRight * 2}
                         disabled={props.disabled}
                         onPress={submit}

@@ -110,9 +110,10 @@ it('shows an accessible loading state while the exact Home switch is pending', a
     const screen = await renderScreen(<AccountSecuritySettingsScreen />);
 
     await vi.waitFor(() => expect(boundary.openAccountSecurityForHome).toHaveBeenCalled());
-    const loading = screen.findByTestId('settings-account-security-home-switching');
-    expect(loading).not.toBeNull();
-    expect(loading?.props.accessibilityLiveRegion).toBe('polite');
+    // The page keeps its header and reserves its rows (announced as busy), with no "Loading…" card.
+    const loading = screen.findHostByTestId('settings-account-security-home-switching');
+    expect(loading?.props.accessibilityState).toEqual({ busy: true });
+    expect(screen.getTextContent()).not.toContain('common.loading');
     expect(screen.findByTestId('exact-account-security-section')).toBeNull();
 });
 

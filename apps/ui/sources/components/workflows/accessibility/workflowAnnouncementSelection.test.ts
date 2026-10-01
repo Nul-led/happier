@@ -34,6 +34,7 @@ describe('workflow announcement selection', () => {
       kind: 'terminal',
       terminal: 'completed_with_failures',
       attentionCount: 2,
+      attentionHasMore: false,
     });
   });
 
@@ -45,7 +46,11 @@ describe('workflow announcement selection', () => {
   it('ranks a newly actionable row above background progress', () => {
     const before = state({ attentionCount: 0 });
     const after = state({ attentionCount: 1, changedRowCount: 4 });
-    expect(selectWorkflowAnnouncement(before, after)).toEqual({ kind: 'attention', attentionCount: 1 });
+    expect(selectWorkflowAnnouncement(before, after)).toEqual({
+      kind: 'attention',
+      attentionCount: 1,
+      attentionHasMore: false,
+    });
   });
 
   it('does not announce attention when the count only fell', () => {
@@ -55,6 +60,51 @@ describe('workflow announcement selection', () => {
       kind: 'progress',
       changedRowCount: 1,
       attentionCount: 1,
+      attentionHasMore: false,
+      historyIncomplete: false,
+    });
+  });
+
+  it('carries the attention paging fact onto the summaries that word it', () => {
+    const before = state({ attentionCount: 2 });
+    const after = state({ attentionCount: 4, attentionHasMore: true });
+    expect(selectWorkflowAnnouncement(before, after)).toEqual({
+      kind: 'attention',
+      attentionCount: 4,
+      attentionHasMore: true,
+    });
+  });
+
+  it('carries both paging facts onto a terminal summary', () => {
+    const before = state({ attentionCount: 2, attentionHasMore: true });
+    const after = state({
+      attentionCount: 2,
+      attentionHasMore: true,
+      historyIncomplete: true,
+      terminal: 'completed',
+    });
+    expect(selectWorkflowAnnouncement(before, after)).toEqual({
+      kind: 'terminal',
+      terminal: 'completed',
+      attentionCount: 2,
+      attentionHasMore: true,
+    });
+  });
+
+  it('carries both paging facts onto a progress summary', () => {
+    const before = state({ attentionCount: 2, attentionHasMore: true });
+    const after = state({
+      attentionCount: 2,
+      attentionHasMore: true,
+      historyIncomplete: true,
+      changedRowCount: 3,
+    });
+    expect(selectWorkflowAnnouncement(before, after)).toEqual({
+      kind: 'progress',
+      changedRowCount: 3,
+      attentionCount: 2,
+      attentionHasMore: true,
+      historyIncomplete: true,
     });
   });
 
@@ -110,6 +160,8 @@ describe('workflow announcement selection', () => {
       kind: 'progress',
       changedRowCount: 3,
       attentionCount: 0,
+      attentionHasMore: false,
+      historyIncomplete: false,
     });
   });
 });

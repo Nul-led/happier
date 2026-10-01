@@ -1,31 +1,31 @@
 import * as React from 'react';
 
 import type { DropdownMenuItem } from '@/components/ui/forms/dropdown/DropdownMenu';
+import type { SegmentedChoiceOption } from '@/components/ui/lists/SegmentedChoiceItem';
 import { Icon, type IconName } from '@/components/ui/icons/Icon';
 import { t } from '@/text';
 import type { TranslationKey } from '@/text';
+export { AUTO_HIDE_DELAY_OPTIONS } from './desktopOverlayAutoHideDelayOptions';
 
 export type ChoiceOption<T extends string | number> = Readonly<{
     value: T;
     titleKey: TranslationKey;
-    icon: IconName;
+    /** Only menus draw it; segmented choices are words. */
+    icon?: IconName;
 }>;
 
 export const VISIBILITY_MODE_OPTIONS: readonly ChoiceOption<'attention_only' | 'active_sessions' | 'always_when_enabled'>[] = [
     {
         value: 'attention_only',
         titleKey: 'settingsDesktop.overlay.visibilityAttentionOnlyTitle',
-        icon: 'warning-circle',
     },
     {
         value: 'active_sessions',
         titleKey: 'settingsDesktop.overlay.visibilityActiveSessionsTitle',
-        icon: 'pulse',
     },
     {
         value: 'always_when_enabled',
         titleKey: 'settingsDesktop.overlay.visibilityAlwaysWhenEnabledTitle',
-        icon: 'sparkle',
     },
 ];
 
@@ -33,40 +33,14 @@ export const PRESENTATION_MODE_OPTIONS: readonly ChoiceOption<'automatic' | 'not
     {
         value: 'automatic',
         titleKey: 'settingsDesktop.overlay.presentationAutomaticTitle',
-        icon: 'sparkle',
     },
     {
         value: 'notch_integrated',
         titleKey: 'settingsDesktop.overlay.presentationNotchIntegratedTitle',
-        icon: 'minus-circle',
     },
     {
         value: 'floating_overlay',
         titleKey: 'settingsDesktop.overlay.presentationFloatingOverlayTitle',
-        icon: 'stack',
-    },
-];
-
-export const AUTO_HIDE_DELAY_OPTIONS: readonly ChoiceOption<3000 | 6000 | 10000 | 30000>[] = [
-    {
-        value: 3000,
-        titleKey: 'settingsDesktop.overlay.autoHideDelay3sTitle',
-        icon: 'clock',
-    },
-    {
-        value: 6000,
-        titleKey: 'settingsDesktop.overlay.autoHideDelay6sTitle',
-        icon: 'clock',
-    },
-    {
-        value: 10000,
-        titleKey: 'settingsDesktop.overlay.autoHideDelay10sTitle',
-        icon: 'clock',
-    },
-    {
-        value: 30000,
-        titleKey: 'settingsDesktop.overlay.autoHideDelay30sTitle',
-        icon: 'clock',
     },
 ];
 
@@ -74,12 +48,10 @@ export const PLACEMENT_MODE_OPTIONS: readonly ChoiceOption<'anchored' | 'custom'
     {
         value: 'anchored',
         titleKey: 'settingsDesktop.overlay.placementAnchoredTitle',
-        icon: 'push-pin',
     },
     {
         value: 'custom',
         titleKey: 'settingsDesktop.overlay.placementCustomTitle',
-        icon: 'arrows-out-cardinal',
     },
 ];
 
@@ -133,8 +105,15 @@ export function buildChoiceDropdownItems<T extends string | number>(
     return choices.map((choice) => ({
         id: String(choice.value),
         title: t(choice.titleKey),
-        icon: <Icon name={choice.icon} size={29} color={color} />,
+        icon: choice.icon ? <Icon name={choice.icon} size={29} color={color} /> : undefined,
     }));
+}
+
+/** The same choices for a segmented row; ids are the stringified values. */
+export function toSegmentedChoiceOptions<T extends string | number>(
+    choices: readonly ChoiceOption<T>[],
+): ReadonlyArray<SegmentedChoiceOption<string>> {
+    return choices.map((choice) => ({ id: String(choice.value), label: t(choice.titleKey) }));
 }
 
 export function findChoiceOption<T extends string | number>(

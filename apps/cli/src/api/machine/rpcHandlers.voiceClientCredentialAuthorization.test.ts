@@ -90,7 +90,7 @@ function manifest() {
             }],
           }],
         },
-        client: { artifactId: 'browser-client', modulePath: './voice', exportName: 'activate' },
+        client: { artifactId: 'browser-client', exportName: 'activate' },
       }],
     },
   }));
@@ -253,7 +253,6 @@ describe('Voice client raw credential authorization RPC', () => {
           contribution,
           credentialSlotId: 'api_key',
           purpose: 'voice.browser',
-          installReviewPrincipalDigest: principal,
         },
         disclosures: [{
           sourceClass: { kind: 'savedSecret', secretKinds: ['apiKey'] },

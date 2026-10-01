@@ -11,12 +11,18 @@ const routerPushMock = vi.hoisted(() => vi.fn());
 vi.mock('expo-router', () => ({
     useRouter: () => ({ push: routerPushMock }),
 }));
-vi.mock('@/components/ui/lists/Item', () => ({ Item: 'Item' }));
+// Rows render their right-hand control, as the real row does; page fields are text inputs.
+vi.mock('@/components/ui/lists/Item', async () => {
+    const React = await import('react');
+    return { Item: (props: { rightElement?: unknown }) => React.createElement('Item', props, props.rightElement as never) };
+});
+vi.mock('@/components/ui/forms/FieldTextInput', () => ({ FieldTextInput: 'TextInput' }));
 vi.mock('@/components/ui/lists/ItemGroup', () => ({ ItemGroup: 'ItemGroup' }));
 vi.mock('@/text', () => ({
     t: (key: string) => key,
 }));
-vi.mock('./identityAdministrationClient', () => ({
+vi.mock('./identityAdministrationClient', async (importOriginal) => ({
+    ...await importOriginal<typeof import('./identityAdministrationClient')>(),
     createIdentityAdministrationClient: () => ({ executeDirectory: executeDirectoryMock }),
 }));
 

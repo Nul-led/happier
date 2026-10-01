@@ -16,6 +16,7 @@ import {
 import { Item } from '@/components/ui/lists/Item';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
 import { ItemList } from '@/components/ui/lists/ItemList';
+import { SectionActionButton } from '@/components/ui/lists/SectionActionButton';
 import { useFeatureEnabled } from '@/hooks/server/useFeatureEnabled';
 import { Modal } from '@/modal';
 import {
@@ -30,6 +31,7 @@ import {
 import { useActivePluginAccountAvailabilityReleaseClassifier } from '@/sync/domains/plugins/availability/projection';
 import { createFrontDoorUiActionExecutor } from '@/sync/ops/actions/frontDoorRuntimeActionExecutor';
 import { t } from '@/text';
+import { SettingsPageHeader } from '@/components/settings/shell/SettingsPageHeader';
 
 type AccountStatus = Awaited<ReturnType<PluginWebhookAdministrationHttpClient['readStatus']>>;
 type EndpointStatus = AccountStatus['endpoints'][number];
@@ -305,7 +307,7 @@ const WebhookEndpointSection = React.memo(function WebhookEndpointSection(props:
     return (
         <ItemGroup
             title={`${endpoint.contribution.pluginId} / ${endpoint.contribution.localId}`}
-            footer={describeQueue(endpoint)}
+            description={describeQueue(endpoint)}
         >
             <Item
                 testID={`settings.plugins.webhooks.endpoint.${endpoint.webhookEndpointId}.status`}
@@ -547,8 +549,9 @@ export const PluginWebhookAdministrationScreen = React.memo(function PluginWebho
 
     if (!webhooksAvailable) {
         return (
-            <ItemList style={{ paddingTop: 0 }} testID="settings.plugins.webhooks.screen">
-                <ItemGroup title={t('settingsPlugins.webhookAdministration.title')}>
+            <ItemList style={{ paddingTop: 0 }} testID="settings.plugins.webhooks.screen" presentation="page">
+                <SettingsPageHeader description={t('settingsPlugins.webhookAdministration.footer')} />
+                <ItemGroup>
                     <Item
                         testID="settings.plugins.webhooks.unavailable"
                         title={t('settingsPlugins.webhookAdministration.unavailableTitle')}
@@ -562,24 +565,30 @@ export const PluginWebhookAdministrationScreen = React.memo(function PluginWebho
     }
 
     return (
-        <ItemList style={{ paddingTop: 0 }} testID="settings.plugins.webhooks.screen">
-            <ItemGroup
-                title={t('settingsPlugins.webhookAdministration.title')}
-                footer={t('settingsPlugins.webhookAdministration.footer')}
-            >
-                <Item
-                    testID="settings.plugins.webhooks.refresh"
-                    title={t('common.refresh')}
-                    subtitle={loading
-                        ? t('common.loading')
-                        : error
-                            ? t('settingsPlugins.webhookAdministration.loadError')
-                            : undefined}
-                    onPress={() => { void refresh(); }}
-                    loading={loading}
-                    showChevron={false}
-                />
-            </ItemGroup>
+        <ItemList style={{ paddingTop: 0 }} testID="settings.plugins.webhooks.screen" presentation="page">
+            <SettingsPageHeader
+                description={t('settingsPlugins.webhookAdministration.footer')}
+                actions={(
+                    <SectionActionButton
+                        testID="settings.plugins.webhooks.refresh"
+                        title={t('common.refresh')}
+                        icon="arrows-clockwise"
+                        onPress={() => { void refresh(); }}
+                        loading={loading}
+                    />
+                )}
+            />
+            {error && !loading ? (
+                <ItemGroup>
+                    <Item
+                        testID="settings.plugins.webhooks.loadError"
+                        title={t('settingsPlugins.webhookAdministration.loadError')}
+                        detail={t('common.retry')}
+                        onPress={() => { void refresh(); }}
+                        showChevron={false}
+                    />
+                </ItemGroup>
+            ) : null}
             {!loading && !error && status?.endpoints.length === 0 ? (
                 <ItemGroup title={t('settingsPlugins.webhookAdministration.endpointsTitle')}>
                     <Item

@@ -64,7 +64,17 @@ export type MachineAdministrationTargetStateV1 =
     | Readonly<{ kind: 'online'; target: MachineAdministrationTargetV1; machine: MachineAdministrationCandidateV1 }>
     | Readonly<{ kind: 'offline'; target: MachineAdministrationTargetV1; snapshot: MachineAdministrationCandidateV1 }>
     | Readonly<{ kind: 'locked'; target: MachineAdministrationTargetV1; snapshot: MachineAdministrationCandidateV1 }>
-    | Readonly<{ kind: 'missing'; target: MachineAdministrationTargetV1; snapshot: MachineAdministrationCandidateV1 | null }>
+    | Readonly<{
+        kind: 'missing';
+        target: MachineAdministrationTargetV1;
+        snapshot: MachineAdministrationCandidateV1 | null;
+        /**
+         * `false` when the target's Home has not answered with its machine list yet (unreachable or
+         * still loading): the machine is absent from what is known, not known to be gone. Absent when
+         * the Home's list was read. Either way the target stays unusable (fail closed).
+         */
+        inventoryKnown?: false;
+    }>
     | Readonly<{
         kind: 'replaced';
         target: MachineAdministrationTargetV1;
@@ -107,6 +117,15 @@ export function machineAdministrationTargetsEqual(
 }
 
 /**
+ * The name a person gave the machine, or null when the inventory only knows its id (the candidate
+ * projection falls back to the id). Presentation says "Unnamed machine" instead of an opaque id.
+ */
+export function readMachineAdministrationCandidateName(candidate: MachineAdministrationCandidateV1): string | null {
+    const name = candidate.displayName.trim();
+    return name && name !== candidate.target.machineId ? name : null;
+}
+
+/**
  * How the picker names the machine and server a target points at.
  *
  * A confirmation for an irreversible machine-scoped change must say which
@@ -146,6 +165,8 @@ export function resolveMachineAdministrationTargetState(params: Readonly<{
     storedTarget: MachineAdministrationTargetV1 | null;
     candidates: readonly MachineAdministrationCandidateV1[];
     allowSoleCandidate?: boolean;
+    /** Whether a Home's machine list has been read and is current; without it no Home counts as read. */
+    isInventoryKnown?: (serverIdentityId: string) => boolean;
 }>): MachineAdministrationTargetStateV1 {
     const candidates = [...params.candidates].sort(compareCandidates);
     if (params.storedTarget === null) {
@@ -165,7 +186,14 @@ export function resolveMachineAdministrationTargetState(params: Readonly<{
         machineAdministrationTargetsEqual(candidate.target, params.storedTarget!)
     ));
     if (!selected) {
-        return Object.freeze({ kind: 'missing', target: params.storedTarget, snapshot: null });
+        // A saved machine is "gone" only when its Home's settled list lacks it; unread is not removed.
+        const inventoryKnown = params.isInventoryKnown?.(params.storedTarget.serverIdentityId) ?? false;
+        return Object.freeze({
+            kind: 'missing',
+            target: params.storedTarget,
+            snapshot: null,
+            ...(inventoryKnown ? {} : { inventoryKnown: false as const }),
+        });
     }
     return projectCandidateState(params.storedTarget, selected);
 }

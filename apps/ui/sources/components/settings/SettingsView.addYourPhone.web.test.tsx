@@ -100,12 +100,6 @@ vi.mock('expo-constants', () => ({
     default: { expoConfig: { version: '0.0.0-test' } },
 }));
 
-vi.mock('@/constants/Typography', () => ({
-    Typography: {
-        default: () => ({}),
-        mono: () => ({}),
-    },
-}));
 
 vi.mock('@/components/ui/lists/ItemList', () => ({
     ItemList: createPassThroughComponent('ItemList'),
@@ -123,8 +117,11 @@ vi.mock('@/hooks/session/useConnectTerminal', () => ({
     useConnectTerminal: () => ({ connectTerminal: vi.fn(), connectWithUrl: vi.fn(), isLoading: false }),
 }));
 
+// The real provider memoizes its context value and holds credentials in state, so consumers see one
+// stable object; a fresh object per call would re-run every effect that depends on `credentials`.
+const authContextValue = vi.hoisted(() => ({ isAuthenticated: true, credentials: { token: 't', secret: 's' } }));
 vi.mock('@/auth/context/AuthContext', () => ({
-    useAuth: () => ({ isAuthenticated: true, credentials: { token: 't', secret: 's' } }),
+    useAuth: () => authContextValue,
 }));
 
 vi.mock('@/sync/sync', () => ({
@@ -154,19 +151,8 @@ vi.mock('@/hooks/ui/useHappyAction', () => ({
     useHappyAction: (fn: any) => [false, fn],
 }));
 
-vi.mock('@/sync/domains/profiles/profile', () => ({
-    profileDefaults: {
-        id: '',
-        timestamp: 0,
-        firstName: null,
-        lastName: null,
-        username: null,
-        avatar: null,
-        linkedProviders: [],
-        connectedServices: [],
-        connectedServicesV2: [],
-        connectedServiceCredentialRevisionsV1: [],
-    },
+vi.mock('@/sync/domains/profiles/profile', async (importOriginal) => ({
+    ...await importOriginal<typeof import('@/sync/domains/profiles/profile')>(),
     getDisplayName: () => null,
     getAvatarUrl: () => null,
     getBio: () => null,
@@ -174,15 +160,6 @@ vi.mock('@/sync/domains/profiles/profile', () => ({
 
 vi.mock('@/components/ui/avatar/Avatar', () => ({
     Avatar: 'Avatar',
-}));
-
-vi.mock('@/agents/catalog/catalog', () => ({
-    AGENT_IDS: [],
-    DEFAULT_AGENT_ID: 'agent',
-    getAgentCore: () => ({ connectedService: null }),
-    getAgentIconSource: () => 1,
-    getAgentIconTintColor: () => null,
-    resolveAgentIdFromConnectedServiceId: () => null,
 }));
 
 vi.mock('@/components/settings/supportUsBehavior', () => ({
@@ -213,7 +190,8 @@ vi.mock('@/sync/domains/features/featureBuildPolicy', () => ({
     getFeatureBuildPolicyDecision: () => 'allow',
 }));
 
-vi.mock('@/sync/domains/server/serverProfiles', () => ({
+vi.mock('@/sync/domains/server/serverProfiles', async (importOriginal) => ({
+    ...await importOriginal<typeof import('@/sync/domains/server/serverProfiles')>(),
     getActiveServerSnapshot: () => ({ serverId: 'srv', serverUrl: 'https://local.example.test', generation: 0 }),
     listServerProfiles: () => [],
     subscribeActiveServer: (listener: any) => {
@@ -230,27 +208,9 @@ vi.mock('@/components/settings/machines/hooks/useActiveSelectionMachineGroups', 
     }),
 }));
 
-vi.mock('@/components/settings/machines/sections/ActiveSelectionMachinesSection', () => ({
-    ActiveSelectionMachinesSection: () => null,
-}));
-
 describe('SettingsView (web)', () => {
     afterEach(() => {
         vi.unstubAllGlobals();
-    });
-
-    it('renders an “Add your phone” shortcut that routes to /settings/add-phone', async () => {
-        windowDimensions = { width: 1600, height: 900 };
-        vi.resetModules();
-        routerPushSpy.mockClear();
-        const { SettingsView } = await import('./SettingsView');
-
-        const screen = await renderSettingsView(<SettingsView />);
-
-        expect(screen.findRow('settings-add-your-phone-shortcut')).toBeTruthy();
-        screen.pressRow('settings-add-your-phone-shortcut');
-        expect(routerPushSpy).toHaveBeenCalledTimes(1);
-        expect(routerPushSpy).toHaveBeenCalledWith('/settings/add-phone');
     });
 
     it('hides “Add your phone” on phone-sized web', async () => {

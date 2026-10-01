@@ -78,3 +78,16 @@ export function resolvePreferredMachineId(params: Readonly<{
 }>): string | null {
   return listPreferredMachineIds(params)[0] ?? null;
 }
+
+/**
+ * The machine a launch starts on when nobody chose one: the preferred order among online
+ * machines, and only when none is online the same order over every machine.
+ */
+export function resolvePreferredLaunchMachineId(params: Readonly<{
+  machines: ReadonlyArray<Machine>;
+  recentMachinePaths: ReadonlyArray<RecentMachinePathEntry>;
+  preferredMachineId?: string | null;
+}>): string | null {
+  return resolvePreferredMachineId({ ...params, onlineOnly: true })
+    ?? resolvePreferredMachineId(params);
+}

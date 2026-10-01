@@ -5,7 +5,9 @@ import {
     buildPluginListingRoute,
     buildPluginsHomeRoute,
     pluginsHomeTitleKey,
+    pluginsOpenItemParams,
     readPluginDetailRoutePluginId,
+    readPluginsOpenItem,
     readPluginListingRouteParams,
     resolvePluginsSurfaceHost,
 } from './pluginsSurfaceRoutes';
@@ -52,6 +54,21 @@ describe('plugins surface routes', () => {
     it('round-trips a source-qualified listing through its route params', () => {
         const route = buildPluginListingRoute('app', { sourceId: 'marketplace:curated', pluginId: 'acme.tools' });
         expect(readPluginListingRouteParams(route.params)).toEqual({ sourceId: 'marketplace:curated', pluginId: 'acme.tools' });
+    });
+
+    it('names the plugin open beside the Plugins page in the home route, and reads it back', () => {
+        const installed = { kind: 'installed', pluginId: 'acme.tools' } as const;
+        const listing = { kind: 'listing', sourceId: 'marketplace:curated', pluginId: 'acme.notes' } as const;
+        expect(buildPluginsHomeRoute('app', { view: 'installed', open: installed })).toBe('/plugins?view=installed&plugin=acme.tools');
+        expect(buildPluginsHomeRoute('settings', { view: 'browse', open: listing }))
+            .toBe('/settings/plugins?view=browse&plugin=acme.notes&source=marketplace%3Acurated');
+
+        expect(readPluginsOpenItem(pluginsOpenItemParams(installed))).toEqual(installed);
+        expect(readPluginsOpenItem(pluginsOpenItemParams(listing))).toEqual(listing);
+        // Closing clears both params, so a later Installed selection never inherits a listing's source.
+        expect(pluginsOpenItemParams(null)).toEqual({ plugin: undefined, source: undefined });
+        expect(readPluginsOpenItem({ plugin: ['  '] })).toBeNull();
+        expect(readPluginsOpenItem({ view: 'browse' })).toBeNull();
     });
 
     it('rejects a deep link that does not name both the source and the plugin', () => {

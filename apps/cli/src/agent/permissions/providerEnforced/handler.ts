@@ -36,6 +36,7 @@ export type { PermissionResult, PendingRequest };
 type HandlerOpts = Readonly<{
   pushSender?: PermissionRequestPushSender | null;
   getAccountSettings?: (() => AccountSettings | null) | null;
+  getWorkspaceWrites?: (() => 'allow' | 'deny' | undefined) | null;
   getAccountSettingsSecretsReadKeys?: (() => ReadonlyArray<Uint8Array | null | undefined>) | null;
   onAbortRequested?: (() => void | Promise<void>) | null;
   toolTrace?: { protocol: ToolTraceProtocol; provider: string } | null;
@@ -74,6 +75,7 @@ export class ProviderEnforcedPermissionHandler extends BasePermissionHandler {
     super(session, {
       pushSender: params.pushSender ?? null,
       getAccountSettings: params.getAccountSettings ?? null,
+      getWorkspaceWrites: params.getWorkspaceWrites ?? null,
       getAccountSettingsSecretsReadKeys: params.getAccountSettingsSecretsReadKeys ?? null,
       onAbortRequested: params.onAbortRequested ?? null,
       toolTrace: params.toolTrace ?? null,
@@ -89,6 +91,10 @@ export class ProviderEnforcedPermissionHandler extends BasePermissionHandler {
 
   protected getLogPrefix(): string {
     return this.logPrefix;
+  }
+
+  protected override getApprovalReviewerPermissionMode(): string {
+    return this.currentPermissionMode;
   }
 
   protected isCurrentRemoteMediationAllowEligible(params: Readonly<{
@@ -187,6 +193,8 @@ export class ProviderEnforcedPermissionHandler extends BasePermissionHandler {
     input: unknown,
     context?: AcpPermissionCallContext,
   ): PermissionResult | null {
+    const workspaceDecision = this.resolveWorkspaceWriteDecision(toolName, input);
+    if (workspaceDecision) return workspaceDecision;
     const effective = resolveCausalPermissionMode({
       currentPermissionMode: this.currentPermissionMode,
       context,

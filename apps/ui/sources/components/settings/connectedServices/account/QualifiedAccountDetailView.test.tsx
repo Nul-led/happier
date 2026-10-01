@@ -1,17 +1,17 @@
 import * as React from 'react';
 import type { ReactTestInstance } from 'react-test-renderer';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { act } from 'react-test-renderer';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { renderScreen } from '@/dev/testkit';
-import { t } from '@/text';
+import { renderScreen } from '@/dev/testkit/render/renderScreen';
+import { standardCleanup } from '@/dev/testkit/cleanup/standardCleanup';
+import { withPopoverWebGlobals } from '@/dev/testkit/harness/popoverHarness';
 import type { QualifiedConnectedAccountUiGroup } from '@/sync/domains/connectedServices/qualifiedConnectedAccountUiSource';
 import {
     ConnectedServiceAuthGroupPolicyV1Schema,
-    type ConnectedServiceCredentialHealthStatusV1,
     type PluginContributionIdentityV1,
     type QualifiedConnectedAccountRef,
 } from '@happier-dev/protocol';
-import type { StatusPillVariant } from '@/components/ui/status/StatusPill';
 
 import {
     QualifiedAccountDetailView,
@@ -23,6 +23,13 @@ import {
 const modalState = vi.hoisted(() => ({
     confirmResult: true,
     confirmSpy: vi.fn(),
+}));
+
+vi.mock('react-native', async () => (await import('@/dev/testkit/mocks/reactNative')).createReactNativeWebMock());
+vi.mock('react-native-unistyles', async () => (await import('@/dev/testkit/mocks/unistyles')).createUnistylesMock());
+// These account journeys do not render Markdown; fail if the unavailable third-party export is used.
+vi.mock('react-native-enriched-markdown/lib/module/web/streamingReveal.js', () => ({
+    splitStreamingRevealTextParts: () => { throw new Error('Unexpected streaming Markdown in account detail'); },
 }));
 
 vi.mock('@/modal', async () => {
@@ -99,98 +106,79 @@ function rowTitleOf(root: ReactTestInstance, testID: string): unknown {
     ))[0]?.props.title;
 }
 
-/** The status pill's rendered variant, read from the element that carries it. */
-function statusPillVariantOf(root: ReactTestInstance): unknown {
-    return root.findAll((node) => (
-        node.props?.testID === 'qualified-account-detail:status-pill'
-        && typeof node.props?.variant === 'string'
-    ))[0]?.props.variant;
-}
-
-function subtitleTextOf(node: ReactTestInstance | null): string {
-    if (!node) return '';
+/** The text of one header fact (the identity line under the title), read by its test id. */
+function metaTextOf(root: ReactTestInstance, testID: string): string | undefined {
+    const node = root.findAll((candidate) => candidate.props?.testID === testID)[0];
+    if (!node) return undefined;
     const parts: string[] = [];
     const collect = (value: unknown): void => {
-        if (typeof value === 'string' || typeof value === 'number') {
-            parts.push(String(value));
-            return;
-        }
-        if (Array.isArray(value)) {
-            for (const entry of value) collect(entry);
-            return;
-        }
-        if (value && typeof value === 'object' && 'props' in value) {
-            collect((value as { props?: { children?: unknown } }).props?.children);
-        }
+        if (typeof value === 'string' || typeof value === 'number') { parts.push(String(value)); return; }
+        if (Array.isArray(value)) { value.forEach(collect); return; }
+        if (value && typeof value === 'object' && 'props' in value) collect((value as { props?: { children?: unknown; value?: unknown } }).props?.children ?? (value as { props?: { value?: unknown } }).props?.value);
     };
-    collect(node.props?.children);
-    return parts.join(' ');
+    collect(node.props?.children ?? node.props?.value);
+    return parts.join('');
 }
 
 describe('QualifiedAccountDetailView', () => {
+    let restoreWebGlobals: () => void;
     beforeEach(() => {
+        restoreWebGlobals = withPopoverWebGlobals();
         modalState.confirmResult = true;
         modalState.confirmSpy.mockClear();
     });
 
-    it('renders identity rows from the qualified account props', async () => {
+    afterEach(() => {
+        standardCleanup();
+        restoreWebGlobals();
+    });
+
+    it('offers account configuration only when declared and opens its existing form', async () => {
+        const absent = await renderDetail();
+        expect(absent.findByTestId('qualified-account-detail:configuration')).toBeNull();
+        const onConfigureAccount = vi.fn();
+        const screen = await renderDetail({ onConfigureAccount, accountConfigurationBlocked: true });
+        expect(screen.findByTestId('qualified-account-detail:configuration')).toBeTruthy();
+        expect(screen.root.findAll((node) => node.props.testID === 'qualified-account-detail:configuration'
+            && node.props.detail === 'Blocked').length).toBeGreaterThan(0);
+        screen.pressByTestId('qualified-account-detail:configuration');
+        expect(onConfigureAccount).toHaveBeenCalledOnce();
+    });
+
+    it('offers service configuration separately with its blocked state and exact mode', async () => {
+        const onConfigure = vi.fn();
+        const screen = await renderDetail({
+            serviceConfigurations: [{ modeId: 'enterprise', title: 'Enterprise sign-in', blocked: true, onConfigure }],
+        });
+        const id = 'connected-service-configuration-settings:enterprise';
+        expect(screen.findByTestId(id)).toBeTruthy();
+        expect(screen.root.findAll((node) => node.props.testID === id
+            && node.props.detail === 'Enterprise sign-in · Blocked').length).toBeGreaterThan(0);
+        screen.pressByTestId(id);
+        expect(onConfigure).toHaveBeenCalledOnce();
+        expect(screen.findByTestId('qualified-account-detail:configuration')).toBeNull();
+    });
+
+    it('says who the account is in its header: the email, the service and plan, and the provider account id (lab csvc D1)', async () => {
         const screen = await renderDetail({
             providerEmail: 'work@example.com',
-            providerAccountId: 'acct_1234',
+            providerAccountId: 'user-4fQk8TzW1c',
+            planLabel: 'Pro',
             status: 'connected',
         });
 
-        expect(subtitleTextOf(screen.findByTestId('qualified-account-detail:row:account-id:subtitle')))
-            .toContain('work');
-        expect(subtitleTextOf(screen.findByTestId('qualified-account-detail:row:email:subtitle')))
-            .toContain('work@example.com');
-        expect(subtitleTextOf(screen.findByTestId('qualified-account-detail:row:provider-account-id:subtitle')))
-            .toContain('acct_1234');
-        expect(screen.findByTestId('qualified-account-detail:status-pill')).toBeTruthy();
+        expect(metaTextOf(screen.root, 'qualified-account-detail:meta:email')).toBe('work@example.com');
+        expect(metaTextOf(screen.root, 'qualified-account-detail:meta:plan')).toBe('Codex Pro');
+        expect(metaTextOf(screen.root, 'qualified-account-detail:meta:account-id')).toContain('user-4fQk8TzW1c');
+        // Identity lives in the header; there is no separate "Account details" list.
+        expect(screen.findByTestId('qualified-account-detail:row:email')).toBeNull();
     });
 
-    // The pill's colour is NOT this screen's decision: the credential status is
-    // derived to `AccountHealth` by the canonical `deriveAccountHealth` owner and
-    // painted by `resolveAccountHealthVariant`, exactly as the accounts list dot
-    // and the pool aggregate are. `refreshing` is therefore healthy (a credential
-    // being renewed is not a problem), not the warning a local table once painted.
-    const STATUS_PILL_VARIANTS: ReadonlyArray<
-        readonly [ConnectedServiceCredentialHealthStatusV1, StatusPillVariant]
-    > = [
-        ['refreshing', 'success'],
-        ['refresh_failed_retryable', 'warning'],
-        ['needs_reauth', 'danger'],
-    ];
+    it('says a signed-out account once, in its banner, never also as a header pill (lab csvc D2)', async () => {
+        const screen = await renderDetail({ status: 'needs_reauth', onReconnect: vi.fn() });
 
-    it.each(STATUS_PILL_VARIANTS)(
-        'paints the "%s" status pill through the canonical account-health variant owner',
-        async (status, variant) => {
-            const screen = await renderDetail({ status });
-
-            expect(statusPillVariantOf(screen.root)).toBe(variant);
-        },
-    );
-
-    it('keeps a healthy account quiet: its status is a plain header fact, not a pill', async () => {
-        const screen = await renderDetail({ status: 'connected' });
-
-        expect(statusPillVariantOf(screen.root)).toBeUndefined();
-        expect(screen.findByTestId('qualified-account-detail:status-pill')).toBeTruthy();
-    });
-
-    it('names the qualified id "Account id" and the provider-side id "Provider account id"', async () => {
-        const screen = await renderDetail({
-            providerAccountId: 'acct_1234',
-            status: 'connected',
-        });
-
-        // dev's vocabulary reserves "account" for the QUALIFIED identity, so the
-        // qualified `ref.accountId` owns the account-id label and the
-        // provider-reported id is explicitly namespaced as the provider's.
-        expect(rowTitleOf(screen.root, 'qualified-account-detail:row:account-id'))
-            .toBe(t('connectedServices.profile.accountId'));
-        expect(rowTitleOf(screen.root, 'qualified-account-detail:row:provider-account-id'))
-            .toBe(t('connectedServices.profile.providerAccountId'));
+        expect(screen.findByTestId('qualified-account-detail:signed-out-banner')).toBeTruthy();
+        expect(screen.findByTestId('qualified-account-detail:status-pill')).toBeNull();
     });
 
     it('names the account by its provider email when the caller resolved no label', async () => {
@@ -226,11 +214,11 @@ describe('QualifiedAccountDetailView', () => {
         expect(hasTitle(screen.root, 'Work account')).toBe(true);
     });
 
-    it('omits the email and provider-account rows when those identity fields are unknown', async () => {
+    it('omits the email and account id facts when those identity fields are unknown', async () => {
         const screen = await renderDetail({ status: 'connected' });
 
-        expect(screen.findByTestId('qualified-account-detail:row:email')).toBeNull();
-        expect(screen.findByTestId('qualified-account-detail:row:provider-account-id')).toBeNull();
+        expect(metaTextOf(screen.root, 'qualified-account-detail:meta:email')).toBeUndefined();
+        expect(metaTextOf(screen.root, 'qualified-account-detail:meta:account-id')).toBeUndefined();
     });
 
     it('lists pools the account belongs to and drills into the pressed pool', async () => {
@@ -288,8 +276,6 @@ describe('QualifiedAccountDetailView', () => {
             status: 'needs_reauth',
         });
 
-        expect(screen.findByTestId('qualified-account-detail:action:set-default')).toBeNull();
-        expect(screen.findByTestId('qualified-account-detail:default-switch')).toBeNull();
         expect(screen.findByTestId('qualified-account-detail:action:edit-label')).toBeNull();
         expect(screen.findByTestId('qualified-account-detail:action:reconnect')).toBeNull();
         expect(screen.findByTestId('qualified-account-detail:action:disconnect')).toBeNull();
@@ -297,19 +283,23 @@ describe('QualifiedAccountDetailView', () => {
         expect(screen.findByTestId('qualified-account-detail:pool:fallback')).toBeTruthy();
     });
 
-    it('invokes the edit-label and reconnect callbacks', async () => {
-        const onEditLabel = vi.fn();
+    it('renames the account in place: the pencil opens a small popover under the name, and Save writes the new name', async () => {
+        const onRename = vi.fn();
         const onReconnect = vi.fn();
         const screen = await renderDetail({
             status: 'needs_reauth',
-            onEditLabel,
+            rename: { currentLabel: 'Work account', onRename },
             onReconnect,
         });
 
-        screen.pressByTestId('qualified-account-detail:action:edit-label');
-        screen.pressByTestId('qualified-account-detail:action:reconnect');
+        expect(screen.findByTestId('qualified-account-detail:rename:input')).toBeNull();
+        await screen.pressByTestIdAsync('qualified-account-detail:action:edit-label');
+        await act(async () => screen.changeTextByTestId('qualified-account-detail:rename:input', '  Team · Acme  '));
+        expect(screen.findHostByTestId('qualified-account-detail:rename:input')?.props.value).toBe('  Team · Acme  ');
+        await screen.pressByTestIdAsync('qualified-account-detail:rename:save');
+        expect(onRename).toHaveBeenCalledWith('Team · Acme');
 
-        expect(onEditLabel).toHaveBeenCalledTimes(1);
+        screen.pressByTestId('qualified-account-detail:action:reconnect');
         expect(onReconnect).toHaveBeenCalledTimes(1);
     });
 
@@ -331,18 +321,14 @@ describe('QualifiedAccountDetailView', () => {
         expect(screen.findByTestId('qualified-account-detail:action:add-to-pool')).toBeNull();
     });
 
-    it('toggles the default account from the settings switch', async () => {
-        const onToggleDefault = vi.fn();
-        const screen = await renderDetail({ isDefault: false, onToggleDefault });
+    it('offers ★ "default for an agent" in the header, never a per-service default switch', async () => {
+        const setDefault = vi.fn();
+        const screen = await renderDetail({
+            agentDefaults: { choices: [{ agentId: 'codex', title: 'Codex', isDefault: true }], setDefault },
+        });
 
-        const switchNode = screen.findAllByTestId('qualified-account-detail:default-switch')
-            .find((node) => typeof node.props?.onValueChange === 'function');
-        expect(switchNode).toBeTruthy();
-        expect(switchNode?.props.value).toBe(false);
-
-        switchNode?.props.onValueChange(true);
-
-        expect(onToggleDefault).toHaveBeenCalledTimes(1);
+        expect(screen.findByTestId('qualified-account-detail:default-for')).toBeTruthy();
+        expect(screen.findByTestId('qualified-account-detail:default-switch')).toBeNull();
     });
 
     it('confirms before disconnecting and does not disconnect when the confirmation is declined', async () => {
@@ -387,5 +373,42 @@ describe('QualifiedAccountDetailView', () => {
 
         expect(modalState.confirmSpy).toHaveBeenCalledTimes(1);
         expect(onDisconnect).toHaveBeenCalledTimes(1);
+    });
+    it('says a signed-out account is blocked in a banner here, with the fix, and keeps its usage in view', async () => {
+        const onReconnect = vi.fn();
+        const screen = await renderDetail({
+            status: 'needs_reauth',
+            onReconnect,
+            usageSection: <></>,
+        });
+
+        expect(screen.findByTestId('qualified-account-detail:signed-out-banner')).toBeTruthy();
+        screen.pressByTestId('qualified-account-detail:signed-out-banner:sign-in-again');
+        expect(onReconnect).toHaveBeenCalledTimes(1);
+
+        const healthy = await renderDetail({ status: 'connected', onReconnect });
+        expect(healthy.findByTestId('qualified-account-detail:signed-out-banner')).toBeNull();
+    });
+
+    it('never offers a removal that would fail: while a pool uses the account, the way out of the pool comes first', async () => {
+        const onDisconnect = vi.fn();
+        const onOpenPool = vi.fn();
+        const pooled = await renderDetail({
+            groups: [makeGroup({ groupId: 'work-pool', displayName: 'Work pool', memberAccountIds: ['work'] })],
+            onOpenPool,
+            onDisconnect,
+        });
+
+        const remove = pooled.findAll((node) => node.props?.testID === 'qualified-account-detail:action:disconnect'
+            && typeof node.props?.onPress === 'function')[0];
+        expect(remove?.props.disabled).toBe(true);
+        pooled.pressByTestId('qualified-account-detail:action:leave-pool:work-pool');
+        expect(onOpenPool).toHaveBeenCalledWith('work-pool');
+        expect(onDisconnect).not.toHaveBeenCalled();
+
+        const alone = await renderDetail({ groups: [], onOpenPool, onDisconnect });
+        const enabled = alone.findAll((node) => node.props?.testID === 'qualified-account-detail:action:disconnect'
+            && typeof node.props?.onPress === 'function')[0];
+        expect(enabled?.props.disabled).toBeFalsy();
     });
 });

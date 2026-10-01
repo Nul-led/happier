@@ -72,6 +72,8 @@ type PendingPersonalHomeBootstrapSeedRecord = Readonly<{
 
 export type ServerCredentialLookupOptions = Readonly<{
     serverId?: string | null;
+    /** Only write when the currently stored credential still owns this scope. */
+    expectedCredentials?: AuthCredentials;
 }>;
 
 /**
@@ -102,6 +104,7 @@ export type HomeCredentialMutationEvent = Readonly<{
     kind: 'credentials_set' | 'credentials_removed';
     serverId: string;
     serverUrl: string;
+    credentials?: AuthCredentials;
 }>;
 
 type HomeCredentialMutationListener = (event: HomeCredentialMutationEvent) => void;
@@ -454,10 +457,20 @@ function emitHomeCredentialMutation(
     kind: HomeCredentialMutationEvent['kind'],
     serverUrl: string,
     options: ServerCredentialLookupOptions,
+    credentials?: AuthCredentials,
 ): void {
     const target = resolveHomeCredentialMutationTarget(serverUrl, options);
     if (!target) return;
-    const event: HomeCredentialMutationEvent = { kind, ...target };
+    const event = { kind, ...target } as HomeCredentialMutationEvent;
+    // Keep the existing observable event shape stable for subscribers that
+    // compare the routing tuple, while allowing the captured Account-settings
+    // owner to identify its own conditional adoption write.
+    if (credentials) {
+        Object.defineProperty(event, 'credentials', {
+            value: credentials,
+            enumerable: false,
+        });
+    }
     for (const listener of [...homeCredentialMutationListeners]) {
         try {
             listener(event);
@@ -1788,6 +1801,22 @@ function parseCredentialsRaw(raw: string | null): AuthCredentials | null {
     }
 }
 
+function areCredentialsEqual(left: AuthCredentials | null, right: AuthCredentials): boolean {
+    if (!left || left.token !== right.token) return false;
+    if (isLegacyAuthCredentials(left) || isLegacyAuthCredentials(right)) {
+        return isLegacyAuthCredentials(left)
+            && isLegacyAuthCredentials(right)
+            && left.secret === right.secret;
+    }
+    if (isDataKeyAuthCredentials(left) || isDataKeyAuthCredentials(right)) {
+        return isDataKeyAuthCredentials(left)
+            && isDataKeyAuthCredentials(right)
+            && left.encryption.publicKey === right.encryption.publicKey
+            && left.encryption.machineKey === right.encryption.machineKey;
+    }
+    return true;
+}
+
 function parseRecoveryKeyReminderDismissedRaw(raw: string | null): boolean {
     if (!raw) return false;
     const value = raw.trim().toLowerCase();
@@ -2636,13 +2665,21 @@ async function writeHomeCredentialsForServerScope(
     const json = JSON.stringify(credentials);
     const previousPrimaryRaw = await readCredentialRawByKey(keys.primary);
     const previousLegacyRaws = await Promise.all(keys.legacy.map((legacyKey) => readCredentialRawByKey(legacyKey)));
+    if (options.expectedCredentials) {
+        const currentCredentials = parseCredentialsRaw(previousPrimaryRaw)
+            ?? previousLegacyRaws.map(parseCredentialsRaw).find((value): value is AuthCredentials => value !== null)
+            ?? null;
+        if (!areCredentialsEqual(currentCredentials, options.expectedCredentials)) {
+            return { stored: false, serverId: identity.serverId, rollback: null };
+        }
+    }
 
     const written = await writeCredentialRawByKey(keys.primary, json);
     if (!written) return { stored: false, serverId: identity.serverId, rollback: null };
     for (const legacyKey of keys.legacy) {
         await removeCredentialByKey(legacyKey);
     }
-    emitHomeCredentialMutation('credentials_set', serverUrl, options);
+    emitHomeCredentialMutation('credentials_set', serverUrl, options, credentials);
 
     const rollback = async (): Promise<boolean> => {
         return await serializeCredentialScopeOperations([keys.primary, ...keys.legacy], async () => {
@@ -2990,7 +3027,7 @@ export const TokenStorage = {
         }
         emitHomeCredentialMutation('credentials_set', getActiveServerUrl(), {
             serverId: getActiveServerId(),
-        });
+        }, credentials);
         return true;
         }, authority);
         });

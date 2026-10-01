@@ -1,6 +1,21 @@
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { createWorkflowDefinitionFixture, createWorkflowRunSummaryFixture } from '@/dev/testkit/fixtures/workflowRunFixtures';
+// The applied connection and storage reader are the Account host boundary;
+// lifetime capture and retirement underneath them remain real.
+const accountHost = vi.hoisted(() => ({
+    scope: { serverId: 'server-a', accountId: 'account-a' },
+}));
+vi.mock('@/sync/runtime/orchestration/connectionManager', () => ({
+    getAppliedActiveServerSnapshot: () => ({ serverId: accountHost.scope.serverId }),
+    isAppliedActiveServerRuntimeAvailable: () => true,
+}));
+vi.mock('@/sync/domains/state/storageStateReaderBridge', () => ({
+    readRegisteredStorageState: () => ({ profileScope: accountHost.scope }),
+}));
+
+import { WorkflowDefinitionV1Schema } from '@happier-dev/protocol/workflows/workflowV1';
+import { WorkflowRunSummaryV1Schema } from '@happier-dev/protocol/workflows/workflowProgressV1';
+import type { WorkflowRunAcceptedContextV1 } from '@happier-dev/protocol';
 
 import {
     buildWorkflowReviewedRunSeed,
@@ -8,16 +23,42 @@ import {
     storeWorkflowReviewedRunSeed,
 } from './workflowReviewedRunSeed';
 
-const ACCEPTED_CONTEXT = {
-    source: { kind: 'inline' as const },
+function createWorkflowDefinitionFixture() {
+    return WorkflowDefinitionV1Schema.parse({ version: 1, inputs: [], defaults: {}, blocks: [{ kind: 'step', id: 'step-1', document: { text: 'Analyze the repository', references: [], attachments: [] }, input: [], result: { kind: 'text' } }] });
+}
+
+function createWorkflowRunSummaryFixture(overrides: Partial<ReturnType<typeof WorkflowRunSummaryV1Schema.parse>> = {}) {
+    return WorkflowRunSummaryV1Schema.parse({ sourceArtifactId: null, ownerAccountId: 'account-1', visibleTeamId: null,
+        id: 'run-1', origin: { kind: 'direct' }, state: 'succeeded', revision: 1,
+        machineId: 'machine-1', workflowCustodyState: 'settled', originDeliveryAckRevision: null,
+        availability: { pause: false, resumeBoundary: false,    restoreWorkspace: false, cancel: false, inspectExecution: true, disabledReasons: [] },
+        createdAt: '2026-09-08T10:00:00.000Z', updatedAt: '2026-09-08T10:00:00.000Z', ...overrides,
+    });
+}
+
+const ACCEPTED_CONTEXT: WorkflowRunAcceptedContextV1 = {
+    source: { kind: 'inline' },
     inputs: { topic: 'release' },
     machineId: 'machine-1',
-    executionTarget: { kind: 'attached_run' as const },
-    workspaceTarget: { project: { machineId: 'machine-1', directory: '/Users/me/project' } },
-    origin: { kind: 'direct' as const },
+    executionTarget: { kind: 'detached_run' },
+    workspaceTarget: { project: { machineId: 'machine-1', directory: '/Users/me/project', checkoutRootPath: '/Users/me/project' } },
+    origin: { kind: 'direct' },
 };
 
 describe('workflow reviewed-run seed', () => {
+    beforeEach(() => {
+        accountHost.scope = { serverId: 'server-a', accountId: 'account-a' };
+    });
+    it('keeps accepted library metadata when opening a run as an unsaved workflow', () => {
+        const seed = buildWorkflowReviewedRunSeed({
+            run: createWorkflowRunSummaryFixture({ id: 'run-completed' }),
+            definition: createWorkflowDefinitionFixture(),
+            acceptedContext: { ...ACCEPTED_CONTEXT, metadata: { title: 'Release review', description: 'Review the release changes' } },
+        });
+        expect(seed).toMatchObject({ name: 'Release review', description: 'Review the release changes' });
+        expect(seed.reasonCode).toBeUndefined();
+        expect(seed.supersededRunId).toBeUndefined();
+    });
     it('carries the accepted definition, placement, runtime and inputs of the run it reviews', () => {
         const definition = createWorkflowDefinitionFixture();
         const seed = buildWorkflowReviewedRunSeed({
@@ -32,7 +73,7 @@ describe('workflow reviewed-run seed', () => {
             project: { machineId: 'machine-1', directory: '/Users/me/project' },
             // Repeating effectful work under a different runtime would be a
             // different operation; the reviewed copy keeps what was accepted.
-            executionTarget: { kind: 'attached_run' },
+            executionTarget: { kind: 'detached_run' },
             inputs: { topic: 'release' },
             supersededRunId: 'run-interrupted',
             reasonCode: 'workspace_conflict',
@@ -55,5 +96,26 @@ describe('workflow reviewed-run seed', () => {
 
     it('refuses a handle that does not name a reviewed-run copy', () => {
         expect(readWorkflowReviewedRunSeed('not-a-stored-seed')).toBeNull();
+    });
+
+    it('refuses a seed after the Account changes before editor intake', () => {
+        const seedId = storeWorkflowReviewedRunSeed(buildWorkflowReviewedRunSeed({
+            run: createWorkflowRunSummaryFixture(),
+            definition: createWorkflowDefinitionFixture(),
+            acceptedContext: ACCEPTED_CONTEXT,
+        }));
+        accountHost.scope = { serverId: 'server-a', accountId: 'account-b' };
+        expect(readWorkflowReviewedRunSeed(seedId)).toBeNull();
+    });
+
+    it('refuses a seed after its Account lifetime retires even when the same Account returns', async () => {
+        const { retireActiveServerAccountScopeLifetime } = await import('@/sync/domains/scope/activeServerAccountScope');
+        const seedId = storeWorkflowReviewedRunSeed(buildWorkflowReviewedRunSeed({
+            run: createWorkflowRunSummaryFixture(),
+            definition: createWorkflowDefinitionFixture(),
+            acceptedContext: ACCEPTED_CONTEXT,
+        }));
+        retireActiveServerAccountScopeLifetime();
+        expect(readWorkflowReviewedRunSeed(seedId)).toBeNull();
     });
 });

@@ -24,7 +24,7 @@ function compatibilityProjection(
       runtime: { apiVersion: 1 },
       contributes: {},
     },
-    uiArtifacts: { version: 1, entries },
+    uiArtifacts: { version: 2, entries },
   };
 }
 
@@ -224,18 +224,17 @@ describe('resolveNpmArtifactMetadata', () => {
 
   it('rejects a candidate whose generated UI artifact targets a different Host UI API before body selection', async () => {
     const generatedEntry = {
-      contributionId: 'main',
+      artifactId: 'main',
       tier: 'hostedWeb',
-      entry: 'web/index.html',
+      entry: 'hosted-web/main/index.html',
       files: [{
-        relativePath: 'web/index.html',
+        relativePath: 'hosted-web/main/index.html',
         digest: `sha256:${'a'.repeat(64)}`,
         byteSize: 1,
       }],
       digest: `sha256:${'b'.repeat(64)}`,
-      builtWith: { bundler: 'vite', version: '7.0.0' },
-      hostUiApiVersion: '999.0.0',
-      compat: {},
+      builtWith: { staging: 'staticDirectory' },
+      hostUiApiRange: '^999.0.0',
     };
     const compatibilityAwarePackument = {
       ...packument,

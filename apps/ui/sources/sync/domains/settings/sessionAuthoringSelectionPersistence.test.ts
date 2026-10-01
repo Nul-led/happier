@@ -4,10 +4,33 @@ import { FavoriteModelSelectionV1Schema } from '@/sync/domains/models/favoriteMo
 import { RememberedEngineSelectionsByScopeV1Schema } from '@/sync/domains/session/authoring/rememberedEngineSelections';
 
 import {
-    attachCurrentSessionAuthoringSelectionsRuntimeProjection,
+    attachCurrentSessionAuthoringSelectionsRuntimeProjection as attachFavoriteProjection,
     replayFavoriteModelSelectionReplacementIntent,
-    replayRememberedEngineSelectionReplacementIntent,
+    mergeCurrentRememberedEngineSelectionsIntoRaw,
 } from './sessionAuthoringSelectionPersistence';
+import { authoringMemoryDefaults, projectAuthoringMemory } from '@/sync/store/domains/authoringMemory';
+import { LegacyRememberedEngineSelectionsByScopeV1Schema } from '@happier-dev/protocol';
+
+function attachCurrentSessionAuthoringSelectionsRuntimeProjection<T extends object>(value: T) {
+    const raw = value as Record<string, unknown>;
+    const favorites = attachFavoriteProjection(value);
+    const authoring = projectAuthoringMemory({ ...authoringMemoryDefaults,
+        lastEngineSelectionsByScopeV1: LegacyRememberedEngineSelectionsByScopeV1Schema.parse(raw.lastEngineSelectionsByScopeV1 ?? {}),
+    });
+    return { ...value, currentFavoriteModelSelectionsV1: favorites.currentFavoriteModelSelectionsV1,
+        currentRememberedEngineSelectionsByScopeV1: authoring.currentRememberedEngineSelectionsByScopeV1 };
+}
+
+function replayRememberedEngineSelectionReplacementIntent(params: {
+    raw: Readonly<Record<string, unknown>>;
+    base: import('@/sync/domains/session/authoring/rememberedEngineSelections').RememberedEngineSelectionsByScopeV1;
+    proposed: import('@/sync/domains/session/authoring/rememberedEngineSelections').RememberedEngineSelectionsByScopeV1;
+}) {
+    return { ...params.raw, lastEngineSelectionsByScopeV1: mergeCurrentRememberedEngineSelectionsIntoRaw({
+        rawSelections: LegacyRememberedEngineSelectionsByScopeV1Schema.parse(params.raw.lastEngineSelectionsByScopeV1 ?? {}),
+        currentSelections: params.base, nextSelections: params.proposed,
+    }) };
+}
 
 function favorite(modelId: string, updatedAt: number, modelLabel?: string) {
     return FavoriteModelSelectionV1Schema.parse({
@@ -15,7 +38,7 @@ function favorite(modelId: string, updatedAt: number, modelLabel?: string) {
             v: 1,
             updatedAt,
             ref: {
-                agentTargetKey: 'backend:codex',
+                agentTargetKey: 'agent:happier.agent.codex/codex',
                 providerConnectionId: null,
                 modelId,
             },
@@ -28,7 +51,7 @@ function favorite(modelId: string, updatedAt: number, modelLabel?: string) {
 describe('session authoring selection persistence', () => {
     it('replays typed edits on a version-conflict winner without dropping remote opaque additions', () => {
         const initialFavorite = {
-            backendTargetKey: 'backend:codex',
+            backendTargetKey: 'agent:happier.agent.codex/codex',
             modelId: 'gpt-5.4',
             addedAtMs: 123,
         };
@@ -40,7 +63,7 @@ describe('session authoring selection persistence', () => {
         const initial = attachCurrentSessionAuthoringSelectionsRuntimeProjection({
             favoriteModelSelectionsV1: [initialFavorite],
             lastEngineSelectionsByScopeV1: {
-                'server-a:backend:codex': initialRemembered,
+                'server-a:agent:happier.agent.codex/codex': initialRemembered,
             },
         });
         const remoteOpaqueFavorite = { v: 2, futureWriterField: 'favorite' };
@@ -49,7 +72,7 @@ describe('session authoring selection persistence', () => {
             schemaVersion: 7,
             favoriteModelSelectionsV1: [initialFavorite, remoteOpaqueFavorite],
             lastEngineSelectionsByScopeV1: {
-                'server-a:backend:codex': initialRemembered,
+                'server-a:agent:happier.agent.codex/codex': initialRemembered,
                 'server-a:backend:future': remoteOpaqueRemembered,
             },
         };
@@ -58,7 +81,7 @@ describe('session authoring selection persistence', () => {
                 v: 1,
                 updatedAt: 456,
                 ref: {
-                    agentTargetKey: 'backend:codex',
+                    agentTargetKey: 'agent:happier.agent.codex/codex',
                     providerConnectionId: null,
                     modelId: 'gpt-5.5',
                 },
@@ -67,8 +90,8 @@ describe('session authoring selection persistence', () => {
         });
         const localRemembered = {
             ...initial.currentRememberedEngineSelectionsByScopeV1,
-            'server-a:backend:codex': {
-                ...initial.currentRememberedEngineSelectionsByScopeV1['server-a:backend:codex']!,
+            'server-a:agent:happier.agent.codex/codex': {
+                ...initial.currentRememberedEngineSelectionsByScopeV1['server-a:agent:happier.agent.codex/codex']!,
                 updatedAt: 456,
             },
         };
@@ -92,7 +115,7 @@ describe('session authoring selection persistence', () => {
                 localFavorite,
             ],
             lastEngineSelectionsByScopeV1: {
-                'server-a:backend:codex': localRemembered['server-a:backend:codex'],
+                'server-a:agent:happier.agent.codex/codex': localRemembered['server-a:agent:happier.agent.codex/codex'],
                 'server-a:backend:future': remoteOpaqueRemembered,
             },
         });
@@ -100,7 +123,7 @@ describe('session authoring selection persistence', () => {
             schemaVersion: 7,
             favoriteModelSelectionsV1: [initialFavorite, remoteOpaqueFavorite],
             lastEngineSelectionsByScopeV1: {
-                'server-a:backend:codex': initialRemembered,
+                'server-a:agent:happier.agent.codex/codex': initialRemembered,
                 'server-a:backend:future': remoteOpaqueRemembered,
             },
         });
@@ -108,7 +131,7 @@ describe('session authoring selection persistence', () => {
 
     it('fails closed when a typed remembered edit is not valid for the bounded Settings carrier', () => {
         const base = {
-            'server-a:backend:codex': {
+            'server-a:agent:happier.agent.codex/codex': {
                 v: 1 as const,
                 modelSelection: null,
                 updatedAt: 1,
@@ -119,8 +142,8 @@ describe('session authoring selection persistence', () => {
         };
         const proposed = {
             ...base,
-            'server-a:backend:codex': {
-                ...base['server-a:backend:codex'],
+            'server-a:agent:happier.agent.codex/codex': {
+                ...base['server-a:agent:happier.agent.codex/codex'],
                 sessionConfigOptionOverrides: {
                     v: 1 as const,
                     updatedAt: 2,
@@ -139,7 +162,7 @@ describe('session authoring selection persistence', () => {
     });
 
     it('keeps a concurrent opaque remembered value at a previously typed scope', () => {
-        const scopeKey = 'server-a:backend:codex';
+        const scopeKey = 'server-a:agent:happier.agent.codex/codex';
         const base = RememberedEngineSelectionsByScopeV1Schema.parse({
             [scopeKey]: {
                 v: 1,
@@ -147,7 +170,7 @@ describe('session authoring selection persistence', () => {
                     v: 1,
                     updatedAt: 1,
                     ref: {
-                        agentTargetKey: 'backend:codex',
+                        agentTargetKey: 'agent:happier.agent.codex/codex',
                         providerConnectionId: null,
                         modelId: 'gpt-5.4',
                     },
@@ -219,7 +242,7 @@ describe('session authoring selection persistence', () => {
     });
 
     it('keeps a concurrent typed remembered winner instead of replacing it with a stale local edit', () => {
-        const scopeKey = 'server-a:backend:codex';
+        const scopeKey = 'server-a:agent:happier.agent.codex/codex';
         const base = RememberedEngineSelectionsByScopeV1Schema.parse({
             [scopeKey]: {
                 v: 1,
@@ -253,7 +276,7 @@ describe('session authoring selection persistence', () => {
     });
 
     it('does not resurrect a locally edited remembered scope after the CAS winner deleted it', () => {
-        const scopeKey = 'server-a:backend:codex';
+        const scopeKey = 'server-a:agent:happier.agent.codex/codex';
         const base = RememberedEngineSelectionsByScopeV1Schema.parse({
             [scopeKey]: {
                 v: 1,
@@ -279,7 +302,7 @@ describe('session authoring selection persistence', () => {
     });
 
     it('treats a padded equivalent scope key as the same opaque CAS winner', () => {
-        const scopeKey = 'server-a:backend:codex';
+        const scopeKey = 'server-a:agent:happier.agent.codex/codex';
         const paddedScopeKey = ` ${scopeKey} `;
         const base = RememberedEngineSelectionsByScopeV1Schema.parse({
             [scopeKey]: {
@@ -316,7 +339,7 @@ describe('session authoring selection persistence', () => {
     });
 
     it('contracts a padded typed scope alias when its value still matches the rendered base', () => {
-        const scopeKey = 'server-a:backend:codex';
+        const scopeKey = 'server-a:agent:happier.agent.codex/codex';
         const paddedScopeKey = ` ${scopeKey} `;
         const base = RememberedEngineSelectionsByScopeV1Schema.parse({
             [scopeKey]: {

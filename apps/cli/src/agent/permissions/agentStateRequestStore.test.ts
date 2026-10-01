@@ -4,6 +4,7 @@ import { resolveAgentStateRequestCoverageOptions } from '@happier-dev/agents';
 import { accountSettingsParse } from '@happier-dev/protocol';
 import type { AgentState } from '@/api/types';
 import { logger } from '@/ui/logger';
+import { createSessionNotificationContextFixture } from '@/testkit/backends/sessionFixtures';
 import { AgentStateRequestStore, type PermissionResponseClaim } from './agentStateRequestStore';
 
 const localPermissionBridgeCoverageOptions = resolveAgentStateRequestCoverageOptions({ kind: 'localPermissionBridge' });
@@ -257,7 +258,7 @@ describe('AgentStateRequestStore', () => {
         const store = new AgentStateRequestStore({
             session,
             logPrefix: '[Test]',
-            pushSender: { sendToAllDevicesAsync },
+            pushSender: { sendToAllDevicesAsync, fetchSessionNotificationContext: async (sessionId) => createSessionNotificationContextFixture(sessionId) },
             getAccountSettings: () => settings,
             getSessionTitle: () => 'Session',
             getAgentDisplayName: () => 'Agent',

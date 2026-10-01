@@ -1,4 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
+import { openAccountScopedBlobCiphertext } from '@happier-dev/protocol';
+import { AUTOMATION_TEMPLATE_V02_EXISTING_PLAIN, AUTOMATION_TEMPLATE_V02_EXISTING_ENCRYPTED }
+    from '../../../../../../packages/protocol/src/automations/automationTemplateV02.testFixtures';
+import { decodeAutomationTemplate } from './automationTemplateCodec';
 
 import {
     encodeAutomationTemplateForTransport,
@@ -8,6 +12,16 @@ import {
 } from './automationTemplateTransport';
 
 describe('automationTemplateTransport', () => {
+    it.each([AUTOMATION_TEMPLATE_V02_EXISTING_PLAIN, AUTOMATION_TEMPLATE_V02_EXISTING_ENCRYPTED])
+        ('reads exact 0.2 existing-session bytes through the shared predecessor codec', async (templateCiphertext) => {
+            const result = await resolveAutomationTemplatePayload({ templateCiphertext,
+                decryptRaw: async ciphertext => openAccountScopedBlobCiphertext({ kind: 'automation_template_payload',
+                    ciphertext, material: { type: 'legacy', secret: new Uint8Array(32).fill(7) } })?.value ?? null });
+            expect(result.kind).toBe('ready');
+            if (result.kind !== 'ready') return;
+            expect(decodeAutomationTemplate(JSON.stringify(result.payload))).toMatchObject({
+                directory: '/repo', prompt: 'Review the release', existingSessionId: 'session-old' });
+        });
     it('seals templates into encrypted envelope payloads', async () => {
         const encryptRaw = vi.fn(async () => 'ciphertext-base64');
 

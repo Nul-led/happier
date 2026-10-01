@@ -1,5 +1,6 @@
 import * as React from 'react';
-import { useUnistyles } from 'react-native-unistyles';
+import { useRouter } from '@/components/appShell/workspace/destinationRoute';
+import { Icon } from '@/components/ui/icons/Icon';
 
 import { DEFAULT_AGENT_ID } from '@/agents/catalog/catalog';
 import { MachineAdministrationTargetSelector } from '@/components/settings/machines/MachineAdministrationTargetSelector';
@@ -7,8 +8,9 @@ import { ItemList } from '@/components/ui/lists/ItemList';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
 import { Item } from '@/components/ui/lists/Item';
 import { Switch } from '@/components/ui/forms/Switch';
-import { DropdownMenu } from '@/components/ui/forms/dropdown/DropdownMenu';
-import { Modal } from '@/modal';
+import { RoundButton } from '@/components/ui/buttons/RoundButton';
+import { FieldValueItem } from '@/components/ui/forms/FieldValueItem';
+import { SegmentedChoiceItem } from '@/components/ui/lists/SegmentedChoiceItem';
 import { t } from '@/text';
 
 import { fetchDaemonMemorySettings, writeDaemonMemorySettings } from '@/sync/domains/memory/fetchDaemonMemorySettings';
@@ -30,32 +32,56 @@ import {
     type MemorySettingsV1,
     type MemoryStatusV1,
 } from '@happier-dev/protocol';
-import { MemorySettingsArchivedSection } from './MemorySettingsArchivedSection';
+import { MemorySettingsArchivedRow } from './MemorySettingsArchivedSection';
 import type { ArchivedMemoryStatusRequestState } from '@/sync/domains/memory/resolveArchivedMemoryEligibilityControl';
 import { MemorySettingsBudgetsSection } from './MemorySettingsBudgetsSection';
 import { MemorySettingsContentPolicySection } from './MemorySettingsContentPolicySection';
-import { MemorySettingsCoverageSection } from './MemorySettingsCoverageSection';
+import { MemorySettingsCoverageRow } from './MemorySettingsCoverageSection';
 import { MemorySettingsEmbeddingsSection } from './MemorySettingsEmbeddingsSection';
 import { MemorySettingsIndexTelemetrySection } from './MemorySettingsIndexTelemetrySection';
 import { MemorySettingsPrivacySection } from './MemorySettingsPrivacySection';
-import { Icon } from '@/components/ui/icons/Icon';
+import { SettingsPageHeader } from '@/components/settings/shell/SettingsPageHeader';
+import { SettingAnchor, SettingRow, SettingSection } from '@/components/settings/shell/SettingRow';
+import { MEMORY_SETTINGS } from '@/components/settings/memory/memorySettings';
+
+/**
+ * Until a machine's index is ready only the local index section renders; its "Enabled" row says what
+ * is missing (choose a machine, reachable, update). It answers a search for any Memory setting then.
+ */
+const MEMORY_SECTIONS_AFTER_READY = Object.values(MEMORY_SETTINGS.sectionRefs)
+    .filter((section) => section !== MEMORY_SETTINGS.sectionRefs.localIndex);
+
+/** In light mode the embeddings section is not rendered; the Indexing section, whose Index mode row leads to it, answers for it. */
+const MEMORY_EMBEDDINGS_SECTIONS = [MEMORY_SETTINGS.sectionRefs.embeddings];
 
 type IndexMode = MemorySettingsV1['indexMode'];
+type BackfillPolicy = MemorySettingsV1['backfillPolicy'];
+type SummarizerPermissionMode = MemorySettingsV1['hints']['summarizerPermissionMode'];
+
+/**
+ * Whether the managed machine's memory settings can be shown and changed. Every memory setting
+ * lives on the machine, so without a reachable, current daemon the page says why instead of
+ * presenting defaults as the machine's settings.
+ */
+type MachineSettingsAccess = 'noMachine' | 'pending' | 'ready' | 'updateRequired' | 'unreachable';
+
+/** The outcome of the last settled settings read, for the machine it was read from. */
+type SettledMachineRead = Readonly<{ targetKey: string; access: 'ready' | 'updateRequired' | 'unreachable' }>;
+
+function resolveExecutionTargetKey(target: FreshMachineAdministrationExecutionTargetV1 | null): string | null {
+    return target
+        ? [target.target.serverIdentityId, target.target.machineId, target.serverId].join('\u0000')
+        : null;
+}
 
 export const MemorySettingsView = React.memo(function MemorySettingsView() {
-    const { theme } = useUnistyles();
+    const router = useRouter();
     const memorySearchEnabled = useFeatureEnabled('memory.search');
     const administrationTargetSelection = useMachineAdministrationTargetSelection(
         MACHINE_ADMINISTRATION_SELECTION_KEYS_V1.memory,
     );
     const executionTarget = administrationTargetSelection.resolveExecutionTarget();
-    const executionTargetKey = executionTarget
-        ? [
-            executionTarget.target.serverIdentityId,
-            executionTarget.target.machineId,
-            executionTarget.serverId,
-        ].join('\u0000')
-        : null;
+    const executionTargetKey = resolveExecutionTargetKey(executionTarget);
     const hasExecutionTarget = executionTarget !== null;
     const isExecutionTargetCurrent = React.useCallback((
         target: FreshMachineAdministrationExecutionTargetV1,
@@ -67,19 +93,24 @@ export const MemorySettingsView = React.memo(function MemorySettingsView() {
     }, [administrationTargetSelection.resolveExecutionTarget]);
 
     const [settings, setSettings] = React.useState<MemorySettingsV1>(() => DEFAULT_MEMORY_SETTINGS);
-    const [settingsRpcSupported, setSettingsRpcSupported] = React.useState(true);
+    // Settings are writable only after a read settled for the machine being managed. Until then the
+    // page holds defaults (or another machine's values), and a write would post them over the machine.
+    const [settledRead, setSettledRead] = React.useState<SettledMachineRead | null>(null);
+    const settledReadRef = React.useRef<SettledMachineRead | null>(null);
+    const settleRead = React.useCallback((next: SettledMachineRead | null) => {
+        settledReadRef.current = next;
+        setSettledRead(next);
+    }, []);
     const [memoryStatus, setMemoryStatus] = React.useState<MemoryStatusV1 | null>(null);
     const [memoryStatusRequestState, setMemoryStatusRequestState] = React.useState<ArchivedMemoryStatusRequestState>('unresolved');
     const [loading, setLoading] = React.useState(false);
-    const [indexModeMenuOpen, setIndexModeMenuOpen] = React.useState(false);
-    const [backfillMenuOpen, setBackfillMenuOpen] = React.useState(false);
-    const [summarizerPermissionMenuOpen, setSummarizerPermissionMenuOpen] = React.useState(false);
 
     const fetchSettings = React.useCallback(async () => {
         if (!memorySearchEnabled) return;
         const target = administrationTargetSelection.resolveExecutionTarget();
         if (!target) return;
         setLoading(true);
+        settleRead(null);
         setMemoryStatus(null);
         setMemoryStatusRequestState('loading');
         try {
@@ -87,7 +118,8 @@ export const MemorySettingsView = React.memo(function MemorySettingsView() {
                 fetchDaemonMemorySettings({
                     machineId: target.machine.id,
                     serverId: target.serverId,
-                }),
+                }).then((result) => ({ result, unreachable: false as const }))
+                    .catch(() => ({ result: null, unreachable: true as const })),
                 fetchDaemonMemoryStatus({
                     machineId: target.machine.id,
                     serverId: target.serverId,
@@ -95,32 +127,40 @@ export const MemorySettingsView = React.memo(function MemorySettingsView() {
                     .catch(() => ({ status: null, requestState: 'unreachable' as const })),
             ]);
             if (!isExecutionTargetCurrent(target)) return;
-            setSettings(settingsResult.settings);
-            setSettingsRpcSupported(settingsResult.supported);
+            const targetKey = resolveExecutionTargetKey(target)!;
+            if (settingsResult.result) {
+                setSettings(settingsResult.result.settings);
+                settleRead({ targetKey, access: settingsResult.result.supported ? 'ready' : 'updateRequired' });
+            } else {
+                settleRead({ targetKey, access: 'unreachable' });
+            }
             setMemoryStatus(statusResult.status);
             setMemoryStatusRequestState(statusResult.requestState);
         } finally {
             if (isExecutionTargetCurrent(target)) setLoading(false);
         }
-    }, [administrationTargetSelection.resolveExecutionTarget, isExecutionTargetCurrent, memorySearchEnabled]);
+    }, [administrationTargetSelection.resolveExecutionTarget, isExecutionTargetCurrent, memorySearchEnabled, settleRead]);
 
     React.useEffect(() => {
         if (!memorySearchEnabled) return;
         if (!hasExecutionTarget) {
             setSettings(DEFAULT_MEMORY_SETTINGS);
-            setSettingsRpcSupported(false);
+            settleRead(null);
             setMemoryStatus(null);
             setMemoryStatusRequestState('unresolved');
             setLoading(false);
             return;
         }
         void fetchSettings();
-    }, [executionTargetKey, fetchSettings, hasExecutionTarget, memorySearchEnabled]);
+    }, [executionTargetKey, fetchSettings, hasExecutionTarget, memorySearchEnabled, settleRead]);
 
     const writeSettings = React.useCallback(async (next: MemorySettingsV1) => {
         if (!memorySearchEnabled) return;
         const target = administrationTargetSelection.resolveExecutionTarget();
         if (!target) return;
+        const targetKey = resolveExecutionTargetKey(target)!;
+        const read = settledReadRef.current;
+        if (read?.targetKey !== targetKey || read.access !== 'ready') return;
         const result = await writeDaemonMemorySettings({
             machineId: target.machine.id,
             serverId: target.serverId,
@@ -128,8 +168,8 @@ export const MemorySettingsView = React.memo(function MemorySettingsView() {
         });
         if (!isExecutionTargetCurrent(target)) return;
         setSettings(result.settings);
-        setSettingsRpcSupported(result.supported);
         if (!result.supported) {
+            settleRead({ targetKey, access: 'updateRequired' });
             return;
         }
         setMemoryStatusRequestState('loading');
@@ -141,23 +181,21 @@ export const MemorySettingsView = React.memo(function MemorySettingsView() {
         if (!isExecutionTargetCurrent(target)) return;
         setMemoryStatus(statusResult.status);
         setMemoryStatusRequestState(statusResult.requestState);
-    }, [administrationTargetSelection.resolveExecutionTarget, isExecutionTargetCurrent, memorySearchEnabled]);
+    }, [administrationTargetSelection.resolveExecutionTarget, isExecutionTargetCurrent, memorySearchEnabled, settleRead]);
 
-    const indexModeItems = [
-        { id: 'hints', title: t('memorySearchSettings.indexMode.options.lightTitle'), subtitle: t('memorySearchSettings.indexMode.options.lightSubtitle') },
-        { id: 'deep', title: t('memorySearchSettings.indexMode.options.deepTitle'), subtitle: t('memorySearchSettings.indexMode.options.deepSubtitle') },
-    ] as const;
-
-    const backfillItems = [
-        { id: 'new_only', title: t('memorySearchSettings.backfill.options.newOnlyTitle'), subtitle: t('memorySearchSettings.backfill.options.newOnlySubtitle') },
-        { id: 'last_30_days', title: t('memorySearchSettings.backfill.options.last30DaysTitle'), subtitle: t('memorySearchSettings.backfill.options.last30DaysSubtitle') },
-        { id: 'all_history', title: t('memorySearchSettings.backfill.options.allHistoryTitle'), subtitle: t('memorySearchSettings.backfill.options.allHistorySubtitle') },
-    ] as const;
-
-    const summarizerPermissionItems = [
-        { id: 'no_tools', title: t('memorySearchSettings.hints.permissions.options.noToolsTitle'), subtitle: t('memorySearchSettings.hints.permissions.options.noToolsSubtitle') },
-        { id: 'read_only', title: t('memorySearchSettings.hints.permissions.options.readOnlyTitle'), subtitle: t('memorySearchSettings.hints.permissions.options.readOnlySubtitle') },
-    ] as const;
+    const indexModeOptions = React.useMemo(() => [
+        { id: 'hints' as const, label: t('memorySearchSettings.indexMode.options.lightTitle'), description: t('memorySearchSettings.indexMode.options.lightSubtitle') },
+        { id: 'deep' as const, label: t('memorySearchSettings.indexMode.options.deepTitle'), description: t('memorySearchSettings.indexMode.options.deepSubtitle') },
+    ], []);
+    const backfillOptions = React.useMemo(() => [
+        { id: 'new_only' as const, label: t('memorySearchSettings.backfill.options.newOnlyTitle'), description: t('memorySearchSettings.backfill.options.newOnlySubtitle') },
+        { id: 'last_30_days' as const, label: t('memorySearchSettings.backfill.options.last30DaysTitle'), description: t('memorySearchSettings.backfill.options.last30DaysSubtitle') },
+        { id: 'all_history' as const, label: t('memorySearchSettings.backfill.options.allHistoryTitle'), description: t('memorySearchSettings.backfill.options.allHistorySubtitle') },
+    ], []);
+    const summarizerPermissionOptions = React.useMemo(() => [
+        { id: 'no_tools' as const, label: t('memorySearchSettings.hints.permissions.options.noToolsTitle'), description: t('memorySearchSettings.hints.permissions.options.noToolsSubtitle') },
+        { id: 'read_only' as const, label: t('memorySearchSettings.hints.permissions.options.readOnlyTitle'), description: t('memorySearchSettings.hints.permissions.options.readOnlySubtitle') },
+    ], []);
 
     const statusPresentation = React.useMemo(() => presentDaemonMemoryStatus(memoryStatus), [memoryStatus]);
     const embeddingsStatusPresentation = React.useMemo(
@@ -193,227 +231,224 @@ export const MemorySettingsView = React.memo(function MemorySettingsView() {
     const embeddingsModelSubtitle = React.useMemo(() => {
         return embeddingsStatusPresentation?.modelId ?? t('common.unavailable');
     }, [embeddingsStatusPresentation?.modelId]);
-    const showReadOnlySettings = settingsRpcSupported !== true || !hasExecutionTarget;
+
+    const access: MachineSettingsAccess = !hasExecutionTarget
+        ? 'noMachine'
+        : settledRead?.targetKey === executionTargetKey
+            ? settledRead.access
+            : 'pending';
+
+    // The chip names the machine this page manages; it stays in every state because it is how
+    // the user recovers from a missing or unreachable machine.
+    const machineChip = (
+        <MachineAdministrationTargetSelector
+            selection={administrationTargetSelection}
+            testIDPrefix="memory-settings-target"
+            presentation="chip"
+        />
+    );
 
     if (!memorySearchEnabled) {
         return (
-            <ItemList style={{ paddingTop: 0 }}>
+            <ItemList presentation="page">
+                <SettingsPageHeader description={t('memorySearchSettings.pagePurpose')} actions={machineChip} />
                 <ItemGroup
-                    title={t('settings.memorySearch')}
-                    footer={t('memorySearchSettings.disabled.footer')}
+                    title={t('memorySearchSettings.disabled.title')}
+                    description={t('memorySearchSettings.disabled.footer')}
                 >
                     <Item
-                        title={t('memorySearchSettings.disabled.title')}
-                        subtitle={t('memorySearchSettings.disabled.subtitle')}
-                        icon={<Icon name="magnifying-glass" size={29} color={theme.colors.state.success.foreground} />}
-                        onPress={() => { void Modal.alert(t('memorySearchSettings.disabled.alertTitle'), t('memorySearchSettings.disabled.alertBody')); }}
+                        icon={<Icon name="flask" />}
+                        testID="memory-settings-open-features"
+                        title={t('memorySearchSettings.disabled.openFeatureSettings')}
+                        onPress={() => router.push('/settings/features')}
                     />
                 </ItemGroup>
             </ItemList>
         );
     }
 
+    const enabledSubtitle = access === 'ready'
+        ? t('memorySearchSettings.enabled.subtitle')
+        : access === 'noMachine'
+            ? t('memorySearchSettings.enabled.chooseMachine')
+            : access === 'pending'
+                ? t('common.loading')
+                : access === 'unreachable'
+                ? t('memorySearchSettings.enabled.unreachable')
+                : t('memorySearchSettings.enabled.updateRequired');
+
     return (
-        <ItemList style={{ paddingTop: 0 }}>
-            <MachineAdministrationTargetSelector
-                selection={administrationTargetSelection}
-                testIDPrefix="memory-settings-target"
-            />
-            <ItemGroup
-                title={t('settings.memorySearch')}
-                footer={showReadOnlySettings ? t('common.unavailable') : t('memorySearchSettings.enabled.footer')}
-            >
-                <Item
-                    title={t('memorySearchSettings.enabled.title')}
-                    subtitle={showReadOnlySettings ? t('common.unavailable') : t('memorySearchSettings.enabled.subtitle')}
-                    icon={<Icon name="magnifying-glass" size={29} color={theme.colors.state.success.foreground} />}
-                    rightElement={showReadOnlySettings ? null : (
-                        <Switch
-                            value={settings.enabled}
-                            onValueChange={(value) => {
-                                void writeSettings({ ...settings, enabled: Boolean(value) });
-                            }}
-                        />
+        <ItemList presentation="page">
+            <SettingsPageHeader description={t('memorySearchSettings.pagePurpose')} actions={machineChip} />
+            <SettingSection section={MEMORY_SETTINGS.sectionRefs.localIndex} answersFor={access === 'ready' ? undefined : MEMORY_SECTIONS_AFTER_READY}>
+                <ItemGroup
+                    title={t('memorySearchSettings.enabled.sectionTitle')}
+                    description={t('memorySearchSettings.enabled.footer')}
+                >
+                    <SettingRow
+                        setting={MEMORY_SETTINGS.settings.enabled}
+                        subtitle={enabledSubtitle}
+                        subtitleLines={0}
+                        rightElement={access === 'ready' ? (
+                            <Switch
+                                value={settings.enabled}
+                                onValueChange={(value) => {
+                                    void writeSettings({ ...settings, enabled: Boolean(value) });
+                                }}
+                            />
+                        ) : access === 'unreachable' ? (
+                            <RoundButton
+                                testID="memory-settings-retry"
+                                size="small"
+                                display="secondary"
+                                title={t('common.retry')}
+                                disabled={loading}
+                                onPress={() => fetchSettings()}
+                            />
+                        ) : null}
+                        showChevron={false}
+                    />
+                    {access === 'noMachine' ? null : (
+                        <>
+                            <Item
+                                title={t('memorySearchSettings.status.title')}
+                                subtitle={statusSubtitle}
+                                showChevron={false}
+                            />
+                            <Item
+                                title={t('memorySearchSettings.status.diskUsageTitle')}
+                                subtitle={diskUsageSubtitle}
+                                showChevron={false}
+                            />
+                        </>
                     )}
-                    showChevron={false}
-                />
-                <Item
-                    title={t('memorySearchSettings.status.title')}
-                    subtitle={statusSubtitle}
-                    icon={<Icon name="chart-line" size={29} color={theme.colors.accent.orange} />}
-                    showChevron={false}
-                />
-                <Item
-                    title={t('memorySearchSettings.status.diskUsageTitle')}
-                    subtitle={diskUsageSubtitle}
-                    icon={<Icon name="cpu" size={29} color={theme.colors.accent.purple} />}
-                    showChevron={false}
-                />
-                {showEmbeddingsStatus ? (
-                    <>
-                        <Item
-                            title={t('memorySearchSettings.status.embeddingsTitle')}
-                            subtitle={embeddingsStatusSubtitle}
-                            icon={<Icon name="sparkle" size={29} color={theme.colors.accent.indigo} />}
-                            showChevron={false}
-                        />
-                        <Item
-                            title={t('memorySearchSettings.status.embeddingsProviderTitle')}
-                            subtitle={embeddingsProviderSubtitle}
-                            icon={<Icon name="cloud" size={29} color={theme.colors.accent.blue} />}
-                            showChevron={false}
-                        />
-                        <Item
-                            title={t('memorySearchSettings.status.embeddingsModelTitle')}
-                            subtitle={embeddingsModelSubtitle}
-                            icon={<Icon name="cube" size={29} color={theme.colors.accent.purple} />}
-                            showChevron={false}
-                        />
-                    </>
-                ) : null}
-            </ItemGroup>
+                    {access !== 'noMachine' && showEmbeddingsStatus ? (
+                        <>
+                            <Item
+                                title={t('memorySearchSettings.status.embeddingsTitle')}
+                                subtitle={embeddingsStatusSubtitle}
+                                showChevron={false}
+                            />
+                            <Item
+                                title={t('memorySearchSettings.status.embeddingsProviderTitle')}
+                                subtitle={embeddingsProviderSubtitle}
+                                showChevron={false}
+                            />
+                            <Item
+                                title={t('memorySearchSettings.status.embeddingsModelTitle')}
+                                subtitle={embeddingsModelSubtitle}
+                                showChevron={false}
+                            />
+                        </>
+                    ) : null}
+                </ItemGroup>
+            </SettingSection>
 
             <MemorySettingsIndexTelemetrySection memoryStatus={memoryStatus} />
 
-            {showReadOnlySettings ? null : (
+            {access !== 'ready' ? null : (
                 <>
-            <ItemGroup
-                title={t('memorySearchSettings.indexMode.title')}
-                footer={t('memorySearchSettings.indexMode.footer')}
-            >
-                <DropdownMenu
-                    open={indexModeMenuOpen}
-                    onOpenChange={setIndexModeMenuOpen}
-                    selectedId={settings.indexMode}
-                    items={indexModeItems}
-                    onSelect={(id) => {
-                        const mode = (id === 'deep' ? 'deep' : 'hints') as IndexMode;
-                        void writeSettings({ ...settings, indexMode: mode });
-                        setIndexModeMenuOpen(false);
-                    }}
-                    itemTrigger={{
-                        title: t('memorySearchSettings.indexMode.triggerTitle'),
-                        icon: <Icon name="sliders-horizontal" size={29} color={theme.colors.accent.orange} />,
-                    }}
-                />
-            </ItemGroup>
+                    {/* Without deep mode the embeddings rows do not exist; Index mode (in this section) is what leads to them. */}
+                    <SettingSection section={MEMORY_SETTINGS.sectionRefs.indexing} answersFor={settings.indexMode === 'deep' ? undefined : MEMORY_EMBEDDINGS_SECTIONS}>
+                    <ItemGroup
+                        title={t('memorySearchSettings.indexing.title')}
+                        description={t('memorySearchSettings.indexing.description')}
+                    >
+                        <SettingAnchor setting={MEMORY_SETTINGS.settings.indexMode}>
+                            <SegmentedChoiceItem<IndexMode>
+                                title={t(MEMORY_SETTINGS.settings.indexMode.titleKey)}
+                                options={indexModeOptions}
+                                value={settings.indexMode}
+                                onChange={(mode) => {
+                                    void writeSettings({ ...settings, indexMode: mode });
+                                }}
+                                testIDPrefix="memory-settings-index-mode"
+                            />
+                        </SettingAnchor>
+                        <SettingAnchor setting={MEMORY_SETTINGS.settings.backfill}>
+                            <SegmentedChoiceItem<BackfillPolicy>
+                                title={t(MEMORY_SETTINGS.settings.backfill.titleKey)}
+                                options={backfillOptions}
+                                value={settings.backfillPolicy}
+                                onChange={(policy) => {
+                                    void writeSettings({ ...settings, backfillPolicy: policy });
+                                }}
+                                testIDPrefix="memory-settings-backfill"
+                            />
+                        </SettingAnchor>
+                        <MemorySettingsCoverageRow settings={settings} writeSettings={writeSettings} />
+                        <MemorySettingsArchivedRow
+                            settings={settings}
+                            status={memoryStatus}
+                            statusRequestState={memoryStatusRequestState}
+                            writeSettings={writeSettings}
+                        />
+                    </ItemGroup>
+                    </SettingSection>
 
-            <ItemGroup
-                title={t('memorySearchSettings.backfill.title')}
-                footer={t('memorySearchSettings.backfill.footer')}
-            >
-                <DropdownMenu
-                    open={backfillMenuOpen}
-                    onOpenChange={setBackfillMenuOpen}
-                    selectedId={settings.backfillPolicy}
-                    items={backfillItems}
-                    onSelect={(id) => {
-                        const policy =
-                            id === 'all_history'
-                                ? 'all_history'
-                                : id === 'last_30_days'
-                                    ? 'last_30_days'
-                                    : 'new_only';
-                        void writeSettings({ ...settings, backfillPolicy: policy });
-                        setBackfillMenuOpen(false);
-                    }}
-                    itemTrigger={{
-                        title: t('memorySearchSettings.backfill.triggerTitle'),
-                        icon: <Icon name="clock" size={29} color={theme.colors.accent.purple} />,
-                    }}
-                />
-            </ItemGroup>
+                    <MemorySettingsContentPolicySection settings={settings} writeSettings={writeSettings} />
 
-            <MemorySettingsArchivedSection
-                settings={settings}
-                status={memoryStatus}
-                statusRequestState={memoryStatusRequestState}
-                writeSettings={writeSettings}
-            />
+                    <MemorySettingsEmbeddingsSection settings={settings} writeSettings={writeSettings} />
 
-            <MemorySettingsCoverageSection settings={settings} writeSettings={writeSettings} />
+                    <ItemGroup
+                        title={t('memorySearchSettings.hints.title')}
+                        description={t('memorySearchSettings.hints.footer')}
+                    >
+                        <SettingAnchor setting={MEMORY_SETTINGS.settings.summarizerBackend}>
+                            <FieldValueItem
+                                testID="memory-settings-summarizer-backend"
+                                fieldTestID="memory-settings-summarizer-backend-field"
+                                title={t(MEMORY_SETTINGS.settings.summarizerBackend.titleKey)}
+                                subtitle={t('memorySearchSettings.hints.backend.promptBody')}
+                                placeholder={DEFAULT_AGENT_ID}
+                                monospace
+                                value={settings.hints.summarizerBackendId}
+                                onCommit={(draft) => {
+                                    if (!draft) return settings.hints.summarizerBackendId;
+                                    void writeSettings({
+                                        ...settings,
+                                        hints: { ...settings.hints, summarizerBackendId: draft },
+                                    });
+                                }}
+                            />
+                        </SettingAnchor>
+                        <SettingAnchor setting={MEMORY_SETTINGS.settings.summarizerModel}>
+                            <FieldValueItem
+                                testID="memory-settings-summarizer-model"
+                                fieldTestID="memory-settings-summarizer-model-field"
+                                title={t(MEMORY_SETTINGS.settings.summarizerModel.titleKey)}
+                                subtitle={t('memorySearchSettings.hints.model.promptBody')}
+                                placeholder="default"
+                                monospace
+                                value={settings.hints.summarizerModelId}
+                                onCommit={(draft) => {
+                                    if (!draft) return settings.hints.summarizerModelId;
+                                    void writeSettings({
+                                        ...settings,
+                                        hints: { ...settings.hints, summarizerModelId: draft },
+                                    });
+                                }}
+                            />
+                        </SettingAnchor>
+                        <SettingAnchor setting={MEMORY_SETTINGS.settings.permissions}>
+                            <SegmentedChoiceItem<SummarizerPermissionMode>
+                                title={t(MEMORY_SETTINGS.settings.permissions.titleKey)}
+                                options={summarizerPermissionOptions}
+                                value={settings.hints.summarizerPermissionMode}
+                                onChange={(mode) => {
+                                    void writeSettings({
+                                        ...settings,
+                                        hints: { ...settings.hints, summarizerPermissionMode: mode },
+                                    });
+                                }}
+                                testIDPrefix="memory-settings-summarizer-permissions"
+                            />
+                        </SettingAnchor>
+                    </ItemGroup>
 
-            <MemorySettingsBudgetsSection settings={settings} writeSettings={writeSettings} />
+                    <MemorySettingsBudgetsSection settings={settings} writeSettings={writeSettings} />
 
-            <MemorySettingsContentPolicySection settings={settings} writeSettings={writeSettings} />
-
-            <ItemGroup
-                title={t('memorySearchSettings.hints.title')}
-                footer={t('memorySearchSettings.hints.footer')}
-            >
-                <Item
-                    testID="memory-settings-summarizer-backend"
-                    title={t('memorySearchSettings.hints.backend.title')}
-                    subtitle={settings.hints.summarizerBackendId}
-                    icon={<Icon name="hard-drives" size={29} color={theme.colors.accent.blue} />}
-                    onPress={async () => {
-                        const next = await Modal.prompt(
-                            t('memorySearchSettings.hints.backend.promptTitle'),
-                            t('memorySearchSettings.hints.backend.promptBody'),
-                            {
-                                defaultValue: settings.hints.summarizerBackendId,
-                                placeholder: DEFAULT_AGENT_ID,
-                                confirmText: t('common.save'),
-                                cancelText: t('common.cancel'),
-                            },
-                        );
-                        if (typeof next === 'string' && next.trim()) {
-                            void writeSettings({
-                                ...settings,
-                                hints: { ...settings.hints, summarizerBackendId: next.trim() },
-                            });
-                        }
-                    }}
-                    showChevron={false}
-                />
-                <Item
-                    testID="memory-settings-summarizer-model"
-                    title={t('memorySearchSettings.hints.model.title')}
-                    subtitle={settings.hints.summarizerModelId}
-                    icon={<Icon name="cube" size={29} color={theme.colors.accent.indigo} />}
-                    onPress={async () => {
-                        const next = await Modal.prompt(
-                            t('memorySearchSettings.hints.model.promptTitle'),
-                            t('memorySearchSettings.hints.model.promptBody'),
-                            {
-                                defaultValue: settings.hints.summarizerModelId,
-                                placeholder: 'default',
-                                confirmText: t('common.save'),
-                                cancelText: t('common.cancel'),
-                            },
-                        );
-                        if (typeof next === 'string' && next.trim()) {
-                            void writeSettings({
-                                ...settings,
-                                hints: { ...settings.hints, summarizerModelId: next.trim() },
-                            });
-                        }
-                    }}
-                    showChevron={false}
-                />
-                <DropdownMenu
-                    open={summarizerPermissionMenuOpen}
-                    onOpenChange={setSummarizerPermissionMenuOpen}
-                    selectedId={settings.hints.summarizerPermissionMode}
-                    items={summarizerPermissionItems}
-                    onSelect={(id) => {
-                        const mode = id === 'read_only' ? 'read_only' : 'no_tools';
-                        void writeSettings({
-                            ...settings,
-                            hints: { ...settings.hints, summarizerPermissionMode: mode },
-                        });
-                        setSummarizerPermissionMenuOpen(false);
-                    }}
-                    itemTrigger={{
-                        title: t('memorySearchSettings.hints.permissions.triggerTitle'),
-                        icon: <Icon name="lock" size={29} color={theme.colors.state.danger.foreground} />,
-                    }}
-                />
-            </ItemGroup>
-
-            <MemorySettingsPrivacySection settings={settings} writeSettings={writeSettings} />
-
-            <MemorySettingsEmbeddingsSection settings={settings} writeSettings={writeSettings} />
+                    <MemorySettingsPrivacySection settings={settings} writeSettings={writeSettings} />
                 </>
             )}
         </ItemList>

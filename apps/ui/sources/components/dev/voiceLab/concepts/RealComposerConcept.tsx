@@ -8,7 +8,7 @@ import { SafeIonicons } from '@/components/ui/icons/SafeIonicons';
 import { Text } from '@/components/ui/text/Text';
 import { Typography } from '@/constants/Typography';
 
-import { TactilePressable } from '@/components/voice/controls/VoiceControls';
+import { TactilePressable } from '@/components/ui/interactions/TactilePressable';
 import { PlanetOrb, VoiceWaveform } from '@/components/voice/light/VoiceLight';
 import { TranscriptStream } from '@/components/voice/surface/VoiceTranscriptStream';
 import { light, onPlanetInk, useVoiceLightTokens } from '@/components/voice/light/voiceLightTokens';

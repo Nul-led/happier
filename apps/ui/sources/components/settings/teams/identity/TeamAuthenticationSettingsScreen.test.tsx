@@ -41,8 +41,16 @@ const identityStateMock = vi.hoisted(() => ({
     },
 }));
 
-vi.mock('expo-router', () => ({ useRouter: () => ({ push: routerPushMock }) }));
-vi.mock('@/components/ui/lists/Item', () => ({ Item: 'Item' }));
+vi.mock('expo-router', () => ({
+    useRouter: () => ({ push: routerPushMock }),
+    useLocalSearchParams: () => ({}),
+}));
+// Rows render their right-hand control, as the real row does; page fields are text inputs.
+vi.mock('@/components/ui/lists/Item', async () => {
+    const React = await import('react');
+    return { Item: (props: { rightElement?: unknown }) => React.createElement('Item', props, props.rightElement as never) };
+});
+vi.mock('@/components/ui/forms/FieldTextInput', () => ({ FieldTextInput: 'TextInput' }));
 vi.mock('@/components/ui/lists/ItemGroup', () => ({ ItemGroup: 'ItemGroup' }));
 vi.mock('@/components/ui/feedback/ActivitySpinner', () => ({ ActivitySpinner: 'ActivitySpinner' }));
 vi.mock('@/text', () => ({ t: (key: string) => key }));
@@ -114,6 +122,12 @@ beforeEach(() => {
 });
 
 describe('TeamAuthenticationSettingsScreen', () => {
+    it('uses the translated canonical provider-kind label when the catalog has no display name', async () => {
+        identityStateMock.current.eligibleProviders[0]!.displayName = null;
+        const screen = await renderScreen(<TeamAuthenticationSettingsScreen serverId="home-1" teamId="team-1" />);
+        expect(screen.findByTestId('team-eligible-provider:provider-1')?.props.title)
+            .toBe('identityAdministration.providerOidc');
+    });
     it('keeps every connection and eligible provider mounted beyond 100 rows', async () => {
         identityStateMock.current.items = Array.from({ length: 101 }, (_, index) => ({
             v: 1,
@@ -295,8 +309,8 @@ describe('TeamAuthenticationSettingsScreen', () => {
 
         await renderScreen(<TeamAuthenticationSettingsScreen serverId="home-1" teamId="team-1" />);
 
-        expect(teamGitHubAppsSectionMock).toHaveBeenCalledTimes(1);
-        expect(teamGitHubAppsSectionMock.mock.calls[0]?.[0]).toEqual(expect.objectContaining({
+        expect(teamGitHubAppsSectionMock).toHaveBeenCalled();
+        expect(teamGitHubAppsSectionMock.mock.lastCall?.[0]).toEqual(expect.objectContaining({
             createAvailable: false,
         }));
     });

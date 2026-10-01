@@ -1,18 +1,25 @@
 import * as React from 'react';
 import { Pressable, View } from 'react-native';
-import { useNavigation, useRouter } from 'expo-router';
-import { useIsFocused } from '@react-navigation/native';
+import { useNavigation, useRouter } from '@/components/appShell/workspace/destinationRoute';
+import { useIsFocused } from '@/components/appShell/workspace/destinationRoute';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 import { isPersistentMachine, type MachinePoolMemberInputV1, type MachinePoolViewV1 } from '@happier-dev/protocol';
 import { ItemList } from '@/components/ui/lists/ItemList';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
 import { Item } from '@/components/ui/lists/Item';
-import { Switch } from '@/components/ui/forms/Switch';
 import { Text, TextInput } from '@/components/ui/text/Text';
-import { StatusPill, type StatusPillVariant } from '@/components/ui/status/StatusPill';
+import { Typography } from '@/constants/Typography';
+import { FieldTextInput } from '@/components/ui/forms/FieldTextInput';
+import { Icon } from '@/components/ui/icons/Icon';
+import { PageHeaderMenu } from '@/components/ui/layout/PageHeaderEntityParts';
+import type { PageHeaderPrimaryAction } from '@/components/ui/layout/PageHeader';
+import { EmptyState } from '@/components/ui/empty/EmptyState';
+import { IconButton } from '@/components/ui/buttons/IconButton';
+import { AttentionBanner } from '@/components/ui/lists/AttentionBanner';
+import { SectionActionButton } from '@/components/ui/lists/SectionActionButton';
+import { SettingsPageHeader } from '@/components/settings/shell/SettingsPageHeader';
+import type { StatusPillVariant } from '@/components/ui/status/StatusPill';
 import { SelectionList, resolvePopoverSelectionListHeightBehavior, type SelectionListStep } from '@/components/ui/selectionList';
-import { SettingsActionFooter } from '@/components/ui/settingsSurface/SettingsActionFooter';
-import { SETTINGS_TEXT_INPUT_METRICS } from '@/components/ui/forms/settingsTextInputMetrics';
 import { Modal } from '@/modal';
 import { t } from '@/text';
 import { useMachineListByServerId, useMachineListStatusByServerId } from '@/sync/domains/state/storage';
@@ -23,17 +30,19 @@ import { MachinePoolActionError } from '@/sync/api/machines/machinePoolActions';
 import { randomUUID } from '@/platform/randomUUID';
 import { safeRouterBack } from '@/utils/navigation/safeRouterBack';
 import { invalidateMachinePoolProjection } from '@/sync/engine/machines/machinePoolProjection';
-import { resolveMachinePoolMemberLabel } from '@/components/machines/pools/machinePoolRowPresentation';
+import { resolveMachinePoolMemberLabel, resolveMachinePoolMemberLabels } from '@/components/machines/pools/machinePoolRowPresentation';
 import { createMachinePoolEditorTierState, isMachinePoolHomeOffline, isMachinePoolRefreshFailed, moveMachinePoolEditorTier, normalizeMachinePoolEditorMembers, normalizeMachinePoolEditorTierState } from './machinePoolEditorModel';
 import { useApprovalArtifact } from '@/components/approvals/useApprovalArtifact';
 import { useMachinesSettingsViewModel } from '../machinesSettingsViewModel';
 import { useServerProfilesGeneration } from '@/hooks/server/useServerProfilesGeneration';
 import { getServerProfileById } from '@/sync/domains/server/serverProfiles';
+import { resolveHomeDisplayLabel } from '@/components/settings/server/homeDisplayName';
 import { restoreFocusToBestTarget, useRetargetNavigationFocusReturnIntent } from '@/keyboard/focusReturn';
 import {
     machinePoolSettingsRowTestId,
     resolveMachinePoolDeleteFocusTargetTestId,
 } from '../sections/MachinePoolsSection';
+import { publishMachinePoolDraftTitle } from './machinePoolDraftTitle';
 
 type Draft = Readonly<{ name: string; description: string; members: readonly MachinePoolMemberInputV1[]; tierCount: number }>;
 const draftFromView = (view: MachinePoolViewV1 | null): Draft => {
@@ -134,6 +143,16 @@ function MachinePoolEditorContent(props: MachinePoolEditorContentProps) {
     const existing = pools?.find((item) => item.pool.id === props.poolId) ?? null;
     const createIdRef = React.useRef(isNew ? randomUUID() : '');
     const [draft, setDraft] = React.useState<Draft>(() => draftFromView(existing));
+    // The saved values the draft is compared with: Save waits for a change, Create for a name.
+    const [baseline, setBaseline] = React.useState<Draft>(() => draftFromView(existing));
+    // A new pool's draft row in the Machines collection shows its name as it is typed.
+    React.useEffect(() => {
+        if (!isNew) return;
+        publishMachinePoolDraftTitle(draft.name);
+    }, [draft.name, isNew]);
+    React.useEffect(() => () => {
+        if (isNew) publishMachinePoolDraftTitle('');
+    }, [isNew]);
     const [saving, setSaving] = React.useState(false); const [error, setError] = React.useState<string | null>(null);
     const [approvalId, setApprovalId] = React.useState<string | null>(null);
     const {
@@ -175,7 +194,7 @@ function MachinePoolEditorContent(props: MachinePoolEditorContentProps) {
         return createdRef;
     }, []);
     React.useEffect(() => {
-        if (existing && loadedRevisionRef.current === null) { loadedRevisionRef.current = existing.pool.revision; setDraft(draftFromView(existing)); }
+        if (existing && loadedRevisionRef.current === null) { loadedRevisionRef.current = existing.pool.revision; setDraft(draftFromView(existing)); setBaseline(draftFromView(existing)); }
     }, [existing]);
     const homeOffline = isMachinePoolHomeOffline(machineListStatus)
         || isMachinePoolHomeOffline(poolProjection?.status ?? 'loading');
@@ -219,14 +238,18 @@ function MachinePoolEditorContent(props: MachinePoolEditorContentProps) {
         && !machine.replacedByMachineId
     )), [machines]);
     const availableMachines = React.useMemo(() => eligibleMachines.filter((machine) => !draft.members.some((member) => member.machineId === machine.id)), [draft.members, eligibleMachines]);
-    const orderedMembers = React.useMemo(() => draft.members
-        .map((member) => ({
-            member,
-            label: resolveMachinePoolMemberLabel(member.machineId, machines),
-        }))
-        .sort((a, b) => a.member.priorityTier - b.member.priorityTier
-            || a.label.localeCompare(b.label)
-            || a.member.machineId.localeCompare(b.member.machineId)), [draft.members, machines]);
+    // Saved members carry the state the server reports, which names a member this Home no longer lists.
+    const orderedMembers = React.useMemo(() => {
+        const labels = resolveMachinePoolMemberLabels(draft.members.map((member) => ({
+            machineId: member.machineId,
+            state: existing?.pool.members.find((saved) => saved.machineId === member.machineId)?.state,
+        })), machines);
+        return draft.members
+            .map((member) => ({ member, label: labels.get(member.machineId) ?? member.machineId }))
+            .sort((a, b) => a.member.priorityTier - b.member.priorityTier
+                || a.label.localeCompare(b.label)
+                || a.member.machineId.localeCompare(b.member.machineId));
+    }, [draft.members, existing, machines]);
     React.useEffect(() => {
         const firstInvalid = orderedMembers.find(({ member }) => invalidMemberIds.has(member.machineId));
         if (!firstInvalid) return;
@@ -240,7 +263,7 @@ function MachinePoolEditorContent(props: MachinePoolEditorContentProps) {
             kind: 'static',
             id: 'machines',
             options: availableMachines.map((machine) => {
-                const label = resolveMachinePoolMemberLabel(machine.id, machines);
+                const label = resolveMachinePoolMemberLabel({ machineId: machine.id }, machines);
                 const status = machine.active ? t('status.online') : t('status.offline');
                 return {
                     id: machine.id,
@@ -258,7 +281,7 @@ function MachinePoolEditorContent(props: MachinePoolEditorContentProps) {
         Modal.hide(memberPickerModalIdRef.current);
         memberPickerModalIdRef.current = null;
     }, []);
-    const openMemberPicker = React.useCallback(() => {
+    const openMemberPicker = React.useCallback((priorityTier: number) => {
         if (formDisabled || availableMachines.length === 0) return;
         closeMemberPicker();
         memberPickerModalIdRef.current = Modal.show({
@@ -270,7 +293,7 @@ function MachinePoolEditorContent(props: MachinePoolEditorContentProps) {
                 onSelect: (machineId: string) => setDraft((current) => current.members.some((member) => member.machineId === machineId) ? current : ({
                     ...current,
                     ...normalizeMachinePoolEditorTierState(
-                        [...current.members, { machineId, priorityTier: 0, enabled: true }],
+                        [...current.members, { machineId, priorityTier, enabled: true }],
                         current.tierCount,
                     ),
                 })),
@@ -333,6 +356,11 @@ function MachinePoolEditorContent(props: MachinePoolEditorContentProps) {
                     kind: 'static' as const,
                     id: 'membership',
                     options: [{
+                        id: member.enabled ? 'pause' : 'resume',
+                        testID: `settings.machinePools.editor.member.${member.machineId}.${member.enabled ? 'pause' : 'resume'}`,
+                        label: member.enabled ? t('machinePools.pauseMember') : t('machinePools.resumeMember'),
+                        accessibilityLabel: `${member.enabled ? t('machinePools.pauseMember') : t('machinePools.resumeMember')}. ${machineLabel}`,
+                    }, {
                         id: 'remove',
                         testID: `settings.machinePools.editor.member.${member.machineId}.remove`,
                         label: t('machinePools.removeMember'),
@@ -348,6 +376,10 @@ function MachinePoolEditorContent(props: MachinePoolEditorContentProps) {
                 listAccessibilityLabel: machineLabel,
                 rootStep,
                 onSelect: (optionId: string) => {
+                    if (optionId === 'pause' || optionId === 'resume') {
+                        updateMember(member.machineId, { enabled: optionId === 'resume' });
+                        return;
+                    }
                     if (optionId === 'remove') {
                         setDraft((current) => ({
                             ...current,
@@ -371,7 +403,7 @@ function MachinePoolEditorContent(props: MachinePoolEditorContentProps) {
             },
             closeOnBackdrop: true,
         });
-    }, [closeMemberActions, draft.tierCount, formDisabled, moveMember]);
+    }, [closeMemberActions, draft.tierCount, formDisabled, moveMember, updateMember]);
     const save = React.useCallback(async () => {
         if (formDisabled) return;
         if (!draft.name.trim()) {
@@ -432,41 +464,94 @@ function MachinePoolEditorContent(props: MachinePoolEditorContentProps) {
     const reloadConflict = React.useCallback(async () => {
         if (!conflict) return;
         const confirmed = await Modal.confirm(t('machinePools.reloadTitle'), t('machinePools.reloadBody'), { cancelText: t('common.cancel'), confirmText: t('machinePools.reload') });
-        if (!confirmed || !lifetimeCurrentRef.current) return; loadedRevisionRef.current = conflict.pool.revision; setDraft(draftFromView(conflict)); setConflict(undefined);
+        if (!confirmed || !lifetimeCurrentRef.current) return; loadedRevisionRef.current = conflict.pool.revision; setDraft(draftFromView(conflict)); setBaseline(draftFromView(conflict)); setConflict(undefined);
     }, [conflict]);
 
+    const waitingForRows = waitingForFeature || waitingForExisting;
+    // Nothing to add is its own state only while the form is otherwise usable; a disabled form keeps
+    // its disabled Add row, and the banner above says why.
+    const nothingToAdd = !formDisabled && availableMachines.length === 0;
+    const homeProfile = getServerProfileById(props.serverId);
+    const homeName = homeProfile ? resolveHomeDisplayLabel(homeProfile, props.serverId) : null;
+    const pageTitle = draft.name.trim() || (isNew ? t('machinePools.newPoolTitle') : existing?.pool.name ?? t('machinePools.title'));
+    const dirty = JSON.stringify(draft) !== JSON.stringify(baseline);
+    // Create waits for a name; Save waits for a change. Both wait for the form to be writable.
+    const primaryDisabled = formDisabled || !draft.name.trim() || (!isNew && !dirty);
+    const leave = () => safeRouterBack({ router, navigation, fallbackHref: '/settings/machines' });
+    const primaryAction: PageHeaderPrimaryAction = {
+        testID: 'settings.machinePools.editor.save',
+        title: isNew ? t('machinePools.create') : t('machinePools.save'),
+        disabled: primaryDisabled,
+        loading: saving,
+        onPress: () => { void save(); },
+    };
+    const cancelAction: PageHeaderPrimaryAction | null = isNew
+        ? { testID: 'settings.machinePools.editor.cancel', title: t('common.cancel'), onPress: leave }
+        : null;
     return <>
-        <ItemList keyboardShouldPersistTaps="handled">
-            {homeOffline ? <ItemGroup><Item testID="settings.machinePools.editor.offline" title={t('machinePools.homeOffline')} mode="info" /></ItemGroup> : null}
-            {refreshFailed ? <ItemGroup>
-                <Item testID="settings.machinePools.editor.refreshFailed" title={t('machinePools.refreshFailed')} mode="info" />
-                <Item
-                    testID="settings.machinePools.editor.retry"
-                    title={t('common.retry')}
-                    disabled={retrying}
-                    onPress={() => { void retryRefresh(); }}
-                />
-            </ItemGroup> : null}
-            {featureUnavailable ? <ItemGroup>
-                <Item testID="settings.machinePools.editor.featureUnavailable" title={t('machinePools.featureUnavailable')} mode="info" />
-                <Item
-                    testID="settings.machinePools.editor.featureUnavailable.back"
-                    title={t('common.back')}
-                    onPress={() => safeRouterBack({ router, navigation, fallbackHref: '/settings/machines' })}
-                />
-            </ItemGroup> : null}
-            {waitingForFeature ? <ItemGroup><Item testID="settings.machinePools.editor.loading" title={t('common.loading')} mode="info" /></ItemGroup> : null}
-            {waitingForExisting ? <ItemGroup><Item testID="settings.machinePools.editor.loading" title={t('common.loading')} mode="info" /></ItemGroup> : null}
-            {existingMissing ? <ItemGroup><Item testID="settings.machinePools.editor.missing" title={t('machinePools.poolNotFound')} mode="info" /></ItemGroup> : null}
-            <ItemGroup title={t('machinePools.basics')} footer={t('machinePools.privacy')}>
-                <View style={styles.field}><Text style={styles.label}>{t('machinePools.name')}</Text><TextInput ref={nameInputRef} testID="settings.machinePools.editor.name" accessibilityLabel={t('machinePools.name')} value={draft.name} onChangeText={(name) => setDraft((current) => ({ ...current, name }))} style={[styles.input, { color: theme.colors.input.text, backgroundColor: theme.colors.input.background, borderColor: theme.colors.border.default }]} editable={!formDisabled} /></View>
-                <View style={styles.field}><Text style={styles.label}>{t('machinePools.description')}</Text><TextInput testID="settings.machinePools.editor.description" accessibilityLabel={t('machinePools.description')} value={draft.description} onChangeText={(description) => setDraft((current) => ({ ...current, description }))} style={[styles.input, styles.multiline, { color: theme.colors.input.text, backgroundColor: theme.colors.input.background, borderColor: theme.colors.border.default }]} editable={!formDisabled} multiline /></View>
-            </ItemGroup>
-            {conflict !== undefined ? <ItemGroup title={t('machinePools.conflictTitle')}>
-                <Item testID="settings.machinePools.editor.conflict" title={conflict ? t('machinePools.conflictBody') : t('machinePools.conflictNoReload')} mode="info" />
-                {conflict ? <Item testID="settings.machinePools.editor.reload" title={t('machinePools.reload')} onPress={() => { void reloadConflict(); }} /> : null}
-            </ItemGroup> : null}
-            {error ? <ItemGroup><Item testID="settings.machinePools.editor.error" title={error} mode="info" /></ItemGroup> : null}
+        <ItemList keyboardShouldPersistTaps="handled" presentation="page">
+            <SettingsPageHeader
+                testID="settings.machinePools.editor.header"
+                alwaysShowTitle
+                title={pageTitle}
+                description={t('machinePools.benefit')}
+                // A pool has no mark of its own; the Home it belongs to is its one fact.
+                meta={homeName ? [{ key: 'home', text: homeName, icon: 'house' }] : undefined}
+                // One primary (with Cancel while new): in the page on wide layouts, in the native header
+                // on phones. The page header owns that placement.
+                primaryAction={primaryAction}
+                cancelAction={cancelAction ?? undefined}
+                actions={(
+                    <View style={styles.headerActions}>
+                        {!isNew && !featureUnavailable && !existingMissing ? (
+                            <PageHeaderMenu
+                                testID="settings.machinePools.editor.menu"
+                                actions={[{
+                                    id: 'delete',
+                                    testID: 'settings.machinePools.editor.delete',
+                                    title: t('machinePools.delete'),
+                                    destructive: true,
+                                    disabled: formDisabled,
+                                    onSelect: () => { void remove(); },
+                                }]}
+                            />
+                        ) : null}
+                    </View>
+                )}
+            />
+            {homeOffline ? <AttentionBanner testID="settings.machinePools.editor.offline" title={t('machinePools.homeOffline')} /> : null}
+            {refreshFailed ? <AttentionBanner
+                testID="settings.machinePools.editor.refreshFailed"
+                title={t('machinePools.refreshFailed')}
+                action={{
+                    testID: 'settings.machinePools.editor.retry',
+                    label: t('common.retry'),
+                    disabled: retrying,
+                    onPress: () => { void retryRefresh(); },
+                }}
+            /> : null}
+            {featureUnavailable ? <AttentionBanner
+                testID="settings.machinePools.editor.featureUnavailable"
+                title={t('machinePools.featureUnavailable')}
+                tone="neutral"
+                action={{
+                    testID: 'settings.machinePools.editor.featureUnavailable.back',
+                    label: t('common.back'),
+                    onPress: () => safeRouterBack({ router, navigation, fallbackHref: '/settings/machines' }),
+                }}
+            /> : null}
+            {existingMissing ? <AttentionBanner testID="settings.machinePools.editor.missing" title={t('machinePools.poolNotFound')} /> : null}
+            {conflict !== undefined ? <AttentionBanner
+                testID="settings.machinePools.editor.conflict"
+                title={t('machinePools.conflictTitle')}
+                description={conflict ? t('machinePools.conflictBody') : t('machinePools.conflictNoReload')}
+                action={conflict ? {
+                    testID: 'settings.machinePools.editor.reload',
+                    label: t('machinePools.reload'),
+                    onPress: () => { void reloadConflict(); },
+                } : null}
+            /> : null}
+            {error ? <AttentionBanner testID="settings.machinePools.editor.error" title={error} /> : null}
             {approvalId ? <ItemGroup><Item
                 testID="settings.machinePools.editor.approval"
                 title={t('approvals.title')}
@@ -480,16 +565,60 @@ function MachinePoolEditorContent(props: MachinePoolEditorContentProps) {
                     router.push(`/inbox/approvals/${encodeURIComponent(approvalId)}?serverId=${encodeURIComponent(props.serverId)}${completion}${focus}`);
                 }}
             /></ItemGroup> : null}
-            <ItemGroup>
+            <ItemGroup title={t('machinePools.basics')} description={t('machinePools.privacy')}>
                 <Item
-                    testID="settings.machinePools.editor.placementChangeNotice"
-                    title={t('machinePools.placementChangeNotice')}
-                    mode="info"
+                    title={t('machinePools.name')}
+                    showChevron={false}
+                    accessoryLayout="adaptive"
+                    rightElement={<FieldTextInput
+                        ref={nameInputRef}
+                        testID="settings.machinePools.editor.name"
+                        accessibilityLabel={t('machinePools.name')}
+                        value={draft.name}
+                        onChangeText={(name) => setDraft((current) => ({ ...current, name }))}
+                        autoCapitalize="sentences"
+                        editable={!formDisabled}
+                    />}
+                />
+                <Item
+                    title={t('machinePools.descriptionTitle')}
+                    titleAccessory={<Text style={styles.optionalMarker}>{t('common.optional')}</Text>}
+                    showChevron={false}
+                    accessoryLayout="stacked"
+                    rightElement={<FieldTextInput
+                        testID="settings.machinePools.editor.description"
+                        accessibilityLabel={t('machinePools.description')}
+                        value={draft.description}
+                        onChangeText={(description) => setDraft((current) => ({ ...current, description }))}
+                        autoCapitalize="sentences"
+                        editable={!formDisabled}
+                        multiline
+                    />}
                 />
             </ItemGroup>
-            {Array.from({ length: draft.tierCount }, (_, tier) => <ItemGroup key={tier} title={tierLabel(tier)}>
-                {tier > 0 ? <Item testID={`settings.machinePools.editor.tier.${tier}.earlier`} title={t('machinePools.moveTierEarlier')} accessibilityLabel={`${t('machinePools.moveTierEarlier')}. ${tierLabel(tier)}`} onPress={() => setDraft((current) => ({ ...current, ...normalizeMachinePoolEditorTierState(moveMachinePoolEditorTier(current.members, tier, tier - 1), current.tierCount) }))} disabled={formDisabled} /> : null}
-                {tier + 1 < draft.tierCount ? <Item testID={`settings.machinePools.editor.tier.${tier}.later`} title={t('machinePools.moveTierLater')} accessibilityLabel={`${t('machinePools.moveTierLater')}. ${tierLabel(tier)}`} onPress={() => setDraft((current) => ({ ...current, ...normalizeMachinePoolEditorTierState(moveMachinePoolEditorTier(current.members, tier, tier + 1), current.tierCount) }))} disabled={formDisabled} /> : null}
+            <ItemGroup
+                title={t('machinePools.machinesSection')}
+                description={t('machinePools.placementChangeNotice')}
+                surface="none"
+                action={<SectionActionButton
+                    testID="settings.machinePools.editor.addFallback"
+                    title={t('machinePools.addFallback')}
+                    icon="plus"
+                    onPress={() => setDraft((current) => ({ ...current, tierCount: current.tierCount + 1 }))}
+                    disabled={formDisabled}
+                />}
+            >
+                {null}
+            </ItemGroup>
+            {Array.from({ length: draft.tierCount }, (_, tier) => <ItemGroup
+                key={tier}
+                title={tierLabel(tier)}
+                description={tier === 0 ? t('machinePools.tierPrimaryDescription') : t('machinePools.tierFallbackDescription')}
+                action={tier > 0 || tier + 1 < draft.tierCount ? <View style={styles.tierActions}>
+                    {tier > 0 ? <SectionActionButton testID={`settings.machinePools.editor.tier.${tier}.earlier`} title={t('machinePools.moveTierEarlier')} icon="arrow-up" accessibilityLabel={`${t('machinePools.moveTierEarlier')}. ${tierLabel(tier)}`} onPress={() => setDraft((current) => ({ ...current, ...normalizeMachinePoolEditorTierState(moveMachinePoolEditorTier(current.members, tier, tier - 1), current.tierCount) }))} disabled={formDisabled} /> : null}
+                    {tier + 1 < draft.tierCount ? <SectionActionButton testID={`settings.machinePools.editor.tier.${tier}.later`} title={t('machinePools.moveTierLater')} icon="arrow-down" accessibilityLabel={`${t('machinePools.moveTierLater')}. ${tierLabel(tier)}`} onPress={() => setDraft((current) => ({ ...current, ...normalizeMachinePoolEditorTierState(moveMachinePoolEditorTier(current.members, tier, tier + 1), current.tierCount) }))} disabled={formDisabled} /> : null}
+                </View> : undefined}
+            >
                 {orderedMembers
                     .filter(({ member }) => member.priorityTier === tier)
                     .map(({ member, label }) => {
@@ -499,47 +628,66 @@ function MachinePoolEditorContent(props: MachinePoolEditorContentProps) {
                             ? memberStatusPresentation(savedMember.state)
                             : memberStatusPresentation(machine?.active ? 'connected' : 'offline');
                         const ineligible = invalidMemberIds.has(member.machineId);
+                        const statusLine = [
+                            memberStatus.label,
+                            member.enabled ? null : t('machinePools.pausedState'),
+                        ].filter(Boolean).join(' · ');
                         return <Item
                             key={member.machineId}
                             testID={`settings.machinePools.editor.member.${member.machineId}`}
                             pressableRef={getMemberRowRef(member.machineId)}
                             title={label}
-                            subtitle={ineligible ? t('machinePools.memberNotEligibleDetail') : undefined}
-                            accessibilityLabel={[label, tierLabel(tier), memberStatus.label, ineligible ? t('machinePools.memberNotEligibleDetail') : null].filter(Boolean).join('. ')}
+                            subtitle={ineligible ? t('machinePools.memberNotEligibleDetail') : statusLine}
+                            subtitleLeading={<View
+                                testID={`settings.machinePools.editor.member.${member.machineId}.status`}
+                                accessibilityLabel={memberStatus.label}
+                                style={[styles.presenceDot, memberStatus.variant === 'success' ? styles.presenceOnline : styles.presenceOther]}
+                            />}
+                            icon={<Icon name="desktop" size={18} color={theme.colors.text.secondary} />}
+                            accessibilityLabel={[label, tierLabel(tier), memberStatus.label, member.enabled ? null : t('machinePools.pausedState'), ineligible ? t('machinePools.memberNotEligibleDetail') : null].filter(Boolean).join('. ')}
                             rightElementOutsidePressable
-                            rightElement={<View style={styles.memberControls}>
-                                <StatusPill testID={`settings.machinePools.editor.member.${member.machineId}.status`} label={memberStatus.label} variant={memberStatus.variant} />
-                                <Switch testID={`settings.machinePools.editor.member.${member.machineId}.enabled`} value={member.enabled} disabled={formDisabled} accessibilityLabel={`${t('machinePools.enableMember')}. ${label}`} onValueChange={(enabled) => updateMember(member.machineId, { enabled })} />
-                            </View>}
+                            rightElement={<IconButton
+                                testID={`settings.machinePools.editor.member.${member.machineId}.menu`}
+                                iconName="dots-three"
+                                accessibilityLabel={`${t('machinePools.memberMenu')}. ${label}`}
+                                variant="plain"
+                                disabled={formDisabled}
+                                onPress={() => openMemberActions(member, label)}
+                            />}
+                            showChevron={false}
                             disabled={formDisabled}
                             onPress={() => openMemberActions(member, label)}
                         />;
                     })}
+                {waitingForRows ? (
+                    // While the pool or its feature decision loads, the tier's rows hold their place.
+                    tier === 0 ? <Item testID="settings.machinePools.editor.loading" title={t('common.loading')} loading showChevron={false} mode="info" /> : null
+                ) : nothingToAdd ? (
+                    // One line says why nothing can be added, in place of a dead "Add machines" row.
+                    // "No persistent machines" would be untrue when eligible machines are already members.
+                    tier + 1 === draft.tierCount ? <EmptyState
+                        layout="line"
+                        testID={eligibleMachines.length === 0 ? 'settings.machinePools.editor.noMachines' : 'settings.machinePools.editor.allMachinesAdded'}
+                        title={eligibleMachines.length === 0 ? t('machinePools.noMachines') : t('machinePools.allMachinesAdded')}
+                    /> : null
+                ) : <Item
+                    testID={tier === 0 ? 'settings.machinePools.editor.addMachines' : `settings.machinePools.editor.addMachines.tier.${tier}`}
+                    title={t('machinePools.addMachines')}
+                    icon={<Icon name="plus" size={18} color={theme.colors.text.secondary} />}
+                    showChevron={false}
+                    onPress={() => openMemberPicker(tier)}
+                    disabled={formDisabled}
+                />}
             </ItemGroup>)}
-            <ItemGroup title={t('machinePools.addMachines')}>
-                <Item testID="settings.machinePools.editor.addMachines" title={t('machinePools.addMachines')} onPress={openMemberPicker} disabled={formDisabled || availableMachines.length === 0} />
-                {/* A disabled action always says why. "No persistent machines" would be untrue when
-                    the Home has eligible machines that are simply already in this pool. */}
-                {eligibleMachines.length === 0 ? <Item
-                    testID="settings.machinePools.editor.noMachines"
-                    title={t('machinePools.noMachines')}
-                    mode="info"
-                /> : availableMachines.length === 0 ? <Item
-                    testID="settings.machinePools.editor.allMachinesAdded"
-                    title={t('machinePools.allMachinesAdded')}
-                    mode="info"
-                /> : null}
-                <Item testID="settings.machinePools.editor.addFallback" title={t('machinePools.addFallback')} onPress={() => setDraft((current) => ({ ...current, tierCount: current.tierCount + 1 }))} disabled={formDisabled} />
-            </ItemGroup>
         </ItemList>
-        <SettingsActionFooter primaryLabel={isNew ? t('machinePools.create') : t('machinePools.save')} primaryTestID="settings.machinePools.editor.save" primaryDisabled={formDisabled} onPrimaryPress={() => { void save(); }} secondaryLabel={!isNew ? t('machinePools.delete') : t('common.cancel')} secondaryTestID={!isNew ? 'settings.machinePools.editor.delete' : 'settings.machinePools.editor.cancel'} secondaryTone={!isNew ? 'destructive' : 'default'} onSecondaryPress={!isNew ? (formDisabled ? null : () => { void remove(); }) : () => safeRouterBack({ router, navigation, fallbackHref: '/settings/machines' })} />
     </>;
 }
 
 function MachinePoolRouteUnavailable() {
     const router = useRouter();
     const navigation = useNavigation();
-    return <ItemList>
+    return <ItemList presentation="page">
+        <SettingsPageHeader description={t('machinePools.benefit')} />
         <ItemGroup>
             <Item
                 testID="settings.machinePools.routeUnavailable"
@@ -567,8 +715,9 @@ function MachinePoolHomeChooserScreen() {
     const viewModel = useMachinesSettingsViewModel();
     const projections = useMachinePoolProjections(viewModel.visibleMachineGroups);
 
-    return <ItemList>
-        <ItemGroup title={t('homeGovernance.chooseHome')} footer={t('machinePools.benefit')}>
+    return <ItemList presentation="page">
+        <SettingsPageHeader alwaysShowTitle title={t('machinePools.newPoolTitle')} description={t('machinePools.benefit')} />
+        <ItemGroup title={t('homeGovernance.chooseHome')}>
             {viewModel.visibleMachineGroups.map((group, index) => {
                 const projection = projections[index];
                 const signedOut = isMachinePoolHomeOffline(group.status)
@@ -634,9 +783,11 @@ export function MachinePoolEditorRoute(props: Readonly<{ params: { serverId?: st
 }
 
 const styles = StyleSheet.create((theme) => ({
-    field: { paddingHorizontal: 16, paddingVertical: 10, gap: 6 },
-    label: { color: theme.colors.text.secondary },
-    input: { ...SETTINGS_TEXT_INPUT_METRICS, minHeight: 48, borderWidth: StyleSheet.hairlineWidth, borderRadius: 10, paddingHorizontal: 12, paddingVertical: 10 },
-    multiline: { minHeight: 88, textAlignVertical: 'top' },
-    memberControls: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+    headerActions: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+    // The field's quiet "Optional" suffix beside its label.
+    optionalMarker: { ...Typography.default('regular'), fontSize: 15, color: theme.colors.text.tertiary },
+    tierActions: { flexDirection: 'row', flexWrap: 'wrap', gap: 4 },
+    presenceDot: { width: 6, height: 6, borderRadius: 3, marginRight: 6 },
+    presenceOnline: { backgroundColor: theme.colors.status.connected },
+    presenceOther: { backgroundColor: theme.colors.text.tertiary },
 }));

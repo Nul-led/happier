@@ -209,6 +209,41 @@ it('continues a verified mailbox proof into the exact Home provision controller 
     expect(boundary.preview).toHaveBeenCalledWith(boundary.request, 'verification-bearer');
 });
 
+it('retries authentication discovery after a valid verification preview without replaying the preview', async () => {
+    boundary.fetchScopedAuthEntry.mockRejectedValueOnce(new TypeError('offline'));
+    screen = await renderScreen(<NativeAuthEmailVerifyScreen token="verification-bearer" homeTarget={SAVED_HOME_IDENTITY} />);
+    await vi.waitFor(() => expect(screen?.findByTestId('native-auth-verify-retry-auth')).not.toBeNull());
+
+    await screen.pressByTestIdAsync('native-auth-verify-retry-auth');
+    await screen.pressByTestIdAsync('native-auth-verify-create-account');
+
+    expect(screen.findByTestId('native-auth-admission-flow')).not.toBeNull();
+    expect(boundary.flowProps).toMatchObject({
+        target: { kind: 'saved_profile', profileRef: savedHomeProfileId },
+        nativeAdmission: { kind: 'native_email_verification', token: 'verification-bearer' },
+    });
+    expect(boundary.preview).toHaveBeenCalledTimes(1);
+});
+
+it('recovers sign-in discovery after a completed reset without resetting the password again', async () => {
+    boundary.fetchAuthEntry.mockRejectedValueOnce(new TypeError('offline'));
+    screen = await renderScreen(<NativeAuthPasswordResetScreen token="reset-bearer" homeTarget={SAVED_HOME_IDENTITY} />);
+    await act(async () => {
+        screen?.changeTextByTestId('native-auth-reset-password', 'a valid new password');
+        screen?.changeTextByTestId('native-auth-reset-confirm', 'a valid new password');
+    });
+    await screen.pressByTestIdAsync('native-auth-reset-submit');
+    await vi.waitFor(() => expect(screen?.findByTestId('native-auth-reset-done')).not.toBeNull());
+
+    await screen.pressByTestIdAsync('native-auth-reset-retry-auth');
+    await screen.pressByTestIdAsync('native-auth-reset-sign-in');
+
+    expect(screen.findByTestId('native-auth-reset-sign-in-flow')).not.toBeNull();
+    expect(boundary.flowProps).toMatchObject({ target: { kind: 'saved_profile', profileRef: savedHomeProfileId } });
+    expect(boundary.submitReset).toHaveBeenCalledTimes(1);
+    expect(boundary.resetPreview).toHaveBeenCalledTimes(1);
+});
+
 it('resumes transferable invitation provision with the unchanged admission and exact mailbox bearer', async () => {
     const admission = { kind: 'team_invitation' as const, token: 'I'.repeat(43) };
     boundary.readInvitationContinuation.mockReturnValue({

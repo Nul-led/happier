@@ -9,14 +9,19 @@ import { renderScreen, standardCleanup } from '@/dev/testkit';
 const executeMock = vi.hoisted(() => vi.fn());
 const announceMock = vi.hoisted(() => vi.fn());
 
-vi.mock('expo-router', () => ({
-    useNavigation: () => ({ addListener: () => () => {}, dispatch: vi.fn(), setOptions: vi.fn() }),
-    useRouter: () => ({ replace: vi.fn() }),
-}));
+vi.mock('expo-router', async () => {
+    const { createExpoRouterMock } = await import('@/dev/testkit/mocks/router');
+    return createExpoRouterMock().module;
+});
 vi.mock('@/components/ui/forms/FieldItem', () => ({ FieldItem: 'FieldItem' }));
-vi.mock('@/components/ui/lists/Item', () => ({ Item: 'Item' }));
+// Rows render their right-hand control, as the real row does; page fields are text inputs.
+vi.mock('@/components/ui/lists/Item', async () => {
+    const React = await import('react');
+    return { Item: (props: { rightElement?: unknown }) => React.createElement('Item', props, props.rightElement as never) };
+});
+vi.mock('@/components/ui/forms/FieldTextInput', () => ({ FieldTextInput: 'TextInput' }));
 vi.mock('@/components/ui/lists/ItemGroup', () => ({ ItemGroup: 'ItemGroup' }));
-vi.mock('@/components/ui/text/Text', () => ({ TextInput: 'TextInput' }));
+vi.mock('@/components/ui/text/Text', () => ({ Text: 'Text', TextInput: 'TextInput' }));
 vi.mock('@/text', () => ({ t: (key: string) => key }));
 vi.mock('@/components/ui/accessibility/announceAccessibilityMessage', () => ({
     announceAccessibilityMessage: announceMock,
@@ -101,7 +106,7 @@ describe('ManagedOidcProviderEditorContent failure presentation', () => {
 
         await screen.pressByTestIdAsync('identity-provider-save');
 
-        expect(screen.findByTestId('identity-provider-save')?.parent?.props.footer).toBe(expected);
+        expect(screen.findAllByType('ItemGroup').map((group) => group.props.description)).toContain(expected);
     });
 
     it('announces the failure so a screen reader hears it away from the pressed control', async () => {
@@ -122,8 +127,8 @@ describe('ManagedOidcProviderEditorContent failure presentation', () => {
 
         await screen.pressByTestIdAsync('identity-provider-test');
 
-        expect(screen.findByTestId('identity-provider-save')?.parent?.props.footer)
-            .toBe('identityAdministration.errorInvalid');
+        expect(screen.findAllByType('ItemGroup').map((group) => group.props.description))
+            .toContain('identityAdministration.errorInvalid');
     });
 
     it('keeps local validation messages, which are not server outcomes', async () => {
@@ -134,8 +139,8 @@ describe('ManagedOidcProviderEditorContent failure presentation', () => {
 
         await screen.pressByTestIdAsync('identity-provider-save');
 
-        expect(screen.findByTestId('identity-provider-save')?.parent?.props.footer)
-            .toBe('identityAdministration.invalidIssuer');
+        expect(screen.findAllByType('ItemGroup').map((group) => group.props.description))
+            .toContain('identityAdministration.invalidIssuer');
         expect(executeMock).not.toHaveBeenCalled();
     });
 
@@ -164,19 +169,19 @@ describe('ManagedOidcProviderEditorContent failure presentation', () => {
 
         await screen.pressByTestIdAsync('identity-provider-save');
 
-        expect(screen.findByTestId('identity-provider-save')?.parent?.props.footer)
-            .toBe('connect.waitingForApproval');
+        expect(screen.findAllByType('ItemGroup').map((group) => group.props.description))
+            .not.toContain('connect.waitingForApproval');
         expect(screen.findByTestId('identity-provider-save')?.props.loading).toBe(false);
         expect(onSaved).not.toHaveBeenCalled();
         expect(onApprovalPending).toHaveBeenCalledWith(approval);
-        expect(announceMock).toHaveBeenCalledWith('connect.waitingForApproval');
+        expect(announceMock).not.toHaveBeenCalledWith('connect.waitingForApproval');
 
         await act(async () => {
             await completeApprovedSave?.({ ...provider(5), displayName: 'Edited OIDC' });
         });
 
         expect(onSaved).toHaveBeenCalledOnce();
-        expect(onSaved).toHaveBeenCalledWith(expect.objectContaining({ revision: 5, displayName: 'Edited OIDC' }));
+        expect(onSaved).toHaveBeenCalledWith(expect.objectContaining({ revision: 5, displayName: 'Edited OIDC' }), expect.objectContaining({ onApprovalFailed: expect.any(Function) }));
     });
 
     it('does not mark a pending validation as completed', async () => {
@@ -202,8 +207,8 @@ describe('ManagedOidcProviderEditorContent failure presentation', () => {
 
         expect(screen.findByTestId('identity-provider-test')?.props.detail).toBeUndefined();
         expect(screen.findByTestId('identity-provider-test')?.props.loading).toBe(false);
-        expect(screen.findByTestId('identity-provider-save')?.parent?.props.footer)
-            .toBe('connect.waitingForApproval');
+        expect(screen.findAllByType('ItemGroup').map((group) => group.props.description))
+            .not.toContain('connect.waitingForApproval');
         expect(onApprovalPending).toHaveBeenCalledWith(approval);
 
         await act(async () => {
@@ -232,8 +237,8 @@ describe('ManagedOidcProviderEditorContent failure presentation', () => {
         await screen.pressByTestIdAsync('identity-provider-save');
         await act(async () => reportApprovedFailure?.('home_unreachable'));
 
-        expect(screen.findByTestId('identity-provider-save')?.parent?.props.footer)
-            .toBe('teams.unavailable.offline');
+        expect(screen.findAllByType('ItemGroup').map((group) => group.props.description))
+            .toContain('teams.unavailable.offline');
         expect(screen.findByTestId('identity-provider-save')?.props.disabled).toBe(false);
     });
 
@@ -272,7 +277,7 @@ describe('ManagedOidcProviderEditorContent failure presentation', () => {
             await completeApprovedCreate?.(provider(1));
         });
 
-        expect(onSaved).toHaveBeenCalledWith(provider(1));
+        expect(onSaved).toHaveBeenCalledWith(provider(1), expect.objectContaining({ onApprovalFailed: expect.any(Function) }));
     });
 
     it('finishes the secret-replacement step from its approved result', async () => {
@@ -315,7 +320,7 @@ describe('ManagedOidcProviderEditorContent failure presentation', () => {
             await completeApprovedSecret?.({ ...provider(6), securityRevision: 4 });
         });
 
-        expect(onSaved).toHaveBeenCalledWith(expect.objectContaining({ revision: 6, securityRevision: 4 }));
+        expect(onSaved).toHaveBeenCalledWith(expect.objectContaining({ revision: 6, securityRevision: 4 }), expect.objectContaining({ onApprovalFailed: expect.any(Function) }));
     });
 
     it('hands an approved provider update into a second approval for its exact secret replacement', async () => {
@@ -380,7 +385,7 @@ describe('ManagedOidcProviderEditorContent failure presentation', () => {
         expect(onSaved).toHaveBeenCalledWith(expect.objectContaining({
             revision: 6,
             securityRevision: 4,
-        }));
+        }), expect.objectContaining({ onApprovalFailed: expect.any(Function) }));
     });
 
     it('does not resume an approved result after its editor origin unmounts', async () => {

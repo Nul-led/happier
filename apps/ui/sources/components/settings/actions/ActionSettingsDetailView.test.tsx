@@ -20,6 +20,10 @@ const capture = vi.hoisted(() => ({
     segmentedTabBars: [] as Array<Record<string, unknown>>,
     dropdownMenus: [] as Array<Record<string, unknown>>,
     rawSettings: { v: 1, actions: {} } as unknown,
+    rawPolicy: { v: 1, allowEnvironmentVariables: false, allowCrossMachine: false } as unknown,
+    rawAllowLists: { v: 1, allowedRoleIds: null, allowedAgentTargetKeys: null } as unknown,
+    setPolicy: vi.fn(),
+    setAllowLists: vi.fn(),
     stackOptions: null as Record<string, unknown> | null,
     switches: [] as Array<Record<string, unknown>>,
     windowWidth: 800,
@@ -34,6 +38,10 @@ const capture = vi.hoisted(() => ({
         this.segmentedTabBars = [];
         this.dropdownMenus = [];
         this.rawSettings = { v: 1, actions: {} };
+        this.rawPolicy = { v: 1, allowEnvironmentVariables: false, allowCrossMachine: false };
+        this.rawAllowLists = { v: 1, allowedRoleIds: null, allowedAgentTargetKeys: null };
+        this.setPolicy.mockReset();
+        this.setAllowLists.mockReset();
         this.stackOptions = null;
         this.switches = [];
         this.windowWidth = 800;
@@ -112,7 +120,11 @@ installSettingsViewCommonModuleMocks({
         return createStorageModuleMock({
             importOriginal,
             overrides: {
-                useSettingMutable: createUseSettingMutableMockFromReader(() => [capture.rawSettings, (next: unknown) => {
+                useSettingMutable: createUseSettingMutableMockFromReader((key) => key === 'sessionAgentSpawnPolicyV1'
+                    ? [capture.rawPolicy, capture.setPolicy] as const
+                    : key === 'sessionAgentStartAllowListsV1'
+                        ? [capture.rawAllowLists, capture.setAllowLists] as const
+                        : [capture.rawSettings, (next: unknown) => {
                     capture.rawSettings = next;
                     capture.setRawSettings(next);
                 }] as const),
@@ -178,7 +190,8 @@ function containsSearchHeaderMock(node: React.ReactNode): boolean {
     });
 }
 
-vi.mock('@/components/ui/lists/ItemGroup', () => ({
+vi.mock('@/components/ui/lists/ItemGroup', async (importOriginal) => ({
+    ...await importOriginal<typeof import('@/components/ui/lists/ItemGroup')>(),
     ItemGroup: ({ children }: { children?: React.ReactNode }) => {
         if (containsSearchHeaderMock(children)) {
             capture.itemGroupsWithSearchHeader += 1;
@@ -208,6 +221,10 @@ afterEach(() => {
     daemonProjection.reset();
     resetSettingsViewCommonModuleMockState();
 });
+
+// Resolve the shared catalog/module graph during collection, outside individual
+// interaction-test deadlines; the page and domain logic remain real.
+await import('./ActionSettingsDetailView');
 
 describe('ActionSettingsDetailView', () => {
     it('renders approval-capable targets as mode tabs and ordinary placements as switches', async () => {
@@ -406,10 +423,48 @@ describe('ActionSettingsDetailView', () => {
         expect(typeof onDirectoryToggleChange).toBe('function');
         (onDirectoryToggleChange as (next: boolean) => void)(false);
 
-        expect(capture.setRawSettings).toHaveBeenCalledWith(expect.objectContaining({
+        expect(capture.setPolicy).toHaveBeenCalledWith(expect.objectContaining({
             v: 1,
             allowCustomDirectory: false,
+            allowCrossMachine: false,
+            allowEnvironmentVariables: false,
         }));
+        const written = capture.setPolicy.mock.calls.at(-1)?.[0];
+        expect(written).not.toHaveProperty('allowedRoleIds');
+        expect(written).not.toHaveProperty('allowedAgentTargetKeys');
+        expect(capture.setAllowLists).not.toHaveBeenCalled();
+    });
+
+    it('restores the environment-variables policy toggle and writes it with the rest of the policy', async () => {
+        const { ActionSettingsDetailContent } = await import('./ActionSettingsDetailView');
+
+        await renderScreen(<ActionSettingsDetailContent actionId="session.spawn_new" />);
+
+        const environmentToggle = capture.switches.find((switchProps) =>
+            switchProps.testID === 'settings-actions:session-spawn-policy:allowEnvironmentVariables',
+        );
+        expect(environmentToggle?.value).toBe(false);
+        (environmentToggle?.onValueChange as (next: boolean) => void)(true);
+
+        expect(capture.setPolicy).toHaveBeenLastCalledWith(expect.objectContaining({
+            v: 1,
+            allowEnvironmentVariables: true,
+            allowCrossMachine: false,
+        }));
+    });
+
+    it('writes engine allow-lists only to their separate Account setting', async () => {
+        capture.rawAllowLists = { v: 1, allowedRoleIds: ['builder'], allowedAgentTargetKeys: null };
+        const { ActionSettingsDetailContent } = await import('./ActionSettingsDetailView');
+        const screen = await renderScreen(<ActionSettingsDetailContent actionId="session.spawn_new" />);
+        await screen.pressByTestIdAsync('settings-actions:session-start-allow-lists:agents');
+        const menu = capture.dropdownMenus.find((entry) => entry.testID === 'settings-actions:session-start-allow-lists:agents:menu');
+        expect(menu).toBeTruthy();
+        const select = menu?.onSelect;
+        if (typeof select !== 'function') throw new Error('allow-list selection unavailable');
+        select('none');
+        expect(capture.setAllowLists).toHaveBeenCalledWith({ v: 1, allowedRoleIds: ['builder'], allowedAgentTargetKeys: [] });
+        expect(capture.setPolicy).not.toHaveBeenCalled();
     });
 
     it('moves approval mode controls into the target text column on narrow mobile widths', async () => {

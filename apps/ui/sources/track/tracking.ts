@@ -1,4 +1,5 @@
 import { config } from '@/config';
+import { isEmbedWindowContext } from '@/embed/isEmbedWindowContext';
 import PostHog from 'posthog-react-native';
 import type { FeatureId } from '@happier-dev/protocol';
 import { getFeatureBuildPolicyDecision } from '@/sync/domains/features/featureBuildPolicy';
@@ -54,6 +55,6 @@ function createTrackingClient(): PostHog {
     return client;
 }
 
-export const tracking = ((config.postHogKey?.trim() ?? '') && getFeatureBuildPolicyDecision(ANALYTICS_FEATURE_ID) !== 'deny')
+export const tracking = (!isEmbedWindowContext() && (config.postHogKey?.trim() ?? '') && getFeatureBuildPolicyDecision(ANALYTICS_FEATURE_ID) !== 'deny')
     ? createTrackingClient()
     : null;

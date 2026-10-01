@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { act } from 'react-test-renderer';
 
 import { renderScreen, standardCleanup } from '@/dev/testkit';
@@ -49,10 +49,27 @@ vi.mock('@/components/plugins/surfaces/PluginContextualResourceStoreProvider', (
     PluginContextualResourceStoreProvider: (props: Readonly<{ children?: React.ReactNode }>) =>
         React.createElement(React.Fragment, null, props.children),
 }));
+// The canonical SelectionList popover is a portal/virtualized-list boundary:
+// the step it is handed and each option's selection are the behaviour under test.
+vi.mock('@/components/sessions/agentInput/components/AgentInputSelectionListPopover', () => ({
+    AgentInputSelectionListPopover: (props: Record<string, unknown>) => (
+        props.open === true ? React.createElement('SelectionListPopover', props) : null
+    ),
+}));
+// The saved-workflow list is a network read; the library owner above it stays real.
+vi.mock('@/sync/domains/workflows/workflowDefinitionActions', async (importOriginal) => ({
+    ...(await importOriginal<Record<string, unknown>>()),
+    listWorkflowDefinitions: async () => ({ definitions: [] }),
+}));
 vi.mock('@/components/ui/popover/Popover', () => ({
     Popover: (props: { open: boolean; children: (render: unknown) => React.ReactNode }) =>
         (props.open ? React.createElement(React.Fragment, null, props.children({})) : null),
 }));
+
+// Module transform is paid once, outside any single case's time budget.
+beforeAll(async () => {
+    await loadHarness();
+}, 300_000);
 
 afterEach(async () => {
     await standardCleanup();
@@ -63,8 +80,12 @@ const AGENT_TARGET = { kind: 'agent' as const, identity: { pluginId: 'happier.ag
 async function loadHarness() {
     const editor = await import('./WorkflowBlockListEditor');
     const draftModule = await import('@/sync/domains/workflows/workflowEditorDraft');
+    const edits = await import('@happier-dev/protocol/workflows/workflowDefinitionEditV1');
     const authoring = await import('@/sync/domains/workflows/workflowAuthoring');
-    return { ...editor, ...draftModule, ...authoring };
+    const custody = await import('@/components/sessions/authoring/authoringComposerCustody');
+    const loop = await import('./WorkflowLoopEditor');
+    const group = await import('./WorkflowGroupEditor');
+    return { ...editor, ...draftModule, ...edits, ...authoring, ...custody, ...loop, ...group };
 }
 
 type Harness = Awaited<ReturnType<typeof loadHarness>>;
@@ -81,18 +102,49 @@ function buildDraft(harness: Harness, blocks?: Parameters<Harness['createWorkflo
     );
 }
 
+type AddOption = Readonly<{ id: string; label: string; onSelect?: () => void; openStep?: AddStep; disabled?: boolean }>;
+type AddStep = Readonly<{ sections: ReadonlyArray<Readonly<{ id: string; options: readonly AddOption[] }>> }>;
+
+/** Opens a scope's Add menu and returns the step the canonical popover was handed. */
+async function openAddMenu(screen: Awaited<ReturnType<typeof renderScreen>>, addTestID: string): Promise<AddStep> {
+    await screen.pressByTestIdAsync(addTestID);
+    const popover = screen.root.findAll((node) => (node.type as unknown) === 'SelectionListPopover').at(-1);
+    if (!popover) throw new Error('Add menu did not open');
+    return popover.props.rootStep as AddStep;
+}
+
+/** Chooses an Add option by id, walking into a pushed step when `path` names one. */
+async function chooseAdd(screen: Awaited<ReturnType<typeof renderScreen>>, addTestID: string, path: readonly string[]): Promise<void> {
+    let step = await openAddMenu(screen, addTestID);
+    for (let index = 0; index < path.length; index += 1) {
+        const option = step.sections.flatMap((section) => section.options).find((candidate) => candidate.id === path[index]);
+        if (!option) throw new Error(`No Add option ${path[index]}`);
+        if (index < path.length - 1) {
+            if (!option.openStep) throw new Error(`${path[index]} opens no step`);
+            step = option.openStep;
+            continue;
+        }
+        await act(async () => { option.onSelect?.(); });
+    }
+}
+
 async function renderList(harness: Harness, options: Readonly<{
     draft: ReturnType<typeof buildDraft>;
     onChange?: (next: unknown) => void;
     onSelect?: (id: string | null) => void;
     selectedBlockId?: string | null;
+    presentation?: Record<string, unknown>;
+    resolveActionFieldOptions?: (field: { optionsSourceId?: string; options?: unknown }) => ReadonlyArray<{ value: string; label: string }>;
 }>) {
     const element = React.createElement(harness.WorkflowBlockListEditor, {
+        ...(options.presentation === undefined ? {} : { presentation: options.presentation as never }),
+        ...(options.resolveActionFieldOptions === undefined ? {} : { resolveActionFieldOptions: options.resolveActionFieldOptions as never }),
         draft: options.draft,
         list: { kind: 'root' },
         blocks: options.draft.blocks,
         depth: 0,
         composerScope: MACHINE_COMPOSER_SCOPE,
+        composerCustody: harness.createWorkflowAuthoringComposerCustody(options.draft.draftId),
         selectedBlockId: options.selectedBlockId ?? null,
         validation: harness.validateWorkflowEditorDraft(options.draft),
         onChange: options.onChange ?? (() => {}),
@@ -100,6 +152,29 @@ async function renderList(harness: Harness, options: Readonly<{
         onCustomize: () => {},
     });
     return renderScreen(element);
+}
+
+/**
+ * A container's options are Step options content (04 §4.3, §5.2): the document
+ * shows the container as a sentence, and its owner renders the option rows.
+ */
+async function renderContainerOptions(harness: Harness, options: Readonly<{
+    draft: ReturnType<typeof buildDraft>;
+    blockId: string;
+    onChange?: (next: ReturnType<typeof buildDraft>) => void;
+}>) {
+    const block = harness.findWorkflowBlock(options.draft, options.blockId);
+    if (block?.kind === 'loop') {
+        return renderScreen(React.createElement(harness.WorkflowLoopOptions, {
+            draft: options.draft, block, onChange: (next) => options.onChange?.(next as ReturnType<typeof buildDraft>), testIDPrefix: 'workflow-editor',
+        }));
+    }
+    if (block?.kind === 'parallel') {
+        return renderScreen(React.createElement(harness.WorkflowGroupOptions, {
+            draft: options.draft, block, onChange: (next) => options.onChange?.(next as ReturnType<typeof buildDraft>), testIDPrefix: 'workflow-editor',
+        }));
+    }
+    throw new Error(`No container options for ${options.blockId}`);
 }
 
 describe('workflow block list editor', () => {
@@ -114,6 +189,43 @@ describe('workflow block list editor', () => {
         expect(screen.findByTestId('workflow-editor-step-analyze')).not.toBeNull();
         expect(screen.findByTestId('workflow-editor-step-implement')).not.toBeNull();
         expect(screen.findByProps({ testID: 'composer:implement' }).props.value).toBe('Implement');
+    });
+
+    /**
+     * The block list is an ordered list a screen reader can count: every block
+     * is a real item carrying its position in the set, its prompt field is named
+     * for the step it belongs to on the input itself, and the heading that
+     * selects the block is a real button rather than pressable text.
+     */
+    it('exposes ordered list items, a step-named prompt input and a real heading button', async () => {
+        const harness = await loadHarness();
+        const draft = buildDraft(harness, [
+            { kind: 'step', id: 'analyze', document: { text: 'Analyze', references: [], attachments: [] }, input: [], result: { kind: 'text' } },
+            { kind: 'step', id: 'implement', document: { text: 'Implement', references: [], attachments: [] }, input: [], result: { kind: 'text' } },
+        ]);
+        const onSelect = vi.fn();
+        const screen = await renderList(harness, { draft, onSelect });
+
+        const items = screen.root.findAll((node) => (
+            typeof node.type === 'string' && node.props.role === 'listitem'
+        ));
+        expect(items.map((item) => [item.props['aria-posinset'], item.props['aria-setsize']])).toEqual([
+            [1, 2],
+            [2, 2],
+        ]);
+
+        const implementContext = `workflows.a11y.stepContext:${JSON.stringify({ block: 'Implement', position: 2, total: 2 })}`;
+        expect(screen.findByProps({ testID: 'composer:implement' }).props.inputAccessibilityLabel)
+            .toBe(implementContext);
+
+        const heading = screen.findByTestId('workflow-editor-step-implement-label');
+        // The canonical pressable announces its role (web `role`, native `accessibilityRole`).
+        expect(heading?.props.role ?? heading?.props.accessibilityRole).toBe('button');
+        expect(heading?.props.accessibilityLabel).toBe(implementContext);
+        await act(async () => {
+            heading?.props.onPress();
+        });
+        expect(onSelect).toHaveBeenCalledWith('implement');
     });
 
     it('keeps portable references controlled by the workflow document and retires only deleted tokens', async () => {
@@ -150,6 +262,170 @@ describe('workflow block list editor', () => {
         }
     });
 
+    it('renders the same document read-only with its note and per-step slots in fixed places', async () => {
+        const harness = await loadHarness();
+        const draft = buildDraft(harness, [
+            { kind: 'step', id: 'analyze', document: { text: 'Analyze', references: [], attachments: [] }, input: [], result: { kind: 'text' } },
+            { kind: 'step', id: 'implement', document: { text: 'Implement', references: [], attachments: [] }, input: [], result: { kind: 'text' } },
+        ]);
+        const changes: unknown[] = [];
+        const screen = await renderList(harness, {
+            draft,
+            onChange: (next) => changes.push(next),
+            presentation: {
+                editable: false,
+                note: React.createElement('Text', { testID: 'frozen-note' }, 'This run uses the version it started with.'),
+                step: (blockId: string) => blockId === 'analyze' ? {
+                    state: React.createElement('Text', { testID: 'slot-state' }, 'Completed'),
+                    reviewedCard: React.createElement('View', { testID: 'slot-reviewed' }),
+                    footer: React.createElement('Text', { testID: 'slot-footer' }, 'Open conversation'),
+                } : null,
+            },
+        });
+
+        // Nothing edits: no Add row, no block menus, no Step options.
+        expect(screen.findHostByTestId('workflow-editor-add-root')).toBeNull();
+        expect(screen.findHostByTestId('workflow-editor-step-analyze-actions')).toBeNull();
+        expect(screen.findHostByTestId('workflow-editor-step-analyze-customize')).toBeNull();
+        // The composer is the same one, rendered not editable.
+        expect(screen.root.findAll((node) => (
+            node.props?.editable === false && node.props?.custody !== undefined
+        )).length).toBeGreaterThan(0);
+        // The note sits above the first block; each slot sits in its block.
+        const noteIndex = screen.getTextContent().indexOf('This run uses the version it started with.');
+        expect(noteIndex).toBeGreaterThanOrEqual(0);
+        expect(noteIndex).toBeLessThan(screen.getTextContent().indexOf('Completed'));
+        const analyze = screen.findByTestId('workflow-editor-step-analyze');
+        for (const slot of ['slot-state', 'slot-reviewed', 'slot-footer']) {
+            expect(analyze?.findAll((node) => node.props?.testID === slot).length, slot).toBeGreaterThan(0);
+        }
+        const implement = screen.findByTestId('workflow-editor-step-implement');
+        expect(implement?.findAll((node) => node.props?.testID === 'slot-state')).toHaveLength(0);
+        expect(changes).toHaveLength(0);
+    });
+
+    it('offers the step kinds, then structure, and inserts an Action or a Wait for you as one change', async () => {
+        const harness = await loadHarness();
+        const draft = buildDraft(harness, [
+            { kind: 'step', id: 'analyze', document: { text: 'Analyze', references: [], attachments: [] }, input: [], result: { kind: 'text' } },
+        ]);
+        const changes: Array<ReturnType<typeof buildDraft>> = [];
+        const screen = await renderList(harness, { draft, onChange: (next) => changes.push(next as ReturnType<typeof buildDraft>) });
+
+        const root = await openAddMenu(screen, 'workflow-editor-add-root');
+        expect(root.sections.map((section) => section.options.map((option) => option.label))).toEqual([
+            ['workflows.editor.addStep', 'workflows.page.blocks.menuRun', 'workflows.page.blocks.menuAction', 'workflows.page.blocks.menuWait'],
+            ['workflows.editor.addParallel', 'workflows.editor.addLoop', 'workflows.editor.addIf'],
+        ]);
+        const actionStep = root.sections[0]!.options.find((option) => option.id === 'workflow-editor-add-root-action')?.openStep;
+        const actionIds = actionStep?.sections.flatMap((section) => section.options.map((option) => option.id)) ?? [];
+        expect(actionIds).toContain('workflow-editor-add-root-action:notifications.notify_me');
+        // Composition is the Run a workflow step, never a workflow.run.* Action.
+        expect(actionIds.some((id) => id.includes(':workflow.run.'))).toBe(false);
+        await act(async () => {
+            actionStep?.sections[0]?.options.find((option) => option.id === 'workflow-editor-add-root-action:notifications.notify_me')?.onSelect?.();
+        });
+        expect(changes.at(-1)?.blocks.at(-1)).toMatchObject({ kind: 'action', actionId: 'notifications.notify_me', input: {} });
+
+        await chooseAdd(screen, 'workflow-editor-add-root', ['workflow-editor-add-root-wait']);
+        expect(changes.at(-1)?.blocks.at(-1)).toMatchObject({ kind: 'wait', result: { kind: 'text' } });
+    });
+
+    it('renders every step kind the definition admits, with its fields, never as nothing', async () => {
+        const harness = await loadHarness();
+        const draft = buildDraft(harness, [
+            { kind: 'action', id: 'notify', actionId: 'notifications.notify_me', input: { message: { kind: 'literal', value: 'Ship it' } } },
+            { kind: 'workflow', id: 'review', workflowRef: 'builtin:review-and-converge', input: {} },
+            { kind: 'wait', id: 'check', document: { text: 'Check the notes', references: [], attachments: [] }, result: { kind: 'text' } },
+            { kind: 'action', id: 'unknown', actionId: 'acme.plugin.unknown_action', input: { target: { kind: 'literal', value: 'x' } } },
+        ] as never);
+        const changes: Array<ReturnType<typeof buildDraft>> = [];
+        const screen = await renderList(harness, { draft, onChange: (next) => changes.push(next as ReturnType<typeof buildDraft>) });
+
+        // Action: one row per declared field, bound or not.
+        for (const field of ['message', 'title', 'channels']) {
+            expect(screen.findHostByTestId(`workflow-editor-action-notify-field-${field}`), field).not.toBeNull();
+        }
+        // An Action this client does not know keeps its block and its bound fields.
+        expect(screen.findHostByTestId('workflow-editor-action-unknown')).not.toBeNull();
+        expect(screen.findHostByTestId('workflow-editor-action-unknown-field-target')).not.toBeNull();
+        expect(screen.getTextContent()).toContain('workflows.page.blocks.actionUnavailable');
+        // A nested workflow names the child and lists its declared inputs.
+        expect(screen.findHostByTestId('workflow-editor-workflow-review')).not.toBeNull();
+        expect(screen.findAll((node) => typeof node.props?.testID === 'string'
+            && node.props.testID.startsWith('workflow-editor-workflow-review-input-')).length).toBeGreaterThan(0);
+        // A Wait for you is the same authoring composer, not a second editor.
+        expect(screen.findByProps({ testID: 'composer:check' }).props.value).toBe('Check the notes');
+
+        // Setting an unbound field binds it as a literal on that Action alone.
+        await screen.pressByTestIdAsync('workflow-editor-action-notify-field-title-set');
+        expect(changes.at(-1)?.blocks[0]).toMatchObject({
+            kind: 'action',
+            input: { message: { kind: 'literal', value: 'Ship it' }, title: { kind: 'literal', value: '' } },
+        });
+    });
+
+    /**
+     * 04 §5.3 E20: a review Action's engine field offers exactly what the
+     * review-engine inventory returns for this Machine — never a static enum —
+     * and a newly set multi-select starts as an empty selection, not text.
+     */
+    it('binds a review Action engine field through the inventory options source', async () => {
+        const harness = await loadHarness();
+        const draft = buildDraft(harness, [
+            { kind: 'action', id: 'review', actionId: 'review.start', input: {} },
+        ] as never);
+        const asked: Array<string | undefined> = [];
+        const changes: Array<ReturnType<typeof buildDraft>> = [];
+        const screen = await renderList(harness, {
+            draft,
+            onChange: (next) => changes.push(next as ReturnType<typeof buildDraft>),
+            resolveActionFieldOptions: (field) => {
+                asked.push(field.optionsSourceId);
+                return field.optionsSourceId === 'review.engines.available'
+                    ? [{ value: 'claude', label: 'Claude Code' }, { value: 'acme-reviewer', label: 'Acme reviewer' }]
+                    : [];
+            },
+        });
+
+        await screen.pressByTestIdAsync('workflow-editor-action-review-field-engineIds-set');
+        expect(changes.at(-1)?.blocks[0]).toMatchObject({ input: { engineIds: { kind: 'literal', value: [] } } });
+        await screen.unmount();
+
+        const bound = await renderList(harness, {
+            draft: changes.at(-1)!,
+            resolveActionFieldOptions: (field) => {
+                asked.push(field.optionsSourceId);
+                return field.optionsSourceId === 'review.engines.available' ? [{ value: 'acme-reviewer', label: 'Acme reviewer' }] : [];
+            },
+        });
+        expect(asked).toContain('review.engines.available');
+        expect(bound.getTextContent()).toContain('Acme reviewer');
+    });
+
+    /**
+     * 04 §4.3: the between-block inserter opens the same Add menu bound to its
+     * exact position, so the new block lands in that gap, not at the end; it
+     * is visible on touch only while a block in its list is selected.
+     */
+    it('inserts a block into the gap it was opened from', async () => {
+        const harness = await loadHarness();
+        const draft = buildDraft(harness, [
+            { kind: 'step', id: 'a', document: { text: 'A', references: [], attachments: [] }, input: [], result: { kind: 'text' } },
+            { kind: 'step', id: 'b', document: { text: 'B', references: [], attachments: [] }, input: [], result: { kind: 'text' } },
+        ]);
+        const changes: Array<ReturnType<typeof buildDraft>> = [];
+        const screen = await renderList(harness, { draft, onChange: (next) => changes.push(next as ReturnType<typeof buildDraft>) });
+        // One inserter per gap, none after the last block (the end row adds there).
+        expect(screen.findHostByTestId('workflow-editor-insert-after-a')).not.toBeNull();
+        expect(screen.findHostByTestId('workflow-editor-insert-after-b')).toBeNull();
+
+        await chooseAdd(screen, 'workflow-editor-insert-after-a', ['workflow-editor-insert-after-a-wait']);
+        const ids = changes.at(-1)!.blocks.map((block) => block.kind);
+        expect(ids).toEqual(['step', 'wait', 'step']);
+        expect(changes.at(-1)!.blocks[2]?.id).toBe('b');
+    });
+
     it('adds a block at the active scope and selects it without touching other scopes', async () => {
         const harness = await loadHarness();
         const draft = buildDraft(harness, [
@@ -163,14 +439,41 @@ describe('workflow block list editor', () => {
             onSelect: (id) => selections.push(id),
         });
 
-        await screen.pressByTestIdAsync('workflow-editor-add-root');
-        await screen.pressByTestIdAsync('workflow-editor-add-root-step');
+        await chooseAdd(screen, 'workflow-editor-add-root', ['workflow-editor-add-root-step']);
 
         expect(changes).toHaveLength(1);
         const next = changes[0] as ReturnType<typeof buildDraft>;
         expect(next.blocks.map((block) => block.id)).toEqual(['analyze', expect.any(String)]);
         expect(next.blocks[1]!.id).not.toBe('analyze');
         expect(selections).toEqual([next.blocks[1]!.id]);
+        // "Analyze → Implement" without an output schema: the step added after
+        // another step reads that step's result until the author says otherwise.
+        expect(next.blocks[1]!.kind === 'step' ? next.blocks[1]!.input : null).toEqual([
+            { kind: 'result', producer: { blockId: 'analyze', scope: { kind: 'current' } }, path: [] },
+        ]);
+    });
+
+    it('supplies no input default when the previous block is not one unambiguous producer', async () => {
+        const harness = await loadHarness();
+        const draft = buildDraft(harness, [
+            {
+                kind: 'parallel',
+                id: 'fan-out',
+                failurePolicy: 'fail_stop',
+                branches: [
+                    { id: 'branch-1', blocks: [] },
+                    { id: 'branch-2', blocks: [] },
+                ],
+            },
+        ]);
+        const changes: unknown[] = [];
+        const screen = await renderList(harness, { draft, onChange: (next) => changes.push(next) });
+
+        await chooseAdd(screen, 'workflow-editor-add-root', ['workflow-editor-add-root-step']);
+
+        const next = changes[0] as ReturnType<typeof buildDraft>;
+        const added = next.blocks[1]!;
+        expect(added.kind === 'step' ? added.input : null).toEqual([]);
     });
 
     it('reorders through Move up without changing any block id', async () => {
@@ -243,8 +546,14 @@ describe('workflow block list editor', () => {
         const screen = await renderList(harness, { draft });
 
         expect(screen.findByTestId(`workflow-editor-parallel-${parallel.id}`)).not.toBeNull();
-        expect(screen.findByTestId(`workflow-editor-parallel-${parallel.id}-failure-policy-fail_stop`)).not.toBeNull();
-        expect(screen.findByTestId(`workflow-editor-parallel-${parallel.id}-max-concurrent-omitted`)).not.toBeNull();
+        // The document reads the group as one sentence that opens its options.
+        expect(screen.getTextContent()).toContain('workflows.failurePolicy.failStop');
+        expect(screen.findByTestId(`workflow-editor-parallel-${parallel.id}-failure-policy:fail_stop`)).toBeNull();
+        await screen.unmount();
+
+        const options = await renderContainerOptions(harness, { draft, blockId: parallel.id });
+        expect(options.findByTestId(`workflow-editor-parallel-${parallel.id}-failure-policy:fail_stop`)).not.toBeNull();
+        expect(options.findByTestId(`workflow-editor-parallel-${parallel.id}-max-concurrent-omitted`)).not.toBeNull();
     });
 
     it('renders each parallel branch as its own nested block list', async () => {
@@ -273,8 +582,7 @@ describe('workflow block list editor', () => {
             onChange: (next) => changes.push(next as ReturnType<typeof buildDraft>),
         });
 
-        await screen.pressByTestIdAsync('workflow-editor-add-ifOtherwise');
-        await screen.pressByTestIdAsync('workflow-editor-add-ifOtherwise-step');
+        await chooseAdd(screen, 'workflow-editor-add-ifOtherwise', ['workflow-editor-add-ifOtherwise-step']);
 
         const next = changes[0]!;
         expect(next.blocks[0]).toMatchObject({
@@ -302,7 +610,7 @@ describe('workflow block list editor', () => {
                 : block),
         );
 
-        const sequential = await renderList(harness, { draft: withItems });
+        const sequential = await renderContainerOptions(harness, { draft: withItems, blockId: loop.id });
         expect(sequential.findByTestId(`workflow-editor-loop-${loop.id}-max-concurrent`)).toBeNull();
         await sequential.unmount();
 
@@ -311,7 +619,7 @@ describe('workflow block list editor', () => {
                 ? { ...block, repetition: { ...block.repetition, execution: 'parallel' } }
                 : block
         ));
-        const parallel = await renderList(harness, { draft: asParallel });
+        const parallel = await renderContainerOptions(harness, { draft: asParallel, blockId: loop.id });
         expect(parallel.findByTestId(`workflow-editor-loop-${loop.id}-max-concurrent`)).not.toBeNull();
     });
 
@@ -335,9 +643,9 @@ describe('workflow block list editor', () => {
                 : block),
         );
         const changes: unknown[] = [];
-        const screen = await renderList(harness, { draft, onChange: (next) => changes.push(next) });
+        const screen = await renderContainerOptions(harness, { draft, blockId: loop.id, onChange: (next) => changes.push(next) });
 
-        await screen.pressByTestIdAsync(`workflow-editor-loop-${loop.id}-items-sequential`);
+        await screen.pressByTestIdAsync(`workflow-editor-loop-${loop.id}-items:sequential`);
         const next = changes[0] as ReturnType<typeof buildDraft>;
         const repetition = (next.blocks[0] as { repetition: Record<string, unknown> }).repetition;
         expect(repetition.execution).toBe('sequential');
@@ -354,20 +662,22 @@ describe('workflow block list editor', () => {
 
         const firstChanges: ReturnType<typeof buildDraft>[] = [];
         const initial = buildDraft(harness, [firstLoop, secondLoop]);
-        const firstScreen = await renderList(harness, {
+        const firstScreen = await renderContainerOptions(harness, {
             draft: initial,
-            onChange: (next) => firstChanges.push(next as ReturnType<typeof buildDraft>),
+            blockId: firstLoop.id,
+            onChange: (next) => firstChanges.push(next),
         });
-        await firstScreen.pressByTestIdAsync(`workflow-editor-loop-${firstLoop.id}-mode-evaluate`);
+        await firstScreen.pressByTestIdAsync(`workflow-editor-loop-${firstLoop.id}-mode:evaluate`);
         await firstScreen.unmount();
 
         const afterFirst = firstChanges[0]!;
         const secondChanges: ReturnType<typeof buildDraft>[] = [];
-        const secondScreen = await renderList(harness, {
+        const secondScreen = await renderContainerOptions(harness, {
             draft: afterFirst,
-            onChange: (next) => secondChanges.push(next as ReturnType<typeof buildDraft>),
+            blockId: secondLoop.id,
+            onChange: (next) => secondChanges.push(next),
         });
-        await secondScreen.pressByTestIdAsync(`workflow-editor-loop-${secondLoop.id}-mode-evaluate`);
+        await secondScreen.pressByTestIdAsync(`workflow-editor-loop-${secondLoop.id}-mode:evaluate`);
 
         const ids = harness.walkWorkflowBlocks(secondChanges[0]!.blocks).map((block) => block.id);
         expect(new Set(ids).size).toBe(ids.length);
@@ -412,6 +722,7 @@ describe('workflow block list editor', () => {
             blocks: draft.blocks,
             depth: 0,
             composerScope: MACHINE_COMPOSER_SCOPE,
+            composerCustody: harness.createWorkflowAuthoringComposerCustody(draft.draftId),
             selectedBlockId: null,
             validation: harness.validateWorkflowEditorDraft(draft),
             onChange: () => {},
@@ -468,20 +779,17 @@ describe('workflow block list editor', () => {
                     : block)),
             })),
         }]);
+        // The group's options, over the same controlled draft owner.
         function Controlled(): React.ReactElement {
             const [current, setCurrent] = React.useState(draft);
             draft = current;
-            return React.createElement(harness.WorkflowBlockListEditor, {
+            const block = current.blocks[0];
+            if (block?.kind !== 'parallel') throw new Error('unreachable');
+            return React.createElement(harness.WorkflowGroupOptions, {
                 draft: current,
-                list: { kind: 'root' },
-                blocks: current.blocks,
-                depth: 0,
-                composerScope: MACHINE_COMPOSER_SCOPE,
-                selectedBlockId: null,
-                validation: harness.validateWorkflowEditorDraft(current),
-                onChange: setCurrent,
-                onSelect: () => {},
-                onCustomize: () => {},
+                block,
+                onChange: (next) => setCurrent(next as typeof current),
+                testIDPrefix: 'workflow-editor',
             });
         }
         const screen = await renderScreen(React.createElement(Controlled));
@@ -519,7 +827,7 @@ describe('workflow block list editor', () => {
                 : block
         ));
         const changes: ReturnType<typeof buildDraft>[] = [];
-        const screen = await renderList(harness, { draft, onChange: (next) => changes.push(next as ReturnType<typeof buildDraft>) });
+        const screen = await renderContainerOptions(harness, { draft, blockId: loop.id, onChange: (next) => changes.push(next) });
 
         await act(async () => { screen.changeTextByTestId(`workflow-editor-loop-${loop.id}-max-iterations`, ''); });
         const cleared = changes.at(-1)!.blocks[0] as { repetition: { maxIterations: number } };
@@ -590,8 +898,9 @@ describe('workflow block list editor', () => {
             { kind: 'step', id: 'root-step', document: { text: 'Root', references: [], attachments: [] }, input: [{ kind: 'item', field: 'count' }], result: { kind: 'text' } },
         ]);
         const screen = await renderList(harness, { draft });
+        // A value choice announces checked (D14A radio semantics, owned by the data editor).
         expect(screen.findByTestId('workflow-editor-step-root-step-input-0-item-field-count')?.props.accessibilityState)
-            .toMatchObject({ selected: true });
+            .toMatchObject({ checked: true });
         expect(harness.validateWorkflowEditorDraft(draft).issues.map((issue) => issue.code))
             .toContain('invalid_reference_scope');
     });

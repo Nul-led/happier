@@ -1,0 +1,375 @@
+import * as React from 'react';
+import { View } from 'react-native';
+import { StyleSheet, useUnistyles } from 'react-native-unistyles';
+import { happierPageTextMetrics } from '@happier-dev/plugin-ui/presentation';
+
+import type { MachineAgent, MachineAgentSignInSession } from '@/agents/machineAgents/machineAgentTypes';
+import { ProgressChecklist, type ProgressChecklistStep } from '@/components/systemTasks/ProgressChecklist';
+import { RoundButton } from '@/components/ui/buttons/RoundButton';
+import { SelectionTiles } from '@/components/ui/forms/SelectionTiles';
+import { Icon } from '@/components/ui/icons/Icon';
+import { AttentionBanner } from '@/components/ui/lists/AttentionBanner';
+import { SurfaceStateCard } from '@/components/ui/surfaces/SurfaceStateCard';
+import { Text } from '@/components/ui/text/Text';
+import { Typography } from '@/constants/Typography';
+import { t } from '@/text';
+import { formatByteSize } from '@/utils/files/formatByteSize';
+
+import { presentAgentInstallJobFailure } from '@/agents/machineAgents/installJobs/presentAgentInstallJobFailure';
+import { resolveAgentSetupPhase, type AgentSetupPhase } from './machineAgentPresentation';
+
+/** How the agent will sign in: one of the connected services it accepts, or its own login on the machine. */
+export type AgentSignInChoice = Readonly<{ kind: 'service'; serviceId: string }> | Readonly<{ kind: 'native' }>;
+
+export type AgentSetupFormHandlers = Readonly<{
+    onInstall: () => void;
+    onCancelInstall: () => void;
+    onRetry: () => void;
+    onCheckAgain: () => void;
+    onOpenGuide: (url: string) => void;
+    onUseService: (serviceId: string) => void;
+    onConnectService: (serviceId: string) => void;
+    onOpenNativeSignIn: () => void;
+    onShowTerminal: () => void;
+    onCancelSignIn: () => void;
+    /** Ready: start a session with this agent here (omitted where the surface has its own next step). */
+    onStartSession?: () => void;
+    onSetUpAnother?: () => void;
+}>;
+
+export type AgentSetupFormViewProps = Readonly<{
+    agent: MachineAgent;
+    machineName: string;
+    /** `full`: the machine's Agents section and Settings → Agents. `compact`: the engine popover and Home. */
+    layout: 'full' | 'compact';
+    session?: MachineAgentSignInSession | null;
+    handlers: AgentSetupFormHandlers;
+    testID: string;
+}>;
+
+/** The sign-in choices in the order the form offers them: connected services first (recommended), then the machine's own login. */
+export function resolveAgentSignInChoices(agent: MachineAgent): readonly AgentSignInChoice[] {
+    const services = agent.signIn.connectedServices.map((service): AgentSignInChoice => ({ kind: 'service', serviceId: service.serviceId }));
+    return agent.signIn.nativeLogin === 'terminal' ? [...services, { kind: 'native' }] : services;
+}
+
+function choiceKey(choice: AgentSignInChoice): string {
+    return choice.kind === 'native' ? 'native' : `service:${choice.serviceId}`;
+}
+
+/** The install as a plan before anything runs: the agent, each part it still needs, a check, then sign-in. */
+function buildInstallPlan(agent: MachineAgent): ProgressChecklistStep[] {
+    return [
+        { stepId: 'agent', title: t('machineAgents.installAgent', { agent: agent.title }), status: 'pending' },
+        ...agent.dependencies
+            .filter((dependency) => !dependency.installed)
+            .map((dependency): ProgressChecklistStep => ({ stepId: dependency.key, title: dependency.title, status: 'pending' })),
+        { stepId: 'check', title: t('machineAgents.stepCheck'), status: 'pending' },
+        { stepId: 'signIn', title: t('machineAgents.stepSignIn'), status: 'pending' },
+    ];
+}
+
+function buildJobSteps(agent: MachineAgent): ProgressChecklistStep[] {
+    return (agent.job?.steps ?? []).map((step) => ({
+        stepId: step.stepId,
+        title: step.label,
+        status: step.state === 'running' ? 'active' : step.state === 'done' ? 'done' : step.state === 'failed' ? 'failed' : 'pending',
+        message: step.state === 'running' && step.bytesDone !== null && step.bytesTotal
+            ? t('machineAgents.progress', { done: formatByteSize(step.bytesDone), total: formatByteSize(step.bytesTotal) })
+            : null,
+    }));
+}
+
+/**
+ * The one agent-setup form (lab `agent-setup`): install → installing → sign in → ready, in two layouts.
+ * It renders what the inventory, install-job and sign-in owners report and calls back for every
+ * action; it holds only the local choice of how to sign in. Nothing here starts work on mount.
+ */
+export const AgentSetupFormView = React.memo(function AgentSetupFormView(props: AgentSetupFormViewProps) {
+    const { agent, handlers } = props;
+    const phase = resolveAgentSetupPhase(agent, props.session);
+    const compact = props.layout === 'compact';
+    return (
+        <View testID={props.testID} style={compact ? styles.bodyCompact : styles.body} accessibilityLiveRegion="polite">
+            <PhaseBody {...props} phase={phase} compact={compact} handlers={handlers} />
+        </View>
+    );
+});
+
+function PhaseBody(props: AgentSetupFormViewProps & Readonly<{ phase: AgentSetupPhase; compact: boolean }>) {
+    const { agent, handlers, machineName: machine, compact, testID } = props;
+    switch (props.phase) {
+        case 'install': {
+            const lead = agent.install.mode === 'vendor_recipe'
+                ? t('machineAgents.installLeadVendor', { agent: agent.title, machine })
+                : t('machineAgents.installLeadManaged', { agent: agent.title, machine });
+            const missing = agent.dependencies.filter((dependency) => !dependency.installed);
+            const also = missing.length > 0
+                ? ` ${t('machineAgents.installAlsoDownloads', {
+                    what: missing.map((dependency) => dependency.title).join(', ')
+                        + (agent.install.sizeBytes ? ` (${formatByteSize(agent.install.sizeBytes)})` : ''),
+                })}`
+                : '';
+            return (
+                <>
+                    <Lead text={`${lead}${also} ${t('machineAgents.installThenSignIn')}`} />
+                    <View style={styles.plan}>
+                        <ProgressChecklist steps={buildInstallPlan(agent)} testIDPrefix={`${testID}.plan`} showStepMessages={false} />
+                    </View>
+                    <Actions>
+                        <RoundButton testID={`${testID}.install`} size="small" title={t('machineAgents.installAgent', { agent: agent.title })} onPress={handlers.onInstall} />
+                        {!compact && agent.install.guideUrl ? (
+                            <RoundButton testID={`${testID}.installMyself`} size="small" display="secondary" title={t('machineAgents.installMyself')} onPress={() => handlers.onOpenGuide(agent.install.guideUrl!)} />
+                        ) : null}
+                        <View style={styles.grow} />
+                        {compact && agent.install.guideUrl ? (
+                            <RoundButton testID={`${testID}.guide`} size="small" display="inverted" title={t('machineAgents.actionGuide')} onPress={() => handlers.onOpenGuide(agent.install.guideUrl!)} />
+                        ) : null}
+                    </Actions>
+                </>
+            );
+        }
+        case 'manualInstall':
+            return (
+                <>
+                    <Lead text={t('machineAgents.manualLead', { agent: agent.title, machine })} />
+                    <Actions>
+                        {agent.install.guideUrl ? (
+                            <RoundButton testID={`${testID}.guide`} size="small" title={t('machineAgents.actionGuide')} onPress={() => handlers.onOpenGuide(agent.install.guideUrl!)} />
+                        ) : null}
+                        <RoundButton testID={`${testID}.checkAgain`} size="small" display="secondary" title={t('machineAgents.checkAgain')} onPress={handlers.onCheckAgain} />
+                    </Actions>
+                </>
+            );
+        case 'installing':
+            return (
+                <>
+                    <View style={styles.plan}>
+                        <ProgressChecklist steps={buildJobSteps(agent)} testIDPrefix={`${testID}.job`} />
+                    </View>
+                    {agent.job?.logLine ? <Text style={styles.log} numberOfLines={1}>{agent.job.logLine}</Text> : null}
+                    <Actions>
+                        <Text style={styles.quiet}>{t('machineAgents.closeNote', { machine })}</Text>
+                        <View style={styles.grow} />
+                        <RoundButton testID={`${testID}.cancel`} size="small" display="inverted" title={t('machineAgents.actionCancel')} onPress={handlers.onCancelInstall} />
+                    </Actions>
+                </>
+            );
+        case 'installFailed': {
+            const outcome = agent.job?.outcome?.kind === 'failed' ? agent.job.outcome : null;
+            const failure = outcome ? presentAgentInstallJobFailure(outcome) : null;
+            const guideUrl = failure?.recovery.guideUrl ?? agent.install.guideUrl;
+            return (
+                <>
+                    {agent.job && agent.job.steps.length > 0 ? (
+                        <View style={styles.plan}>
+                            <ProgressChecklist steps={buildJobSteps(agent)} testIDPrefix={`${testID}.job`} />
+                        </View>
+                    ) : null}
+                    <AttentionBanner
+                        testID={`${testID}.failure`}
+                        title={failure?.title ?? t('machineAgents.unknown')}
+                        description={[outcome?.message ?? failure?.body, t('machineAgents.failedKept')].filter(Boolean).join(' ')}
+                        action={failure?.recovery.kind === 'guide' && guideUrl
+                            ? { label: failure.recovery.label, onPress: () => handlers.onOpenGuide(guideUrl), testID: `${testID}.failure.guide` }
+                            : { label: failure?.recovery.label ?? t('machineAgents.actionRetry'), onPress: handlers.onRetry, testID: `${testID}.retry` }}
+                        announce="alert"
+                    />
+                </>
+            );
+        }
+        case 'signIn':
+            return <SignInChoices {...props} />;
+        case 'waitingForSignIn':
+            return (
+                <>
+                    <Lead text={t('machineAgents.waitingLead', { agent: agent.title, machine })} />
+                    <Actions>
+                        <RoundButton testID={`${testID}.showTerminal`} size="small" display="secondary" title={t('machineAgents.actionShowTerminal')} onPress={handlers.onShowTerminal} />
+                        <View style={styles.grow} />
+                        <RoundButton testID={`${testID}.cancelSignIn`} size="small" display="inverted" title={t('machineAgents.actionCancel')} onPress={handlers.onCancelSignIn} />
+                    </Actions>
+                </>
+            );
+        case 'ready':
+            return (
+                <>
+                    <SuccessLine
+                        title={t('machineAgents.readyLine', { agent: agent.title, machine })}
+                        detail={agent.signIn.via?.kind === 'connected'
+                            ? t('machineAgents.signedInWith', { label: agent.signIn.via.profileLabel ?? agent.signIn.via.title })
+                            : agent.signIn.via?.kind === 'native' && agent.signIn.via.accountLabel
+                                ? t('machineAgents.signedInAs', { label: agent.signIn.via.accountLabel })
+                                : null}
+                    />
+                    {handlers.onStartSession || (!compact && handlers.onSetUpAnother) ? (
+                        <Actions>
+                            {handlers.onStartSession ? (
+                                <RoundButton testID={`${testID}.startSession`} size="small" title={t('machineAgents.startSessionWith', { agent: agent.title })} onPress={handlers.onStartSession} />
+                            ) : null}
+                            <View style={styles.grow} />
+                            {!compact && handlers.onSetUpAnother ? (
+                                <RoundButton testID={`${testID}.setUpAnother`} size="small" display="inverted" title={t('machineAgents.setUpAnother')} onPress={handlers.onSetUpAnother} />
+                            ) : null}
+                        </Actions>
+                    ) : null}
+                </>
+            );
+        case 'unsupported':
+            return <Lead text={t('machineAgents.unsupportedLead', { agent: agent.title, machine })} />;
+        case 'checking':
+            return <SurfaceStateCard testID={`${testID}.checking`} size="line" kind="loading" title={t('machineAgents.checking')} />;
+        case 'unknown':
+            return (
+                <SurfaceStateCard
+                    testID={`${testID}.unknown`}
+                    size="line"
+                    kind="unavailable"
+                    title={t('machineAgents.unknown')}
+                    action={{ label: t('machineAgents.checkAgain'), onPress: handlers.onCheckAgain }}
+                />
+            );
+    }
+}
+
+function SignInChoices(props: AgentSetupFormViewProps & Readonly<{ compact: boolean }>) {
+    const { agent, handlers, machineName: machine, testID } = props;
+    const choices = resolveAgentSignInChoices(agent);
+    const [selectedKey, setSelectedKey] = React.useState<string | null>(null);
+    const selected = choices.find((choice) => choiceKey(choice) === selectedKey) ?? choices[0] ?? null;
+    if (!selected) {
+        return <Lead text={t('machineAgents.noNativeLogin', { agent: agent.title })} />;
+    }
+    const serviceOf = (serviceId: string) => agent.signIn.connectedServices.find((service) => service.serviceId === serviceId) ?? null;
+    const selectedService = selected.kind === 'service' ? serviceOf(selected.serviceId) : null;
+    const options = choices.map((choice, index) => {
+        if (choice.kind === 'native') {
+            return {
+                id: 'native',
+                title: t('machineAgents.signInOn', { machine }),
+                subtitle: t('machineAgents.signInOnDetail', { agent: agent.title }),
+                icon: 'terminal' as const,
+                testID: `${testID}.way.native`,
+            };
+        }
+        const service = serviceOf(choice.serviceId);
+        return {
+            id: choiceKey(choice),
+            title: t('machineAgents.useService', { service: service?.title ?? choice.serviceId }),
+            subtitle: service?.connected && service.profileLabel
+                ? t('machineAgents.serviceConnected', { profile: service.profileLabel })
+                : t('machineAgents.serviceNotConnected'),
+            icon: 'link' as const,
+            badge: index === 0 ? t('machineAgents.recommended') : undefined,
+            testID: `${testID}.way.${choice.serviceId}`,
+        };
+    });
+    const primary = selected.kind === 'native'
+        ? { title: t('machineAgents.openSignInTerminal'), onPress: handlers.onOpenNativeSignIn, id: 'openTerminal' }
+        : selectedService?.connected && selectedService.healthy
+            ? { title: t('machineAgents.useThisAccount'), onPress: () => handlers.onUseService(selected.serviceId), id: 'useService' }
+            : { title: t('machineAgents.connect'), onPress: () => handlers.onConnectService(selected.serviceId), id: 'connectService' };
+    return (
+        <>
+            {agent.installed && agent.version && agent.job?.outcome?.kind === 'succeeded' ? (
+                <SuccessLine
+                    title={t('machineAgents.installedLine', { agent: agent.title, version: agent.version })}
+                    detail={t('machineAgents.nowSignIn')}
+                />
+            ) : null}
+            <SelectionTiles
+                variant="card"
+                selectionMode="single"
+                accessibilityLabel={t('machineAgents.signInHow', { agent: agent.title })}
+                testIdPrefix={`${testID}.ways`}
+                density="compact"
+                minimumColumns={1}
+                options={options}
+                value={choiceKey(selected)}
+                onChange={(next) => { if (next) setSelectedKey(next); }}
+            />
+            {agent.signIn.nativeLogin === 'unsupported' ? <Lead text={t('machineAgents.noNativeLogin', { agent: agent.title })} /> : null}
+            <Actions>
+                <RoundButton testID={`${testID}.${primary.id}`} size="small" title={primary.title} onPress={primary.onPress} />
+            </Actions>
+        </>
+    );
+}
+
+function Lead(props: Readonly<{ text: string }>) {
+    return <Text style={styles.lead}>{props.text}</Text>;
+}
+
+function Actions(props: Readonly<{ children: React.ReactNode }>) {
+    return <View style={styles.actions}>{props.children}</View>;
+}
+
+/** The ready beat: a check and one line (lab `af-okline`). */
+function SuccessLine(props: Readonly<{ title: string; detail: string | null }>) {
+    const { theme } = useUnistyles();
+    return (
+        <View style={styles.success} accessibilityRole="text">
+            <Icon name="check-circle" size={16} color={theme.colors.state.success.foreground} />
+            <Text style={styles.successText}>
+                <Text style={styles.successTitle}>{props.title}</Text>
+                {props.detail ? <Text style={styles.quiet}>{` · ${props.detail}`}</Text> : null}
+            </Text>
+        </View>
+    );
+}
+
+const styles = StyleSheet.create((theme) => ({
+    body: {
+        gap: 14,
+        paddingBottom: 16,
+    },
+    bodyCompact: {
+        gap: 12,
+    },
+    lead: {
+        ...Typography.default(),
+        ...happierPageTextMetrics('rowDescription'),
+        color: theme.colors.text.secondary,
+        maxWidth: 560,
+    },
+    plan: {
+        borderRadius: 12,
+        borderWidth: 1,
+        borderColor: theme.colors.border.default,
+        overflow: 'hidden',
+    },
+    log: {
+        ...Typography.mono(),
+        ...happierPageTextMetrics('rowDescription'),
+        color: theme.colors.text.tertiary,
+    },
+    actions: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        flexWrap: 'wrap',
+        gap: 8,
+    },
+    grow: {
+        flexGrow: 1,
+    },
+    quiet: {
+        ...Typography.default(),
+        ...happierPageTextMetrics('rowDescription'),
+        color: theme.colors.text.secondary,
+    },
+    success: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 8,
+    },
+    successText: {
+        ...Typography.default(),
+        ...happierPageTextMetrics('rowDescription'),
+        flexShrink: 1,
+        color: theme.colors.text.primary,
+    },
+    successTitle: {
+        ...Typography.default('semiBold'),
+        color: theme.colors.text.primary,
+    },
+}));

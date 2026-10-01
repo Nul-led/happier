@@ -1,11 +1,12 @@
 import * as React from 'react';
+import { MACHINE_ADMINISTRATION_SELECTION_KEYS_V1 } from '@/sync/domains/machines/administration/selectionPreferences';
 import { act, ReactTestRenderer } from 'react-test-renderer';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { PromptRegistryListAdaptersResponseV1, PromptRegistryScanSourceResponseV1 } from '@happier-dev/protocol';
 import type { PromptRegistrySkillImportResult } from '@/sync/ops/promptLibrary/promptRegistrySkillImports';
 import { createModalModuleMock } from '@/dev/testkit/mocks/modal';
 import { createPartialStorageModuleMock } from '@/dev/testkit/mocks/storage';
-import { changeTextTestInstance, pressTestInstanceAsync, renderScreen } from '@/dev/testkit';
+import { changeTextTestInstance, pressTestInstanceAsync, renderScreen, standardCleanup } from '@/dev/testkit';
 import {
     installPromptRegistriesCommonModuleMocks,
     promptRegistriesRouterPushSpy,
@@ -66,24 +67,7 @@ const contextSelectionsState = vi.hoisted(() => ({
     value: { v: 1, selectionsByKey: {} as Record<string, { machineId?: string | null; workspacePath?: string | null }> },
 }));
 const setContextSelectionsMock = vi.hoisted(() => vi.fn());
-const administrationTargetState = vi.hoisted(() => ({
-    current: {
-        target: { serverIdentityId: 'identity-1', machineId: 'machine-1' },
-        serverId: 'server-1',
-        machine: {
-            id: 'machine-1',
-            metadata: {
-                displayName: 'Laptop',
-                host: 'laptop.local',
-                homeDir: '/Users/test',
-            },
-        },
-    } as {
-        target: { serverIdentityId: string; machineId: string };
-        serverId: string;
-        machine: { id: string; metadata: { displayName: string; host: string; homeDir: string } };
-    } | null,
-}));
+let administration: Awaited<ReturnType<typeof createMachineAdministrationFixture>>;
 
 installPromptRegistriesCommonModuleMocks({
     modal: async () => createModalModuleMock({
@@ -119,11 +103,6 @@ vi.mock('@expo/vector-icons', () => ({
     Ionicons: 'Ionicons',
 }));
 
-vi.mock('@/components/ui/text/Text', () => ({
-    Text: 'Text',
-    TextInput: 'TextInput',
-}));
-
 vi.mock('@/components/ui/layout/layout', () => ({
     layout: { maxWidth: 1000 },
     useLayoutMaxWidth: () => 1000,
@@ -138,24 +117,11 @@ vi.mock('@/components/settings/machines/MachineAdministrationTargetSelector', ()
     MachineAdministrationTargetSelector: (props: any) => React.createElement('MachineAdministrationTargetSelector', props),
 }));
 
-vi.mock('@/sync/domains/machines/administration/useTargetSelection', () => ({
-    useMachineAdministrationTargetSelection: () => ({
-        selectedTarget: administrationTargetState.current?.target ?? null,
-        canExecute: administrationTargetState.current !== null,
-        resolveExecutionTarget: () => administrationTargetState.current,
-    }),
-}));
 
-vi.mock('@/components/ui/lists/ItemList', () => ({
-    ItemList: ({ children }: any) => React.createElement('ItemList', null, children),
-}));
 
-vi.mock('@/components/ui/lists/ItemGroup', () => ({
-    ItemGroup: ({ children }: any) => React.createElement('ItemGroup', null, children),
-}));
-
+// Rows keep their props inspectable and render their control (search field, row actions).
 vi.mock('@/components/ui/lists/Item', () => ({
-    Item: (props: any) => React.createElement('Item', props),
+    Item: (props: any) => React.createElement('Item', props, props.rightElement ?? null),
 }));
 
 vi.mock('@/components/ui/lists/ItemRowActions', () => ({
@@ -190,9 +156,11 @@ vi.mock('@/sync/ops/promptLibrary/promptRegistrySkillImports', () => ({
     importPromptRegistrySkillItem: importPromptRegistrySkillItemMock,
 }));
 
+// Load the real store after the existing boundary mocks are configured, during collection.
+const { createMachineAdministrationFixture } = await import('@/dev/testkit/fixtures/machineAdministrationFixture');
+
 describe('PromptRegistriesScreen', () => {
-    beforeEach(() => {
-        vi.resetModules();
+    beforeEach(async () => {
         promptRegistriesRouterPushSpy.mockReset();
         setRegistrySourcesMock.mockReset();
         machinePromptRegistriesListSourcesMock.mockReset();
@@ -248,18 +216,12 @@ describe('PromptRegistriesScreen', () => {
         modalAlertSpy.mockReset();
         contextSelectionsState.value = { v: 1, selectionsByKey: {} };
         setContextSelectionsMock.mockReset();
-        administrationTargetState.current = {
-            target: { serverIdentityId: 'identity-1', machineId: 'machine-1' },
-            serverId: 'server-1',
-            machine: {
-                id: 'machine-1',
-                metadata: {
-                    displayName: 'Laptop',
-                    host: 'laptop.local',
-                    homeDir: '/Users/test',
-                },
-            },
-        };
+        administration = await createMachineAdministrationFixture(MACHINE_ADMINISTRATION_SELECTION_KEYS_V1.promptRegistries);
+    });
+
+    afterEach(async () => {
+        standardCleanup();
+        await administration?.cleanup();
     });
 
     it('auto-loads sources on mount, opens registry item details, and imports registry items from row actions', async () => {
@@ -269,20 +231,20 @@ describe('PromptRegistriesScreen', () => {
         tree = (await renderScreen(React.createElement(PromptRegistriesScreen))).tree;
         await act(async () => {});
 
-        expect(machinePromptRegistriesListAdaptersMock).toHaveBeenCalledWith('machine-1', { serverId: 'server-1' });
+        expect(machinePromptRegistriesListAdaptersMock).toHaveBeenCalledWith('machine-1', { serverId: administration.serverIds[0] });
         expect(machinePromptRegistriesListSourcesMock).toHaveBeenCalledWith(
             'machine-1',
             expect.objectContaining({
                 configuredSources: expect.any(Array),
             }),
-            { serverId: 'server-1' },
+            { serverId: administration.serverIds[0] },
         );
         expect(machinePromptRegistriesScanSourceMock).toHaveBeenCalledWith(
             'machine-1',
             expect.objectContaining({
                 sourceId: 'git:local-skills',
             }),
-            { serverId: 'server-1' },
+            { serverId: administration.serverIds[0] },
         );
 
         const addSourceExpander = tree.findByType('InlineAddExpander');
@@ -334,7 +296,7 @@ describe('PromptRegistriesScreen', () => {
             expect.objectContaining({
                 sourceId: 'git:local-skills',
             }),
-            { serverId: 'server-1' },
+            { serverId: administration.serverIds[0] },
         );
 
         const registryItem = tree.findByTestId('promptRegistries.item.0');
@@ -359,7 +321,7 @@ describe('PromptRegistriesScreen', () => {
 
         expect(importPromptRegistrySkillItemMock).toHaveBeenCalledWith(expect.objectContaining({
             machineId: 'machine-1',
-            serverId: 'server-1',
+            serverId: administration.serverIds[0],
             sourceId: 'git:local-skills',
             itemId: 'git:local-skills:reviewer',
         }));
@@ -391,7 +353,7 @@ describe('PromptRegistriesScreen', () => {
                 sourceId: 'git:local-skills',
                 query: 'design',
             }),
-            { serverId: 'server-1' },
+            { serverId: administration.serverIds[0] },
         ]);
     });
 
@@ -432,7 +394,7 @@ describe('PromptRegistriesScreen', () => {
                 sourceId: 'skills_sh:featured',
                 query: 'u',
             }),
-            { serverId: 'server-1' },
+            { serverId: administration.serverIds[0] },
         ]);
         expect(machinePromptRegistriesListSourcesMock).not.toHaveBeenCalled();
     });
@@ -638,31 +600,18 @@ describe('PromptRegistriesScreen', () => {
             expect.objectContaining({
                 configuredSources: expect.any(Array),
             }),
-            { serverId: 'server-1' },
+            { serverId: administration.serverIds[0] },
         );
     });
 
     it('re-loads registry sources when the Administration target changes', async () => {
         const { PromptRegistriesScreen } = await import('./PromptRegistriesScreen');
 
-        let tree!: ReactTestRenderer;
-        tree = (await renderScreen(React.createElement(PromptRegistriesScreen))).tree;
+        await renderScreen(React.createElement(PromptRegistriesScreen));
         await act(async () => {});
 
         await act(async () => {
-            administrationTargetState.current = {
-                target: { serverIdentityId: 'identity-2', machineId: 'machine-2' },
-                serverId: 'server-2',
-                machine: {
-                    id: 'machine-2',
-                    metadata: {
-                        displayName: 'Desktop',
-                        host: 'desktop.local',
-                        homeDir: '/Users/desktop',
-                    },
-                },
-            };
-            tree.update(React.createElement(PromptRegistriesScreen));
+            administration.selectTarget(administration.targets[1]);
         });
         await act(async () => {});
 
@@ -671,12 +620,12 @@ describe('PromptRegistriesScreen', () => {
             expect.objectContaining({
                 configuredSources: expect.any(Array),
             }),
-            { serverId: 'server-2' },
+            { serverId: administration.serverIds[1] },
         );
     });
 
     it('does not invoke registry operations when no fresh Administration target is available', async () => {
-        administrationTargetState.current = null;
+        administration.selectTarget(null);
 
         const { PromptRegistriesScreen } = await import('./PromptRegistriesScreen');
 

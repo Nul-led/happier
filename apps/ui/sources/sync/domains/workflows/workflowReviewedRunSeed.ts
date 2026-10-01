@@ -6,12 +6,12 @@ import type {
 import type { WorkflowProjectTargetV1 } from '@happier-dev/protocol/workflows';
 
 import { getTempData, storeTempData } from '@/utils/sessions/tempDataStore';
+import { captureActiveServerAccountScopeLifetime, type ActiveServerAccountScopeLifetime } from '@/sync/domains/scope/activeServerAccountScope';
 
 import { workflowDefinitionPromptTitle } from './workflowBlockLabel';
 
 /**
- * The reviewed copy handed to the editor when a Run cannot be recovered in
- * place.
+ * An unsaved authored copy reviewed from a Run, for saving or fresh recovery.
  *
  * D4 resolves a missing workspace by **restoring** it and resuming the same
  * Run. When restoration is impossible there is exactly one truthful remaining
@@ -27,6 +27,7 @@ import { workflowDefinitionPromptTitle } from './workflowBlockLabel';
 
 export type WorkflowReviewedRunSeed = Readonly<{
     name: string;
+    description?: string;
     /** The accepted host placement, so the new Run starts where the old one ran. */
     project: WorkflowProjectTargetV1;
     /** The definition the predecessor Run was admitted with, unchanged. */
@@ -35,26 +36,33 @@ export type WorkflowReviewedRunSeed = Readonly<{
     executionTarget: WorkflowRunAcceptedContextV1['executionTarget'];
     /** The accepted declared inputs, so the review starts from what actually ran. */
     inputs: WorkflowRunAcceptedContextV1['inputs'];
-    /** Provenance only: the Run this copy was reviewed from. It is never resumed. */
-    supersededRunId: string;
+    /** Review navigation only, never reusable definition content. */
+    sourceRunId: string;
+    /** Recovery provenance only. Ordinary library copies do not supersede a Run. */
+    supersededRunId?: string;
     /** The exact reason code that made in-place recovery impossible. */
-    reasonCode: string;
+    reasonCode?: string;
 }>;
 
 export function buildWorkflowReviewedRunSeed(params: Readonly<{
     run: WorkflowRunSummaryV1;
     definition: WorkflowDefinitionV1;
     acceptedContext: WorkflowRunAcceptedContextV1;
-    reasonCode: string;
+    reasonCode?: string;
 }>): WorkflowReviewedRunSeed {
     return {
-        name: workflowDefinitionPromptTitle(params.definition) ?? '',
+        name: params.acceptedContext.metadata?.title ?? workflowDefinitionPromptTitle(params.definition) ?? '',
+        ...(params.acceptedContext.metadata?.description === undefined
+            ? {} : { description: params.acceptedContext.metadata.description }),
         project: params.acceptedContext.workspaceTarget.project,
         definition: params.definition,
         executionTarget: params.acceptedContext.executionTarget,
         inputs: params.acceptedContext.inputs,
-        supersededRunId: params.run.id,
-        reasonCode: params.reasonCode,
+        sourceRunId: params.run.id,
+        ...(params.reasonCode === undefined ? {} : {
+            supersededRunId: params.run.id,
+            reasonCode: params.reasonCode,
+        }),
     };
 }
 
@@ -63,11 +71,16 @@ const WORKFLOW_REVIEWED_RUN_SEED_KIND = 'happier.workflow-reviewed-run-seed.v1' 
 type StoredWorkflowReviewedRunSeed = Readonly<{
     kind: typeof WORKFLOW_REVIEWED_RUN_SEED_KIND;
     seed: WorkflowReviewedRunSeed;
+    lifetime: ActiveServerAccountScopeLifetime | null;
 }>;
 
 /** Returns the opaque route parameter for a reviewed new Run. */
 export function storeWorkflowReviewedRunSeed(seed: WorkflowReviewedRunSeed): string {
-    return storeTempData({ kind: WORKFLOW_REVIEWED_RUN_SEED_KIND, seed } satisfies StoredWorkflowReviewedRunSeed);
+    return storeTempData({
+        kind: WORKFLOW_REVIEWED_RUN_SEED_KIND,
+        seed,
+        lifetime: captureActiveServerAccountScopeLifetime(),
+    } satisfies StoredWorkflowReviewedRunSeed);
 }
 
 /**
@@ -76,6 +89,6 @@ export function storeWorkflowReviewedRunSeed(seed: WorkflowReviewedRunSeed): str
  */
 export function readWorkflowReviewedRunSeed(dataId: string): WorkflowReviewedRunSeed | null {
     const stored = getTempData<StoredWorkflowReviewedRunSeed>(dataId);
-    if (stored === null || stored.kind !== WORKFLOW_REVIEWED_RUN_SEED_KIND) return null;
+    if (stored === null || stored.kind !== WORKFLOW_REVIEWED_RUN_SEED_KIND || !stored.lifetime?.isCurrent()) return null;
     return stored.seed;
 }

@@ -11,7 +11,7 @@ import {
 } from '@happier-dev/protocol';
 
 import { captureLoopbackOauthRedirect } from '@/cloud/loopbackOauthPkce';
-import { openBrowser } from '@/ui/openBrowser';
+import { describeBrowserHandoffFallback, openBrowser } from '@/ui/openBrowser';
 import { createExternalAuthProof } from '@/auth/externalAuthProof';
 import type { CliAccountServiceSelection } from './cliAccountServiceSession';
 
@@ -46,6 +46,11 @@ type CallbackBinding = Readonly<{
 type AuthDependencies = Readonly<{
   request?: (path: string, init?: RequestInit) => Promise<Response>;
   randomBytes?: (size: number) => Uint8Array;
+  /**
+   * Terminal writer for the headless browser handoff. The composing coordinator
+   * injects one that yields its progress animation before writing.
+   */
+  write?: (line: string) => void;
   runBrowserCallback?: (input: Readonly<{
     providerId: string;
     expected: Omit<CallbackBinding, 'pending'>;
@@ -70,7 +75,7 @@ function defaultRequest(endpoint: string): NonNullable<AuthDependencies['request
 }
 
 async function readJson(response: Response): Promise<unknown> {
-  if (!response.ok) throw new Error(`Account Service request failed (${response.status})`);
+  if (!response.ok) throw new Error(`Sign-in request failed (${response.status})`);
   return await response.json();
 }
 
@@ -180,7 +185,7 @@ export async function authenticateCliAccountService(
         { method: 'GET', headers: { Origin: callbackOrigin }, signal: input.signal },
       )));
       if (!parsed.success || !('purpose' in parsed.data)) {
-        throw new Error('Account Service OAuth is unsupported');
+        throw new Error('Sign-in with this service is unsupported');
       }
       if (parsed.data.purpose !== expected.purpose
         || !('credentialTarget' in parsed.data)
@@ -191,7 +196,7 @@ export async function authenticateCliAccountService(
         || parsed.data.endpointServerIdentityId !== expected.endpointServerIdentityId
         || !('canonicalServerUrl' in parsed.data)
         || parsed.data.canonicalServerUrl !== expected.canonicalServerUrl) {
-        throw new Error('Account Service OAuth destination mismatch');
+        throw new Error('Sign-in destination mismatch');
       }
       return parsed.data.url;
     };
@@ -208,7 +213,12 @@ export async function authenticateCliAccountService(
           signal: input.signal,
           resolveAuthorizationUrl,
           openAuthorizationUrl: async (url) => {
-            if (!(await openBrowser(url))) throw new Error(`Open this URL in a browser: ${url}`);
+            // A machine with no browser is the headless case this entry exists
+            // for: print the link and keep the loopback listener waiting rather
+            // than reporting the reachable sign-in service as unavailable.
+            if (await openBrowser(url)) return;
+            const write = deps.write ?? ((line: string) => console.log(line));
+            for (const line of describeBrowserHandoffFallback(url)) write(line);
           },
         }) as CallbackBinding;
     if (callback.endpointServerIdentityId !== expected.endpointServerIdentityId) return { kind: 'identity_mismatch' };

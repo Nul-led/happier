@@ -32,6 +32,8 @@ const payload: ProviderBrokerRouteGrantPayloadV1 = {
   teamId: 'team-1',
   resourceId: 'resource-1',
   sourceRevision: 'source-revision-7',
+  brokerPlacementFingerprint: 'c'.repeat(64),
+  initiatorTokenEpoch: 0,
   initiator: {
     accountId: 'recipient-1',
     machineId: 'worker-1',
@@ -55,6 +57,7 @@ const expectedBinding = {
   teamId: payload.teamId,
   resourceId: payload.resourceId,
   sourceRevision: payload.sourceRevision,
+  brokerPlacementFingerprint: payload.brokerPlacementFingerprint,
   initiator: payload.initiator,
   target: payload.target,
   consumer: payload.consumer,

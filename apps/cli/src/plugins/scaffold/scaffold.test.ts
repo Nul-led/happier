@@ -349,10 +349,10 @@ describe('scaffoldLocalPlugin',
     expect(skill).toContain('happier plugins change status <pendingChangeId>');
     expect(skill).toContain('same daemon lifetime');
     expect(skill).toContain('outcome_unknown');
-    expect(skill).toContain('node_modules/@happier-dev/plugin-sdk/examples/operation-only-channel-provider/');
-    expect(skill).toContain('@happier-dev/channels-protocol/v1');
-    expect(skill).toContain('does not declare a target, descriptor, or surface');
-    expect(skill).toContain('the same public contracts serve external and bundled plugins');
+    expect(skill).toContain('node_modules/@happier-dev/plugin-sdk/examples/public-authoring/');
+    expect(skill).toContain('node_modules/@happier-dev/plugin-sdk/examples/advanced-package-root/');
+    expect(skill).toContain('does not create product availability');
+    expect(skill).not.toContain('operation-only-channel-provider');
     expect(skill).not.toContain('externally supported author product remains operation-only');
     expect(skill).not.toContain('first-party Preview product');
     expect(skill).not.toContain('defineContributionProtocol');
@@ -381,8 +381,8 @@ describe('scaffoldLocalPlugin',
 
       // This focused archive assertion is about package-file selection, not
       // SDK resolution. Keep the canonical pack operation's package-root path
-      // while using a dependency-free author module.
-      delete packageJson.dependencies;
+      // and the scaffold-emitted canonical SDK runtime dependency declaration
+      // while using an SDK-import-free author module.
       delete packageJson.devDependencies;
       await writeFile(scaffold.packageJsonPath, `${JSON.stringify(packageJson, null, 2)}\n`, 'utf8');
       await writeFile(scaffold.sourceEntryPath, [
@@ -573,8 +573,17 @@ describe('scaffoldLocalPlugin',
     if (!parsedManifest.ok) throw new Error('Expected generated manifest to parse.');
     const manifest = parsedManifest.manifest;
     expect(manifest.engines).toBeUndefined();
+    // The default scaffold shape is the declarative surface, so `save-note` is
+    // reachable from the UI it ships with as well as from the headless surfaces.
     expect(manifest.contributes.actions.find(({ id }) => id === 'save-note')?.surfaces)
-      .toEqual(['agent', 'cli', 'mcp']);
+      .toEqual(['agent', 'cli', 'mcp', 'ui']);
+    // …and the whole point of that default is that it costs no build: a
+    // declarative renderer is projected from the manifest, so the scaffold
+    // declares no UI artifact and emits no build config for a bundler to run.
+    expect(manifest.contributes.ui.renderers.map(({ kind }) => kind)).toEqual(['declarative']);
+    await expect(readFile(join(targetDir, 'pluginUiBuild.ts'), 'utf8')).rejects.toMatchObject({
+      code: 'ENOENT',
+    });
     expect(manifest.contributes.actions.find(({ id }) => id === 'save-note'))
       .toHaveProperty('execution', { target: 'daemon' });
     expect(manifest.contributes.actions.find(({ id }) => id === 'save-note'))
@@ -683,9 +692,8 @@ describe('scaffoldLocalPlugin',
     expect(generatedUiDeclarationPropertyNames(source)).toEqual(['surfaces', 'translations']);
     const surfaceName = generatedUiSurfaceReference(source);
     expect(surfaceName).toBe('mainSurface');
-    // The declaration lives in the surface leaf module `pluginUiBuild.ts` also
-    // reads, so the manifest projection and the build target derive from one
-    // `defineUiSurfaceDefinition(...)` call.
+    // The manifest projection and conventional artifact directory derive from
+    // this one `defineUiSurfaceDefinition(...)` call.
     expect(generatedUiSurfaceUsesPublicDeclarationHelper(
       await readFile(join(targetDir, 'src', 'ui', 'surfaces.ts'), 'utf8'),
       surfaceName,
@@ -697,9 +705,15 @@ describe('scaffoldLocalPlugin',
 
     // The hosted-web arm must ship a real bridge application, not an inert
     // title-only stub: a client entry that negotiates the public host API and
-    // creates the document shell needed by the SDK-owned operation-local Vite
-    // config.
-    expect(result.uiEntryPath).toBe(join(targetDir, 'src', 'ui', 'index.ts'));
+    // creates the document shell staged by the SDK-owned compiler.
+    expect(result.uiEntryPath).toBe(join(
+      targetDir,
+      '.happier-plugin',
+      'ui',
+      'hosted-web',
+      'main-renderer',
+      'entry.ts',
+    ));
     const uiSource = await readFile(result.uiEntryPath as string, 'utf8');
     expect(uiSource).toContain("createPluginUiRenderContext,");
     expect(uiSource).toContain("from '@happier-dev/plugin-sdk/ui/client';");
@@ -745,9 +759,7 @@ describe('scaffoldLocalPlugin',
       "await context.hostApi.executeAction('save-note', { note: 'hello' }, { signal: context.signal });",
     );
 
-    // Standard surfaces declare targets only. The SDK's one build owner
-    // creates the operation-local Vite config and hosted HTML entry, so a
-    // scaffold must not leave an ignored package-root document/config behind.
+    // Hosted static bytes live under the manifest-owned conventional directory.
     await expect(readFile(join(targetDir, 'index.html'), 'utf8'))
       .rejects.toMatchObject({ code: 'ENOENT' });
     await expect(readFile(join(targetDir, 'vite.config.mjs'), 'utf8'))
@@ -758,28 +770,20 @@ describe('scaffoldLocalPlugin',
       scripts: { 'build:ui': 'happier-plugin-build-ui --project-root .' },
       devDependencies: {
         typescript: PUBLIC_TOOLCHAIN_SCAFFOLD_BINDINGS_V1.devDependencies.typescript,
-        vite: PUBLIC_TOOLCHAIN_SCAFFOLD_BINDINGS_V1.devDependencies.vite,
         react: PUBLIC_TOOLCHAIN_SCAFFOLD_BINDINGS_V1.dependencies.react,
       },
     });
 
-    // One surface declaration owns the build identity. The config derives its
-    // targets through the SDK projection instead of restating `rendererId`,
-    // `entry` or the artifact tier a second time.
+    // One surface declaration owns the artifact identity; source bytes use the
+    // matching conventional directory without author-owned build config.
     const uiSurfaceModuleSource = await readFile(join(targetDir, 'src', 'ui', 'surfaces.ts'), 'utf8');
     expect(uiSurfaceModuleSource).toContain('defineUiSurfaceDefinition');
-    expect(uiSurfaceModuleSource).toContain('entry: "src/ui/index.ts"');
-    const uiBuildConfigSource = await readFile(join(targetDir, 'pluginUiBuild.ts'), 'utf8');
-    expect(uiBuildConfigSource).toContain('defineBuildConfig');
-    expect(uiBuildConfigSource).toContain('buildUiSurfaceTargets(mainSurface)');
-    expect(uiBuildConfigSource).toContain("from './src/ui/surfaces.ts'");
-    expect(uiBuildConfigSource).not.toContain('./dist/index.js');
-    expect(uiBuildConfigSource).not.toContain('entry:');
-    expect(uiBuildConfigSource).not.toContain('rendererId:');
-    expect(uiBuildConfigSource).not.toContain('createManagedRuntimeBundlerRunner');
-    expect(uiBuildConfigSource).not.toContain('platforms:');
-    expect(uiBuildConfigSource).not.toContain('module:');
-    expect(uiBuildConfigSource).not.toContain('bundlerConfig');
+    await expect(readFile(join(targetDir, 'pluginUiBuild.ts'), 'utf8'))
+      .rejects.toMatchObject({ code: 'ENOENT' });
+    expect(await readFile(join(targetDir, '.happier-plugin', 'ui', 'hosted-web', 'main-renderer', 'index.html'), 'utf8'))
+      .toContain('<script type="module" src="./assets/app.js"></script>');
+    expect(await readFile(join(targetDir, '.happier-plugin', 'ui', 'hosted-web', 'main-renderer', 'entry.ts'), 'utf8'))
+      .toContain('createPluginUiRenderContext');
 
     const testSource = await readFile(join(targetDir, 'test', 'index.test.mjs'), 'utf8');
     expect(testSource).toContain("import { activate, mainSurface, manifest } from '../dist/index.js';");
@@ -787,7 +791,7 @@ describe('scaffoldLocalPlugin',
     expect(testSource).toContain("surface: 'ui'");
     expect(testSource).toContain('createPluginUiTestkit');
     expect(testSource).toContain('createSurfaceContextFixture');
-    expect(testSource).toContain("import('../node_modules/.cache/happier/plugin-author-test/ui/index.js')");
+    expect(testSource).toContain("import('../dist/happier-plugin-ui/hosted-web/main-renderer/assets/app.js')");
     expect(testSource).toContain('bootstrapHostedWebSurface');
     expect(testSource).toContain('adapter:');
     expect(testSource).not.toMatch(/(?:apps|packages)\//u);
@@ -801,7 +805,7 @@ describe('scaffoldLocalPlugin',
     );
     await linkInstalledDependency(targetDir, '@types/node');
     await linkInstalledDependency(targetDir, 'typescript');
-    await linkInstalledDependency(targetDir, 'vite');
+    await linkInstalledDependency(targetDir, 'esbuild');
     const toolchainResult = await runRealGeneratedPluginTest(targetDir);
     expect(toolchainResult, JSON.stringify(toolchainResult, null, 2))
       .toMatchObject({ ok: true, operation: 'test', projectRoot: targetDir });
@@ -843,10 +847,8 @@ describe('scaffoldLocalPlugin',
       }),
     ]));
 
-    const uiBuildConfigModule = await import(pathToFileURL(join(targetDir, 'pluginUiBuild.ts')).href);
-    expect(uiBuildConfigModule.default.targets).toEqual([
-      { rendererId: 'main-renderer', entry: 'src/ui/index.ts', kind: 'hostedWeb' },
-    ]);
+    await expect(readFile(join(targetDir, 'pluginUiBuild.ts'), 'utf8'))
+      .rejects.toMatchObject({ code: 'ENOENT' });
   }, 180_000);
 
   it('emits a semantic React Native surface and every declared Preview artifact', async () => {
@@ -867,8 +869,7 @@ describe('scaffoldLocalPlugin',
     expect(generatedUiDeclarationPropertyNames(source)).toEqual(['surfaces', 'translations']);
     const surfaceName = generatedUiSurfaceReference(source);
     expect(surfaceName).toBe('mainSurface');
-    // The declaration lives in the surface leaf module `pluginUiBuild.ts` also
-    // reads, so the manifest projection and the build target derive from one
+    // The manifest projection and exact package export derive from this one
     // `defineUiSurfaceDefinition(...)` call.
     expect(generatedUiSurfaceUsesPublicDeclarationHelper(
       await readFile(join(targetDir, 'src', 'ui', 'surfaces.ts'), 'utf8'),
@@ -900,9 +901,8 @@ describe('scaffoldLocalPlugin',
     await linkInstalledDependency(
       targetDir,
       'react-native',
-      // The generated semantic test is a Node/RNW consumer. Production native
-      // builds compile React Native through Re.Pack; the semantic author test
-      // must resolve the same public imports through the RNW platform alias.
+      // The generated semantic test is a Node/RNW consumer; resolve the same
+      // public imports through the RNW platform alias.
       fileURLToPath(new URL('../../../../../packages/plugins/inspector/node_modules/react-native-web', import.meta.url)),
     );
     await linkInstalledDependency(
@@ -910,8 +910,6 @@ describe('scaffoldLocalPlugin',
       '@types/react',
       fileURLToPath(new URL('../../../../../packages/plugins/inspector/node_modules/@types/react', import.meta.url)),
     );
-    await linkInstalledDependency(targetDir, 'vite');
-    await linkInstalledDependency(targetDir, '@vitejs/plugin-react');
     expect(await compileGeneratedPlugin(targetDir)).toEqual([]);
     const reactNativeModule = await import(pathToFileURL(join(targetDir, 'dist', 'index.js')).href) as {
       manifest: unknown;
@@ -959,13 +957,7 @@ describe('scaffoldLocalPlugin',
       },
       devDependencies: {
         typescript: PUBLIC_TOOLCHAIN_SCAFFOLD_BINDINGS_V1.devDependencies.typescript,
-        vite: PUBLIC_TOOLCHAIN_SCAFFOLD_BINDINGS_V1.devDependencies.vite,
-        '@vitejs/plugin-react': PUBLIC_TOOLCHAIN_SCAFFOLD_BINDINGS_V1.devDependencies['@vitejs/plugin-react'],
         '@types/react': PUBLIC_TOOLCHAIN_SCAFFOLD_BINDINGS_V1.devDependencies['@types/react'],
-        '@callstack/repack': PUBLIC_TOOLCHAIN_SCAFFOLD_BINDINGS_V1.devDependencies['@callstack/repack'],
-        '@react-native-community/cli': PUBLIC_TOOLCHAIN_SCAFFOLD_BINDINGS_V1.devDependencies['@react-native-community/cli'],
-        '@rspack/core': PUBLIC_TOOLCHAIN_SCAFFOLD_BINDINGS_V1.devDependencies['@rspack/core'],
-        '@swc/helpers': PUBLIC_TOOLCHAIN_SCAFFOLD_BINDINGS_V1.devDependencies['@swc/helpers'],
       },
     });
     await expect(readFile(join(targetDir, 'vite.config.mjs'), 'utf8'))
@@ -976,21 +968,8 @@ describe('scaffoldLocalPlugin',
       .rejects.toMatchObject({ code: 'ENOENT' });
     const uiSurfaceModule = await readFile(join(targetDir, 'src', 'ui', 'surfaces.ts'), 'utf8');
     expect(uiSurfaceModule).toContain('defineUiSurfaceDefinition');
-    expect(uiSurfaceModule).toContain('entry: "src/ui/renderSurface.tsx"');
-    expect(uiSurfaceModule).toContain("platforms: ['web', 'ios', 'android']");
-    expect(uiSurfaceModule).toContain('module: {');
-    const uiBuildConfig = await readFile(join(targetDir, 'pluginUiBuild.ts'), 'utf8');
-    expect(uiBuildConfig).toContain('defineBuildConfig');
-    expect(uiBuildConfig).toContain('buildUiSurfaceTargets(mainSurface)');
-    expect(uiBuildConfig).toContain("from './src/ui/surfaces.ts'");
-    expect(uiBuildConfig).not.toContain('./dist/index.js');
-    expect(uiBuildConfig).not.toContain('createManagedRuntimeBundlerRunner');
-    expect(uiBuildConfig).not.toContain('bundlerConfig');
-    // The Module Federation identity, entry and platform list are declared once
-    // on the surface; a beginner never synchronizes them here.
-    expect(uiBuildConfig).not.toContain("rendererId: 'main-renderer'");
-    expect(uiBuildConfig).not.toContain("platforms: ['web', 'ios', 'android']");
-    expect(uiBuildConfig).not.toContain('module: {');
+    await expect(readFile(join(targetDir, 'pluginUiBuild.ts'), 'utf8'))
+      .rejects.toMatchObject({ code: 'ENOENT' });
     const testSource = await readFile(join(targetDir, 'test', 'index.test.mjs'), 'utf8');
     expect(testSource).toContain("import { activate, mainSurface, manifest } from '../dist/index.js';");
     expect(testSource).toContain("test('reactNative UI definition projects the public app surface and action launcher'");
@@ -1018,29 +997,6 @@ describe('scaffoldLocalPlugin',
       generatedSuite.status,
       `${generatedSuite.stdout}\n${generatedSuite.stderr}`,
     ).toBe(0);
-  });
-
-  it('loads the generated React Native build config through public SDK exports', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'happier-plugin-scaffold-rn-config-'));
-    const targetDir = join(root, 'template-plugin');
-    const result = await scaffoldLocalPlugin({
-      targetDir,
-      pluginId: 'acme.template',
-      displayName: 'Acme Template',
-      ui: 'reactNative',
-    });
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-
-    await linkPublicSdk(targetDir);
-    await expect(readFile(join(targetDir, 'dist', 'index.js'), 'utf8'))
-      .rejects.toMatchObject({ code: 'ENOENT' });
-    const child = spawnSync(
-      process.execPath,
-      ['--input-type=module', '--eval', "import('./pluginUiBuild.ts').then((mod) => { if (mod.default?.targets?.[0]?.rendererId !== 'main-renderer') process.exit(2); })"],
-      { cwd: targetDir, encoding: 'utf8' },
-    );
-    expect({ status: child.status, stderr: child.stderr }).toEqual({ status: 0, stderr: '' });
   });
 
   it('keeps every shipped UI mode on the same strict daemon declaration', async () => {

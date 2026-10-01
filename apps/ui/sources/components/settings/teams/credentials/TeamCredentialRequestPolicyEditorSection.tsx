@@ -118,7 +118,7 @@ export const TeamCredentialRequestPolicyEditorSection = React.memo(
 
         if (support.status === 'unavailable') {
             return (
-                <ItemGroup footer={t('teams.credentials.requestPolicy.catalogUnavailable')}>
+                <ItemGroup description={t('teams.credentials.requestPolicy.catalogUnavailable')}>
                     <Item
                         testID={`${testIDPrefix}-support-unavailable`}
                         title={t('common.unavailable')}
@@ -177,7 +177,7 @@ export const TeamCredentialRequestPolicyEditorSection = React.memo(
 
         return (
             <>
-                {projection.storedPolicyUnsupported ? <ItemGroup footer={t('teams.credentials.requestPolicy.catalogUnavailable')}>
+                {projection.storedPolicyUnsupported ? <ItemGroup description={t('teams.credentials.requestPolicy.catalogUnavailable')}>
                     <Item
                         testID={`${testIDPrefix}-stored-unsupported`}
                         title={t('teams.credentials.requestPolicy.title')}
@@ -196,7 +196,7 @@ export const TeamCredentialRequestPolicyEditorSection = React.memo(
                 {protocolKinds.length > 0 ? (
                     <ItemGroup
                         title={t('teams.credentials.requestPolicy.protocolsLabel')}
-                        footer={draft.protocols === null
+                        description={draft.protocols === null
                             ? `${t('teams.credentials.requestPolicy.subtitle')} ${t('teams.credentials.requestPolicy.protocolsAny')}`
                             : t('teams.credentials.requestPolicy.subtitle')}
                     >

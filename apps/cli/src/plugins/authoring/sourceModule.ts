@@ -8,22 +8,27 @@ import {
   type ParsedPluginManifestV2,
 } from '@happier-dev/protocol';
 import {
-  normalizePluginAccountCollectionMigrationRuntimeProjection,
-  normalizePluginDaemonDatabaseRuntimeProjection,
   type PluginAccountCollectionMigrationRuntimeProjection,
   type PluginDaemonDatabaseRuntimeProjection,
 } from '@happier-dev/plugin-sdk';
+import {
+  normalizePluginAccountCollectionMigrationRuntimeProjection,
+  normalizePluginDaemonDatabaseRuntimeProjection,
+} from '@happier-dev/plugin-sdk/host/registration';
 import { serializeCanonicalPluginManifest } from '@/plugins/manifest/serialize';
 import {
+  createPluginTypeScriptCandidateScope,
   createPluginTypeScriptGenerationScope,
+  isSupportedPluginAuthorSourceExtension,
   loadPluginAuthorSourceModule,
   loadVerifiedPluginModule,
   resolvePluginModuleCandidatePaths,
   type PluginModuleNamespace,
 } from '@/plugins/runtime/loadPluginModule';
 import type { PluginRelativeModuleResolution } from '@/plugins/runtime/activationSources';
+import type { DevelopmentPluginSourceCustody, PluginRuntimeSourceAuthority } from '@/plugins/runtime/sourceAuthority';
+import { preparePluginSingleFileDevelopmentLoad } from './hostSdkResolution';
 import {
-  createPreparedPluginActivationGraph,
   type PreparedPluginActivationGraph,
 } from '@/plugins/runtime/types';
 import {
@@ -64,6 +69,21 @@ export type EvaluatedPluginAuthorSource = ProjectedPluginAuthorModule & Readonly
   actionContracts: unknown;
 }>;
 
+export type PreparedPluginDevelopmentActivationGraph = Readonly<{
+  module: PreparedPluginActivationGraph['module'];
+  candidateScope: object;
+  sourceAuthority: Extract<PluginRuntimeSourceAuthority, DevelopmentPluginSourceCustody>;
+  rootPath: string;
+  entryPath: string;
+}>;
+
+export type PreparedPluginAuthorStagingGraph = Readonly<{
+  module: PreparedPluginActivationGraph['module'];
+  generationScope: object;
+  rootPath: string;
+  entryPath: string;
+}>;
+
 export type ResolvedPluginAuthoringSource =
   | Readonly<{ ok: true; kind: 'manifest'; source: ResolvedLocalPathPluginSourceSuccess }>
   | Readonly<{ ok: true; kind: 'code'; entry: PluginAuthorSourceEntry }>
@@ -97,11 +117,10 @@ async function regularFileExists(path: string): Promise<boolean> {
 }
 
 function assertAuthorEntryExtension(entryPath: string): void {
-  const extension = extname(entryPath).toLowerCase();
-  if (extension === '.ts' || extension === '.mts') return;
+  if (isSupportedPluginAuthorSourceExtension(entryPath)) return;
   throw new PluginAuthorSourceError(
     'plugin_author_entry_kind_unsupported',
-    `Plugin author entry must be a .ts or .mts daemon module: ${entryPath}`,
+    `Plugin author entry must be a .ts, .mts, .js, or .mjs daemon module: ${entryPath}`,
   );
 }
 
@@ -181,8 +200,8 @@ export async function resolvePluginAuthoringSource(
     return source.ok ? { ok: true, kind: 'manifest', source } : source;
   }
 
-  const extension = extname(absoluteLocator).toLowerCase();
-  const isCodeFile = metadata.isFile() && (extension === '.ts' || extension === '.mts');
+  const isCodeFile = metadata.isFile()
+    && isSupportedPluginAuthorSourceExtension(absoluteLocator);
   const hasCanonicalManifest = metadata.isDirectory()
     && (await regularFileExists(join(absoluteLocator, '.happier-plugin', 'plugin.json'))
       || basename(absoluteLocator) === '.happier-plugin'
@@ -292,7 +311,14 @@ export async function evaluatePluginAuthorSource(input: Readonly<{
   });
   const namespace = input.loadModule
     ? await input.loadModule(entry.entryPath)
-    : await loadPluginAuthorSourceModule(entry.entryPath, { aliases: typeScriptConfig.aliases });
+    : await loadPluginAuthorSourceModule(entry.entryPath, {
+      aliases: {
+        ...typeScriptConfig.aliases,
+        ...(entry.kind === 'singleFile'
+          ? await preparePluginSingleFileDevelopmentLoad(entry.entryPath)
+          : {}),
+      },
+    });
   return Object.freeze({
     entry,
     actionContracts: namespace.actionContracts,
@@ -300,13 +326,116 @@ export async function evaluatePluginAuthorSource(input: Readonly<{
   });
 }
 
-export async function evaluateOwnedPluginAuthorGeneration(input: Readonly<{
+/** Evaluates current trusted author bytes in one fresh, process-local candidate scope. */
+export async function evaluatePluginDevelopmentCandidate(input: Readonly<{
   locator: string;
-  immutableGenerationId: string;
+  sourceAuthority: Extract<PluginRuntimeSourceAuthority, DevelopmentPluginSourceCustody>;
+}>): Promise<Readonly<{
+  evaluated: EvaluatedPluginAuthorSource;
+  graph: PreparedPluginDevelopmentActivationGraph;
+}>> {
+  const entry = await resolvePluginAuthorSourceEntrypoint(input.locator);
+  const typeScriptConfig = await resolvePluginAuthorTypeScriptConfigBoundary({
+    packageRootPath: entry.packageRoot,
+    entryPath: entry.entryPath,
+  });
+  const singleFileAliases = entry.kind === 'singleFile'
+    ? await preparePluginSingleFileDevelopmentLoad(entry.entryPath)
+    : {};
+  const candidateScope = await createPluginTypeScriptCandidateScope({
+    rootPath: entry.packageRoot,
+    // Trusted-root tsconfig aliases never override the host SDK alias contract.
+    aliases: { ...typeScriptConfig.aliases, ...singleFileAliases },
+  });
+  const namespace = await loadVerifiedPluginModule({
+    entryPath: entry.entryPath,
+    loadMode: 'source-ts',
+    generationScope: candidateScope,
+    cacheKey: `development-candidate:${input.sourceAuthority.observedRevision}`,
+  });
+  const evaluated = Object.freeze({
+    entry,
+    actionContracts: namespace.actionContracts,
+    ...projectPluginAuthorModule(namespace),
+  });
+  return Object.freeze({
+    evaluated,
+    graph: Object.freeze({
+      module: evaluated.module,
+      candidateScope,
+      sourceAuthority: input.sourceAuthority,
+      rootPath: entry.packageRoot,
+      entryPath: entry.entryPath,
+    }),
+  });
+}
+
+export async function evaluateManifestPluginDevelopmentCandidate(input: Readonly<{
+  source: ResolvedLocalPathPluginSourceSuccess;
+  sourceAuthority: Extract<PluginRuntimeSourceAuthority, DevelopmentPluginSourceCustody>;
+}>): Promise<Readonly<{
+  evaluated: EvaluatedPluginAuthorSource;
+  graph: PreparedPluginDevelopmentActivationGraph;
+}>> {
+  const developmentEntry = input.source.manifest.entrypoints?.development?.trim();
+  if (!developmentEntry) {
+    throw new PluginAuthorSourceError(
+      'plugin_author_entry_missing',
+      `Plugin '${input.source.manifest.id}' has no development entrypoint`,
+    );
+  }
+  const packageRoot = await realpath(input.source.pluginRootPath);
+  const entryPath = await realpath(resolve(packageRoot, developmentEntry));
+  if (entryPath === packageRoot || !isCanonicalAbsolutePathInsideRoot(packageRoot, entryPath)) {
+    throw new PluginAuthorSourceError(
+      'plugin_author_entry_missing',
+      `Plugin development entry escapes its trusted package root: ${developmentEntry}`,
+    );
+  }
+  assertAuthorEntryExtension(entryPath);
+  const entry: PluginAuthorSourceEntry = Object.freeze({
+    kind: 'packageRoot',
+    locator: packageRoot,
+    packageRoot,
+    entryPath,
+  });
+  const typeScriptConfig = await resolvePluginAuthorTypeScriptConfigBoundary({
+    packageRootPath: packageRoot,
+    entryPath,
+  });
+  const candidateScope = await createPluginTypeScriptCandidateScope({
+    rootPath: packageRoot,
+    aliases: typeScriptConfig.aliases,
+  });
+  const namespace = await loadVerifiedPluginModule({
+    entryPath,
+    loadMode: 'source-ts',
+    generationScope: candidateScope,
+    cacheKey: `development-candidate:${input.sourceAuthority.observedRevision}`,
+  });
+  const evaluated = Object.freeze({
+    entry,
+    actionContracts: namespace.actionContracts,
+    ...projectPluginAuthorModule({ ...namespace, manifest: input.source.manifest }),
+  });
+  return Object.freeze({
+    evaluated,
+    graph: Object.freeze({
+      module: evaluated.module,
+      candidateScope,
+      sourceAuthority: input.sourceAuthority,
+      rootPath: packageRoot,
+      entryPath,
+    }),
+  });
+}
+
+export async function evaluatePluginAuthorStagingSource(input: Readonly<{
+  locator: string;
   rootPath: string;
 }>): Promise<Readonly<{
   evaluated: EvaluatedPluginAuthorSource;
-  graph: PreparedPluginActivationGraph;
+  graph: PreparedPluginAuthorStagingGraph;
 }>> {
   const entry = await resolvePluginAuthorSourceEntrypoint(input.locator);
   const typeScriptConfig = await resolvePluginAuthorTypeScriptConfigBoundary({
@@ -328,18 +457,17 @@ export async function evaluateOwnedPluginAuthorGeneration(input: Readonly<{
   });
   return Object.freeze({
     evaluated,
-    graph: createPreparedPluginActivationGraph({
+    graph: Object.freeze({
       module: evaluated.module,
       generationScope,
-      immutableGenerationId: input.immutableGenerationId,
       rootPath: input.rootPath,
       entryPath: entry.entryPath,
     }),
   });
 }
 
-export async function resolveOwnedPluginAuthorGenerationModule(input: Readonly<{
-  graph: PreparedPluginActivationGraph;
+export async function resolvePluginAuthorStagingModule(input: Readonly<{
+  graph: PreparedPluginAuthorStagingGraph;
   module: string;
 }>): Promise<PluginRelativeModuleResolution<Record<string, unknown>>> {
   const rootPath = await realpath(resolve(input.graph.rootPath));

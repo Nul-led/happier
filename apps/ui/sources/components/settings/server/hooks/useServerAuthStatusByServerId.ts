@@ -1,44 +1,46 @@
 import * as React from 'react';
 
-import { subscribeHomeCredentialMutations, TokenStorage } from '@/auth/storage/tokenStorage';
 import { resolveServerProfileScopeId, type ServerProfile } from '@/sync/domains/server/serverProfiles';
-import { fireAndForget } from '@/utils/system/fireAndForget';
+import { resolveServerCredentialAccountScope } from '@/sync/domains/scope/serverCredentialAccountScope';
+import {
+    useServerCredentialAccountScopeResolutions,
+    type ServerCredentialAccountScopeResolution,
+} from '@/sync/domains/scope/useServerCredentialAccountScopes';
 
 export type ServerAuthStatus = 'signedIn' | 'signedOut' | 'unknown';
+
+/**
+ * Only a confirmed absent credential is `signedOut`. A Home still resolving, an
+ * unreadable credential store, or an unknown Home is `unknown` and must never
+ * be routed to sign-in.
+ */
+export function serverAuthStatusFromCredentialResolution(
+    resolution: ServerCredentialAccountScopeResolution | undefined,
+): ServerAuthStatus {
+    if (resolution?.kind === 'bound') return 'signedIn';
+    if (resolution?.kind === 'signed_out') return 'signedOut';
+    return 'unknown';
+}
+
+/** One Home's current credential state, read through the canonical resolver. */
+export async function readServerAuthStatus(serverId: string): Promise<ServerAuthStatus> {
+    return serverAuthStatusFromCredentialResolution(await resolveServerCredentialAccountScope(serverId));
+}
 
 type ServerProfileLike = Pick<ServerProfile, 'id' | 'serverUrl' | 'serverIdentityId'>;
 
 export function useServerAuthStatusByServerId(servers: ReadonlyArray<ServerProfileLike>): Readonly<Record<string, ServerAuthStatus>> {
-    const [statusById, setStatusById] = React.useState<Record<string, ServerAuthStatus>>({});
-    const [credentialRevision, setCredentialRevision] = React.useState(0);
+    const serverIds = React.useMemo(
+        () => servers.map((profile) => resolveServerProfileScopeId(profile)),
+        [servers],
+    );
+    const resolutions = useServerCredentialAccountScopeResolutions(serverIds);
 
-    React.useEffect(() => {
-        return subscribeHomeCredentialMutations(() => {
-            setCredentialRevision((current) => current + 1);
-        });
-    }, []);
-
-    React.useEffect(() => {
-        let cancelled = false;
-        fireAndForget((async () => {
-            const entries = await Promise.all(servers.map(async (profile) => {
-                const scopeId = resolveServerProfileScopeId(profile);
-                try {
-                    const creds = await TokenStorage.getCredentialsForServerUrl(profile.serverUrl, { serverId: profile.id });
-                    return [scopeId, creds ? 'signedIn' : 'signedOut'] as const;
-                } catch {
-                    return [scopeId, 'unknown'] as const;
-                }
-            }));
-            if (cancelled) return;
-            const next: Record<string, ServerAuthStatus> = {};
-            for (const [id, status] of entries) next[id] = status;
-            setStatusById(next);
-        })(), { tag: 'useServerAuthStatusByServerId.load' });
-        return () => {
-            cancelled = true;
-        };
-    }, [credentialRevision, servers]);
-
-    return statusById;
+    return React.useMemo(() => {
+        const statusById: Record<string, ServerAuthStatus> = {};
+        for (const serverId of serverIds) {
+            statusById[serverId] = serverAuthStatusFromCredentialResolution(resolutions.get(serverId));
+        }
+        return statusById;
+    }, [resolutions, serverIds]);
 }

@@ -7,6 +7,7 @@ import { buildSshHostKeyPromptBody } from '@/components/ssh/buildSshHostKeyPromp
 import { useSystemTaskSnapshot } from '@/components/systemTasks/useSystemTaskSnapshot';
 import { readLatestSystemTaskPrompt } from '@/components/systemTasks/prompts/readLatestSystemTaskPrompt';
 import { useSshSystemTaskPromptModals } from '@/components/systemTasks/ssh/useSshSystemTaskPromptModals';
+import { resolveSystemTaskFailureMessage } from '@/components/systemTasks/resolveSystemTaskFailureMessage';
 import { Modal } from '@/modal';
 import { t } from '@/text';
 import { sync } from '@/sync/sync';
@@ -35,8 +36,8 @@ import {
     setNativeSshTunnelAuthPromptResolver,
     setNativeSshTunnelCredentialResolution,
     setNativeSshTunnelHostKeyPromptResolver,
-    startNativeSshTunnelRuntimeAppStateLifecycle,
 } from '@/sync/runtime/nativeSshTunnels/runtime';
+import { startNativeLoopbackTunnelRuntimeAppStateLifecycle } from '@/sync/runtime/nativeLoopbackTunnels/runtime';
 
 const REMOTE_HOST_FORM_NEW_SENTINEL_ID = '__new__';
 
@@ -159,7 +160,7 @@ export function useRemoteHostOutcomeActions(options: Readonly<{
                 answers,
             };
         });
-        startNativeSshTunnelRuntimeAppStateLifecycle();
+        startNativeLoopbackTunnelRuntimeAppStateLifecycle();
         return () => {
             setNativeSshTunnelHostKeyPromptResolver(null);
             setNativeSshTunnelAuthPromptResolver(null);
@@ -333,7 +334,7 @@ export function useRemoteHostOutcomeActions(options: Readonly<{
             );
             return;
         } else {
-            const message = result.error.message || t('settings.remoteHostsSetupAsMachineFailed');
+            const message = resolveSystemTaskFailureMessage(result.error) ?? t('settings.remoteHostsSetupAsMachineFailed');
             Modal.alert(t('common.error'), message);
         }
 

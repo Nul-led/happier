@@ -10,7 +10,10 @@ const addHomeAllowed: SettingsHostPredicate = () => {
     return relay.allowRelaySelection && relay.allowCustomRelayUrl;
 };
 
-/** The searchable settings of the `servers` page (Homes). Rows render their labels from these declarations. */
+/**
+ * The searchable settings of the `servers` page (Settings → Homes, landing on This device). Rows render
+ * their labels from these declarations.
+ */
 export const SERVERS_SETTINGS = defineSettingsPage({
     pageId: 'servers',
     sections: {
@@ -42,19 +45,25 @@ export const SERVERS_SETTINGS = defineSettingsPage({
                 cloudflareToken: { titleKey: 'settings.relayAccess.fields.tokenLabel' },
             },
         },
+    },
+});
+
+/**
+ * The searchable settings of the `serversAdd` page (Settings → Homes → Add a Home, the collection's
+ * draft): adding a Home by any path, and setting one up on a server (desktop app).
+ */
+export const HOMES_ADD_SETTINGS = defineSettingsPage({
+    pageId: 'serversAdd',
+    sections: {
         add: {
-            // The page header's "Add a Home" opens this form through the setting's anchor.
-            titleKey: 'server.pageSections.addTitle',
-            host: addHomeAllowed,
+            titleKey: 'addFlows.addHome',
             settings: {
-                addHome: { titleKey: 'server.addServerTitle', keywordKeys: ['server.pageSections.addTitle'] },
-            },
-        },
-        actions: {
-            titleKey: 'common.actions',
-            host: relaySelectionAllowed,
-            settings: {
-                createPersonalHome: { titleKey: 'setupOnboarding.setupNewRelayAction', descriptionKey: 'setupOnboarding.openSetupWizardSubtitle' },
+                addHome: { titleKey: 'addFlows.addHome', keywordKeys: ['server.pageSections.addTitle', 'server.addServerTitle'], host: addHomeAllowed },
+                createPersonalHome: {
+                    titleKey: 'setupOnboarding.setupNewRelayAction',
+                    descriptionKey: 'setupOnboarding.openSetupWizardSubtitle',
+                    host: relaySelectionAllowed,
+                },
             },
         },
     },

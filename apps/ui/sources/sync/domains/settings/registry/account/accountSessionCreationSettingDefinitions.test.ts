@@ -34,8 +34,7 @@ describe('account session creation setting definitions', () => {
     it('stores remembered engine selections as account-scoped session creation settings', () => {
         expect(ACCOUNT_SETTING_DEFINITIONS.rememberLastEngineSelectionsV1.storageScope).toBe('account');
         expect(ACCOUNT_SETTING_DEFINITIONS.rememberLastEngineSelectionsV1.default).toBe(true);
-        expect(ACCOUNT_SETTING_DEFINITIONS.lastEngineSelectionsByScopeV1.storageScope).toBe('account');
-        expect(ACCOUNT_SETTING_DEFINITIONS.lastEngineSelectionsByScopeV1.default).toEqual({});
+        expect(ACCOUNT_SETTING_DEFINITIONS).not.toHaveProperty('lastEngineSelectionsByScopeV1');
     });
 
     it('keeps valid wizard presentation overrides and drops unknown section or presentation values', () => {

@@ -10,8 +10,12 @@ export function isPublicRouteForUnauthenticated(segments: string[]): boolean {
     // Home (welcome / login / create account)
     if (first === 'index') return true;
 
-    // Desktop setup/onboarding must be reachable before authentication.
-    if (first === 'setup') return true;
+    // Issued account-service callbacks still land at the exact legacy wizard leaf.
+    // The former setup index is also public so its root redirect can settle.
+    if (first === 'setup') {
+        return normalized.length === 1
+            || (normalized.length === 2 && (normalized[1] === 'index' || normalized[1] === 'wizard'));
+    }
 
     // Server configuration must be reachable before authentication.
     if (first === 'server') return true;
@@ -33,6 +37,9 @@ export function isPublicRouteForUnauthenticated(segments: string[]): boolean {
     // private: only the exact entry leaf is an unauthenticated destination.
     if (first === 'join' && normalized.length === 2) return true;
     if (first === 'teams' && normalized.length === 3 && normalized[2] === 'sign-in') return true;
+    // The account service's sign-in returns to `/homes/sign-in` before this device is signed in to a
+    // Home; only that exact leaf is public (Add a Home and the Homes page stay private).
+    if (first === 'homes' && normalized.length === 2 && normalized[1] === 'sign-in') return true;
 
     // Native verification and password-reset links carry their one-time bearer
     // in the final path segment. Only these exact landing families are public;
@@ -60,6 +67,10 @@ export function isPublicRouteForUnauthenticated(segments: string[]): boolean {
     // Loaded native terminal acceptance must work from a clean embedded QA build. The screen is
     // still dev-only and exposes deterministic local bytes, not credentials or PTY controls.
     if (isDevRouteEnabled() && first === 'dev' && normalized[1] === 'terminal-qa') return true;
+
+    // The agent-setup specimen draws fixture agents through the real components (no account, no
+    // machine RPC), so its side by side pairs run from a clean dev browser. Dev builds only.
+    if (isDevRouteEnabled() && first === 'dev' && normalized[1] === 'agent-setup' && normalized.length === 2) return true;
 
     return false;
 }

@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import type { ManagedServiceRequest, ManagedServiceResponse } from '@happier-dev/plugin-sdk/managed-services';
 import {
   AccountSettingsSchema,
   DEFAULT_PROVIDER_SETTINGS_V1,
@@ -14,6 +15,7 @@ import { computeTeamCredentialSourceMemberKeyV1 } from '@happier-dev/protocol/te
 
 import type { ResolvedProviderContribution } from '@/plugins/projection/registry/types';
 import type { ActiveAccountSettingsSnapshot } from '@/settings/accountSettings/activeAccountSettingsSnapshot';
+import type { ManagedProviderExplicitStartCustody } from '@/providers/connections/publicManagedRuntimeStart';
 import { resolveProviderConnectionForMachine } from '@/providers/registry';
 import {
   createProviderConnectionBrokerSourceOpen,
@@ -28,6 +30,7 @@ import {
 } from './providerConnectionSource';
 import { createTeamCredentialBrokerSourceOwner } from './teamCredentialBrokerSourceOwner';
 import { createPrivateProviderBrokerStreamLifetime } from './daemonProviderBrokerRuntime';
+import { createProviderConnectionCpxBridge } from './providerConnectionCpxBridge';
 
 const key = new Uint8Array(32).fill(7);
 const connectionId = ProviderConnectionIdSchema.parse('pc_team_source');
@@ -825,5 +828,113 @@ describe('Provider Connection Team broker source', () => {
         credentialRef: { reference: { kind: 'apiKey', secretId: 'secret-a' } },
       },
     });
+  });
+
+  it('composes the source owner through the real CPX bridge and revokes before the next request', async () => {
+    const settings = accountSettings();
+    const source = resourceSource(settings);
+    const managedRequests: ManagedServiceRequest[] = [];
+    let resourceEnabled = true;
+    const cleanup = vi.fn(async () => {});
+    const managedRequest = vi.fn(async (request: ManagedServiceRequest): Promise<ManagedServiceResponse> => {
+      managedRequests.push(request);
+      return {
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        headers: { 'content-type': 'application/json' },
+        body: new Response('{"ok":true}').body,
+      };
+    });
+    const custody: ManagedProviderExplicitStartCustody = {
+      acquire: vi.fn(async () => ({
+        access: {
+          endpointUrl: () => 'http://127.0.0.1:43123/v1',
+          request: managedRequest,
+        },
+        isCurrent: () => true,
+        cleanup,
+      })),
+      retire: vi.fn(async () => true),
+      retireExternalApiKey: vi.fn(),
+      revalidateRetainedClaims: vi.fn(async () => 0),
+      retireAll: vi.fn(async () => 0),
+    };
+    const bridge = createProviderConnectionCpxBridge({ custody });
+    const openProviderConnectionSource = createProviderConnectionBrokerSourceOpen({
+      machineId: 'machine-a',
+      readResource: async () => ({
+        teamId: 'team-a',
+        source,
+        brokerPlacement: { kind: 'machine' as const, machineId: 'machine-a' },
+        revision: 7,
+        enabled: resourceEnabled,
+      }),
+      withRegistry: async (read) => await read(registry),
+      getAccountSettingsSnapshot: () => snapshot(settings),
+      collectDnsEvidence: async () => dnsEvidenceByEndpointUrl,
+      openCpxProviderConnection: bridge.open,
+      resolveExactSelection: async () => ({
+        endpointTemplateId: 'responses',
+        protocol: 'openai-responses' as const,
+        credentialTransport: definition.credential!.transports[0]!,
+      }),
+    });
+    const sourceOwner = createTeamCredentialBrokerSourceOwner({
+      machineId: 'machine-a',
+      custody,
+      selectConnectedServicesSourceMember: async () => null,
+      openConnectedServicesSource: async () => null,
+      openProviderConnectionSource,
+    });
+    const lifetime = createPrivateProviderBrokerStreamLifetime({
+      sourceOwner,
+      application: {
+        agentTargetKey: 'agent:happier.agent.codex/codex',
+        implementationIdentity: { pluginId: 'happier.provider.cliproxyapi', localId: 'cliproxyapi' },
+        endpointTemplateId: 'cliproxyapi-openai-responses',
+        protocol: 'openai-responses',
+      },
+      operation: { kind: 'session', sessionId: 'session-composed' },
+    });
+    const access = await lifetime.acquireSource({
+      resourceId: 'resource-composed',
+      brokerMachineId: 'machine-a',
+      source,
+      operation: { kind: 'session', sessionId: 'session-composed' },
+      expectedResourceRevision: 7,
+      application: {
+        agentTargetKey: 'agent:happier.agent.codex/codex',
+        implementationIdentity: { pluginId: 'happier.provider.cliproxyapi', localId: 'cliproxyapi' },
+        endpointTemplateId: 'cliproxyapi-openai-responses',
+        protocol: 'openai-responses',
+      },
+      modelId: 'gateway-model',
+      sourceRevision: 'source-revision-a',
+    });
+    expect(access).not.toBeNull();
+    const response = await access!.access.request({
+      pathAndQuery: '/v1/responses',
+      method: 'POST',
+      headers: { authorization: 'Bearer worker' },
+      body: new TextEncoder().encode('{}'),
+    });
+    expect(response.status).toBe(200);
+    expect(managedRequests).toHaveLength(1);
+    expect(managedRequests[0]?.headers).toMatchObject({
+      'x-happier-provider-source-credential': 'Bearer source-secret',
+      'accept-encoding': 'identity',
+    });
+    expect(managedRequests[0]?.headers).not.toHaveProperty('authorization');
+
+    resourceEnabled = false;
+    await expect(access!.access.request({
+      pathAndQuery: '/v1/responses',
+      method: 'POST',
+      body: new TextEncoder().encode('{}'),
+    })).resolves.toMatchObject({ status: 403 });
+    expect(managedRequests).toHaveLength(1);
+    await lifetime.close();
+    expect(cleanup).toHaveBeenCalled();
   });
 });

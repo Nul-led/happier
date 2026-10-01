@@ -21,6 +21,7 @@ import {
     EMPTY_PLUGIN_UI_PROJECTION,
     type PluginUiProjectionModel,
     type PluginUiSettingsPageProjection,
+    type PluginUiSurfacePlacementProjection,
 } from '@/sync/domains/plugins/ui/projection';
 
 import { usePluginSettingsPageDestinationHandler } from './pluginSettingsPageNavigation';
@@ -198,6 +199,27 @@ function settingsPage(input: Readonly<{
     };
 }
 
+function replacePageLocationRequest(
+    payload: Readonly<{ subPath: string; backLocation: string }>,
+): PluginUiHostApiRequestEnvelopeV1 {
+    return {
+        version: 1,
+        requestId: `replace:${payload.subPath || 'root'}`,
+        surface: {
+            pluginId: 'examples.descriptor-only',
+            contributionId: 'settings-form',
+            surfaceId: 'settingsPage:examples.descriptor-only:settings',
+            placement: 'appSurface',
+            platform: 'web',
+            channel: 'internal',
+            resourceScope: [],
+            diagnostics: [],
+        },
+        method: 'replacePageLocation',
+        payload,
+    };
+}
+
 type SettingsPageHostProps = Readonly<{
     binding?: Readonly<{
         openSurface?: PluginSurfaceOpenHandler;
@@ -271,11 +293,10 @@ describe('PluginSettingsPageScreen', () => {
 
         const replacePageLocation = latestHostProps().binding?.mountedHostApiHandlers?.replacePageLocation;
         expect(replacePageLocation).toBeTypeOf('function');
-        expect(replacePageLocation?.({
-            v: 1,
-            method: 'replacePageLocation',
-            payload: { subPath: 'bindings/7', backLocation: '' },
-        })).toEqual({ subPath: 'bindings/7' });
+        expect(replacePageLocation?.(replacePageLocationRequest({
+            subPath: 'bindings/7',
+            backLocation: '',
+        }))).toEqual({ subPath: 'bindings/7' });
         expect(routerReplaceSpy).toHaveBeenCalledWith(expect.objectContaining({
             pathname: '/(app)/settings/plugins/[pluginId]/[pageId]',
             params: expect.objectContaining({
@@ -307,18 +328,16 @@ describe('PluginSettingsPageScreen', () => {
             />,
         );
 
-        latestHostProps().binding?.mountedHostApiHandlers?.replacePageLocation?.({
-            v: 1,
-            method: 'replacePageLocation',
-            payload: { subPath: 'bindings/7', backLocation: '' },
-        });
+        latestHostProps().binding?.mountedHostApiHandlers?.replacePageLocation?.(
+            replacePageLocationRequest({ subPath: 'bindings/7', backLocation: '' }),
+        );
         appShellState.projection = {
             ...EMPTY_PLUGIN_UI_PROJECTION,
             settingsPagesById: {
                 [page.id]: {
                     ...page,
                     availability: {
-                        state: 'unavailable',
+                        state: 'disabled',
                         reason: 'disabled',
                         diagnostics: [],
                     },
@@ -355,16 +374,19 @@ describe('PluginSettingsPageScreen', () => {
         appShellState.interactionEnabled = false;
         const { PluginSettingsPageScreen } = await import('./PluginSettingsPageScreen');
 
-        const screen = await renderScreen(
+        await renderScreen(
             <PluginSettingsPageScreen pluginId="examples.descriptor-only" pageId="settings" />,
         );
 
         // An empty establishment model is not evidence that this exact route
         // was removed. Preserve route continuity and wait for its first
-        // describe instead of rendering the current-missing tombstone.
-        expect(screen.getTextContent()).toContain('localized:common.loading');
+        // describe instead of rendering the current-missing tombstone: the
+        // shared surface fallback shows only its loading state here.
         expect(hostSpy).not.toHaveBeenCalled();
-        expect(fallbackSpy).not.toHaveBeenCalled();
+        expect(fallbackSpy).toHaveBeenCalled();
+        expect(new Set(fallbackSpy.mock.calls.map(([fallbackProps]) => (
+            (fallbackProps as { state?: string }).state
+        )))).toEqual(new Set(['loading']));
     });
 
     it('inherits the current Settings route focus fact without treating an inactive route as offline', async () => {
@@ -698,7 +720,9 @@ function PluginSettingsPageHostFocusProbe(props: Readonly<{ props: unknown }>): 
 function SettingsTargetNavigationScope(props: React.PropsWithChildren): React.ReactElement {
     const binding = usePluginSurfaceDestinationNavigationBindingForScope({
         placements: appShellState.projection
-            ? Object.values(appShellState.projection.surfacePlacementsById)
+            ? Object.values(appShellState.projection.surfacePlacementsById).filter(
+                (placement): placement is PluginUiSurfacePlacementProjection => placement.binding.kind === 'destination',
+            )
             : [],
         settingsPages: appShellState.projection
             ? Object.values(appShellState.projection.settingsPagesById)

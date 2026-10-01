@@ -73,7 +73,6 @@ describe('SettingsCatalogPageChildren', () => {
             <SettingsCatalogPageChildren
                 parentPageId="account"
                 router={{ push } as never}
-                theme={{ colors: { text: { secondary: '#777' } } } as never}
             />,
         );
 
@@ -101,7 +100,6 @@ describe('SettingsCatalogPageChildren', () => {
             <SettingsCatalogPageChildren
                 parentPageId="account"
                 router={{ push: vi.fn() } as never}
-                theme={{ colors: { text: { secondary: '#777' } } } as never}
             />,
         );
 

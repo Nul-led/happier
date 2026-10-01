@@ -31,6 +31,8 @@ export type ActiveServerAuthReadiness = Readonly<{
   credentialState: CredentialReadinessState;
   authenticated: boolean;
   unusableReason: ActiveServerAuthUnusableReason | null;
+  /** Readable label of the account the relay validated (from the same profile read); null when unknown. */
+  accountLabel: string | null;
   machineId: string | null;
   machineRegistrationState: MachineRegistrationState;
   machineRegistered: boolean;
@@ -76,6 +78,7 @@ export async function resolveActiveServerAuthReadiness(
       credentialState: 'missing',
       authenticated: false,
       unusableReason: 'no-credentials',
+      accountLabel: null,
       machineId,
       machineRegistrationState,
       machineRegistered,
@@ -85,12 +88,27 @@ export async function resolveActiveServerAuthReadiness(
   const validation = await validateTokenFn(credentials.token, deps.signal);
   deps.signal?.throwIfAborted();
   const credentialState: CredentialReadinessState = validation.state;
+  if (
+    credentialState === 'valid'
+    && credentials.credentialProvenance === 'stored_session'
+    && credentials.encryption?.type === 'legacy'
+  ) {
+    const { fetchAccountEncryptionCurrentness } = await import('@/api/client/connectedServiceCredentialApi');
+    await fetchAccountEncryptionCurrentness({
+      token: credentials.token,
+      ...(deps.signal ? { signal: deps.signal } : {}),
+    }).catch(() => {
+      deps.signal?.throwIfAborted();
+      // Profile validation remains an auth fact; currentness owns its typed recovery result.
+    });
+  }
   const rejected = credentialState === 'invalid';
   return {
     credentials,
     credentialState,
     authenticated: credentialState === 'valid',
     unusableReason: rejected ? 'credentials-rejected' : null,
+    accountLabel: validation.state === 'valid' ? validation.accountLabel ?? null : null,
     machineId,
     machineRegistrationState,
     machineRegistered,

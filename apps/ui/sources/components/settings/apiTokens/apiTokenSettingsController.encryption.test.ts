@@ -1,116 +1,32 @@
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import {
-    computeAccountEncryptionMigrateKeyFingerprintV1,
     parseAccountApiTokenCredentialV1,
     openApiTokenEncryptionAccessV1,
     type AccountApiTokenEncryptionAccessV1,
 } from '@happier-dev/protocol';
-import { createEncryptionFromAuthCredentials } from '@/auth/encryption/createEncryptionFromAuthCredentials';
-import { encodeBase64, decodeBase64 } from '@/encryption/base64';
+import { decodeBase64 } from '@/encryption/base64';
+
+import {
+    createApiTokenSettingsControllerHarness,
+    disposeApiTokenSettingsControllerHarnesses,
+    type ApiTokenSettingsControllerHarnessOptions,
+} from './apiTokenSettingsControllerTestHarness';
 
 // The real store and Action graph need a longer cold-transform budget on shared workers.
 beforeAll(async () => {
     await import('@/sync/domains/state/storageStore');
     await import('@/sync/ops/actions/defaultActionExecutor');
 }, 600_000);
-afterEach(() => { vi.restoreAllMocks(); vi.unstubAllEnvs(); });
+afterEach(async () => {
+    await disposeApiTokenSettingsControllerHarnesses();
+    vi.restoreAllMocks();
+    vi.unstubAllEnvs();
+});
 
-async function harness(options: { failure?: 'network' | 'mismatch' | 'unsupported' | 'malformed' | 'conflict' | 'account-disabled'; hold?: Promise<void>; holdCurrentness?: Promise<void> } = {}) {
-    vi.stubEnv('EXPO_PUBLIC_HAPPY_STORAGE_SCOPE', `token-ui-${crypto.randomUUID()}`);
-    const { upsertAndActivateServer } = await import('@/sync/domains/server/serverRuntime');
-    const { setServerProfileIdentityForUrl } = await import('@/sync/domains/server/serverProfiles');
-    const profile = await upsertAndActivateServer({ serverUrl: 'https://token-ui.example', name: 'Token Home' });
-    await setServerProfileIdentityForUrl(profile.serverUrl, 'srv_token-ui');
-    // Apply the Home through the real connection owner rather than staging the
-    // applied-runtime facts it publishes. The credential store is still empty
-    // here, so this runs the genuine switch lifecycle without starting
-    // authenticated Sync or issuing network requests — the same composition
-    // `pendingQueueV2.testHelpers.ts#activatePendingQueueScope` relies on.
-    const { switchConnectionToActiveServer } = await import('@/sync/runtime/orchestration/connectionManager');
-    await switchConnectionToActiveServer();
-    const { storage } = await import('@/sync/domains/state/storageStore');
-    storage.getState().activateProfileScope({ serverId: 'srv_token-ui', accountId: 'account-a' });
-    const credentials = {
-        token: `header.${Buffer.from(JSON.stringify({ sub: 'account-a' })).toString('base64url')}.signature`,
-        secret: encodeBase64(new Uint8Array(32).fill(7), 'base64url'),
-    };
-    const encryption = await createEncryptionFromAuthCredentials(credentials);
-    const { TokenStorage } = await import('@/auth/storage/tokenStorage');
-    // Persisted credential reads and HTTP are the boundaries; controller,
-    // scope, Action admission, adapters and all crypto remain real.
-    vi.spyOn(TokenStorage, 'getCredentialsForServerUrl').mockResolvedValue(credentials);
-    const requests: { path: string; body: Record<string, unknown> }[] = [];
-    const rows: Record<string, unknown>[] = [];
-    let currentnessAvailable = true;
-    const { setRuntimeFetch } = await import('@/utils/system/runtimeFetch');
-    setRuntimeFetch(async (input, init) => {
-        const url = new URL(String(input));
-        const body = init?.body ? JSON.parse(String(init.body)) : {};
-        requests.push({ path: url.pathname, body });
-        let response: unknown = { ok: true };
-        if (url.pathname === '/v1/account/encryption/currentness') {
-            await options.holdCurrentness;
-            if (!currentnessAvailable) throw new Error('Home unavailable');
-            response = {
-            mode: 'e2ee', version: 1, updatedAt: 1, signingKeyFingerprint: 'signing',
-            contentKeyFingerprint: computeAccountEncryptionMigrateKeyFingerprintV1(encryption.contentDataKey),
-            recipientEnvelopeReadiness: { status: 'available' },
-            };
-        }
-        if (url.pathname === '/v1/auth/api-tokens/create') {
-            if (options.failure === 'unsupported') return new Response('{}', { status: 404 });
-            if (options.failure === 'conflict') {
-                return new Response(JSON.stringify({ error: 'api_token_id_conflict' }), { status: 409 });
-            }
-            if (options.failure === 'account-disabled') {
-                return new Response(JSON.stringify({ error: 'account-disabled' }), { status: 403 });
-            }
-            const encryptionArm = body.encryption as { access?: unknown } | undefined;
-            const tokenId = options.failure === 'mismatch'
-                ? '22222222-2222-4222-8222-222222222222'
-                : String(body.tokenId);
-            const row = {
-                tokenId,
-                label: body.label,
-                displayPrefix: `hap_v1_${String(tokenId).slice(0, 8)}`,
-                createdAt: '2026-09-06T00:00:00.000Z',
-                expiresAt: body.expiresAt,
-                lastUsedAt: null,
-                hasEncryptionAccess: encryptionArm !== undefined,
-                hasUnattendedTeamAccess: body.authorizeUnattendedTeamAccess === true,
-            };
-            rows.push(row);
-            // The Home has durably accepted this exact selector before the
-            // response is held. Dismissal now aborts the real request signal,
-            // so the adapter must settle from its issued witness rather than a
-            // late-success-only test double.
-            await options.hold;
-            if (init?.signal?.aborted) {
-                const error = new Error('response aborted after commit');
-                error.name = 'AbortError';
-                throw error;
-            }
-            if (options.failure === 'network') throw new Error('response lost');
-            response = { token: `hap_v1_${tokenId}_${'A'.repeat(43)}`, apiToken: row };
-            if (options.failure === 'malformed') response = { token: 'malformed', apiToken: row };
-        }
-    if (url.pathname.endsWith('/list')) response = { tokens: rows };
-    if (url.pathname.endsWith('/revoke')) {
-        const tokenId = typeof body.tokenId === 'string' ? body.tokenId : '';
-        const rowIndex = rows.findIndex((row) => row.tokenId === tokenId);
-        if (rowIndex >= 0) rows.splice(rowIndex, 1);
-        response = { revoked: rowIndex >= 0 };
-    }
-        return new Response(JSON.stringify(response), { status: 200 });
-    });
-    const { createApiTokenSettingsController } = await import('./apiTokenSettingsController');
-    const { createDefaultActionExecutor } = await import('@/sync/ops/actions/defaultActionExecutor');
-    const { captureActiveServerAccountScopeLifetime: captureLifetime } = await import('@/sync/domains/scope/activeServerAccountScope');
-    const controller = createApiTokenSettingsController({ execute: createDefaultActionExecutor().execute, captureActiveAccountScopeLifetime: captureLifetime, now: Date.now });
-    const { captureActiveServerAccountScopeLifetime } = await import('@/sync/domains/scope/activeServerAccountScope');
-    expect(captureActiveServerAccountScopeLifetime()?.isCurrent()).toBe(true);
-    controller.setCreateDraft({ label: 'Integration', expiryPreset: '90d', encryptionAccess: true });
-    return { controller, requests, encryption, withdrawCurrentness: () => { currentnessAvailable = false; } };
+async function harness(options: ApiTokenSettingsControllerHarnessOptions = {}) {
+    const created = await createApiTokenSettingsControllerHarness(options);
+    created.controller.setCreateDraft({ label: 'Integration', expiryPreset: '90d', encryptionAccess: true });
+    return created;
 }
 
 describe('trusted token UI encryption lifecycle', () => {
@@ -129,20 +45,33 @@ describe('trusted token UI encryption lifecycle', () => {
         const { controller, requests } = await harness();
         await controller.refreshEncryptionAvailability();
         expect(requests.filter((request) => request.path.endsWith('/currentness'))).toHaveLength(1);
-        expect(controller.getState().canCreateEncrypted).toBe(true);
+        expect(controller.getState().encryptionAvailability).toBe('ready');
         controller.retire();
+    }, 180_000);
+
+    it('tells a plain Account (keyless creation) from an encrypted one whose material is not usable here', async () => {
+        const plain = await harness({ mode: 'plain' });
+        expect(plain.controller.getState().encryptionAvailability).toBe('unchecked');
+        await plain.controller.refreshEncryptionAvailability();
+        expect(plain.controller.getState().encryptionAvailability).toBe('plain');
+        plain.controller.retire();
+
+        const unavailable = await harness({ readiness: 'unavailable' });
+        await unavailable.controller.refreshEncryptionAvailability();
+        expect(unavailable.controller.getState().encryptionAvailability).toBe('unavailable');
+        unavailable.controller.retire();
     }, 180_000);
 
     it('withdraws stale encrypted readiness without blocking ordinary creation', async () => {
         const { controller, withdrawCurrentness } = await harness();
         await controller.refreshEncryptionAvailability();
-        expect(controller.getState().canCreateEncrypted).toBe(true);
+        expect(controller.getState().encryptionAvailability).toBe('ready');
         withdrawCurrentness();
         const refresh = controller.refreshEncryptionAvailability();
-        expect(controller.getState().canCreateEncrypted).toBe(false);
+        expect(controller.getState().encryptionAvailability).toBe('checking');
         await refresh;
         expect(controller.getState()).toMatchObject({
-            canCreateEncrypted: false,
+            encryptionAvailability: 'unreadable',
             createDraft: { encryptionAccess: false },
         });
 
@@ -159,19 +88,23 @@ describe('trusted token UI encryption lifecycle', () => {
         let finish!: () => void;
         const holdCurrentness = new Promise<void>((resolve) => { finish = resolve; });
         const { controller, requests } = await harness({ holdCurrentness });
+        controller.setCreateDraft({ label: 'Integration', expiryPreset: '90d', encryptionAccess: false });
         const availability = controller.refreshEncryptionAvailability();
-        await vi.waitFor(() => expect(requests.some((request) => request.path.endsWith('/currentness'))).toBe(true));
+        try {
+            await vi.waitFor(() => expect(requests.some((request) => request.path.endsWith('/currentness'))).toBe(true));
 
-        // The optional read is not a mutation: pressing Create must not return
-        // silently with no pending state, no error and no notice.
-        await controller.createToken();
-        expect(controller.getState()).toMatchObject({
-            createError: null,
-            reveal: { token: expect.stringMatching(/^hap_v1_/) },
-        });
-        finish();
-        await availability;
-        controller.retire();
+            // The optional read is not a mutation: pressing Create must not return
+            // silently with no pending state, no error and no notice.
+            await controller.createToken();
+            expect(controller.getState()).toMatchObject({
+                createError: null,
+                reveal: { token: expect.stringMatching(/^hap_v1_/) },
+            });
+        } finally {
+            finish();
+            await availability;
+            controller.retire();
+        }
     }, 180_000);
 
     it('cancels local preparation before dispatch without creating a token', async () => {

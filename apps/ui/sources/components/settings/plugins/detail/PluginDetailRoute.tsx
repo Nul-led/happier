@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { useLocalSearchParams } from 'expo-router';
+import { useLocalSearchParams } from '@/components/appShell/workspace/destinationRoute';
 
 import { readPluginDetailRoutePluginId } from '../model/pluginsSurfaceRoutes';
 import { PluginDetailScreen } from './PluginDetailScreen';

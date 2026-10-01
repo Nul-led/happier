@@ -53,7 +53,7 @@ function resolveCandidatePresentationDetail(candidate: PluginMachineExecutionOri
         : `${originReasonDetail(candidate.validation.kind === 'rejected' ? candidate.validation.reason : 'unknown')} · ${version}`;
 }
 
-function originReasonDetail(reason: PluginMachineOriginRejectionReasonV1 | 'no_materialization' | 'different_versions'): string {
+function originReasonDetail(reason: PluginMachineOriginRejectionReasonV1 | 'no_materialization' | 'included_with_happier' | 'different_versions'): string {
     switch (reason) {
         case 'content_conflict': return t('settingsPlugins.executionOriginReleaseContentConflict');
         case 'disabled': return t('settingsPlugins.machineMatrix.state.disabled');
@@ -67,6 +67,7 @@ function originReasonDetail(reason: PluginMachineOriginRejectionReasonV1 | 'no_m
         case 'revoked': return t('settingsPlugins.targetSelection.revoked');
         case 'plugin_mismatch': return t('settingsPlugins.targetSelection.pluginMismatch');
         case 'no_materialization': return t('settingsPlugins.targetSelection.noMaterialization');
+        case 'included_with_happier': return t('settingsPlugins.surfaces.runsEverywhere');
         case 'different_versions': return t('settingsPlugins.targetSelection.differentVersions');
         case 'unknown': return t('settingsPlugins.targetSelection.unknown');
     }
@@ -148,8 +149,13 @@ export function resolvePluginMachineExecutionOriginPresentation(
             selected: false,
         };
     }
+    // Nothing chosen: say so, and whether there is anything to choose from (never the New Session copy).
     return {
-        title: t('newSession.noMachineSelected'),
+        title: selection.state.kind === 'unavailable'
+            ? selection.state.reasons.includes('included_with_happier')
+                ? t('settingsPlugins.rowSource.bundled')
+                : t('settingsPlugins.surfaces.runOnNoneAvailable')
+            : t('settingsPlugins.surfaces.runOnNoneChosen'),
         detail: selection.state.kind === 'unavailable'
             ? selection.state.reasons.map(originReasonDetail).join(' · ')
             : t('settingsPlugins.targetSelection.selectionRequired'),

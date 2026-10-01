@@ -4,6 +4,8 @@ import {
   readAiLaunchProfileCollection,
   readProviderSettingsFromAccountSettingsV1,
   type LaunchProfileV2,
+  type AiLaunchProfileSourceV1,
+  type ArtifactSharingResourceV1,
   validateLaunchProfileV2ReservedEnvironment,
 } from '@happier-dev/protocol';
 
@@ -18,7 +20,7 @@ export type CanonicalSpawnProfileResolution =
   | Readonly<{
       ok: true;
       kind: 'slim';
-      profile: LaunchProfileV2;
+      profile: LaunchProfileV2 & AiLaunchProfileSourceV1;
     }>
   | Readonly<{ ok: false; reason: 'profile_overlay_mismatch'; message: string }>;
 
@@ -38,6 +40,7 @@ function rawProfileId(value: unknown): string | null {
 export function resolveCanonicalSpawnProfile(input: Readonly<{
   rawSettings: Readonly<Record<string, unknown>> | null | undefined;
   profileId: string | null | undefined;
+  artifactsById?: ReadonlyMap<string, ArtifactSharingResourceV1>;
 }>): CanonicalSpawnProfileResolution {
   const profileId = input.profileId?.trim() ?? '';
   if (!profileId) return { ok: true, kind: 'none' };
@@ -50,14 +53,15 @@ export function resolveCanonicalSpawnProfile(input: Readonly<{
   }
 
   const rawProfiles = input.rawSettings.profiles;
-  const collection = readAiLaunchProfileCollection(rawProfiles);
+  const collection = readAiLaunchProfileCollection(rawProfiles, input.artifactsById ? { artifactsById: input.artifactsById, includeShared: true } : undefined);
   const rawMatches = (Array.isArray(rawProfiles) ? rawProfiles : [])
     .filter((entry) => rawProfileId(entry) === profileId);
   const parsedMatches = collection.entries.filter(
     (entry): entry is Extract<(typeof collection.entries)[number], { kind: 'legacy' | 'slim' }> =>
       entry.kind !== 'opaque' && entry.profile.id === profileId,
   );
-  if (rawMatches.length === 0) {
+  const matchingCount = rawMatches.length + parsedMatches.filter((entry) => rawProfileId(entry.raw) !== profileId).length;
+  if (matchingCount === 0) {
     if (RETAINED_LEGACY_PROFILE_IDS.has(profileId)) return { ok: true, kind: 'legacy' };
     const completed = readProviderSettingsFromAccountSettingsV1(input.rawSettings)
       .settings.migration?.completedSources.some((outcome) => outcome.sourceProfileId === profileId) === true;
@@ -70,7 +74,7 @@ export function resolveCanonicalSpawnProfile(input: Readonly<{
         : `Launch profile '${profileId}' is not present in canonical account settings`,
     };
   }
-  if (rawMatches.length !== 1 || parsedMatches.length !== 1) {
+  if (matchingCount !== 1 || parsedMatches.length !== 1) {
     return {
       ok: false,
       reason: 'profile_overlay_mismatch',
@@ -91,6 +95,7 @@ export function resolveCanonicalSpawnProfile(input: Readonly<{
 export function validateSpawnProfileEnvironment(input: Readonly<{
   rawSettings: Readonly<Record<string, unknown>> | null | undefined;
   profileId: string | null | undefined;
+  artifactsById?: ReadonlyMap<string, ArtifactSharingResourceV1>;
   providedEnvironmentVariables: Readonly<Record<string, string>>;
   reservedEnvironmentVariableNames: ReadonlySet<string>;
 }>): SpawnProfileValidationResult {

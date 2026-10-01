@@ -8,6 +8,7 @@ import { createPluginContributionIdentity } from '@happier-dev/protocol';
 
 import type { ResolvedPromptAssetContribution, ResolvedResourceContribution } from '@/plugins/projection/registry/types';
 import { createStablePluginResourcesOwner } from '@/plugins/runtime/invocation/services/resources';
+import { createPluginRuntimeOccurrenceId } from '@/plugins/runtime/runtimeSlots';
 import { bindPromptAssetContributionBlocks, MAX_PLUGIN_PROMPT_ASSET_BYTES } from './bindPromptAssetContributionBlocks';
 
 const roots: string[] = [];
@@ -33,9 +34,9 @@ async function createFixture(params: Readonly<{ bytes: Buffer; contentType: stri
       digest: digest(params.bytes), contentType: params.contentType,
     },
   };
-  const immutableGenerationIdsByPluginId = new Map([
-    [promptPluginId, 'prompts-1'],
-    [resourcePluginId, 'resources-1'],
+  const occurrenceIdsByPluginId = new Map([
+    [promptPluginId, createPluginRuntimeOccurrenceId(promptPluginId)],
+    [resourcePluginId, createPluginRuntimeOccurrenceId(resourcePluginId)],
   ]);
   const owner = await createStablePluginResourcesOwner({
     registry: { resources: [resource] },
@@ -46,7 +47,6 @@ async function createFixture(params: Readonly<{ bytes: Buffer; contentType: stri
         files: [{ relativePath: 'resources/instructions.txt', byteLength: params.bytes.byteLength, digest: digest(params.bytes) }],
       }],
     ]),
-    immutableGenerationIdsByPluginId,
   });
   const promptAsset: ResolvedPromptAssetContribution = {
     provenance: 'external', source: { kind: 'archive' }, pluginId: promptPluginId,
@@ -60,17 +60,18 @@ async function createFixture(params: Readonly<{ bytes: Buffer; contentType: stri
       availability: { when: { fact: 'plugin.enabled', operator: 'equals', value: true } },
     },
   };
-  return { owner, promptAsset, immutableGenerationIdsByPluginId };
+  return { owner, promptAsset, occurrenceIdsByPluginId };
 }
 
 describe('prompt asset production binding', () => {
   it('uses structured cross-plugin identity and exact SVC11 text once policy allows it', async () => {
-    const { owner, promptAsset, immutableGenerationIdsByPluginId } = await createFixture({ bytes: Buffer.from('\nExact instructions\n'), contentType: 'text/markdown' });
+    const { owner, promptAsset, occurrenceIdsByPluginId } = await createFixture({ bytes: Buffer.from('\nExact instructions\n'), contentType: 'text/markdown' });
     await expect(bindPromptAssetContributionBlocks({
       promptAssets: [promptAsset],
-      resolveContributionGeneration: (pluginId) => immutableGenerationIdsByPluginId.get(pluginId) ?? null,
+      resolveContributionOccurrence: (pluginId) => occurrenceIdsByPluginId.get(pluginId) ?? null,
+      isContributionOccurrenceCurrent: (pluginId, occurrenceId) => occurrenceIdsByPluginId.get(pluginId) === occurrenceId,
       resources: owner, agent: { pluginId: 'acme.agent', localId: 'worker' },
-      signal: new AbortController().signal, isGenerationCurrent: () => true,
+      signal: new AbortController().signal, isOccurrenceCurrent: () => true,
       facts: { 'plugin.enabled': true },
     })).resolves.toEqual([{
       id: 'plugin_prompt_asset.acme.prompts/review', scope: 'provider_behavior', text: '\nExact instructions\n',
@@ -81,19 +82,37 @@ describe('prompt asset production binding', () => {
     const binary = await createFixture({ bytes: Buffer.from([0xff]), contentType: 'application/octet-stream' });
     await expect(bindPromptAssetContributionBlocks({
       promptAssets: [binary.promptAsset],
-      resolveContributionGeneration: (pluginId) => binary.immutableGenerationIdsByPluginId.get(pluginId) ?? null,
+      resolveContributionOccurrence: (pluginId) => binary.occurrenceIdsByPluginId.get(pluginId) ?? null,
+      isContributionOccurrenceCurrent: (pluginId, occurrenceId) => binary.occurrenceIdsByPluginId.get(pluginId) === occurrenceId,
       resources: binary.owner,
       agent: { pluginId: 'acme.agent', localId: 'worker' }, signal: new AbortController().signal,
-      isGenerationCurrent: () => true, facts: { 'plugin.enabled': true },
+      isOccurrenceCurrent: () => true, facts: { 'plugin.enabled': true },
     })).rejects.toMatchObject({ code: 'PLUGIN_PROMPT_ASSET_RESOURCE_INVALID' });
 
     const oversized = await createFixture({ bytes: Buffer.alloc(MAX_PLUGIN_PROMPT_ASSET_BYTES + 1, 'x'), contentType: 'text/plain' });
     await expect(bindPromptAssetContributionBlocks({
       promptAssets: [oversized.promptAsset],
-      resolveContributionGeneration: (pluginId) => oversized.immutableGenerationIdsByPluginId.get(pluginId) ?? null,
+      resolveContributionOccurrence: (pluginId) => oversized.occurrenceIdsByPluginId.get(pluginId) ?? null,
+      isContributionOccurrenceCurrent: (pluginId, occurrenceId) => oversized.occurrenceIdsByPluginId.get(pluginId) === occurrenceId,
       resources: oversized.owner,
       agent: { pluginId: 'acme.agent', localId: 'worker' }, signal: new AbortController().signal,
-      isGenerationCurrent: () => true, facts: { 'plugin.enabled': true },
+      isOccurrenceCurrent: () => true, facts: { 'plugin.enabled': true },
     })).rejects.toMatchObject({ code: 'plugin_resource_too_large' });
+  });
+
+  it('rejects a prompt asset whose projected plugin occurrence has retired', async () => {
+    const fixture = await createFixture({ bytes: Buffer.from('Current instructions'), contentType: 'text/plain' });
+    const projectedOccurrenceId = fixture.occurrenceIdsByPluginId.get('acme.prompts')!;
+
+    await expect(bindPromptAssetContributionBlocks({
+      promptAssets: [fixture.promptAsset],
+      resolveContributionOccurrence: () => projectedOccurrenceId,
+      isContributionOccurrenceCurrent: () => false,
+      resources: fixture.owner,
+      agent: { pluginId: 'acme.agent', localId: 'worker' },
+      signal: new AbortController().signal,
+      isOccurrenceCurrent: () => true,
+      facts: { 'plugin.enabled': true },
+    })).rejects.toMatchObject({ code: 'PLUGIN_PROMPT_ASSET_RESOURCE_INVALID' });
   });
 });

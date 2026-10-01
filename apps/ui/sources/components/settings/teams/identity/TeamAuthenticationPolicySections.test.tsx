@@ -5,22 +5,17 @@ import {
     ARTIFACT_PLAIN_DATA_KEY_MARKER,
     buildApprovalRequestArtifactHeaderV1,
     decodePlainArtifactStoredContent,
+    type AuthEntryProjectionV1,
 } from '@happier-dev/protocol';
 
-import {
-    collectRenderedTestIds,
-    createHomeGovernanceHarness,
-    installHomeGovernanceBoundaries,
-    renderScreen,
-    standardCleanup,
-    teamCapabilitiesFixture,
-    teamPolicyFixture,
-    teamSummaryFixture,
-} from '@/dev/testkit';
+import { collectRenderedTestIds } from '@/dev/testkit/render/collectRenderedTestIds';
+import { createHomeGovernanceHarness, installHomeGovernanceBoundaries } from '@/dev/testkit/harness/homeGovernanceHarness';
+import { renderScreen } from '@/dev/testkit/render/renderScreen';
+import { standardCleanup } from '@/dev/testkit/cleanup/standardCleanup';
+import { teamCapabilitiesFixture, teamPolicyFixture, teamSummaryFixture } from '@/dev/testkit/fixtures/teamFixtures';
 import { createRootLayoutFeaturesResponse } from '@/dev/testkit/fixtures/featureFixtures';
 import { tryWriteServerEnabledBitInPlace } from '@happier-dev/protocol';
 import {
-    primeServerFeaturesSnapshot,
     resetServerFeaturesClientForTests,
 } from '@/sync/api/capabilities/serverFeaturesClient';
 import { publishHomeAccountChange } from '@/sync/runtime/orchestration/homeAccountChange';
@@ -102,11 +97,33 @@ vi.mock('@/sync/domains/plugins/availability/reader', () => ({
 const harness = createHomeGovernanceHarness();
 installHomeGovernanceBoundaries(harness);
 
+// Load the real graph after the transport boundaries are installed, during
+// collection rather than inside each test's reset deadline.
+const { resetTeamsSnapshotsForTests } = await import('@/sync/store/teams/teamsSnapshots');
+const { resetTeamsDirectoryEngineForTests } = await import('@/sync/engine/teams/teamsDirectoryEngine');
+const { resetTeamActionClientForTests } = await import('@/sync/ops/teams/teamActionClient');
+const { TeamAuthenticationSettingsScreen } = await import('./TeamAuthenticationSettingsScreen');
+
 const TEAM_GET_PATH = '/v1/teams/get';
 const TEAM_POLICY_PATH = '/v1/teams/policy/set';
 const CONNECTIONS_LIST_PATH = '/v1/teams/identity/connections/list';
+const HOME_AUTH_ENTRY_PATH = '/v1/auth/entry';
 const ACCOUNT_SETTINGS_V2_PATH = '/v2/account/settings';
 const ARTIFACT_CREATE_PATH = '/v1/artifacts';
+
+const HOME_AUTH_ENTRY = Object.freeze({
+    v: 1,
+    scope: { kind: 'home' },
+    state: 'ready',
+    autoRedirect: null,
+    actions: [{
+        kind: 'authenticate', methodId: 'email_password', action: 'login',
+        mode: 'either', origin: 'home', presentation: { displayName: 'Email and password' },
+    }, {
+        kind: 'authenticate', methodId: 'signup_only', action: 'provision',
+        mode: 'keyed', origin: 'home', presentation: { displayName: 'Sign-up only' },
+    }],
+} satisfies AuthEntryProjectionV1);
 
 const CONNECTION = Object.freeze({
     v: 1 as const,
@@ -184,7 +201,6 @@ function artifactBody(id: string) {
 async function renderAuthentication(serverId: string) {
     const { getStorage } = await import('@/sync/domains/state/storageStore');
     getStorage().setState({ profileScope: { serverId, accountId: 'account-ada' } });
-    const { TeamAuthenticationSettingsScreen } = await import('./TeamAuthenticationSettingsScreen');
     return renderScreen(<TeamAuthenticationSettingsScreen serverId={serverId} teamId="team-1" />);
 }
 
@@ -200,6 +216,7 @@ async function addHomeWithTeam(
     });
     await harness.selectHomes([serverId]);
     harness.answer(serverId, TEAM_GET_PATH, { body: team });
+    harness.answer(serverId, HOME_AUTH_ENTRY_PATH, { body: HOME_AUTH_ENTRY });
     harness.answer(serverId, CONNECTIONS_LIST_PATH, {
         body: {
             items: [CONNECTION],
@@ -268,9 +285,6 @@ async function waitForPressable(
 }
 
 beforeEach(async () => {
-    const { resetTeamsSnapshotsForTests } = await import('@/sync/store/teams/teamsSnapshots');
-    const { resetTeamsDirectoryEngineForTests } = await import('@/sync/engine/teams/teamsDirectoryEngine');
-    const { resetTeamActionClientForTests } = await import('@/sync/ops/teams/teamActionClient');
     resetTeamsSnapshotsForTests();
     resetTeamsDirectoryEngineForTests();
     resetTeamActionClientForTests();
@@ -693,25 +707,13 @@ describe('TeamAuthenticationPolicySections', () => {
         });
         const serverId = await addHomeWithTeam(team);
         harness.answer(serverId, TEAM_POLICY_PATH, { body: team });
-        // The Home publishes its own sign-in methods to every client; this is
-        // the exact payload its Welcome screen reads.
+        // The current contextual Home entry catalog above offers this method;
+        // an independently acquired features snapshot does not. The mounted
+        // picker must ask the current entry owner, not use a separate catalog.
         const features = createRootLayoutFeaturesResponse({
             capabilities: {
                 auth: {
-                    methods: [{
-                        id: 'email_password',
-                        actions: [
-                            { id: 'login', enabled: true, mode: 'either' },
-                            { id: 'provision', enabled: true, mode: 'either' },
-                        ],
-                        ui: { displayName: 'Email and password' },
-                    }, {
-                        // Offered for provisioning only: it cannot admit anybody
-                        // to a Team, so it must not become an accepted reference.
-                        id: 'signup_only',
-                        actions: [{ id: 'provision', enabled: true, mode: 'keyed' }],
-                        ui: { displayName: 'Sign-up only' },
-                    }],
+                    methods: [],
                 },
             },
         });
@@ -720,7 +722,16 @@ describe('TeamAuthenticationPolicySections', () => {
         }
         harness.answer(serverId, '/v1/features', { body: features });
         harness.answer(serverId, '/v1/features/authenticated', { body: features });
-        primeServerFeaturesSnapshot({ serverId, snapshot: { status: 'ready', features } });
+
+        // Focus another Home before opening this exact Team. A picker using
+        // ambient sign-in discovery would ask the wrong Home.
+        const otherServerId = await harness.addHome({
+            name: 'Home B', serverUrl: 'https://home-b.example', accountId: 'account-bea', teamsEnabled: true,
+        });
+        await harness.selectHomes([serverId, otherServerId]);
+        harness.answer(otherServerId, HOME_AUTH_ENTRY_PATH, {
+            body: { ...HOME_AUTH_ENTRY, actions: [] },
+        });
 
         const screen = await renderAuthentication(serverId);
         await waitForPressable(screen, 'team-authentication-policy-mode:restricted');
@@ -729,6 +740,13 @@ describe('TeamAuthenticationPolicySections', () => {
             expect(collectRenderedTestIds(screen.tree.toJSON())
                 .some((id) => id.startsWith('team-authentication-policy-home-method:'))).toBe(true);
         }, { timeout: 10_000 });
+        expect(harness.requestsFor(HOME_AUTH_ENTRY_PATH)).toEqual([
+            expect.objectContaining({
+                serverId,
+                input: { v: 1, scope: { kind: 'home' } },
+                token: expect.any(String),
+            }),
+        ]);
 
         const homeMethodTestId = 'team-authentication-policy-home-method:email_password';
         const methodId = 'email_password';
@@ -761,6 +779,30 @@ describe('TeamAuthenticationPolicySections', () => {
             .toContainEqual({ kind: 'team_connection', connectionId: 'connection-okta' });
     });
 
+    it('retains a stale Home method disabled until its current entry projection recovers', async () => {
+        const team = teamSummaryFixture({
+            capabilities: teamCapabilitiesFixture({ manageAuthentication: true }),
+            policy: teamPolicyFixture({ authenticationPolicy: RESTRICTED_TO_OKTA }),
+        });
+        const serverId = await addHomeWithTeam(team);
+        const screen = await renderAuthentication(serverId);
+        const methodTestId = 'team-authentication-policy-home-method:email_password';
+        await waitForPressable(screen, methodTestId);
+
+        harness.answer(serverId, HOME_AUTH_ENTRY_PATH, { status: 503 });
+        publishHomeAccountChange(serverId);
+        await waitForTestId(screen, 'team-authentication-home-methods-unavailable');
+        expect(collectRenderedTestIds(screen.tree.toJSON())).toContain(methodTestId);
+        expect(screen.findByTestId(methodTestId)?.props.onPress).toBeUndefined();
+
+        harness.answer(serverId, HOME_AUTH_ENTRY_PATH, { body: HOME_AUTH_ENTRY });
+        await screen.pressByTestIdAsync('team-authentication-home-methods-unavailable');
+        await waitForPressable(screen, methodTestId);
+        expect(collectRenderedTestIds(screen.tree.toJSON()))
+            .not.toContain('team-authentication-home-methods-unavailable');
+        expect(harness.requestsFor(TEAM_POLICY_PATH)).toHaveLength(0);
+    });
+
     it('lets an administrator remove a retained method the Home no longer offers', async () => {
         // A stored restricted policy may name a Home method the Home has since
         // stopped offering. The server refuses any restricted policy holding an
@@ -783,18 +825,11 @@ describe('TeamAuthenticationPolicySections', () => {
         });
         const serverId = await addHomeWithTeam(team);
         harness.answer(serverId, TEAM_POLICY_PATH, { body: team });
-        // The Home still offers `email_password`; `legacy_sso` is gone.
+        // Only auth entry still offers `email_password`; `legacy_sso` is gone.
         const features = createRootLayoutFeaturesResponse({
             capabilities: {
                 auth: {
-                    methods: [{
-                        id: 'email_password',
-                        actions: [
-                            { id: 'login', enabled: true, mode: 'either' },
-                            { id: 'provision', enabled: true, mode: 'either' },
-                        ],
-                        ui: { displayName: 'Email and password' },
-                    }],
+                    methods: [],
                 },
             },
         });
@@ -803,7 +838,6 @@ describe('TeamAuthenticationPolicySections', () => {
         }
         harness.answer(serverId, '/v1/features', { body: features });
         harness.answer(serverId, '/v1/features/authenticated', { body: features });
-        primeServerFeaturesSnapshot({ serverId, snapshot: { status: 'ready', features } });
 
         const screen = await renderAuthentication(serverId);
         const retainedTestId = 'team-authentication-policy-home-method:legacy_sso';

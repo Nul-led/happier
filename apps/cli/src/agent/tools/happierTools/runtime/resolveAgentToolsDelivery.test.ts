@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { resolveAgentToolsDelivery } from './resolveAgentToolsDelivery';
+import { readCatalogEntriesSnapshot } from '@/agent/catalog/registry';
 
 const { readAgentCatalogSnapshot } = vi.hoisted(() => ({
   readAgentCatalogSnapshot: vi.fn(),
@@ -51,5 +52,13 @@ describe('resolveAgentToolsDelivery', () => {
     expect(resolveAgentToolsDelivery('customAcp')).toBe('unsupported');
     expect(resolveAgentToolsDelivery('custom-acp')).toBe('unsupported');
     expect(resolveAgentToolsDelivery('acp:review-bot')).toBe('unsupported');
+  });
+
+  it('uses the caller-owned catalog without falling back to the ambient generation', () => {
+    const entries = readCatalogEntriesSnapshot();
+    expect(resolveAgentToolsDelivery('pi', {
+      catalogEntriesById: { pi: { ...entries.pi!, toolDelivery: 'native_mcp' } },
+    })).toBe('native_mcp');
+    expect(resolveAgentToolsDelivery('pi', { catalogEntriesById: {} })).toBe('unsupported');
   });
 });

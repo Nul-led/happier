@@ -92,15 +92,24 @@ async function probeEndpoint(endpoint: string) {
   };
 }
 
-export async function createLocalPersonalHome(runtime: RuntimeTarget) {
+export async function createLocalPersonalHome(
+  runtime: RuntimeTarget,
+  options: Readonly<{
+    allowErasedRuntimeRecreate?: boolean;
+    signal?: AbortSignal;
+  }> = {},
+) {
   const prepared = await prepareFirstPartyComponentPayloadFromGitHubRelease({
     componentId: 'happier-server',
     channel: resolvePublicReleaseRingIdForLabel(runtime.channel),
   });
   try {
+    // Seed custody is the first durable bootstrap write, so purpose admission
+    // must happen here as well as at the lower-level install mutation boundary.
+    // Both checks use the same artifact-contract owner.
     await assertPersonalHomeServerArtifactCapability({
       payloadRoot: prepared.payloadRoot,
-      provenance: { channel: prepared.channel, versionId: prepared.versionId, source: prepared.source },
+      provenance: { channel: runtime.channel, versionId: prepared.versionId },
     });
     const executable = join(
       prepared.payloadRoot,
@@ -122,13 +131,14 @@ export async function createLocalPersonalHome(runtime: RuntimeTarget) {
     };
     const result = await runPersonalHomeBootstrapFromSystemTasks({
       deps: {
-        runRelayTask: async (kind, options) => await runSystemTaskToCompletion({
+        runRelayTask: async (kind, taskOptions) => await runSystemTaskToCompletion({
           runner: runner as never,
           spec: {
             protocolVersion: SYSTEM_TASK_PROTOCOL_VERSION,
             kind,
-            params: { target: { kind: 'local' }, ...runtime, ...options, selfHostRelayBinaryOverride: executable },
+            params: { target: { kind: 'local' }, ...runtime, ...taskOptions, selfHostRelayBinaryOverride: executable },
           } as SystemTaskSpec,
+          signal: options.signal,
         }),
         probeEndpoint: async (endpoint) => {
           const snapshot = await probeEndpoint(endpoint);
@@ -208,6 +218,7 @@ export async function createLocalPersonalHome(runtime: RuntimeTarget) {
           return { id: adopted.profile.id };
         },
       },
+      allowErasedRuntimeRecreate: options.allowErasedRuntimeRecreate === true,
     });
     if (!completedDescriptor) {
       throw new Error('Personal Home bootstrap completed without a verified Home connection descriptor.');
@@ -231,15 +242,23 @@ export async function reconcileCreatedPersonalHome(
     reload?: typeof reloadConfiguration;
     runSetup?: typeof handleSetupCommand;
     quiet?: boolean;
+    signal?: AbortSignal;
+    replaceServices?: boolean;
+    switchChannel?: boolean;
   }> = {},
 ): Promise<void> {
   await (deps.useProfile ?? useServerProfile)(profileId);
   (deps.reload ?? reloadConfiguration)();
   await (deps.runSetup ?? handleSetupCommand)(
-    ['--server', profileId, '--skip-providers', '--yes'],
+    [
+      '--server', profileId, '--skip-providers', '--yes',
+      ...(deps.replaceServices === true ? ['--replace-services'] : []),
+      ...(deps.switchChannel === true ? ['--switch-channel'] : []),
+    ],
     {
       quiet: deps.quiet === true,
       invocation: 'authenticated-home-create-continuation',
     },
+    deps.signal,
   );
 }

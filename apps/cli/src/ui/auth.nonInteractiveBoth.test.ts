@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { readFile } from 'node:fs/promises';
 import {
   parseTerminalConnectLinkV4Parameters,
   sealTerminalProvisioningV3TokenOnlyPayload,
@@ -28,6 +29,7 @@ const deterministicRandomByte = 7;
 type ServerFeaturesSnapshotMock =
   | Readonly<{
       status: 'ready';
+      provenance?: 'authenticated' | 'public';
       features: Readonly<{
         capabilities: Readonly<{
           serverIdentity: Readonly<{ serverIdentityId: string }>;
@@ -292,7 +294,9 @@ describe.sequential('doAuth (non-interactive)', () => {
         machineId: expect.any(String),
       });
 
-      expect(acquireTerminalAuthEnrollmentRuntimeMock).toHaveBeenCalledWith(descriptor, 'iroh');
+      expect(acquireTerminalAuthEnrollmentRuntimeMock).toHaveBeenCalledOnce();
+      expect(acquireTerminalAuthEnrollmentRuntimeMock.mock.calls[0]?.[0]).toEqual(descriptor);
+      expect(acquireTerminalAuthEnrollmentRuntimeMock.mock.calls[0]?.[1]).toBe('iroh');
       expect(runTailscaleServeStatusMock).not.toHaveBeenCalled();
       expect(fetchServerFeaturesSnapshotMock).toHaveBeenCalledWith({ serverUrl: 'http://127.0.0.1:48123' });
       expect(output.logs.join('\n')).toContain('v4=');
@@ -382,6 +386,7 @@ describe.sequential('doAuth (non-interactive)', () => {
       },
     }).mockResolvedValueOnce({
       status: 'ready',
+      provenance: 'authenticated',
       features: {
         capabilities: { serverIdentity: { serverIdentityId: 'srv_interactive_auth_home' } },
         homeConnectionDescriptor: descriptor,
@@ -419,6 +424,128 @@ describe.sequential('doAuth (non-interactive)', () => {
         id: profile.id,
         descriptor: profile.homeConnectionDescriptor,
       }))).toContainEqual({ id: 'auth-home', descriptor });
+    } finally {
+      output.restore();
+      restoreTty();
+      envScope.restore();
+      await removeTempDir(home);
+    }
+  }, 30_000);
+
+  it('does not exact-adopt a public fallback descriptor after successful authentication', async () => {
+    const home = await createTempDir('happier-cli-auth-public-descriptor-');
+    const envScope = createEnvKeyScope(envKeys);
+    const restoreTty = setStdioTtyForTest({ stdin: false, stdout: false });
+    const output = captureConsoleLogAndMuteStdout();
+    const publicDescriptor: HomeConnectionDescriptorV1 = {
+      v: 1,
+      homeServerIdentityId: 'srv_interactive_auth_home',
+      canonicalServerUrl: 'https://server.example.test',
+      revision: 3,
+      endpoints: [{ kind: 'iroh', endpointId: 'c'.repeat(64) }],
+    };
+    fetchServerFeaturesSnapshotMock.mockResolvedValueOnce({
+      status: 'ready',
+      provenance: 'public',
+      features: {
+        capabilities: { serverIdentity: { serverIdentityId: 'srv_interactive_auth_home' } },
+      },
+    }).mockResolvedValueOnce({
+      status: 'ready',
+      provenance: 'public',
+      features: {
+        capabilities: { serverIdentity: { serverIdentityId: 'srv_interactive_auth_home' } },
+        homeConnectionDescriptor: publicDescriptor,
+      },
+    });
+
+    try {
+      envScope.patch({
+        HAPPIER_HOME_DIR: home,
+        HAPPIER_SERVER_URL: undefined,
+        HAPPIER_WEBAPP_URL: 'https://webapp.example.test',
+        HAPPIER_ACTIVE_SERVER_ID: undefined,
+        HAPPIER_NO_BROWSER_OPEN: '1',
+        HAPPIER_AUTH_POLL_INTERVAL_MS: '1',
+      });
+      vi.resetModules();
+      const { addServerProfile, getServerProfile } = await import('@/server/serverProfiles');
+      const profile = await addServerProfile({
+        name: 'auth-home',
+        serverUrl: 'https://server.example.test',
+        webappUrl: 'https://webapp.example.test',
+        use: true,
+      });
+      const { reloadConfiguration } = await import('@/configuration');
+      reloadConfiguration();
+      const { doAuth } = await import('./auth');
+
+      expect((await doAuth())?.token).toBe('tok');
+      expect((await getServerProfile(profile.id)).homeConnectionDescriptor).toBeUndefined();
+    } finally {
+      output.restore();
+      restoreTty();
+      envScope.restore();
+      await removeTempDir(home);
+    }
+  }, 30_000);
+
+  it('keeps prior credentials when an authenticated descriptor contradicts the selected Home', async () => {
+    const home = await createTempDir('happier-cli-auth-contradictory-descriptor-');
+    const envScope = createEnvKeyScope(envKeys);
+    const restoreTty = setStdioTtyForTest({ stdin: false, stdout: false });
+    const output = captureConsoleLogAndMuteStdout();
+    const contradictoryDescriptor: HomeConnectionDescriptorV1 = {
+      v: 1,
+      homeServerIdentityId: 'srv_other_home',
+      canonicalServerUrl: 'https://other.example.test',
+      revision: 1,
+      endpoints: [{ kind: 'https', url: 'https://other.example.test' }],
+    };
+    fetchServerFeaturesSnapshotMock.mockResolvedValueOnce({
+      status: 'ready',
+      provenance: 'public',
+      features: {
+        capabilities: { serverIdentity: { serverIdentityId: 'srv_interactive_auth_home' } },
+      },
+    }).mockResolvedValueOnce({
+      status: 'ready',
+      provenance: 'authenticated',
+      features: {
+        capabilities: { serverIdentity: { serverIdentityId: 'srv_interactive_auth_home' } },
+        homeConnectionDescriptor: contradictoryDescriptor,
+      },
+    });
+
+    try {
+      envScope.patch({
+        HAPPIER_HOME_DIR: home,
+        HAPPIER_SERVER_URL: 'https://server.example.test',
+        HAPPIER_WEBAPP_URL: 'https://webapp.example.test',
+        HAPPIER_NO_BROWSER_OPEN: '1',
+        HAPPIER_AUTH_POLL_INTERVAL_MS: '1',
+        HAPPIER_AUTH_METHOD: undefined,
+      });
+      vi.resetModules();
+      const configurationModule = await import('@/configuration');
+      configurationModule.reloadConfiguration();
+      const persistence = await import('@/persistence');
+      await persistence.writeCredentialsTokenOnly({ token: 'prior-token' });
+      const priorCredentialBytes = await readFile(configurationModule.configuration.privateKeyFile);
+      const { doAuth } = await import('./auth');
+
+      let result: Awaited<ReturnType<typeof doAuth>> | undefined;
+      let failure: unknown;
+      try {
+        result = await doAuth();
+      } catch (error) {
+        failure = error;
+      }
+
+      expect(failure).toBeUndefined();
+      expect(result).toBeNull();
+      expect(await readFile(configurationModule.configuration.privateKeyFile)).toEqual(priorCredentialBytes);
+      await expect(persistence.readStoredCredentials()).resolves.toMatchObject({ token: 'prior-token' });
     } finally {
       output.restore();
       restoreTty();
@@ -577,7 +704,7 @@ describe.sequential('doAuth (non-interactive)', () => {
     }
   }, 15_000);
 
-  it('prints a hint when mobile links cannot embed localhost server URLs', async () => {
+  it('describes a loopback mobile-link server URL as same-machine only', async () => {
     const home = await createTempDir('happier-cli-auth-noninteractive-loopback-');
     const envScope = createEnvKeyScope(envKeys);
     const restoreTty = setStdioTtyForTest({ stdin: false, stdout: false });
@@ -603,7 +730,8 @@ describe.sequential('doAuth (non-interactive)', () => {
       expect(creds?.token).toBe('tok');
 
       const out = output.logs.join('\n').toLowerCase();
-      expect(out).toContain('does not include a server url');
+      expect(out).toContain('server url');
+      expect(out).toContain('same machine');
       expect(displayQRCodeMock).toHaveBeenCalledTimes(1);
     } finally {
       output.restore();
@@ -642,7 +770,7 @@ describe.sequential('doAuth (non-interactive)', () => {
       expect(out).toContain(encodeURIComponent('http://localhost:3010').toLowerCase());
       expect(out).toContain('same machine');
       expect(out).not.toContain('same lan');
-      expect(out).toContain('does not include a server url');
+      expect(out).toContain('server url');
     } finally {
       output.restore();
       restoreTty();

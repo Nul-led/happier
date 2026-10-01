@@ -156,7 +156,8 @@ function getAutomationAuthorityReasonKey(
     source: ActionSettingsTargetSource,
     targetId: ActionSettingsTargetId,
 ): ActionSettingsReasonKey | null {
-    return source.requiredAuthority === 'present_user' && (targetId === 'api' || targetId === 'plugin')
+    return (targetId === 'api' ? source.surfaces.api !== true
+        : targetId === 'plugin' && source.requiredAuthority === 'present_user')
         ? 'settingsActions.reasons.presentUserRequired'
         : null;
 }

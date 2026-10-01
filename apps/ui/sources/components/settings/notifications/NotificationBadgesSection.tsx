@@ -1,13 +1,11 @@
 import * as React from 'react';
 
-import { useUnistyles } from 'react-native-unistyles';
-
-import { Item } from '@/components/ui/lists/Item';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
 import { Switch } from '@/components/ui/forms/Switch';
 import type { LocalSettings } from '@/sync/domains/settings/localSettings';
 import { t } from '@/text';
-import { Icon } from '@/components/ui/icons/Icon';
+import { SettingRow } from '@/components/settings/shell/SettingRow';
+import { NOTIFICATIONS_SETTINGS } from '@/components/settings/notifications/notificationsSettings';
 
 type NotificationBadgesSectionProps = Readonly<{
     localSettings: LocalSettings;
@@ -18,7 +16,6 @@ export function NotificationBadgesSection({
     localSettings,
     setLocalSetting,
 }: NotificationBadgesSectionProps): React.ReactElement {
-    const { theme } = useUnistyles();
     const deviceOverrides = localSettings.attentionDeviceOverridesV1;
     const badge = deviceOverrides.badge;
     const disabled = badge.enabled === false;
@@ -37,13 +34,11 @@ export function NotificationBadgesSection({
     return (
         <ItemGroup
             title={t('settingsNotifications.badges.title')}
-            footer={t('settingsNotifications.badges.footer')}
+            description={t('settingsNotifications.badges.footer')}
         >
-            <Item
+            <SettingRow
                 testID="settings-notifications-badges-enabled"
-                title={t('settingsNotifications.badges.enabledTitle')}
-                subtitle={t('settingsNotifications.badges.enabledSubtitle')}
-                icon={<Icon name="stack" size={29} color={theme.colors.accent.blue} />}
+                setting={NOTIFICATIONS_SETTINGS.settings.badgesEnabled}
                 rightElement={(
                     <Switch
                         value={!disabled}
@@ -52,10 +47,8 @@ export function NotificationBadgesSection({
                 )}
                 showChevron={false}
             />
-            <Item
-                title={t('settingsNotifications.badges.unreadTitle')}
-                subtitle={t('settingsNotifications.badges.unreadSubtitle')}
-                icon={<Icon name="envelope-simple-open" size={29} color={theme.colors.text.secondary} />}
+            <SettingRow
+                setting={NOTIFICATIONS_SETTINGS.settings.unread}
                 rightElement={(
                     <Switch
                         value={badge.includeUnread !== false}
@@ -65,10 +58,8 @@ export function NotificationBadgesSection({
                 )}
                 showChevron={false}
             />
-            <Item
-                title={t('settingsNotifications.badges.permissionRequestsTitle')}
-                subtitle={t('settingsNotifications.badges.permissionRequestsSubtitle')}
-                icon={<Icon name="hand" size={29} color={theme.colors.text.secondary} />}
+            <SettingRow
+                setting={NOTIFICATIONS_SETTINGS.settings.permissionRequests}
                 rightElement={(
                     <Switch
                         value={badge.includePendingPermissionRequests !== false}
@@ -78,10 +69,8 @@ export function NotificationBadgesSection({
                 )}
                 showChevron={false}
             />
-            <Item
-                title={t('settingsNotifications.badges.userActionsTitle')}
-                subtitle={t('settingsNotifications.badges.userActionsSubtitle')}
-                icon={<Icon name="chat-dots" size={29} color={theme.colors.text.secondary} />}
+            <SettingRow
+                setting={NOTIFICATIONS_SETTINGS.settings.userActions}
                 rightElement={(
                     <Switch
                         value={badge.includePendingUserActionRequests !== false}
@@ -91,10 +80,8 @@ export function NotificationBadgesSection({
                 )}
                 showChevron={false}
             />
-            <Item
-                title={t('settingsNotifications.badges.queuedTitle')}
-                subtitle={t('settingsNotifications.badges.queuedSubtitle')}
-                icon={<Icon name="hourglass" size={29} color={theme.colors.text.secondary} />}
+            <SettingRow
+                setting={NOTIFICATIONS_SETTINGS.settings.queued}
                 rightElement={(
                     <Switch
                         value={badge.includeQueuedUserInput !== false}
@@ -104,10 +91,8 @@ export function NotificationBadgesSection({
                 )}
                 showChevron={false}
             />
-            <Item
-                title={t('settingsNotifications.badges.friendRequestsTitle')}
-                subtitle={t('settingsNotifications.badges.friendRequestsSubtitle')}
-                icon={<Icon name="users" size={29} color={theme.colors.text.secondary} />}
+            <SettingRow
+                setting={NOTIFICATIONS_SETTINGS.settings.friendRequests}
                 rightElement={(
                     <Switch
                         value={badge.includeFriendRequestsInboxCount !== false}
@@ -117,10 +102,8 @@ export function NotificationBadgesSection({
                 )}
                 showChevron={false}
             />
-            <Item
-                title={t('settingsNotifications.badges.desktopDotTitle')}
-                subtitle={t('settingsNotifications.badges.desktopDotSubtitle')}
-                icon={<Icon name="circle" size={29} color={theme.colors.text.secondary} />}
+            <SettingRow
+                setting={NOTIFICATIONS_SETTINGS.settings.desktopDot}
                 rightElement={(
                     <Switch
                         value={badge.includeDesktopNonNumericDot !== false}

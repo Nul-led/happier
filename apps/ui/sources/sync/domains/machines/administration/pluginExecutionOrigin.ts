@@ -46,9 +46,10 @@ function resolveMachineMaterializationRejection(params: Readonly<{
         candidate.kind === 'resolved'
         && candidate.serverIdentityId === params.materialization.serverIdentityId
     ));
-    if (!snapshot || snapshot.kind !== 'resolved') return 'missing';
+    // An unread Home's machine list cannot say a machine left it.
+    if (!snapshot || snapshot.kind !== 'resolved') return 'unknown';
     const machine = snapshot.machines.find((candidate) => candidate.id === params.materialization.machineId);
-    if (!machine) return 'missing';
+    if (!machine) return snapshot.settled === true ? 'missing' : 'unknown';
     if (snapshot.observation === 'stale') return 'stale';
     if (machine.availability?.kind === 'locked') return 'unknown';
     const presence = resolveMachinePickerPresence(machine);
@@ -111,7 +112,11 @@ export type PluginMachineExecutionOriginStateV1 =
         kind: 'unavailable';
         storedOrigin: PluginMachineExecutionOriginV1 | null;
         candidates: readonly PluginMachineExecutionOriginCandidateV1[];
-        reasons: readonly (PluginMachineOriginRejectionReasonV1 | 'no_materialization')[];
+        /**
+         * `included_with_happier`: no machine reports the plugin because it ships inside Happier
+         * (bundled first-party); it runs on every machine running Happier, with nothing to choose.
+         */
+        reasons: readonly (PluginMachineOriginRejectionReasonV1 | 'no_materialization' | 'included_with_happier')[];
     }>;
 
 function compareCandidates(
@@ -170,6 +175,8 @@ export function resolvePluginMachineExecutionOriginState(params: Readonly<{
     pluginId: string;
     storedOrigin: PluginMachineExecutionOriginV1 | null;
     candidates: readonly PluginMachineExecutionOriginCandidateV1[];
+    /** The plugin ships inside Happier (bundled first-party), so a machine without a report still has it. */
+    includedWithHappier?: boolean;
 }>): PluginMachineExecutionOriginStateV1 {
     const candidates = Object.freeze([...params.candidates]
         .filter((candidate) => candidate.materialization.pluginId === params.pluginId)
@@ -234,7 +241,7 @@ export function resolvePluginMachineExecutionOriginState(params: Readonly<{
     const eligible = Object.freeze(candidates.filter((candidate) => candidate.validation.kind === 'admitted'));
     if (eligible.length === 0) {
         const reasons = candidates.length === 0
-            ? Object.freeze(['no_materialization'] as const)
+            ? Object.freeze([params.includedWithHappier ? 'included_with_happier' as const : 'no_materialization' as const])
             : Object.freeze([...new Set(candidates.map((candidate) => (
                 candidate.validation.kind === 'rejected' ? candidate.validation.reason : 'unknown'
             )))]);

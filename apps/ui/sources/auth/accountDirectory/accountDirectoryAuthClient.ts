@@ -1,6 +1,7 @@
 import {
     normalizeAccountDirectoryEndpoint,
     isTokenOnlyAuthCredentials,
+    isLegacyAuthCredentials,
     TokenStorage,
     parseAccountContinuationIntent,
     type TokenOnlyAuthCredentials,
@@ -16,9 +17,11 @@ import { authChallenge, deriveAccountSigningPublicKey } from '@/auth/flows/chall
 import { createAccountServiceReturn } from './accountDirectoryNavigation';
 import { normalizeInternalReturnPath } from '@/utils/path/routeUtils';
 import { HappyError } from '@/utils/errors/errors';
+import { isExplicitlyRetryableError } from '@/sync/runtime/connectivity/transientConnectivityErrors';
 import { AccountDirectoryRequestError, isAccountDirectoryRelinkConflict } from '@/sync/api/accountDirectory/accountDirectoryClient';
 import { AccountDirectoryRouteErrorResponseV1Schema } from '@happier-dev/protocol';
 import { authGetTokenAtEndpoint } from '@/auth/flows/getToken';
+import { loginEmailPassword } from '@/auth/password/loginEmailPassword';
 import { isServerFeaturesProbeRetryable, probeServerFeaturesAtUrl, type ServerFeaturesSnapshot } from '@/sync/api/capabilities/serverFeaturesClient';
 import { AccountDirectoryCapabilitiesSchema, type AccountDirectoryCapabilities } from '@happier-dev/protocol';
 import {
@@ -27,7 +30,11 @@ import {
     type ProjectedAuthenticationMethod,
 } from '@happier-dev/cli-common/authentication/authMethodCatalog';
 import { fetchHomeAuthEntry } from '@/auth/entry/authEntryClient';
-import { projectAuthEntryMethodCapabilities, projectAuthenticationMethodCapabilities } from '@/auth/capabilities/authMethodCapabilities';
+import {
+    projectAuthEntryMethodCapabilities,
+    projectAuthenticationMethodCapabilities,
+    type HomeAuthenticationAction,
+} from '@/auth/capabilities/authMethodCapabilities';
 import type { HomeCarrier } from '@/sync/runtime/homeCarrier';
 import { buildHomeConnectionDescriptorForProfile, resolveServerProfileForPortableIdentity } from '@/sync/domains/server/serverProfiles';
 import { resolveHomeEnrollmentTransport } from '@/auth/enrollment/homeEnrollmentTransport';
@@ -123,8 +130,47 @@ export type AccountDirectoryAuthenticationAction = Readonly<{
     execution:
         | Readonly<{ kind: 'generated_key' }>
         | Readonly<{ kind: 'key_entry' }>
+        | AccountServiceEmailPasswordExecution
         | Readonly<{ kind: 'oauth'; providerId: string; mode: 'keyed' | 'keyless' }>;
 }>;
+
+/**
+ * Email and password on an account service. `login` signs an existing Account in (Plain by
+ * password, E2EE by unlocking its key from the password envelope); `provision` creates one after
+ * the mailbox is proven. `connect` attaches the method to an Account that already exists and
+ * lives in Account Security, so the account service never offers it.
+ */
+export type AccountServiceEmailPasswordExecution = Readonly<{
+    kind: 'email_password';
+    action: 'login' | 'provision';
+    mode: 'keyed' | 'keyless' | 'either';
+    recommendedProvisionMode?: 'plain' | 'e2ee';
+    /** Present only when the service says it can mail a password-reset link. */
+    passwordReset?: 'email';
+}>;
+
+/**
+ * The account-service subset of a service's advertised Home methods, in the service's order.
+ * One rule for both acquisition boundaries (auth entry and the feature catalog).
+ */
+function selectAccountServiceAuthenticationActions(
+    actions: readonly HomeAuthenticationAction[],
+    snapshot: ServerFeaturesSnapshot & { status: 'ready' },
+): readonly AccountDirectoryAuthenticationAction[] {
+    return actions.flatMap(({ method, action, execution }): AccountDirectoryAuthenticationAction[] => {
+        if (execution.kind === 'generated_key' || execution.kind === 'key_entry') {
+            return snapshot.features.capabilities.auth.keyChallenge.v2 === true
+                ? [{ method, action, execution }]
+                : [];
+        }
+        if (execution.kind === 'email_password') {
+            if (execution.action === 'connect') return [];
+            return [{ method, action, execution: { ...execution, action: execution.action } }];
+        }
+        if (execution.kind !== 'oauth') return [];
+        return [{ method, action, execution }];
+    });
+}
 
 export type VerifiedAccountServiceAuthority = Pick<
     AccountDirectoryAuthMethodDiscovery,
@@ -221,17 +267,7 @@ function buildSupportedDiscovery(
     if (!serverIdentityId || !canonicalServerUrl) return null;
     const projected = projectAuthenticationMethodCapabilities(snapshot.features);
     const authenticationCatalog = projected.catalog;
-    const authenticationActions: readonly AccountDirectoryAuthenticationAction[] = projected.authenticationActions.flatMap(
-        ({ method, action, execution }): AccountDirectoryAuthenticationAction[] => {
-            if (execution.kind === 'mtls' || execution.kind === 'email_password') return [];
-            if (execution.kind === 'generated_key' || execution.kind === 'key_entry') {
-                return snapshot.features.capabilities.auth.keyChallenge.v2 === true
-                    ? [{ method, action, execution }]
-                    : [];
-            }
-            return [{ method, action, execution }];
-        },
-    );
+    const authenticationActions = selectAccountServiceAuthenticationActions(projected.authenticationActions, snapshot);
     const oauthProviderIds = [...new Set(authenticationActions.flatMap(({ execution }) => (
         execution.kind === 'oauth' ? [execution.providerId] : []
     )))];
@@ -267,17 +303,7 @@ function buildSupportedDiscoveryFromAuthEntry(
     );
     if (!serverIdentityId || !canonicalServerUrl) return null;
     const projected = projectAuthEntryMethodCapabilities(projection);
-    const authenticationActions: readonly AccountDirectoryAuthenticationAction[] = projected.authenticationActions.flatMap(
-        ({ method, action, execution }): AccountDirectoryAuthenticationAction[] => {
-            if (execution.kind === 'generated_key' || execution.kind === 'key_entry') {
-                return snapshot.features.capabilities.auth.keyChallenge.v2 === true
-                    ? [{ method, action, execution }]
-                    : [];
-            }
-            if (execution.kind !== 'oauth') return [];
-            return [{ method, action, execution }];
-        },
-    );
+    const authenticationActions = selectAccountServiceAuthenticationActions(projected.authenticationActions, snapshot);
     const oauthProviderIds = [...new Set(authenticationActions.flatMap(({ execution }) => (
         execution.kind === 'oauth' ? [execution.providerId] : []
     )))];
@@ -318,6 +344,11 @@ async function verifyAccountDirectoryEndpoint(input: Readonly<{
         ...(input.homeCarrier ? { homeCarrier: input.homeCarrier } : {}),
         ...(input.signal ? { signal: input.signal } : {}),
         force: true,
+        // No foreground cutoff. The probe's default wait budget serves callers with their own
+        // fallback (sign-in, pairing); account-service discovery has none, and a cutoff turned
+        // a slow but healthy service into "unreachable". The shared probe's own attempt bound
+        // still ends the check, and the caller's signal still cancels it.
+        timeoutMs: 0,
     });
     if (snapshot.status !== 'ready') {
         return { kind: 'endpoint_unavailable', endpointUrl, reason: 'probe_failed', snapshot };
@@ -378,6 +409,17 @@ export async function acquireAccountServiceAuthTransport(target: Readonly<{ serv
         ...(resolved.transport.runtimeOrigin ? { runtimeOrigin: resolved.transport.runtimeOrigin } : {}),
         ...(resolved.transport.homeCarrier ? { homeCarrier: resolved.transport.homeCarrier } : {}),
     }, close: resolved.transport.close };
+}
+
+async function commitAccountDirectoryCredentials(
+    target: Readonly<{ endpoint: string; serverIdentityId: string }>,
+    credentials: TokenOnlyAuthCredentials,
+): Promise<TokenOnlyAuthCredentials> {
+    const stored = await TokenStorage.accountDirectoryAuthCredentials.set(target, credentials);
+    if (!stored) {
+        throw new Error('Failed to persist Account Service credentials');
+    }
+    return credentials;
 }
 
 export const accountDirectoryAuthClient = {
@@ -492,17 +534,74 @@ export const accountDirectoryAuthClient = {
             throw new Error('Account Service returned non-Directory credentials');
         }
         input.signal?.throwIfAborted();
-        const stored = await TokenStorage.accountDirectoryAuthCredentials.set(
-            {
-                endpoint: endpointUrl,
-                serverIdentityId: endpointServerIdentityId,
-            },
-            credentials,
-        );
-        if (!stored) {
-            throw new Error('Failed to persist Account Service credentials');
+        return await commitAccountDirectoryCredentials({ endpoint: endpointUrl, serverIdentityId: endpointServerIdentityId }, credentials);
+    },
+
+    /**
+     * Email and password sign-in to an account service, through the one native password login
+     * owner. The Account's stored mode decides the branch (the service's prelogin answer): a Plain
+     * Account gets its Directory credential from the password route; an E2EE Account unlocks its
+     * key from the password envelope and redeems it at the Directory Key Challenge. Only the token
+     * enters Directory custody; an E2EE key is handed back for the session to hold, as key sign-in
+     * does, and never persisted here.
+     */
+    async loginWithPassword(input: Readonly<{
+        endpointUrl: string;
+        endpointServerIdentityId: string;
+        canonicalServerUrl: string;
+        email: string;
+        password: string;
+        signal?: AbortSignal;
+        verifiedServerFeaturesSnapshot: ServerFeaturesSnapshot & { status: 'ready' };
+    }> & AccountDirectoryAuthTransport): Promise<Readonly<{
+        credentials: TokenOnlyAuthCredentials;
+        keyAuthSecret: Uint8Array | null;
+    }>> {
+        input.signal?.throwIfAborted();
+        const endpointUrl = normalizeAccountDirectoryEndpoint(input.endpointUrl);
+        const serverIdentityId = input.endpointServerIdentityId.trim();
+        const canonicalServerUrl = normalizeAccountDirectoryEndpoint(input.canonicalServerUrl);
+        if (!endpointUrl || !serverIdentityId || !canonicalServerUrl) {
+            throw new Error('Account Service password sign-in requires a known endpoint identity and canonical audience');
         }
-        return credentials;
+        const credentials = await loginEmailPassword({
+            target: {
+                endpointUrl,
+                canonicalServerUrl,
+                addressAnchorUrl: endpointUrl,
+                serverId: serverIdentityId,
+                serverIdentityId,
+                ...(input.runtimeOrigin ? { runtimeOrigin: input.runtimeOrigin } : {}),
+                ...(input.homeCarrier ? { homeCarrier: input.homeCarrier } : {}),
+            },
+            email: input.email,
+            password: input.password,
+            credentialTarget: 'account_directory',
+            verifiedServerFeaturesSnapshot: input.verifiedServerFeaturesSnapshot,
+            ...(input.signal ? { signal: input.signal } : {}),
+        }).catch((error: unknown) => {
+            if (error instanceof HappyError && error.status !== undefined) {
+                const parsed = AccountDirectoryRouteErrorResponseV1Schema.safeParse({ error: error.code });
+                if (parsed.success) throw new AccountDirectoryRequestError(error.status, parsed.data.error);
+            }
+            throw error;
+        });
+        const keyAuthSecret = isLegacyAuthCredentials(credentials) ? decodeBase64(credentials.secret, 'base64url') : null;
+        try {
+            // Fail closed on a mode/material mismatch: a key is only ever 32 bytes.
+            if (keyAuthSecret && keyAuthSecret.length !== 32) {
+                throw new HappyError('Password authentication failed', false, { kind: 'auth', code: 'authentication_failed' });
+            }
+            input.signal?.throwIfAborted();
+            const committed = await commitAccountDirectoryCredentials(
+                { endpoint: endpointUrl, serverIdentityId },
+                { token: credentials.token },
+            );
+            return { credentials: committed, keyAuthSecret };
+        } catch (error) {
+            keyAuthSecret?.fill(0);
+            throw error;
+        }
     },
 
     async exchangeOAuth(input: AccountDirectoryOAuthExchangeInput): Promise<AccountDirectoryOAuthExchangeResult> {
@@ -640,7 +739,7 @@ export const accountDirectoryAuthClient = {
             return { kind: 'authenticated', destination };
         } catch (error) {
             if (input.signal?.aborted) return { kind: 'cancelled', accountCredentialCommitted: committed };
-            return failed('token-exchange-failed', error instanceof TypeError || error instanceof HappyError && error.canTryAgain, error);
+            return failed('token-exchange-failed', isExplicitlyRetryableError(error), error);
         } finally {
             await closeTransport().catch(() => {});
         }

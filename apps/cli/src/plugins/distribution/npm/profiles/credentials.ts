@@ -3,7 +3,7 @@ import { join } from 'node:path';
 
 import { readOrCreateDeviceLocalSecretStorage } from '@/daemon/deviceLocalSecretStorage';
 import {
-  createPurposeKeyedPluginSecretStore,
+  createPluginSecretStore,
   resealPurposeKeyedPluginSecretStore,
 } from '@/plugins/runtime/context/secrets';
 import { normalizePluginStorageNamespace } from '@/plugins/runtime/context/pluginNamespace';
@@ -14,7 +14,7 @@ const HOST_NAMESPACE = 'happier.npm.registry.credentials';
 const LEGACY_KEY_FILE_NAME = 'plugin-secrets-key.v1';
 const LEGACY_KEY_TYPE = 'happier_plugin_secret_key_v1';
 
-type NpmCredentialSecretStore = ReturnType<typeof createPurposeKeyedPluginSecretStore>;
+type NpmCredentialSecretStore = ReturnType<typeof createPluginSecretStore>;
 type StoreReadability = Readonly<
   | { readable: true }
   | { readable: false; error: unknown }
@@ -116,7 +116,7 @@ export function createNpmRegistryCredentialStore(params?: Readonly<{ happyHomeDi
 }> {
   const paths = resolvePluginStorePaths(params);
   let destinationKeyPromise: Promise<Uint8Array> | null = null;
-  let servicePromise: Promise<ReturnType<typeof createPurposeKeyedPluginSecretStore>> | null = null;
+  let servicePromise: Promise<ReturnType<typeof createPluginSecretStore>> | null = null;
   let legacyMigrationComplete = false;
   const resolveDestinationKey = async (): Promise<Uint8Array> => {
     destinationKeyPromise ??= readOrCreateDeviceLocalSecretStorage({
@@ -126,8 +126,8 @@ export function createNpmRegistryCredentialStore(params?: Readonly<{ happyHomeDi
     }));
     return await destinationKeyPromise;
   };
-  const resolveService = async (): Promise<ReturnType<typeof createPurposeKeyedPluginSecretStore>> => {
-    servicePromise ??= resolveDestinationKey().then((secretKey) => createPurposeKeyedPluginSecretStore({
+  const resolveService = async (): Promise<ReturnType<typeof createPluginSecretStore>> => {
+    servicePromise ??= resolveDestinationKey().then((secretKey) => createPluginSecretStore({
       pluginId: HOST_NAMESPACE,
       paths,
       secretKey,
@@ -162,7 +162,7 @@ export function createNpmRegistryCredentialStore(params?: Readonly<{ happyHomeDi
 
     const sourceKey = await readLegacyNpmKey(paths);
     if (!sourceKey) throw destinationReadability.error;
-    const source = createPurposeKeyedPluginSecretStore({
+    const source = createPluginSecretStore({
       pluginId: HOST_NAMESPACE,
       paths,
       secretKey: sourceKey,

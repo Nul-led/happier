@@ -105,9 +105,14 @@ vi.mock('@/agents/hooks/useEnabledAgentIds', () => ({
 }));
 
 vi.mock('@/agents/catalog/catalog', () => ({
+    AGENT_IDS: ['claude'],
     DEFAULT_AGENT_ID: 'claude',
     isBundledAgentId: (value: unknown) => value === 'claude',
-    getAgentCore: () => ({ displayNameKey: 'Claude', ui: { agentPickerIconName: 'code-slash-outline' } }),
+    getAgentCore: () => ({
+        displayNameKey: 'Claude',
+        availability: { experimental: false },
+        ui: { agentPickerIconName: 'code-slash-outline' },
+    }),
 }));
 
 vi.mock('@/sync/store/hooks', () => ({
@@ -195,6 +200,29 @@ vi.mock('@/components/ui/overlays/FloatingOverlay', () => ({
 }));
 
 describe('LlmTaskRunnerConfigV1BackendModelPicker', () => {
+
+    it('writes the legacy task-runner backend contract from a selected current catalog entry', async () => {
+        dropdownMenuProps.length = 0;
+        const onChange = vi.fn();
+        const { LlmTaskRunnerConfigV1BackendModelPicker } = await import('./LlmTaskRunnerConfigV1BackendModelPicker');
+
+        await renderScreen(
+            <LlmTaskRunnerConfigV1BackendModelPicker value={null} onChange={onChange} />,
+        );
+
+        const backendMenu = dropdownMenuProps.find((node: any) => (
+            node.searchPlaceholder === 'settingsSession.replayResume.summaryRunner.searchBackendsPlaceholder'
+        ));
+        backendMenu?.onSelect('backend:custom-backend:configured:custom-backend');
+
+        expect(onChange).toHaveBeenCalledWith({
+            v: 1,
+            backendTarget: { kind: 'configuredAcpBackend', backendId: 'custom-backend' },
+            modelId: 'default',
+            permissionMode: 'no_tools',
+        });
+    });
+
 	    it('probes models against the selected configured ACP backend target', async () => {
 	        preflightModelArgs.length = 0;
 	        const { LlmTaskRunnerConfigV1BackendModelPicker } = await import('./LlmTaskRunnerConfigV1BackendModelPicker');

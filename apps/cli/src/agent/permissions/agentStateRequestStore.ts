@@ -16,6 +16,7 @@ import {
 } from '@happier-dev/agents';
 import {
     PluginIdSchema,
+    SessionPermissionApprovalReviewerClaimV1Schema,
     SessionPermissionAccountUserDecisionActorV1Schema,
     SessionPermissionExternalHumanDecisionActorV1Schema,
     SessionPermissionIdempotencyKeyV1Schema,
@@ -23,6 +24,7 @@ import {
     SessionPermissionSourceRevisionOrEpochV1Schema,
     TurnIdSchema,
     type AccountSettings,
+    type SessionPermissionApprovalReviewerClaimV1,
     type SessionPermissionAccountUserDecisionActorV1,
     type SessionPermissionExternalHumanDecisionActorV1,
 } from '@happier-dev/protocol';
@@ -49,6 +51,7 @@ type AgentStateCompletedEntry = NonNullable<AgentState['completedRequests']>[str
  * the remote System Record.
  */
 export type PermissionResponseClaim =
+    | SessionPermissionApprovalReviewerClaimV1
     | Readonly<{
         version: 1;
         /**
@@ -1368,6 +1371,11 @@ function readPermissionResponseClaim(value: unknown): PermissionResponseClaim | 
     const record = clonePlainObjectToNullProto(value);
     if (!record || record.version !== 1 || typeof record.origin !== 'string') return null;
 
+    if (record.origin === 'approvalReviewer') {
+        const parsed = SessionPermissionApprovalReviewerClaimV1Schema.safeParse(record);
+        return parsed.success ? parsed.data : null;
+    }
+
     if (record.origin === 'automaticPolicy') {
         return hasExactlyKeys(record, ['version', 'origin'])
             ? { version: 1, origin: 'automaticPolicy' }
@@ -1465,6 +1473,9 @@ function permissionResponseClaimsEqual(
     if (left.origin === 'automaticPolicy' && right.origin === 'automaticPolicy') return true;
     if (left.origin === 'automaticPolicy' || right.origin === 'automaticPolicy') return false;
     if (left.decision !== right.decision || left.scope !== right.scope) return false;
+    if (left.origin === 'approvalReviewer' && right.origin === 'approvalReviewer') {
+        return left.turnId === right.turnId;
+    }
     if (left.origin === 'presentUser' && right.origin === 'presentUser') {
         return left.actor.accountId === right.actor.accountId
             && left.actor.relationship === right.actor.relationship

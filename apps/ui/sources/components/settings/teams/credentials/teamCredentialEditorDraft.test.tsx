@@ -274,12 +274,12 @@ describe('useTeamCredentialResourceDraft', () => {
     });
 });
 
-describe('useTeamCredentialDraftNavigationGuard', () => {
+describe('credential draft navigation', () => {
     it('joins a dirty resource draft to the standard before-remove guard', async () => {
-        const { useTeamCredentialDraftNavigationGuard } = await import('./useTeamCredentialDraftNavigationGuard');
+        const { useUnsavedDraftNavigationGuard } = await import('@/utils/navigation/useUnsavedDraftNavigationGuard');
         const navigation = { isFocused: () => true, addListener: () => () => {}, dispatch: vi.fn() };
         const hook = await renderHook(
-            ({ isDirty }) => useTeamCredentialDraftNavigationGuard({
+            ({ isDirty }) => useUnsavedDraftNavigationGuard({
                 navigation,
                 isDirty,
                 onDiscard: vi.fn(),

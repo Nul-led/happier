@@ -24,6 +24,8 @@ export type SecretKeyEntryFormProps = Readonly<{
     submitTitle: string;
     onSubmit: (input: Readonly<{ normalizedKey: string; secret: Uint8Array }>) => Promise<SecretKeyEntrySubmitResult>;
     onBack?: () => void;
+    /** A quieter alternative to entering the key (e.g. scanning instead), rendered with Back's weight. */
+    secondaryAction?: Readonly<{ label: string; onPress: () => void }>;
 }>;
 
 const stylesheet = StyleSheet.create((theme) => ({
@@ -203,6 +205,14 @@ export const SecretKeyEntryForm = React.memo(function SecretKeyEntryForm(props: 
                 </Text>
             ) : null}
             <RoundButton testID="restore-manual-submit" title={props.submitTitle} action={submit} loading={submitPending} />
+            {props.secondaryAction ? (
+                <RoundButton
+                    testID="restore-manual-secondary"
+                    title={props.secondaryAction.label}
+                    display="inverted"
+                    onPress={props.secondaryAction.onPress}
+                />
+            ) : null}
             {props.onBack ? (
                 <RoundButton
                     testID="restore-manual-back"

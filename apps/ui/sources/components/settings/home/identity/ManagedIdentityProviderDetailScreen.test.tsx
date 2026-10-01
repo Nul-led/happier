@@ -14,10 +14,16 @@ const requestApprovalMock = vi.hoisted(() => vi.fn());
 const setClipboardMock = vi.hoisted(() => vi.fn(async () => true));
 
 vi.mock('@/utils/ui/clipboard', () => ({ setClipboardStringSafe: setClipboardMock }));
-vi.mock('expo-router', () => ({
-    useRouter: () => ({ replace: replaceMock, push: vi.fn(), back: vi.fn() }),
-}));
-vi.mock('@/components/ui/lists/Item', () => ({ Item: 'Item' }));
+vi.mock('expo-router', async () => {
+    const { createExpoRouterMock } = await import('@/dev/testkit/mocks/router');
+    return createExpoRouterMock({ router: { replace: replaceMock } }).module;
+});
+// Rows render their right-hand control, as the real row does; page fields are text inputs.
+vi.mock('@/components/ui/lists/Item', async () => {
+    const React = await import('react');
+    return { Item: (props: { rightElement?: unknown }) => React.createElement('Item', props, props.rightElement as never) };
+});
+vi.mock('@/components/ui/forms/FieldTextInput', () => ({ FieldTextInput: 'TextInput' }));
 vi.mock('@/components/ui/lists/ItemGroup', () => ({ ItemGroup: 'ItemGroup' }));
 vi.mock('@/components/ui/feedback/ActivitySpinner', () => ({ ActivitySpinner: 'ActivitySpinner' }));
 vi.mock('@/text', () => ({ t: (key: string) => key }));
@@ -209,7 +215,7 @@ describe('ManagedIdentityProviderDetailScreen diagnostics', () => {
         recordIdentityProviderTestReturn({
             kind: 'home', serverId: 'home-1', accountId: 'account-1',
             providerId: 'provider-1', attemptId: 'attempt-1',
-            returnTo: '/settings/home/home-1/policies/identity/provider-1',
+            returnTo: '/settings/home/home-1/sign-in-providers/identity/provider-1',
         }, { kind: 'completed', diagnostics: {
             subjectPresent: true,
             loginAvailable: false,
@@ -235,7 +241,7 @@ describe('ManagedIdentityProviderDetailScreen diagnostics', () => {
         recordIdentityProviderTestReturn({
             kind: 'home', serverId: 'home-1', accountId: 'account-1',
             providerId: 'provider-2', attemptId: 'attempt-2',
-            returnTo: '/settings/home/home-1/policies/identity/provider-2',
+            returnTo: '/settings/home/home-1/sign-in-providers/identity/provider-2',
         }, { kind: 'completed', diagnostics: {
             subjectPresent: true,
             loginAvailable: true,
@@ -257,7 +263,7 @@ describe('ManagedIdentityProviderDetailScreen diagnostics', () => {
         recordIdentityProviderTestReturn({
             kind: 'home', serverId: 'home-1', accountId: 'account-1',
             providerId: 'provider-1', attemptId: 'attempt-1',
-            returnTo: '/settings/home/home-1/policies/identity/provider-1',
+            returnTo: '/settings/home/home-1/sign-in-providers/identity/provider-1',
         }, {
             kind: 'approval_pending',
             artifactId: 'approval-consume-1',
@@ -274,8 +280,7 @@ describe('ManagedIdentityProviderDetailScreen diagnostics', () => {
             artifactId: 'approval-consume-1',
             onExecuted: expect.any(Function),
         });
-        expect(screen.findByTestId('identity-provider-notice')?.props.title)
-            .toBe('connect.waitingForApproval');
+        expect(screen.findByTestId('identity-provider-notice')).toBeNull();
     });
 
     it('continues an approved provider test through the same OAuth-opening path', async () => {
@@ -293,8 +298,7 @@ describe('ManagedIdentityProviderDetailScreen diagnostics', () => {
 
         expect(openExternalUrlMock).not.toHaveBeenCalled();
         expect(requestApprovalMock).toHaveBeenCalledWith(approval);
-        expect(screen.findByTestId('identity-provider-notice')?.props.title)
-            .toBe('connect.waitingForApproval');
+        expect(screen.findByTestId('identity-provider-notice')).toBeNull();
         expect(screen.findByTestId('identity-provider-test')?.props.loading).toBe(false);
 
         openExternalUrlMock.mockResolvedValueOnce(true);
@@ -302,6 +306,10 @@ describe('ManagedIdentityProviderDetailScreen diagnostics', () => {
 
         expect(openExternalUrlMock).toHaveBeenCalledOnce();
         expect(openExternalUrlMock).toHaveBeenCalledWith('https://id.example/authorize');
+        // The OAuth return lands on this provider's page under Sign-in providers.
+        const { consumePendingIdentityProviderTest } = await import('./identityProviderTestReturn');
+        expect(consumePendingIdentityProviderTest('provider-1')?.returnTo)
+            .toBe('/settings/home/home-1/sign-in-providers/identity/provider-1');
     });
 
     it('refreshes only after a pending lifecycle mutation is approved', async () => {
@@ -320,8 +328,7 @@ describe('ManagedIdentityProviderDetailScreen diagnostics', () => {
         expect(refreshMock).not.toHaveBeenCalled();
         expect(replaceMock).not.toHaveBeenCalled();
         expect(requestApprovalMock).toHaveBeenCalledWith(approval);
-        expect(screen.findByTestId('identity-provider-notice')?.props.title)
-            .toBe('connect.waitingForApproval');
+        expect(screen.findByTestId('identity-provider-notice')).toBeNull();
         expect(screen.findByTestId('identity-provider-disable')?.props.disabled).toBe(false);
 
         await completeApprovedLifecycle?.();
@@ -352,11 +359,10 @@ describe('ManagedIdentityProviderDetailScreen diagnostics', () => {
 
         expect(replaceMock).not.toHaveBeenCalled();
         expect(requestApprovalMock).toHaveBeenCalledWith(approval);
-        expect(screen.findByTestId('identity-provider-notice')?.props.title)
-            .toBe('connect.waitingForApproval');
+        expect(screen.findByTestId('identity-provider-notice')).toBeNull();
         expect(screen.findByTestId('identity-provider-remove')?.props.disabled).toBe(false);
 
         await completeApprovedRemoval?.();
-        expect(replaceMock).toHaveBeenCalledWith('/settings/home/home-1/policies');
+        expect(replaceMock).toHaveBeenCalledWith('/settings/home/home-1/sign-in-providers');
     });
 });

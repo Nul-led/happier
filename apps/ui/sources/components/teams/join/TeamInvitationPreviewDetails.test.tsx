@@ -1,4 +1,5 @@
 import * as React from 'react';
+import { act } from 'react-test-renderer';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { TeamInvitationPreviewV1 } from '@happier-dev/protocol/teams';
 
@@ -12,6 +13,7 @@ vi.mock('@/voice/registry/generatedBundledVoiceEntries', () => ({
 
 import { standardCleanup } from '@/dev/testkit/cleanup/standardCleanup';
 import { renderScreen } from '@/dev/testkit/render/renderScreen';
+import { setPreferredLanguageFromSettings } from '@/text';
 
 import { TeamInvitationPreviewDetails } from './TeamInvitationPreviewDetails';
 
@@ -30,7 +32,10 @@ function activePreview(overrides: Partial<TeamInvitationPreviewV1> = {}): TeamIn
 }
 
 describe('TeamInvitationPreviewDetails', () => {
-    afterEach(() => standardCleanup());
+    afterEach(async () => {
+        setPreferredLanguageFromSettings(null);
+        await standardCleanup();
+    });
 
     it('names who invited you when the Home published a label for them', async () => {
         const rendered = await renderScreen(
@@ -53,5 +58,35 @@ describe('TeamInvitationPreviewDetails', () => {
         // Home did publish intact rather than showing an empty or placeholder line.
         expect(rendered.findByTestId('team-join-preview-inviter')).toBeNull();
         expect(rendered.findByTestId('team-join-preview-role')).not.toBeNull();
+    });
+
+    it('keeps published consequences visible with truthful refresh and retry status', async () => {
+        const preview = activePreview({ role: 'guest', historyAccess: 'all_existing' });
+        const onRetry = vi.fn();
+        const rendered = await renderScreen(
+            <TeamInvitationPreviewDetails state={{ kind: 'ready', preview, refreshing: true }} onRetry={onRetry} />,
+        );
+        expect(rendered.findByTestId('team-join-preview-role')).not.toBeNull();
+        expect(rendered.findByTestId('team-join-preview-history')).not.toBeNull();
+        expect(rendered.findByTestId('team-join-preview-refreshing')).not.toBeNull();
+
+        await act(async () => {
+            rendered.tree.update(
+                <TeamInvitationPreviewDetails state={{ kind: 'ready', preview, refreshFailure: { retryable: true } }} onRetry={onRetry} />,
+            );
+        });
+        expect(rendered.findByTestId('team-join-preview-role')).not.toBeNull();
+        expect(rendered.findByTestId('team-join-preview-failed')).not.toBeNull();
+        await rendered.pressByTestIdAsync('team-join-preview-failed-action');
+        expect(onRetry).toHaveBeenCalledTimes(1);
+    });
+
+    it('formats invitation expiry in the selected app language', async () => {
+        setPreferredLanguageFromSettings('de');
+        const rendered = await renderScreen(
+            <TeamInvitationPreviewDetails state={{ kind: 'ready', preview: activePreview() }} />,
+        );
+        const expected = new Intl.DateTimeFormat('de').format(new Date(Date.UTC(2030, 0, 1)));
+        expect(rendered.getTextContent()).toContain(expected);
     });
 });

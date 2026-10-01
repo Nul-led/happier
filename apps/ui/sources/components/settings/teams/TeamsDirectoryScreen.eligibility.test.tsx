@@ -89,7 +89,7 @@ describe('TeamsDirectoryScreen Team-creation eligibility', () => {
             name: 'Home A', serverUrl: 'https://home-a.example', accountId: 'member-a', teamsEnabled: true,
         });
         await harness.selectHomes([home]);
-        harness.answer(home, ELIGIBILITY_PATH, { body: { teamsEnabled: true, createTeam: false } });
+        harness.answer(home, ELIGIBILITY_PATH, { body: { teamsEnabled: true, createTeam: false, createTeamForChosenAccount: false } });
         harness.answer(home, TEAMS_LIST_PATH, {
             body: { items: [teamSummaryFixture({ id: 'alpha', name: 'Alpha' })], nextCursor: null },
         });
@@ -127,10 +127,17 @@ describe('TeamsDirectoryScreen Team-creation eligibility', () => {
             teamsEnabled: true,
         });
         await harness.selectHomes([homeA, homeB]);
-        harness.answer(homeA, ELIGIBILITY_PATH, { body: { teamsEnabled: true, createTeam: false } });
-        harness.answer(homeB, ELIGIBILITY_PATH, { body: { teamsEnabled: true, createTeam: false } });
+        harness.answer(homeA, ELIGIBILITY_PATH, { body: { teamsEnabled: true, createTeam: false, createTeamForChosenAccount: false } });
+        harness.answer(homeB, ELIGIBILITY_PATH, { body: { teamsEnabled: true, createTeam: false, createTeamForChosenAccount: false } });
+        // Search is offered once the list no longer fits at a glance (more than eight Teams).
         harness.answer(homeA, TEAMS_LIST_PATH, {
-            body: { items: [teamSummaryFixture({ id: 'alpha', name: 'Alpha' })], nextCursor: null },
+            body: {
+                items: [
+                    teamSummaryFixture({ id: 'alpha', name: 'Alpha' }),
+                    ...Array.from({ length: 8 }, (_, i) => teamSummaryFixture({ id: `alpha-${i}`, name: `Alpha ${i}` })),
+                ],
+                nextCursor: null,
+            },
         });
         harness.answer(homeB, TEAMS_LIST_PATH, {
             body: { items: [teamSummaryFixture({ id: 'beta', name: 'Beta' })], nextCursor: null },
@@ -143,7 +150,7 @@ describe('TeamsDirectoryScreen Team-creation eligibility', () => {
         expect(virtualizedBoundary.props?.testID).toBe('teams-directory-virtualized-list');
         expect(virtualizedBoundary.props?.maintainVisibleContentPosition).toBe(true);
         expect(screen.findByTestId('teams-directory-search')?.props.placeholder)
-            .toBe('teams.directory.searchPlaceholder');
+            .toBe('teams.directory.searchLoadedPlaceholder');
 
         await React.act(async () => {
             screen.findByTestId('teams-directory-search')?.props.onChangeText('beta');
@@ -171,7 +178,7 @@ describe('TeamsDirectoryScreen Team-creation eligibility', () => {
             snapshot: { status: 'unsupported', reason: 'invalid_payload' },
         });
         await harness.selectHomes([homeA, homeB]);
-        harness.answer(homeA, ELIGIBILITY_PATH, { body: { teamsEnabled: true, createTeam: false } });
+        harness.answer(homeA, ELIGIBILITY_PATH, { body: { teamsEnabled: true, createTeam: false, createTeamForChosenAccount: false } });
         harness.answer(homeA, TEAMS_LIST_PATH, {
             body: { items: [teamSummaryFixture({ id: 'alpha', name: 'Alpha' })], nextCursor: null },
         });
@@ -183,7 +190,8 @@ describe('TeamsDirectoryScreen Team-creation eligibility', () => {
         });
 
         expect(screen.getTextContent()).toContain('teams.unavailable.updateRequired');
-        expect(harness.requestsFor(TEAMS_LIST_PATH).map((request) => request.serverId)).toEqual([homeA]);
+        // Only the capable Home is read (its active and archived lists); the unsupported one never is.
+        expect(new Set(harness.requestsFor(TEAMS_LIST_PATH).map((request) => request.serverId))).toEqual(new Set([homeA]));
     });
 
     it('offers ordinary creation only when a minimum Home projection currently permits it', async () => {
@@ -202,8 +210,8 @@ describe('TeamsDirectoryScreen Team-creation eligibility', () => {
         await harness.selectHomes([deniedHome, allowedHome]);
         harness.answer(deniedHome, TEAMS_LIST_PATH, { body: { items: [], nextCursor: null } });
         harness.answer(allowedHome, TEAMS_LIST_PATH, { body: { items: [], nextCursor: null } });
-        harness.answer(deniedHome, ELIGIBILITY_PATH, { body: { teamsEnabled: true, createTeam: false } });
-        harness.answer(allowedHome, ELIGIBILITY_PATH, { body: { teamsEnabled: true, createTeam: true } });
+        harness.answer(deniedHome, ELIGIBILITY_PATH, { body: { teamsEnabled: true, createTeam: false, createTeamForChosenAccount: false } });
+        harness.answer(allowedHome, ELIGIBILITY_PATH, { body: { teamsEnabled: true, createTeam: true, createTeamForChosenAccount: false } });
 
         const screen = await renderDirectory();
         await vi.waitFor(() => {
@@ -226,7 +234,7 @@ describe('TeamsDirectoryScreen Team-creation eligibility', () => {
         });
         await harness.selectHomes([home]);
         harness.answer(home, TEAMS_LIST_PATH, { body: { items: [], nextCursor: null } });
-        harness.answer(home, ELIGIBILITY_PATH, { body: { teamsEnabled: true, createTeam: false } });
+        harness.answer(home, ELIGIBILITY_PATH, { body: { teamsEnabled: true, createTeam: false, createTeamForChosenAccount: false } });
 
         const screen = await renderDirectory();
         await vi.waitFor(() => {
@@ -236,6 +244,112 @@ describe('TeamsDirectoryScreen Team-creation eligibility', () => {
 
         expect(collectRenderedTestIds(screen.tree.toJSON())).not.toContain('teams-directory-new');
         expect(harness.requestsFor(GOVERNANCE_PATH)).toHaveLength(0);
+        // The page says why there is no way to create a Team, and who can.
+        await vi.waitFor(() => expect(screen.getTextContent()).toContain('teams.directory.createDenied(homes=Managed Home)'));
+    });
+
+    it('names the administrators a member can ask when the one Home in view has them create Teams', async () => {
+        const home = await harness.addHome({
+            name: 'Studio', serverUrl: 'https://studio.example', accountId: 'member-a', teamsEnabled: true,
+        });
+        await harness.selectHomes([home]);
+        harness.answer(home, TEAMS_LIST_PATH, { body: { items: [], nextCursor: null } });
+        harness.answer(home, ELIGIBILITY_PATH, { body: {
+            teamsEnabled: true,
+            createTeam: false,
+            createTeamForChosenAccount: false,
+            teamCreationPolicy: 'managed_only',
+            administratorNames: ['Ada Lovelace', 'grace'],
+            showTeams: true,
+        } });
+
+        const screen = await renderDirectory();
+        await vi.waitFor(() => expect(screen.getTextContent()).toContain('teams.directory.createAdministered'));
+
+        const text = screen.getTextContent();
+        expect(text).toContain('Ada Lovelace');
+        expect(text).toContain('grace');
+        expect(text).not.toContain('teams.directory.createDenied');
+        // No create action that could not succeed, and no policy link for a member.
+        const ids = collectRenderedTestIds(screen.tree.toJSON());
+        expect(ids).not.toContain('teams-directory-new');
+        expect(ids).not.toContain('teams-directory-empty-create');
+        expect(ids).not.toContain('teams-directory-open-creation-policy');
+    });
+
+    it('tells a member that Team creation is off, with nothing to create', async () => {
+        const home = await harness.addHome({
+            name: 'Studio', serverUrl: 'https://studio.example', accountId: 'member-a', teamsEnabled: true,
+        });
+        await harness.selectHomes([home]);
+        harness.answer(home, TEAMS_LIST_PATH, { body: { items: [], nextCursor: null } });
+        harness.answer(home, ELIGIBILITY_PATH, { body: {
+            teamsEnabled: true,
+            createTeam: false,
+            createTeamForChosenAccount: false,
+            teamCreationPolicy: 'disabled',
+            administratorNames: ['Ada Lovelace'],
+            showTeams: true,
+        } });
+
+        const screen = await renderDirectory();
+        await vi.waitFor(() => expect(screen.getTextContent()).toContain('teams.directory.createOff'));
+        expect(screen.getTextContent()).not.toContain('Ada Lovelace');
+        expect(collectRenderedTestIds(screen.tree.toJSON())).not.toContain('teams-directory-empty-create');
+    });
+
+    it('keeps a member\'s Teams under disabled creation and offers no create affordance', async () => {
+        const home = await harness.addHome({
+            name: 'Studio', serverUrl: 'https://studio.example', accountId: 'member-a', teamsEnabled: true,
+        });
+        await harness.selectHomes([home]);
+        harness.answer(home, TEAMS_LIST_PATH, {
+            body: { items: [teamSummaryFixture({ id: 'alpha', name: 'Alpha' })], nextCursor: null },
+        });
+        harness.answer(home, ELIGIBILITY_PATH, { body: {
+            teamsEnabled: true,
+            createTeam: false,
+            createTeamForChosenAccount: false,
+            teamCreationPolicy: 'disabled',
+            administratorNames: [],
+            showTeams: true,
+        } });
+
+        const screen = await renderDirectory();
+        await vi.waitFor(() => expect(collectRenderedTestIds(screen.tree.toJSON())).toContain(`teams-row:${home}:alpha`));
+        await vi.waitFor(() => expect(harness.requestsFor(ELIGIBILITY_PATH)).toHaveLength(1));
+        const ids = collectRenderedTestIds(screen.tree.toJSON());
+        expect(ids).not.toContain('teams-directory-new');
+        expect(ids).not.toContain('teams-directory-empty-create');
+    });
+
+    it('offers an administrator of managed creation New Team and the policy that would let everyone create', async () => {
+        const home = await harness.addHome({
+            name: 'Studio', serverUrl: 'https://studio.example', accountId: 'admin-a', teamsEnabled: true,
+        });
+        await harness.selectHomes([home]);
+        harness.answer(home, TEAMS_LIST_PATH, { body: { items: [], nextCursor: null } });
+        harness.answer(home, ELIGIBILITY_PATH, { body: {
+            teamsEnabled: true,
+            createTeam: true,
+            createTeamForChosenAccount: true,
+            teamCreationPolicy: 'managed_only',
+            administratorNames: ['Ada Lovelace'],
+            showTeams: true,
+        } });
+
+        const screen = await renderDirectory();
+        await vi.waitFor(() => {
+            const ids = collectRenderedTestIds(screen.tree.toJSON());
+            expect(ids).toContain('teams-directory-empty-create');
+            expect(ids).toContain('teams-directory-open-creation-policy');
+        });
+        expect(screen.getTextContent()).not.toContain('teams.directory.createAdministered');
+
+        await screen.pressByTestIdAsync('teams-directory-open-creation-policy');
+        expect(routerPush).toHaveBeenCalledWith(
+            `/settings/home/${encodeURIComponent(home)}/policies?setting=homeAdministration.teamsPolicy.teamCreationPolicy`,
+        );
     });
 
     it('exposes pagination for the archived sequence after that section is opened', async () => {
@@ -246,19 +360,24 @@ describe('TeamsDirectoryScreen Team-creation eligibility', () => {
             teamsEnabled: true,
         });
         await harness.selectHomes([home]);
-        harness.answer(home, ELIGIBILITY_PATH, { body: { teamsEnabled: true, createTeam: false } });
-        harness.answer(home, TEAMS_LIST_PATH, { body: { items: [], nextCursor: null } });
+        harness.answer(home, ELIGIBILITY_PATH, { body: { teamsEnabled: true, createTeam: false, createTeamForChosenAccount: false } });
+        harness.answer(home, TEAMS_LIST_PATH, {
+            body: { items: [], nextCursor: null },
+            select: (input) => (input as { archived?: unknown } | null)?.archived === 'archived'
+                ? {
+                    body: {
+                        items: [teamSummaryFixture({ id: 'archived-1', archivedAt: 1_700_000_000_000 })],
+                        nextCursor: 'archived-page-2',
+                    },
+                }
+                : undefined,
+        });
 
         const screen = await renderDirectory();
         await vi.waitFor(() => expect(collectRenderedTestIds(screen.tree.toJSON()))
             .toContain('teams-directory-toggle-archived'));
+        expect(collectRenderedTestIds(screen.tree.toJSON())).not.toContain('teams-directory-archived-load-more');
 
-        harness.answer(home, TEAMS_LIST_PATH, {
-            body: {
-                items: [teamSummaryFixture({ id: 'archived-1', archivedAt: 1_700_000_000_000 })],
-                nextCursor: 'archived-page-2',
-            },
-        });
         await screen.pressByTestIdAsync('teams-directory-toggle-archived');
 
         await vi.waitFor(() => {

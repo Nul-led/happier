@@ -3,6 +3,8 @@ import {
     writeSessionStateFieldToMetadata,
 } from '@happier-dev/agents/session/state/metadataWriters';
 import {
+    SessionRoleIdV1Schema,
+    SessionRoleConfigurationV1Schema,
     SessionRunnerRuntimeStateV1Schema,
     SessionStateUsageLimitRecoveryValueSchema,
     SessionStateWorkStateValueSchema,
@@ -51,6 +53,13 @@ export function applyRegisteredSessionStateFieldMutationToMetadata(
     }
 
     let value = mutation.op.value;
+
+    if (mutation.fieldId === 'intent.role') {
+        value = SessionRoleIdV1Schema.parse(value);
+    }
+    if (mutation.fieldId === 'intent.sessionRoles') {
+        value = SessionRoleConfigurationV1Schema.parse(value);
+    }
 
     if (mutation.fieldId === 'runtime.workState') {
         value = SessionStateWorkStateValueSchema.parse(value);

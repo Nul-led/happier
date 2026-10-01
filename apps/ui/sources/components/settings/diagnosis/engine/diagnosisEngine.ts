@@ -5,6 +5,7 @@ import {
 } from '@happier-dev/protocol';
 
 import { createServerUrlComparableKey } from '@/sync/domains/server/url/serverUrlCanonical';
+import { isDaemonOfAnotherAccount } from '@/sync/domains/server/relayDrift/relayDriftModel';
 
 export type DiagnosisFindingSeverity = 'info' | 'warning' | 'error';
 
@@ -119,7 +120,9 @@ export function buildDiagnosisReport(input: DiagnosisInput): DiagnosisReport {
       });
     }
 
-    if (uiProfileId && snapshot.accountId && uiProfileId !== snapshot.accountId) {
+    // The account comparison is the drift owner's (`relayDriftModel`), shared with every surface
+    // that describes a daemon.
+    if (isDaemonOfAnotherAccount({ daemonAccountId: snapshot.accountId, appAccountId: uiProfileId })) {
       pushFinding(findings, {
         code: 'auth.mismatch.ui_vs_machine_account',
         severity: 'error',

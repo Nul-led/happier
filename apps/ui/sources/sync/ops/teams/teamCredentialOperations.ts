@@ -30,10 +30,12 @@ import {
     type TeamCredentialUsageQueryInputV1,
     type TeamCredentialUsageQueryResultV1,
     TeamCredentialExternalApiKeyCreateOutputV1Schema,
+    TeamCredentialExternalApiKeyAuthorizeOutputV1Schema,
     TeamCredentialExternalApiKeyListOutputV1Schema,
     TeamCredentialExternalApiKeyRevokeOutputV1Schema,
     TeamCredentialExternalApiKeyRevokeAllOutputV1Schema,
     type TeamCredentialExternalApiKeyCreateOutputV1,
+    type TeamCredentialExternalApiKeyAuthorizeOutputV1,
     type TeamCredentialExternalApiKeyListOutputV1,
     type TeamCredentialExternalApiKeyRevokeOutputV1,
     type TeamCredentialExternalApiKeyRevokeAllOutputV1,
@@ -552,6 +554,24 @@ export function listTeamCredentialExternalApiKeys(params: Readonly<{
         actionId: 'teams.credentials.externalKeys.list',
         input: { resourceId: params.resourceId },
         parse: (value) => TeamCredentialExternalApiKeyListOutputV1Schema.parse(value),
+    });
+}
+
+export function authorizeTeamCredentialExternalApiKey(params: Readonly<{
+    scope: ServerAccountScope;
+    resourceId: string;
+    keyId: string;
+    handlers?: TeamCredentialApprovalHandlers<TeamCredentialExternalApiKeyAuthorizeOutputV1>;
+}>): Promise<TeamCredentialOutcome<TeamCredentialExternalApiKeyAuthorizeOutputV1>> {
+    return runTeamAction({
+        scope: params.scope,
+        actionId: 'teams.credentials.externalKeys.authorize',
+        input: { resourceId: params.resourceId, keyId: params.keyId },
+        parse: (value) => TeamCredentialExternalApiKeyAuthorizeOutputV1Schema.parse(value),
+        ...approvalOptions({
+            scope: params.scope,
+            ...(params.handlers ? { handlers: params.handlers } : {}),
+        }),
     });
 }
 

@@ -16,6 +16,9 @@ import {
     type SessionListIdentityDisplay,
 } from '@/components/sessions/shell/SessionListIdentity';
 import { SESSION_LIST_ROW_IDENTITY_METRICS } from '@/components/sessions/shell/resolveSessionListDensityViewState';
+import { motionTokens } from '@/components/ui/motion/motionTokens';
+import type { WorkStatusTone } from '@/components/work/status/resolveWorkStatusTone';
+import { workStatusWordStyle } from '@/components/work/status/workStatusTreatment';
 
 const MARK_READ_ACCESSIBILITY_ACTION = 'markRead';
 const NO_ACCESSIBILITY_ACTIONS: readonly { name: string; label?: string }[] = [];
@@ -45,6 +48,9 @@ export const InboxReadySessionRow = React.memo(function InboxReadySessionRow(pro
     serverId: string | null;
     title: string;
     subtitle?: string;
+    /** The Session's own state word and tone, from the shared work-status owner (primitives keep the memo). */
+    statusWord?: string;
+    statusTone?: WorkStatusTone;
     pending: boolean;
     showDivider?: boolean;
     onOpen: () => void;
@@ -76,6 +82,8 @@ export const InboxReadySessionRow = React.memo(function InboxReadySessionRow(pro
             testID={testIdPrefix}
             title={props.title}
             subtitle={props.subtitle}
+            detail={props.statusWord}
+            detailStyle={props.statusTone ? workStatusWordStyle(props.statusTone) : null}
             density="compact"
             accessibilityLabel={t('inbox.readySessionAccessibilityLabel', { session: props.title })}
             accessibilityActions={accessibilityActions}
@@ -165,7 +173,7 @@ const styles = StyleSheet.create((theme) => ({
         paddingHorizontal: 12,
     },
     swipeActionPressed: {
-        opacity: 0.78,
+        opacity: motionTokens.press.opacity,
     },
     swipeActionPending: {
         opacity: 0.56,

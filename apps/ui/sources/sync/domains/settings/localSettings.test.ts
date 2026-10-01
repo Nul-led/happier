@@ -5,6 +5,11 @@ import { ACTIVITY_SURFACE_LOCAL_SETTING_DEFINITIONS } from './registry/local/loc
 import { applyLocalSettings, localSettingsDefaults, localSettingsParse } from './localSettings';
 
 describe('localSettingsParse', () => {
+    it('keeps connected-account identity privacy device-local and opt-in across old persisted settings', () => {
+        expect(localSettingsParse({}).hideConnectedAccountIdentities).toBe(false);
+        expect(localSettingsParse({ hideConnectedAccountIdentities: true }).hideConnectedAccountIdentities).toBe(true);
+        expect(localSettingsParse({ hideConnectedAccountIdentities: 'true' }).hideConnectedAccountIdentities).toBe(false);
+    });
     it('keeps remote alert enrollment independent of local notification overrides', () => {
         const settings = localSettingsParse({ localNotificationsEnabled: false });
         expect(settings.deviceRemoteAlertsEnabled).toBe(true);

@@ -1,9 +1,6 @@
 import * as React from 'react';
-import { useUnistyles } from 'react-native-unistyles';
 
-import { Icon } from '@/components/ui/icons/Icon';
-import { Item } from '@/components/ui/lists/Item';
-import { ItemGroup } from '@/components/ui/lists/ItemGroup';
+import { AttentionBanner } from '@/components/ui/lists/AttentionBanner';
 import { t } from '@/text';
 
 import type { TeamSectionContext } from '../teamSectionContext';
@@ -38,33 +35,23 @@ export const TeamOwnerRequiredNotice = React.memo(function TeamOwnerRequiredNoti
      */
     noCandidate?: boolean;
 }>) {
-    const { theme } = useUnistyles();
     const { context } = props;
 
     if (context.team.recovery?.kind !== 'owner_required' || !context.team.capabilities.viewTeam) return null;
 
     return (
-        <ItemGroup
-            footer={props.noCandidate === true
+        <AttentionBanner
+            testID="team-owner-required"
+            title={t('teams.members.ownerRequiredTitle')}
+            description={props.noCandidate === true
                 ? t('teams.members.ownerRequiredNoCandidate')
                 : t('teams.members.ownerRequiredBody', { team: context.team.name })}
-        >
-            <Item
-                testID="team-owner-required"
-                mode="info"
-                title={t('teams.members.ownerRequiredTitle')}
-                subtitle={t('teams.members.ownerRequiredBody', { team: context.team.name })}
-                icon={<Icon name="warning" size={29} color={theme.colors.state.warning.foreground} />}
-                accessibilityLiveRegion="polite"
-                showChevron={false}
-            />
-            {context.team.recovery.canAppointOwner && props.onChooseOwner && props.noCandidate !== true ? (
-                <Item
-                    testID="team-owner-required-choose"
-                    title={t('teams.members.chooseOwner')}
-                    onPress={props.onChooseOwner}
-                />
-            ) : null}
-        </ItemGroup>
+            accessibilityLiveRegion="polite"
+            action={context.team.recovery.canAppointOwner && props.onChooseOwner && props.noCandidate !== true ? {
+                label: t('teams.members.chooseOwner'),
+                onPress: props.onChooseOwner,
+                testID: 'team-owner-required-choose',
+            } : null}
+        />
     );
 });

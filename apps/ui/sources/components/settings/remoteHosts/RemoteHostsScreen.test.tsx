@@ -8,6 +8,11 @@ import { installSettingsViewCommonModuleMocks } from '../settingsViewTestHelpers
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
+const routerSpies = vi.hoisted(() => ({
+    push: vi.fn(),
+    replace: vi.fn(),
+    back: vi.fn(),
+}));
 const featureGateState = vi.hoisted(() => ({
     managementEnabled: true,
     secretMaterialEnabled: false,
@@ -126,7 +131,9 @@ const startMock = vi.hoisted(() => vi.fn(async (spec: { kind?: string }) => {
     }
     return taskId;
 }));
+/** The host's operations as the collection owner builds them for its page (see `loadRemoteHostsScreen`). */
 const itemRowActionsSpy = vi.hoisted(() => ({ props: null as any }));
+const collectionSpy = vi.hoisted(() => ({ value: null as any }));
 const modalSpies = vi.hoisted(() => ({
     show: vi.fn(),
     alert: vi.fn(async () => undefined),
@@ -228,6 +235,10 @@ function setTauriDesktop(enabled: boolean) {
 }
 
 installSettingsViewCommonModuleMocks({
+    router: async () => {
+        const { createExpoRouterMock } = await import('@/dev/testkit/mocks/router');
+        return createExpoRouterMock({ router: routerSpies }).module;
+    },
     reactNative: async () => {
         const { createReactNativeWebMock } = await import('@/dev/testkit/mocks/reactNative');
         return createReactNativeWebMock({
@@ -355,7 +366,7 @@ vi.mock('@/components/systemTasks/SystemTaskProgressCard', () => ({
 vi.mock('@/sync/sync', () => ({
     sync: {
         decryptSecretValue: () => secretState.decryptedSecretValue,
-        encryptSecretValue: () => ({ __brand: 'SecretString', value: 'enc' }),
+        encryptSecretValue: () => ({ _isSecretValue: true, value: 'enc' }),
     },
 }));
 
@@ -380,7 +391,10 @@ vi.mock('@/sync/runtime/nativeSshTunnels/runtime', () => ({
     },
     setNativeSshTunnelHostKeyPromptResolver: nativeTunnelState.setHostKeyPromptResolver,
     setNativeSshTunnelAuthPromptResolver: nativeTunnelState.setAuthPromptResolver,
-    startNativeSshTunnelRuntimeAppStateLifecycle: nativeTunnelState.startLifecycle,
+}));
+
+vi.mock('@/sync/runtime/nativeLoopbackTunnels/runtime', () => ({
+    startNativeLoopbackTunnelRuntimeAppStateLifecycle: nativeTunnelState.startLifecycle,
 }));
 
 vi.mock('@/components/systemTasks/nativeSshBridgeInterruptionStore', () => ({
@@ -413,10 +427,7 @@ vi.mock('@/components/ui/lists/Item', () => ({
 }));
 
 vi.mock('@/components/ui/lists/ItemRowActions', () => ({
-    ItemRowActions: (props: any) => {
-        itemRowActionsSpy.props = props;
-        return React.createElement('ItemRowActions', props);
-    },
+    ItemRowActions: (props: any) => React.createElement('ItemRowActions', props),
 }));
 
 	    afterEach(() => {
@@ -451,6 +462,9 @@ vi.mock('@/components/ui/lists/ItemRowActions', () => ({
                 generation: 1,
             };
 	        startMock.mockReset();
+            routerSpies.push.mockReset();
+            routerSpies.replace.mockReset();
+            routerSpies.back.mockReset();
 	        itemRowActionsSpy.props = null;
             modalSpies.show.mockReset();
             modalSpies.alert.mockReset();
@@ -461,10 +475,46 @@ vi.mock('@/components/ui/lists/ItemRowActions', () => ({
 	        standardCleanup();
 	    });
 
-	describe('RemoteHostsScreen', () => {
+
+/**
+ * The Remote hosts collection as one screen for these tests: the list, the first host's page and the
+ * keys-and-connections page under the collection owner, plus a probe reading the owner's operations
+ * for that host (what the host page offers).
+ */
+async function loadRemoteHostsScreen() {
+    const collection = await import('./collection/RemoteHostsCollection');
+    const { RemoteHostPage } = await import('./collection/RemoteHostPage');
+    const { useRemoteHostsCollection } = await import('./collection/remoteHostsCollectionController');
+    function HostActionsProbe() {
+        const controller = useRemoteHostsCollection();
+        collectionSpy.value = controller;
+        const { hosts, buildHostActions } = controller;
+        const host = hosts[0];
+        itemRowActionsSpy.props = host ? { actions: buildHostActions(host) } : null;
+        return null;
+    }
+    function FirstHostPage() {
+        const { hosts } = useRemoteHostsCollection();
+        return hosts[0] ? React.createElement(RemoteHostPage, { hostId: hosts[0].id }) : null;
+    }
+    function RemoteHostsScreen() {
+        return React.createElement(
+            collection.RemoteHostsCollectionRoot,
+            null,
+            React.createElement(collection.RemoteHostsCollectionList, { variant: 'page' }),
+            React.createElement(FirstHostPage),
+            React.createElement(collection.RemoteHostsAccessPage),
+            React.createElement(collection.RemoteHostsActiveTask),
+            React.createElement(HostActionsProbe),
+        );
+    }
+    return { RemoteHostsScreen };
+}
+
+	describe('RemoteHosts collection', () => {
 	    it('renders a desktop-only notice when not running on desktop', async () => {
 	        setTauriDesktop(false);
-	        const { RemoteHostsScreen } = await import('./RemoteHostsScreen');
+	        const { RemoteHostsScreen } = await loadRemoteHostsScreen();
 	        const screen = await renderScreen(React.createElement(RemoteHostsScreen));
 
 	        expect(screen.findByTestId('settings.remoteHosts.desktopOnly')).toBeTruthy();
@@ -474,7 +524,7 @@ vi.mock('@/components/ui/lists/ItemRowActions', () => ({
 	        setTauriDesktop(true);
 	        featureGateState.managementEnabled = false;
 
-	        const { RemoteHostsScreen } = await import('./RemoteHostsScreen');
+	        const { RemoteHostsScreen } = await loadRemoteHostsScreen();
 	        const screen = await renderScreen(React.createElement(RemoteHostsScreen));
 
 	        expect(screen.findByTestId('settings.remoteHosts.managementDisabled')).toBeTruthy();
@@ -500,7 +550,7 @@ vi.mock('@/components/ui/lists/ItemRowActions', () => ({
             },
         ];
 
-        const { RemoteHostsScreen } = await import('./RemoteHostsScreen');
+        const { RemoteHostsScreen } = await loadRemoteHostsScreen();
         const screen = await renderScreen(React.createElement(RemoteHostsScreen));
 
         expect(screen.findByTestId('settings.remoteHosts.desktopOnly')).toBeNull();
@@ -551,7 +601,7 @@ vi.mock('@/components/ui/lists/ItemRowActions', () => ({
             },
         ];
 
-        const { RemoteHostsScreen } = await import('./RemoteHostsScreen');
+        const { RemoteHostsScreen } = await loadRemoteHostsScreen();
         const screen = await renderScreen(React.createElement(RemoteHostsScreen));
 
         expect(screen.findByTestId('settings.remoteHosts.hostRow.host-password')).toBeTruthy();
@@ -605,7 +655,7 @@ vi.mock('@/components/ui/lists/ItemRowActions', () => ({
             },
         ];
 
-        const { RemoteHostsScreen } = await import('./RemoteHostsScreen');
+        const { RemoteHostsScreen } = await loadRemoteHostsScreen();
         const screen = await renderScreen(React.createElement(RemoteHostsScreen));
 
         const addHost = screen.findByTestId('settings.remoteHosts.addHost');
@@ -614,16 +664,43 @@ vi.mock('@/components/ui/lists/ItemRowActions', () => ({
 
         addHost!.props.onPress();
 
-        expect(modalSpies.show).toHaveBeenCalledWith(expect.objectContaining({
-            component: expect.anything(),
-            props: expect.objectContaining({
-                remoteHost: null,
-                savedRemoteHosts: remoteHostsState.value,
-            }),
-        }));
+        // Adding happens in the collection: a draft host with its editor, never a modal form.
+        expect(modalSpies.show).not.toHaveBeenCalled();
+        expect(routerSpies.push).toHaveBeenCalledWith('/settings/remote-hosts/new');
     });
 
-    it('preserves opaque legacy rows when the settings form upserts or removes a current host', async () => {
+    it('adds a host as a draft in the collection: the editor saves it and opens its page', async () => {
+        setTauriDesktop(true);
+        featureGateState.managementEnabled = true;
+        remoteHostsState.value = [];
+        const collection = await import('./collection/RemoteHostsCollection');
+        const { RemoteHostPage } = await import('./collection/RemoteHostPage');
+        const screen = await renderScreen(React.createElement(
+            collection.RemoteHostsCollectionRoot,
+            null,
+            React.createElement(RemoteHostPage, { hostId: null }),
+        ));
+
+        expect(screen.findByTestId('settings.remoteHosts.host.save')?.props.disabled).toBe(true);
+        await act(async () => {
+            screen.changeTextByTestId('remote-host-form-name', 'Build box');
+            screen.changeTextByTestId('remote-host-form-ssh-sshUsernameInput', 'ci');
+            screen.changeTextByTestId('remote-host-form-ssh-sshHostInput', 'build.local');
+        });
+        expect(screen.findByTestId('settings.remoteHosts.host.save')?.props.disabled).toBe(false);
+        await act(async () => {
+            screen.findByTestId('settings.remoteHosts.host.save')?.props.onPress();
+        });
+        await flushHookEffects({ cycles: 2, turns: 4 });
+
+        const saved = remoteHostsState.setValue.mock.calls.at(-1)?.[0] as Array<{ id: string; name: string; ssh: { target: string } }>;
+        expect(saved).toHaveLength(1);
+        expect(saved[0]).toEqual(expect.objectContaining({ name: 'Build box', ssh: expect.objectContaining({ target: 'ci@build.local' }) }));
+        expect(routerSpies.replace).toHaveBeenCalledWith(`/settings/remote-hosts/${saved[0].id}`);
+        expect(modalSpies.show).not.toHaveBeenCalled();
+    });
+
+    it('preserves opaque legacy rows when the collection saves or removes a current host', async () => {
         setTauriDesktop(true);
         featureGateState.managementEnabled = true;
         const currentHost = {
@@ -648,14 +725,13 @@ vi.mock('@/components/ui/lists/ItemRowActions', () => ({
         };
         remoteHostsState.value = [currentHost, opaqueFutureHost];
 
-        const { RemoteHostsScreen } = await import('./RemoteHostsScreen');
+        const { RemoteHostsScreen } = await loadRemoteHostsScreen();
         const screen = await renderScreen(React.createElement(RemoteHostsScreen));
-        screen.findByTestId('settings.remoteHosts.addHost')?.props.onPress();
-
-        const formProps = modalSpies.show.mock.calls.at(-1)?.[0]?.props;
-        if (!formProps) {
-            throw new Error('Expected remote-host form props');
-        }
+        expect(screen.findByTestId('settings.remoteHosts.hostRow.host-a')).toBeTruthy();
+        const formProps = {
+            onSave: (payload: any) => collectionSpy.value.saveHost(payload),
+            onDelete: (id: string) => collectionSpy.value.deleteHost(id),
+        };
         const addedHost = {
             ...currentHost,
             id: 'host-b',
@@ -675,7 +751,7 @@ vi.mock('@/components/ui/lists/ItemRowActions', () => ({
         expect(afterRemove[0]).toBe(opaqueFutureHost);
     });
 
-    it('pins outcome actions and keeps maintenance actions in overflow', async () => {
+    it('leads a host page with what this device can do with it, then keeping Happier there up to date', async () => {
         setTauriDesktop(true);
         featureGateState.managementEnabled = true;
         remoteHostsState.value = [
@@ -695,37 +771,21 @@ vi.mock('@/components/ui/lists/ItemRowActions', () => ({
             },
         ];
 
-        const { RemoteHostsScreen } = await import('./RemoteHostsScreen');
-        await renderScreen(React.createElement(RemoteHostsScreen));
+        const { RemoteHostsScreen } = await loadRemoteHostsScreen();
+        const screen = await renderScreen(React.createElement(RemoteHostsScreen));
 
-        const rowActionsProps = itemRowActionsSpy.props as {
-            actions?: Array<{ id: string }>;
-            compactActionIds?: string[];
-            pinnedActionIds?: string[];
-        } | null;
-        expect(rowActionsProps?.actions?.map((action) => action.id)).toEqual(expect.arrayContaining([
-            'setupAsMachine',
-            'useAsRelayHost',
-            'configureAccess',
-            'testConnection',
-            'installOrUpdateCli',
-            'edit',
-            'remove',
-        ]));
-        expect(rowActionsProps?.compactActionIds).toEqual([
-            'setupAsMachine',
-            'connectFromThisDevice',
-            'useAsRelayHost',
-            'configureAccess',
-        ]);
-        expect(rowActionsProps?.pinnedActionIds).toEqual([
-            'setupAsMachine',
-            'connectFromThisDevice',
-            'useAsRelayHost',
-            'configureAccess',
-        ]);
-        expect(rowActionsProps?.compactActionIds).not.toContain('testConnection');
-        expect(rowActionsProps?.compactActionIds).not.toContain('installOrUpdateCli');
+        // What this device can do with the host leads its page; maintaining Happier there follows.
+        const useIds = ['setupAsMachine', 'useAsRelayHost', 'configureAccess'];
+        const maintenanceIds = ['testConnection', 'installOrUpdateCli'];
+        for (const id of [...useIds, ...maintenanceIds]) {
+            expect(screen.findByTestId(`settings.remoteHosts.hostAction.${id}`)).toBeTruthy();
+        }
+        const order = screen.root.findAll((node) => typeof node.props?.testID === 'string'
+            && node.props.testID.startsWith('settings.remoteHosts.hostAction.')
+            && typeof node.type === 'string')
+            .map((node) => String(node.props.testID).slice('settings.remoteHosts.hostAction.'.length));
+        const firstMaintenance = order.findIndex((id) => maintenanceIds.includes(id));
+        expect(useIds.every((id) => order.indexOf(id) < firstMaintenance)).toBe(true);
     });
 
     it('starts the remote SSH bootstrap task when setting a host up as a Happier machine', async () => {
@@ -748,7 +808,7 @@ vi.mock('@/components/ui/lists/ItemRowActions', () => ({
             },
         ];
 
-        const { RemoteHostsScreen } = await import('./RemoteHostsScreen');
+        const { RemoteHostsScreen } = await loadRemoteHostsScreen();
         await renderScreen(React.createElement(RemoteHostsScreen));
 
         const rowActionsProps = itemRowActionsSpy.props as { actions?: Array<{ id: string; onPress: () => void }> } | null;
@@ -790,7 +850,7 @@ vi.mock('@/components/ui/lists/ItemRowActions', () => ({
                     target: 'dev@10.0.0.1',
                     port: 2222,
                     authMode: 'password',
-                    passwordEnc: { __brand: 'SecretString', value: 'enc' },
+                    passwordEnc: { _isSecretValue: true, value: 'enc' },
                 },
                 linkedMachineId: null,
                 linkedRelayProfileId: null,
@@ -800,7 +860,7 @@ vi.mock('@/components/ui/lists/ItemRowActions', () => ({
             },
         ];
 
-        const { RemoteHostsScreen } = await import('./RemoteHostsScreen');
+        const { RemoteHostsScreen } = await loadRemoteHostsScreen();
         await renderScreen(React.createElement(RemoteHostsScreen));
 
         const rowActionsProps = itemRowActionsSpy.props as { actions?: Array<{ id: string; onPress: () => void }> } | null;
@@ -898,7 +958,7 @@ vi.mock('@/components/ui/lists/ItemRowActions', () => ({
                     target: 'dev@10.0.0.1',
                     port: 2222,
                     authMode: 'password',
-                    passwordEnc: { __brand: 'SecretString', value: 'enc' },
+                    passwordEnc: { _isSecretValue: true, value: 'enc' },
                 },
                 linkedMachineId: null,
                 linkedRelayProfileId: null,
@@ -908,7 +968,7 @@ vi.mock('@/components/ui/lists/ItemRowActions', () => ({
             },
         ];
 
-        const { RemoteHostsScreen } = await import('./RemoteHostsScreen');
+        const { RemoteHostsScreen } = await loadRemoteHostsScreen();
         const screen = await renderScreen(React.createElement(RemoteHostsScreen));
 
         const rowActionsProps = itemRowActionsSpy.props as { actions?: Array<{ id: string; onPress: () => void }> } | null;
@@ -944,7 +1004,7 @@ vi.mock('@/components/ui/lists/ItemRowActions', () => ({
         }];
         nativeTunnelState.releaseTunnel.mockRejectedValueOnce(new Error('native_stop_failed'));
 
-        const { RemoteHostsScreen } = await import('./RemoteHostsScreen');
+        const { RemoteHostsScreen } = await loadRemoteHostsScreen();
         const screen = await renderScreen(React.createElement(RemoteHostsScreen));
 
         const action = screen.findByTestId(
@@ -972,7 +1032,7 @@ vi.mock('@/components/ui/lists/ItemRowActions', () => ({
                     target: 'dev@10.0.0.1',
                     port: 2222,
                     authMode: 'password',
-                    passwordEnc: { __brand: 'SecretString', value: 'enc' },
+                    passwordEnc: { _isSecretValue: true, value: 'enc' },
                 },
                 linkedMachineId: null,
                 linkedRelayProfileId: null,
@@ -988,12 +1048,14 @@ vi.mock('@/components/ui/lists/ItemRowActions', () => ({
             startedAtMs: 1760000000000,
         });
 
-        const { RemoteHostsScreen } = await import('./RemoteHostsScreen');
+        const { RemoteHostsScreen } = await loadRemoteHostsScreen();
         const screen = await renderScreen(React.createElement(RemoteHostsScreen));
 
-        expect(screen.findByTestId('settings.remoteHosts.interruptedBootstrap.host-a')).toBeTruthy();
-        const actions = itemRowActionsSpy.props as { actions?: Array<{ id: string; onPress: () => void }> } | null;
-        const clearAction = actions?.actions?.find((action) => action.id === 'clearInterruptedBootstrap');
+        const interrupted = screen.findByTestId('settings.remoteHosts.interruptedBootstrap.host-a');
+        expect(interrupted).toBeTruthy();
+        const interruptedRowActions = interrupted!.findAll((node) => (node.type as unknown) === 'ItemRowActions')[0]?.props as
+            { actions?: Array<{ id: string; onPress: () => void }> } | undefined;
+        const clearAction = interruptedRowActions?.actions?.find((action) => action.id === 'clearInterruptedBootstrap');
         expect(clearAction).toBeTruthy();
 
         await act(async () => {
@@ -1020,7 +1082,7 @@ vi.mock('@/components/ui/lists/ItemRowActions', () => ({
                     target: 'dev@10.0.0.1',
                     port: 2222,
                     authMode: 'password',
-                    passwordEnc: { __brand: 'SecretString', value: 'enc' },
+                    passwordEnc: { _isSecretValue: true, value: 'enc' },
                 },
                 linkedMachineId: null,
                 linkedRelayProfileId: null,
@@ -1030,7 +1092,11 @@ vi.mock('@/components/ui/lists/ItemRowActions', () => ({
             },
         ];
         const markerKey = 'native-ssh-interrupted:host-a:remote.ssh.bootstrapMachine.v1';
-        startMock.mockImplementationOnce(async () => {
+        // The host page's SSH editor may ask the runner for configured hosts first; only the
+        // bootstrap is the live task this test follows.
+        const defaultStart = startMock.getMockImplementation()!;
+        startMock.mockImplementation(async (spec: { kind?: string }) => {
+            if (spec.kind !== 'remote.ssh.bootstrapMachine.v1') return defaultStart(spec);
             const taskId = 'native_ssh_task_live';
             systemTaskState.snapshots.set(taskId, {
                 taskId,
@@ -1050,7 +1116,7 @@ vi.mock('@/components/ui/lists/ItemRowActions', () => ({
             return taskId;
         });
 
-        const { RemoteHostsScreen } = await import('./RemoteHostsScreen');
+        const { RemoteHostsScreen } = await loadRemoteHostsScreen();
         const screen = await renderScreen(React.createElement(RemoteHostsScreen));
         const rowActionsProps = itemRowActionsSpy.props as { actions?: Array<{ id: string; onPress: () => void }> } | null;
         const setupAsMachine = rowActionsProps?.actions?.find((action) => action.id === 'setupAsMachine');
@@ -1080,7 +1146,7 @@ vi.mock('@/components/ui/lists/ItemRowActions', () => ({
                     target: 'dev@10.0.0.1',
                     port: 2222,
                     authMode: 'password',
-                    passwordEnc: { __brand: 'SecretString', value: 'enc' },
+                    passwordEnc: { _isSecretValue: true, value: 'enc' },
                 },
                 linkedMachineId: null,
                 linkedRelayProfileId: null,
@@ -1090,7 +1156,7 @@ vi.mock('@/components/ui/lists/ItemRowActions', () => ({
             },
         ];
 
-        const { RemoteHostsScreen } = await import('./RemoteHostsScreen');
+        const { RemoteHostsScreen } = await loadRemoteHostsScreen();
         await renderScreen(React.createElement(RemoteHostsScreen));
 
         const rowActionsProps = itemRowActionsSpy.props as { actions?: Array<{ id: string }> } | null;
@@ -1122,7 +1188,7 @@ vi.mock('@/components/ui/lists/ItemRowActions', () => ({
             },
         ];
 
-        const { RemoteHostsScreen } = await import('./RemoteHostsScreen');
+        const { RemoteHostsScreen } = await loadRemoteHostsScreen();
         await renderScreen(React.createElement(RemoteHostsScreen));
 
         const rowActionsProps = itemRowActionsSpy.props as { actions?: Array<{ id: string }> } | null;
@@ -1149,7 +1215,7 @@ vi.mock('@/components/ui/lists/ItemRowActions', () => ({
             },
         ];
 
-        const { RemoteHostsScreen } = await import('./RemoteHostsScreen');
+        const { RemoteHostsScreen } = await loadRemoteHostsScreen();
         const screen = await renderScreen(React.createElement(RemoteHostsScreen));
 
         const rowActionsProps = itemRowActionsSpy.props as { actions?: Array<{ id: string; onPress: () => void }> } | null;
@@ -1208,7 +1274,7 @@ vi.mock('@/components/ui/lists/ItemRowActions', () => ({
             },
         ];
 
-        const { RemoteHostsScreen } = await import('./RemoteHostsScreen');
+        const { RemoteHostsScreen } = await loadRemoteHostsScreen();
         const screen = await renderScreen(React.createElement(RemoteHostsScreen));
 
         const rowActionsProps = itemRowActionsSpy.props as { actions?: Array<{ id: string; onPress: () => void }> } | null;
@@ -1251,7 +1317,7 @@ vi.mock('@/components/ui/lists/ItemRowActions', () => ({
             },
         ];
 
-        const { RemoteHostsScreen } = await import('./RemoteHostsScreen');
+        const { RemoteHostsScreen } = await loadRemoteHostsScreen();
         const screen = await renderScreen(React.createElement(RemoteHostsScreen));
 
         expect(screen.findByTestId('settings.remoteHosts.desktopOnly')).toBeNull();
@@ -1321,7 +1387,7 @@ vi.mock('@/components/ui/lists/ItemRowActions', () => ({
             lastProbeAt: '2026-05-06T10:01:00.000Z',
         }];
 
-        const { RemoteHostsScreen } = await import('./RemoteHostsScreen');
+        const { RemoteHostsScreen } = await loadRemoteHostsScreen();
         const screen = await renderScreen(React.createElement(RemoteHostsScreen));
         await flushHookEffects({ cycles: 3, turns: 6 });
 

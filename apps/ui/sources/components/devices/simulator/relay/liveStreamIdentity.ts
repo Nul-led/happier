@@ -4,21 +4,9 @@ import type {
     SimulatorDeviceResourceV1,
 } from '@happier-dev/protocol';
 
-/**
- * Default viewer-proposed caps for a simulator live-stream watch (Phase 8.1b).
- *
- * The server enforces the real policy ceiling through the relay-authorization grant
- * scope (`requestLiveStreamRelayAuthorization`), so these are the viewer's requested
- * upper bounds, not a trusted limit. They are intentionally conservative; the
- * device-QA lane (8.2/8.3) tunes them against live capture once the
- * `devices.simulatorPreview` gate is flipped.
- */
-export const DEFAULT_SIMULATOR_LIVE_STREAM_CAPS: MachineLiveStreamCapsV1 = {
-    maxBitrateBps: 4_000_000,
-    maxFramesPerSecond: 30,
-    maxFrameBytes: 2_000_000,
-    maxDurationMs: 30 * 60_000,
-};
+// Omitted quality limits leave capture at its source capability. Explicit viewer
+// quality choices remain proposals; the Home's grant owner applies operator policy.
+export const DEFAULT_SIMULATOR_LIVE_STREAM_CAPS: MachineLiveStreamCapsV1 = {};
 
 export type SimulatorLiveStreamIdentity = Readonly<{
     simulatorId: string;

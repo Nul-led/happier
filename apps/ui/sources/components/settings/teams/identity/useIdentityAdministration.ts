@@ -2,10 +2,11 @@ import * as React from 'react';
 import { TEAMS_ACCOUNT_CHANGE_ENTITY_ID_V1 } from '@happier-dev/protocol';
 
 import type { ServerAccountScope } from '@/sync/domains/scope/serverAccountScope';
+import type { ActionApprovalRegistration } from '@/components/approvals/actionApprovalContinuation';
 import { serverAccountScopedTeamKey, type TeamAddress } from '@/sync/domains/teams/teamAddress';
 import { subscribeHomeAccountChange } from '@/sync/runtime/orchestration/homeAccountChange';
 
-import { createIdentityAdministrationClient } from './identityAdministrationClient';
+import { createIdentityAdministrationClient, executeIdentityAdministrationRead, type TeamIdentityActionOutput } from './identityAdministrationClient';
 import {
     beginIdentityAdministrationRefresh,
     INITIAL_IDENTITY_ADMINISTRATION_STATE,
@@ -33,6 +34,7 @@ type BoundIdentityAdministrationState = Readonly<{
 export function useIdentityAdministration(
     scope: ServerAccountScope,
     teamId: string,
+    onApprovalPending?: (registration: ActionApprovalRegistration) => void,
 ): IdentityAdministrationBinding {
     const address: TeamAddress = { serverId: scope.serverId, teamId };
     const bindingKey = serverAccountScopedTeamKey(scope, address);
@@ -42,8 +44,8 @@ export function useIdentityAdministration(
     }));
     const [refreshGeneration, setRefreshGeneration] = React.useState(0);
     const client = React.useMemo(
-        () => createIdentityAdministrationClient(scope),
-        [scope.serverId, scope.accountId],
+        () => createIdentityAdministrationClient(scope, { onApprovalPending }),
+        [scope.serverId, scope.accountId, onApprovalPending],
     );
     const state = boundState.bindingKey === bindingKey
         ? boundState.value
@@ -57,11 +59,11 @@ export function useIdentityAdministration(
                 ? beginIdentityAdministrationRefresh(current.value)
                 : INITIAL_IDENTITY_ADMINISTRATION_STATE,
         }));
-        void client.execute(
+        void executeIdentityAdministrationRead<TeamIdentityActionOutput<'teams.identity.connections.list'>>((options) => client.execute(
             'teams.identity.connections.list',
             { v: 1, teamId },
-            { signal: controller.signal },
-        ).then((result) => {
+            options,
+        ), controller.signal).then((result) => {
             if (controller.signal.aborted) return;
             setBoundState((current) => current.bindingKey !== bindingKey
                 ? current

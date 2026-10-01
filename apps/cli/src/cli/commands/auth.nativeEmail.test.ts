@@ -1,25 +1,34 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import fastify from 'fastify';
+import fastify, { type FastifyRequest } from 'fastify';
 import { Readable } from 'node:stream';
 import tweetnacl from 'tweetnacl';
 import {
+  CURRENT_ACCOUNT_STORED_CONTENT_PROTOCOL_VERSION,
   createKeyChallengeV2SigningInput,
   decodeBase64,
+  deriveAccountMachineKeyFromRecoverySecret,
   formatRecoveryKey,
+  verifyAccountContentKeyBindingV1,
 } from '@happier-dev/protocol';
 
 import { createEnvKeyScope } from '@/testkit/env/envScope';
 import { createTempDir, removeTempDir } from '@/testkit/fs/tempDir';
 import { installAxiosFastifyAdapter } from '@/testkit/http/axiosAdapter';
-import { captureConsoleText } from '@/testkit/logger/captureOutput';
+import { captureConsoleJsonOutput, captureConsoleText } from '@/testkit/logger/captureOutput';
 
-const authenticatedHome = vi.hoisted(() => ({
-  register: vi.fn(async () => ({ machineId: 'machine-1' })),
-}));
+const terminalBearer = `header.${Buffer.from(JSON.stringify({ sub: 'account-1', tokenEpoch: 0,
+  provenance: { v: 1, kind: 'terminal', authority: 'account_automation' },
+})).toString('base64url')}.signature`;
 
-vi.mock('@/ui/auth', () => ({
-  registerMachineWithAuthenticatedHomeRuntime: authenticatedHome.register,
-}));
+function installNativeAuthTransport(app: ReturnType<typeof fastify>): () => void {
+  // Machine registration is real; only the Home's HTTP boundary is substituted.
+  app.get('/v1/account/encryption', async () => ({ mode: 'plain', updatedAt: 1 }));
+  app.post('/v1/machines', async (request: FastifyRequest) => {
+    const body = request.body as { id: string; metadata: string };
+    return { machine: { id: body.id, metadata: body.metadata, metadataVersion: 1, daemonState: null, daemonStateVersion: 0 } };
+  });
+  return installAxiosFastifyAdapter({ app, origin: 'http://account.test' });
+}
 
 describe('native email and recovery CLI commands', () => {
   const env = createEnvKeyScope([
@@ -40,11 +49,21 @@ describe('native email and recovery CLI commands', () => {
       HAPPIER_WEBAPP_URL: 'http://account.test',
       HAPPIER_TOKEN: undefined,
     });
-    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({
+    const nativeFetch = globalThis.fetch;
+    vi.stubGlobal('fetch', vi.fn(async (...[input, init]: Parameters<typeof fetch>) => {
+      const url = new URL(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url);
+      // Ink's real Yoga initializer fetches its packaged data-URL WASM.
+      if (url.protocol === 'data:') return await nativeFetch(input, init);
+      if (url.origin !== 'http://account.test' || url.pathname !== '/v1/features') throw new Error('Unexpected fixture fetch target');
+      return new Response(JSON.stringify({
       features: {},
-      capabilities: { serverIdentity: { serverIdentityId: 'srv_home' } },
-    }), { status: 200, headers: { 'content-type': 'application/json' } })));
-    authenticatedHome.register.mockClear();
+      capabilities: {
+        serverIdentity: { serverIdentityId: 'srv_home' },
+        accountStoredContentCompatibility: { v: 1, currentProtocolVersion: CURRENT_ACCOUNT_STORED_CONTENT_PROTOCOL_VERSION,
+          minimumProtocolVersion: CURRENT_ACCOUNT_STORED_CONTENT_PROTOCOL_VERSION, declarationTransport: 'http-header-and-socket-auth-v1' },
+      },
+      }), { status: 200, headers: { 'content-type': 'application/json' } });
+    }));
     vi.resetModules();
   });
 
@@ -61,12 +80,14 @@ describe('native email and recovery CLI commands', () => {
     const password = '  exact password with surrounding spaces  ';
     app.post('/v1/auth/email/prelogin', async () => ({ v: 1, kind: 'plain_password' }));
     app.post('/v1/auth/email/login', async (request) => {
-      expect(request.body).toEqual({ v: 1, email: 'person@example.test', password });
-      return { token: 'header.eyJzdWIiOiJhY2NvdW50LTEifQ.signature' };
+      expect(request.body).toEqual({ v: 1, email: 'person@example.test', password, credentialKind: 'terminal' });
+      return { token: terminalBearer };
     });
-    const restore = installAxiosFastifyAdapter({ app, origin: 'http://account.test' });
-    const output = captureConsoleText();
+    const restore = installNativeAuthTransport(app);
+    const output = captureConsoleJsonOutput<unknown>();
     try {
+      // Surface module-readiness errors instead of the command's secret-safe projection.
+      await import('@/ui/auth');
       const { expandAuthSecretsFromStdin } = await import('./auth/stdinSecrets');
       const args = await expandAuthSecretsFromStdin(
         ['login', '--email', 'person@example.test', '--json', '--secrets-json-stdin'],
@@ -74,9 +95,9 @@ describe('native email and recovery CLI commands', () => {
       );
       const { handleAuthCommand } = await import('./auth');
       await handleAuthCommand(args);
-      const envelope = JSON.parse(output.text());
-      expect(envelope).toMatchObject({ ok: true, data: { accountId: 'account-1' } });
-      expect(output.text()).not.toContain(password);
+      const envelope = output.json();
+      expect(envelope).toEqual(expect.objectContaining({ ok: true, data: expect.objectContaining({ accountId: 'account-1' }) }));
+      expect(output.logs.join('\n')).not.toContain(password);
     } finally {
       output.restore();
       restore();
@@ -100,23 +121,34 @@ describe('native email and recovery CLI commands', () => {
       expect(request.body).toMatchObject({
         challengeId: 'challenge-existing-account',
         requireExistingAccount: true,
+        credentialKind: 'terminal',
       });
-      const body = request.body as { publicKey: string; signature: string };
+      const body = request.body as { publicKey: string; signature: string; contentPublicKey?: string; contentPublicKeySig?: string };
       expect(tweetnacl.sign.detached.verify(
         createKeyChallengeV2SigningInput({ ...challenge, requireExistingAccount: true }),
         decodeBase64(body.signature),
         decodeBase64(body.publicKey),
       )).toBe(true);
-      return { token: 'header.eyJzdWIiOiJhY2NvdW50LTEifQ.signature' };
+      const contentPrivateKey = deriveAccountMachineKeyFromRecoverySecret(recoverySecret);
+      expect(decodeBase64(body.contentPublicKey ?? '')).toEqual(
+        tweetnacl.box.keyPair.fromSecretKey(contentPrivateKey).publicKey,
+      );
+      expect(verifyAccountContentKeyBindingV1({
+        accountSigningPublicKey: decodeBase64(body.publicKey),
+        contentPublicKey: decodeBase64(body.contentPublicKey ?? ''),
+        signature: decodeBase64(body.contentPublicKeySig ?? ''),
+      })).not.toBeNull();
+      return { success: true, token: terminalBearer };
     });
-    const restore = installAxiosFastifyAdapter({ app, origin: 'http://account.test' });
-    const output = captureConsoleText();
+    const restore = installNativeAuthTransport(app);
+    const output = captureConsoleJsonOutput<unknown>();
     try {
+      await import('@/ui/auth');
       const { handleAuthCommand } = await import('./auth');
       await handleAuthCommand(['recovery-key', 'login', '--key', recoveryKey, '--json']);
-      const envelope = JSON.parse(output.text());
-      expect(envelope).toMatchObject({ ok: true, data: { accountId: 'account-1' } });
-      expect(output.text()).not.toContain(recoveryKey);
+      const envelope = output.json();
+      expect(envelope).toEqual(expect.objectContaining({ ok: true, data: expect.objectContaining({ accountId: 'account-1' }) }));
+      expect(output.logs.join('\n')).not.toContain(recoveryKey);
     } finally {
       output.restore();
       restore();
@@ -130,7 +162,7 @@ describe('native email and recovery CLI commands', () => {
       expect(request.body).toEqual({ v: 1, email: 'person@example.test' });
       return { accepted: true };
     });
-    const restore = installAxiosFastifyAdapter({ app, origin: 'http://account.test' });
+    const restore = installNativeAuthTransport(app);
     const output = captureConsoleText();
     try {
       const { handleAuthCommand } = await import('./auth');
@@ -164,7 +196,7 @@ describe('native email and recovery CLI commands', () => {
       provisionRequests += 1;
       return {};
     });
-    const restore = installAxiosFastifyAdapter({ app, origin: 'http://account.test' });
+    const restore = installNativeAuthTransport(app);
     const output = captureConsoleText();
     try {
       const { handleAuthCommand } = await import('./auth');
@@ -197,7 +229,7 @@ describe('native email and recovery CLI commands', () => {
       expect(request.body).toEqual({ v: 1, token: resetToken, password });
       return reply.code(400).send({ error: 'invalid_reset' });
     });
-    const restore = installAxiosFastifyAdapter({ app, origin: 'http://account.test' });
+    const restore = installNativeAuthTransport(app);
     const output = captureConsoleText();
     try {
       const { expandAuthSecretsFromStdin } = await import('./auth/stdinSecrets');
@@ -226,7 +258,7 @@ describe('native email and recovery CLI commands', () => {
       expect(request.body).toEqual({ v: 1, verificationToken });
       return reply.code(400).send({ error: 'verification_invalid' });
     });
-    const restore = installAxiosFastifyAdapter({ app, origin: 'http://account.test' });
+    const restore = installNativeAuthTransport(app);
     const output = captureConsoleText();
     try {
       const { writeCredentialsTokenOnly } = await import('@/persistence');

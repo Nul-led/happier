@@ -197,8 +197,10 @@ export function createProviderManagedCatalogRuntimePort(input: Readonly<{
       }
       const registry = registryLease.registry;
       if (
-        launchInput.expectedRuntimeRegistryGeneration !== undefined
-        && registry.generation !== launchInput.expectedRuntimeRegistryGeneration
+        launchInput.expectedActivationOccurrenceId !== undefined
+        && registry.readPluginOccurrenceId?.(
+          launchInput.source.implementationIdentity.pluginId,
+        ) !== launchInput.expectedActivationOccurrenceId
       ) {
         return await fail(createProviderErrorV1(
           'provider_authorization_changed',

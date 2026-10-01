@@ -9,20 +9,26 @@ import { renderScreen, standardCleanup } from '@/dev/testkit';
 
 const executeMock = vi.hoisted(() => vi.fn());
 
-vi.mock('expo-router', () => ({
-    useNavigation: () => ({ addListener: () => () => {}, dispatch: vi.fn(), setOptions: vi.fn() }),
-    useRouter: () => ({ replace: vi.fn() }),
-}));
+vi.mock('expo-router', async () => {
+    const { createExpoRouterMock } = await import('@/dev/testkit/mocks/router');
+    return createExpoRouterMock().module;
+});
 vi.mock('@/components/ui/forms/FieldItem', () => ({ FieldItem: 'FieldItem' }));
-vi.mock('@/components/ui/lists/Item', () => ({ Item: 'Item' }));
+// Rows render their right-hand control, as the real row does; page fields are text inputs.
+vi.mock('@/components/ui/lists/Item', async () => {
+    const React = await import('react');
+    return { Item: (props: { rightElement?: unknown }) => React.createElement('Item', props, props.rightElement as never) };
+});
+vi.mock('@/components/ui/forms/FieldTextInput', () => ({ FieldTextInput: 'TextInput' }));
 vi.mock('@/components/ui/lists/ItemGroup', () => ({ ItemGroup: 'ItemGroup' }));
-vi.mock('@/components/ui/text/Text', () => ({ TextInput: 'TextInput' }));
+vi.mock('@/components/ui/text/Text', () => ({ Text: 'Text', TextInput: 'TextInput' }));
 vi.mock('@/text', () => ({ t: (key: string) => key }));
 vi.mock('./managedIdentityProviderClient', () => ({
     createManagedIdentityProviderClient: () => ({ execute: executeMock }),
 }));
 
 import {
+    EMPTY_MANAGED_OIDC_PROVIDER_DRAFT,
     ManagedOidcProviderEditorContent,
     validateManagedIdentityProviderDraft,
 } from './ManagedIdentityProviderEditorScreen';
@@ -117,7 +123,8 @@ describe('ManagedOidcProviderEditorContent', () => {
         );
 
         expect(screen.findByTestId('identity-provider-name')?.props.editable).toBe(false);
-        expect(screen.findByTestId('identity-provider-advanced-toggle')?.props.disabled).toBe(true);
+        await screen.pressByTestIdAsync('identity-provider-advanced-toggle');
+        expect(screen.findByTestId('identity-provider-scopes')?.props.editable).toBe(false);
     });
 
     it('presents provider validation as validation rather than a sign-in test', async () => {
@@ -355,6 +362,7 @@ describe('ManagedOidcProviderEditorContent', () => {
 });
 
 const EMPTY_DRAFT = Object.freeze({
+    ...EMPTY_MANAGED_OIDC_PROVIDER_DRAFT,
     displayName: '',
     issuer: '',
     clientId: '',

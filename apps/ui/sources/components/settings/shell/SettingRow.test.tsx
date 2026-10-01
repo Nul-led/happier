@@ -1,8 +1,12 @@
 import * as React from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { act } from 'react-test-renderer';
+import { View } from 'react-native';
 
-import { renderScreen } from '@/dev/testkit';
+import { renderScreen } from '@/dev/testkit/render/renderScreen';
+// Prepare the real owner graph during collection, before individual tests enable fake timers.
+import { SettingAnchor, SettingSection, SettingRow, useSettingRevealRequested } from './SettingRow';
+import { ExpandableItem } from '@/components/ui/lists/ExpandableItem';
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -28,7 +32,16 @@ vi.mock('react-native-unistyles', async () => {
     return createUnistylesMock();
 });
 
+vi.mock('react-native-reanimated', async () => {
+    const { createReanimatedModuleMock } = await import('@/dev/testkit/mocks/reanimated');
+    return createReanimatedModuleMock();
+});
+
 vi.mock('@expo/vector-icons', () => ({ Ionicons: 'Ionicons' }));
+// This third-party SDK export is unavailable on some workers and is never used by setting anchors.
+vi.mock('react-native-enriched-markdown/lib/module/web/streamingReveal.js', () => ({
+    splitStreamingRevealTextParts: () => { throw new Error('Unexpected streaming Markdown in setting anchor test'); },
+}));
 
 const PAGE = await (async () => {
     const { defineSettingsPage } = await import('@/components/settings/catalog/settingDeclarations');
@@ -53,7 +66,6 @@ const PAGE = await (async () => {
 
 async function renderPage(requested: string, rowMounted: boolean) {
     paramsState.value = { setting: requested };
-    const { SettingSection, SettingRow } = await import('./SettingRow');
     const screen = await renderScreen(
         <>
             <SettingSection section={PAGE.sectionRefs.content}>
@@ -79,6 +91,32 @@ describe('SettingSection', () => {
         paramsState.value = {};
     });
 
+    it('reveals only the matching group and opens again for a different setting request in that group', async () => {
+        paramsState.value = { setting: PAGE.settings.indexMode.anchor };
+        function Group(props: { testID: string; settings: readonly typeof PAGE.settings.indexMode[] }) {
+            const [expanded, setExpanded] = React.useState(false);
+            return <SettingAnchor settings={props.settings}>
+                <ExpandableItem expanded={expanded} onExpandedChange={setExpanded}
+                    header={(state) => <View testID={`${props.testID}.header`} {...state.headerProps} />}>
+                    <View testID={`${props.testID}.content`} />
+                </ExpandableItem>
+            </SettingAnchor>;
+        }
+        const render = () => <SettingSection section={PAGE.sectionRefs.content}>
+            <Group testID="target" settings={[PAGE.settings.indexMode, PAGE.settings.backfill]} />
+            <Group testID="neighbor" settings={[PAGE.settings.unrelated]} />
+        </SettingSection>;
+        const screen = await renderScreen(render());
+        expect(screen.findByTestId('target.content')).not.toBeNull();
+        expect(screen.findByTestId('neighbor.content')).toBeNull();
+        await act(async () => screen.findByTestId('target.header')!.props.onPress());
+        expect(screen.findByTestId('target.header')!.props.accessibilityState.expanded).toBe(false);
+        paramsState.value = { setting: PAGE.settings.backfill.anchor };
+        await act(async () => screen.update(render()));
+        expect(screen.findByTestId('target.content')).not.toBeNull();
+        expect(screen.findByTestId('neighbor.content')).toBeNull();
+    });
+
     it('lets the requested row reveal itself when the page renders it', async () => {
         vi.useFakeTimers();
         const screen = await renderPage(PAGE.settings.indexMode.anchor, true);
@@ -99,7 +137,6 @@ describe('SettingSection', () => {
     it('lets a rendered section answer for a section the page does not render in its state', async () => {
         vi.useFakeTimers();
         paramsState.value = { setting: PAGE.settings.unrelated.anchor };
-        const { SettingSection, SettingRow } = await import('./SettingRow');
         // Only `content` is on screen (say, until a machine is chosen); it explains `other`'s rows too.
         const screen = await renderScreen(
             <SettingSection section={PAGE.sectionRefs.content} answersFor={[PAGE.sectionRefs.other]}>
@@ -113,15 +150,50 @@ describe('SettingSection', () => {
         expect(screen.findByTestId(`setting-reveal.${PAGE.sectionRefs.content.id}`)).toBeTruthy();
     });
 
-    it('tells a disclosure when search asks for one of its rows', async () => {
+    it('lets route and virtualized owners inspect the requested setting', async () => {
         paramsState.value = { setting: PAGE.settings.backfill.anchor };
-        const { renderHook } = await import('@/dev/testkit');
-        const { useSettingRevealRequested } = await import('./SettingRow');
+        const { renderHook } = await import('@/dev/testkit/hooks/renderHook');
         const inside = await renderHook(() => useSettingRevealRequested([PAGE.settings.indexMode, PAGE.settings.backfill]));
         expect(inside.getCurrent()).toBe(true);
         await inside.unmount();
         const outside = await renderHook(() => useSettingRevealRequested([PAGE.settings.unrelated]));
         expect(outside.getCurrent()).toBe(false);
         await outside.unmount();
+    });
+
+    it('reveals only the anchor requested by each concurrently hosted page', async () => {
+        const { DestinationInstanceHost } = await import('@/components/appShell/workspace/DestinationInstanceHost');
+        function RevealRequestProbe() {
+            return React.createElement('RevealRequestProbe', {
+                requested: useSettingRevealRequested([PAGE.settings.indexMode]),
+            });
+        }
+        paramsState.value = { setting: PAGE.settings.indexMode.anchor };
+        const screen = await renderScreen(<>
+            <DestinationInstanceHost tabId="a" ref={{ kind: 'settings', params: { setting: PAGE.settings.indexMode.anchor } }} pathname="/settings/memory" focused visible>
+                <RevealRequestProbe />
+            </DestinationInstanceHost>
+            <DestinationInstanceHost tabId="b" ref={{ kind: 'settings', params: { setting: PAGE.settings.backfill.anchor } }} pathname="/settings/memory" focused={false} visible>
+                <RevealRequestProbe />
+            </DestinationInstanceHost>
+        </>);
+        expect(screen.root.findAllByType('RevealRequestProbe').map((node) => node.props.requested)).toEqual([true, false]);
+    });
+
+    it('reveals the missing row section even when another tab renders that same requested row', async () => {
+        vi.useFakeTimers();
+        const { DestinationInstanceHost } = await import('@/components/appShell/workspace/DestinationInstanceHost');
+        const screen = await renderScreen(<>
+            {[true, false].map((rowMounted, index) => <DestinationInstanceHost key={index}
+                tabId={`settings-${index}`} ref={{ kind: 'settings', params: { setting: PAGE.settings.indexMode.anchor } }}
+                pathname="/settings/memory" focused={index === 0} visible>
+                <SettingSection section={PAGE.sectionRefs.content}>
+                    {rowMounted ? <SettingRow setting={PAGE.settings.indexMode} /> : null}
+                </SettingSection>
+            </DestinationInstanceHost>)}
+        </>);
+        await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+        expect(screen.findAllHostsByTestId(`setting-reveal.${PAGE.settings.indexMode.anchor}`)).toHaveLength(1);
+        expect(screen.findAllHostsByTestId(`setting-reveal.${PAGE.sectionRefs.content.id}`)).toHaveLength(1);
     });
 });

@@ -77,6 +77,13 @@ export const TriageDetailSurfaceInputV1Schema = defineProtocolObject({
     linkedSessions: defineProtocolArray(TriageLinkedSessionProjectionV1Schema, {
         maxItems: MAX_TRIAGE_LINKED_SESSIONS_PAGE_SIZE_V1,
     }),
+    /**
+     * The one detail tab the target asks the source to render as a panel
+     * (r0.42): a shared tab id or one of the source's own declared tab ids.
+     * Absent means the whole detail body. A source that declares no tabs never
+     * receives it.
+     */
+    panel: TriageIdentifierV1ProtocolSchema.optional(),
     linkedSessionsHasMore: defineProtocolUnion([
         defineProtocolLiteral(true),
         defineProtocolLiteral(false),

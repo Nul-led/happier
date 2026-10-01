@@ -8,6 +8,7 @@ import {
   type ProviderSettingsMigrationSourceOutcomeV1,
   type LegacyProfileReviewedMappingV1,
   type LegacyProfileMigrationConflictResolutionV1,
+  type LegacyProfileAuthoringMemoryClearV1,
 } from '@happier-dev/protocol';
 
 import {
@@ -15,6 +16,10 @@ import {
   updateAccountSettingsV2OnceAgainstLatest,
   type AccountSettingsUpdateV2Deps,
 } from '@/settings/accountSettings/updateAccountSettingsV2WithRetry';
+import {
+  readAuthoringMemoryLastUsedProfile,
+  clearAuthoringMemoryLastUsedProfileIfEqual,
+} from '@/settings/profiles/readAuthoringMemoryLastUsedProfile';
 
 export async function previewLegacyProfileMigration(params: Readonly<{
   credentials: Credentials;
@@ -22,6 +27,7 @@ export async function previewLegacyProfileMigration(params: Readonly<{
   reviewedMapping: LegacyProfileReviewedMappingV1;
   deps?: AccountSettingsUpdateV2Deps;
 }>): Promise<Readonly<{ version: number; sourceFingerprint: string }>> {
+  const authoringMemory = { lastUsedProfile: await readAuthoringMemoryLastUsedProfile(params.credentials) };
   let sourceFingerprint: string | null = null;
   const result = requireAccountSettingsMutationSuccess(await updateAccountSettingsV2OnceAgainstLatest({
     credentials: params.credentials,
@@ -29,6 +35,7 @@ export async function previewLegacyProfileMigration(params: Readonly<{
     mutate: (settings) => {
       sourceFingerprint = createLegacyProfileMigrationSourceFingerprintV1({
         rawSettings: settings,
+        authoringMemory,
         sourceProfileId: params.sourceProfileId,
         reviewedMapping: params.reviewedMapping,
       });
@@ -62,21 +69,26 @@ export async function confirmLegacyProfileMigration(params: Readonly<{
   migratedAt: number;
   deps?: AccountSettingsUpdateV2Deps;
 }>): Promise<Readonly<{ version: number; settings: AccountSettings }>> {
+  const authoringMemory = { lastUsedProfile: await readAuthoringMemoryLastUsedProfile(params.credentials) };
+  const clear: { value?: LegacyProfileAuthoringMemoryClearV1 } = {};
   const result = requireAccountSettingsMutationSuccess(await updateAccountSettingsV2OnceAgainstLatest({
     credentials: params.credentials,
     deps: params.deps,
     mutate: (settings) => {
       const migrated = confirmLegacyAiLaunchProfileMigrationV1({
         rawSettings: settings,
+        authoringMemory,
         sourceProfileId: params.sourceProfileId,
         expectedSourceFingerprint: params.expectedSourceFingerprint,
         reviewedMapping: params.reviewedMapping,
         migratedAt: params.migratedAt,
       });
       if (!migrated.ok) throw new ProviderSettingsMigrationError(migrated.reason);
+      clear.value = migrated.lastUsedProfileClear;
       return migrated.settings;
     },
   }));
+  if (clear.value) await clearAuthoringMemoryLastUsedProfileIfEqual(params.credentials, clear.value.base);
   return { version: result.version, settings: result.settings };
 }
 
@@ -102,19 +114,23 @@ export async function migrateProviderSettings(params: Readonly<{
   outcomes: readonly ProviderSettingsMigrationSourceOutcomeV1[];
 }>> {
   let outcomes: readonly ProviderSettingsMigrationSourceOutcomeV1[] = [];
+  const clear: { value?: LegacyProfileAuthoringMemoryClearV1 } = {};
   const lease = await params.acquireRegistryLease();
   try {
+    const authoringMemory = { lastUsedProfile: await readAuthoringMemoryLastUsedProfile(params.credentials) };
     const result = requireAccountSettingsMutationSuccess(await updateAccountSettingsV2OnceAgainstLatest({
       credentials: params.credentials,
       deps: params.deps,
       mutate: async (settings) => {
         const context = await params.deriveContext(settings, lease.registry);
-        const migrated = migrateLegacyAiLaunchProfilesV1(settings, context);
+        const migrated = migrateLegacyAiLaunchProfilesV1(settings, context, authoringMemory);
         if (!migrated.ok) throw new ProviderSettingsMigrationError(migrated.reason);
         outcomes = migrated.outcomes;
+        clear.value = migrated.lastUsedProfileClear;
         return migrated.settings;
       },
     }));
+    if (clear.value) await clearAuthoringMemoryLastUsedProfileIfEqual(params.credentials, clear.value.base);
     return { version: result.version, settings: result.settings, outcomes };
   } finally {
     await lease.release();

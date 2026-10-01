@@ -2,18 +2,19 @@ import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 
 import { configuration } from '../../configuration';
+import { resolveHappyHomeDirFromEnvironment } from '@happier-dev/cli-common/agents';
 
 type RuntimeInstallableUpdateState = Readonly<{
   lastCheckAtMsByInstallableKey: Record<string, number>;
 }>;
 
-function runtimeInstallableUpdateStatePath(): string {
-  return join(configuration.happyHomeDir, 'installables', 'runtime-auto-update-state.json');
+function runtimeInstallableUpdateStatePath(env?: NodeJS.ProcessEnv): string {
+  return join(env ? resolveHappyHomeDirFromEnvironment(env) : configuration.happyHomeDir, 'installables', 'runtime-auto-update-state.json');
 }
 
-async function readRuntimeInstallableUpdateState(): Promise<RuntimeInstallableUpdateState> {
+async function readRuntimeInstallableUpdateState(env?: NodeJS.ProcessEnv): Promise<RuntimeInstallableUpdateState> {
   try {
-    const raw = await readFile(runtimeInstallableUpdateStatePath(), 'utf8');
+    const raw = await readFile(runtimeInstallableUpdateStatePath(env), 'utf8');
     const parsed = JSON.parse(raw) as { lastCheckAtMsByInstallableKey?: Record<string, unknown> };
     const rawMap = parsed?.lastCheckAtMsByInstallableKey;
     if (!rawMap || typeof rawMap !== 'object' || Array.isArray(rawMap)) {
@@ -40,8 +41,8 @@ async function writeRuntimeInstallableUpdateState(next: RuntimeInstallableUpdate
   await rename(tempPath, path);
 }
 
-export async function readRuntimeInstallableLastCheckAtMs(installableKey: string): Promise<number | null> {
-  const state = await readRuntimeInstallableUpdateState();
+export async function readRuntimeInstallableLastCheckAtMs(installableKey: string, env?: NodeJS.ProcessEnv): Promise<number | null> {
+  const state = await readRuntimeInstallableUpdateState(env);
   const value = state.lastCheckAtMsByInstallableKey[installableKey];
   return typeof value === 'number' && Number.isFinite(value) ? value : null;
 }

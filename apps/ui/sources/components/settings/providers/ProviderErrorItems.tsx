@@ -1,17 +1,29 @@
 import * as React from 'react';
-import { useRouter } from 'expo-router';
+import { useRouter } from '@/components/appShell/workspace/destinationRoute';
 import { ProviderErrorV1Schema } from '@happier-dev/protocol';
 import { useUnistyles } from 'react-native-unistyles';
-import { View } from 'react-native';
+import { Platform, View } from 'react-native';
+import { StyleSheet } from 'react-native-unistyles';
 
 import { Item } from '@/components/ui/lists/Item';
 import { presentProviderError, presentProviderRecoveryAction } from '@/providers/connection/errorPresentation';
 import { dispatchProviderRecoveryAction } from '@/providers/connection/recovery';
 import { t } from '@/text';
-import { Icon } from '@/components/ui/icons/Icon';
+import { Icon, ICON_SIZE } from '@/components/ui/icons/Icon';
+import { IconButton } from '@/components/ui/buttons/IconButton';
+import { Tooltip } from '@/components/ui/overlays/Tooltip';
+import { Text } from '@/components/ui/text/Text';
+import { resolveMinimumInteractiveTargetSize } from '@/components/ui/interactiveTargetSize';
 
 export const ProviderErrorItems = React.memo(function ProviderErrorItems(props: Readonly<{
     error: unknown;
+    /**
+     * `'rows'` (default): the settings anatomy — a titled info row with its description, and the
+     * recovery action as a row beneath. `'line'`: one compact line inside a picker — the severity
+     * glyph (its tooltip and accessible name carry the description), the title, and the recovery
+     * action as an icon-only control.
+     */
+    presentation?: 'rows' | 'line';
     retry?: () => void | Promise<void>;
     loadModel?: () => void | Promise<void>;
     reviewAndRestart?: () => void | Promise<void>;
@@ -69,6 +81,40 @@ export const ProviderErrorItems = React.memo(function ProviderErrorItems(props: 
         }
     };
 
+    if (props.presentation === 'line') {
+        const code = typedError.success ? typedError.data.code : 'unknown';
+        const actionTitle = actionPresentation && typedError.success ? t(actionPresentation.titleKey) : null;
+        return (
+            <View
+                testID={`provider-error:${code}`}
+                accessibilityLiveRegion="polite"
+                style={lineStyles.line}
+            >
+                <Tooltip
+                    testID={`provider-error-detail:${code}`}
+                    label={t(presentation.descriptionKey)}
+                >
+                    <Icon name={iconName} size={ICON_SIZE.sm} color={iconColor} />
+                </Tooltip>
+                <Text numberOfLines={1} style={lineStyles.title}>{t(presentation.titleKey)}</Text>
+                {actionTitle ? (
+                    <IconButton
+                        testID={`provider-error-action:${code}`}
+                        iconName={actionPresentation?.titleKey === 'settingsProviders.errors.actions.retry' ? 'arrow-clockwise' : 'caret-right'}
+                        accessibilityLabel={actionTitle}
+                        tooltip={actionTitle}
+                        variant="plain"
+                        size={24}
+                        iconSize={ICON_SIZE.sm}
+                        minimumInteractiveTargetSize={resolveMinimumInteractiveTargetSize(Platform.OS)}
+                        disabled={recoveryPending}
+                        onPress={() => void runRecovery()}
+                    />
+                ) : null}
+            </View>
+        );
+    }
+
     return (
         <>
             <View accessibilityLiveRegion="polite">
@@ -92,3 +138,19 @@ export const ProviderErrorItems = React.memo(function ProviderErrorItems(props: 
         </>
     );
 });
+
+const lineStyles = StyleSheet.create((theme) => ({
+    line: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 6,
+        minHeight: 24,
+    },
+    title: {
+        flex: 1,
+        minWidth: 0,
+        fontSize: 12,
+        lineHeight: 16,
+        color: theme.colors.text.secondary,
+    },
+}));

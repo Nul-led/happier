@@ -1,7 +1,8 @@
 import { getActionSpec } from '@happier-dev/protocol/actions';
 import {
-    buildReviewCommentMutationEventEnvelopeV1,
+    buildReviewCommentPlainMutationTransportInputV1,
     buildReviewCommentPublicationTransportRequestV1,
+    executeReviewCommentTransportV1,
     openReviewCommentPublicationTransportResponseV1,
     type AccountScopedCryptoMaterial,
     type ReviewCommentActionIdV1,
@@ -10,8 +11,6 @@ import {
     type ReviewCommentClaimPublicationDispatchRequestV1,
     type ReviewCommentCreateRequestV1,
     type ReviewCommentEditRequestV1,
-    type ReviewCommentGetRequestV1,
-    type ReviewCommentListRequestV1,
     type ReviewCommentRedactRequestV1,
     type ReviewCommentReplyRequestV1,
     type ReviewCommentSetDispositionRequestV1,
@@ -71,27 +70,6 @@ function appendQueryValue(query: URLSearchParams, key: string, value: unknown): 
     query.append(key, String(value));
 }
 
-function listPath(input: ReviewCommentListRequestV1): string {
-    const query = new URLSearchParams();
-    appendQueryValue(query, 'workspaceId', input.workspaceId);
-    appendQueryValue(query, 'projectId', input.projectId);
-    appendQueryValue(query, 'sessionId', input.sessionId);
-    appendQueryValue(query, 'runId', input.runId);
-    appendQueryValue(query, 'states', input.states);
-    appendQueryValue(query, 'authorKind', input.authorKind);
-    appendQueryValue(query, 'authorId', input.authorId);
-    appendQueryValue(query, 'engineId', input.engineId);
-    appendQueryValue(query, 'filePath', input.filePath);
-    appendQueryValue(query, 'folderPath', input.folderPath);
-    appendQueryValue(query, 'severity', input.severity);
-    appendQueryValue(query, 'taxonomyIds', input.taxonomyIds);
-    appendQueryValue(query, 'includeHistory', input.includeHistory);
-    appendQueryValue(query, 'cursor', input.cursor);
-    appendQueryValue(query, 'limit', input.limit);
-    const suffix = query.toString();
-    return suffix ? `/v1/reviews/comments?${suffix}` : '/v1/reviews/comments';
-}
-
 function withJsonBody(body: unknown): RequestInit {
     return {
         method: 'POST',
@@ -112,9 +90,12 @@ async function readReviewCommentJsonResponse(response: Response): Promise<unknow
     const payload = await response.json();
     if (response.ok) return payload;
     const parsed = typeof payload === 'object' && payload !== null ? payload as Record<string, unknown> : {};
-    const code = typeof parsed.errorCode === 'string' ? parsed.errorCode : null;
+    const code = typeof parsed.errorCode === 'string' ? parsed.errorCode
+        : typeof parsed.error === 'string' ? parsed.error : null;
     const message = typeof parsed.message === 'string' ? parsed.message : null;
-    throw new Error(code ?? message ?? 'review_comment_request_failed');
+    throw Object.assign(new Error(code ?? message ?? 'review_comment_request_failed'), {
+        code: code ?? 'review_comment_request_failed',
+    });
 }
 
 async function requestReviewCommentJson(
@@ -150,35 +131,17 @@ async function sealReviewCommentMutationInput(params: Readonly<{
         'reviews.comments.list' | 'reviews.comments.get' | 'reviews.comments.claimPublicationDispatch'
     >;
     input: Record<string, unknown>;
-    resolveEventStorageContext: () => Promise<ReviewCommentEventStorageContext>;
-    randomBytes: (length: number) => Uint8Array;
+    context: Readonly<{ accountId: string; mode: 'plain' }>;
 }>): Promise<Record<string, unknown>> {
-    const context = await params.resolveEventStorageContext();
+    const context = params.context;
     const actor = { kind: 'user' as const, userId: context.accountId };
-    let eventEnvelope;
-    if (context.mode === 'plain') {
-        eventEnvelope = buildReviewCommentMutationEventEnvelopeV1({
-            accountId: context.accountId,
-            actor,
-            actionId: params.actionId,
-            input: params.input,
-            mode: 'plain',
-        });
-    } else {
-        if (!context.material) {
-            throw new Error('review_comment_encryption_material_unavailable');
-        }
-        eventEnvelope = buildReviewCommentMutationEventEnvelopeV1({
-            accountId: context.accountId,
-            actor,
-            actionId: params.actionId,
-            input: params.input,
-            mode: 'e2ee',
-            material: context.material,
-            randomBytes: params.randomBytes,
-        });
-    }
-    return { ...params.input, eventEnvelope };
+    return buildReviewCommentPlainMutationTransportInputV1({
+        accountId: context.accountId,
+        actor,
+        actionId: params.actionId,
+        input: params.input,
+        mode: 'plain',
+    });
 }
 
 export function createReviewCommentsHttpActionExecutor(
@@ -195,36 +158,51 @@ export function createReviewCommentsHttpActionExecutor(
                 requestOptions,
             )
             : request;
+        const storage = await resolveEventStorageContext();
+        const context = { ...storage, material: storage.mode === 'plain' ? null : storage.material ?? null };
+        if (actionId === 'reviews.comments.claimPublicationDispatch') {
+            const parsed = parseReviewCommentInput<ReviewCommentClaimPublicationDispatchRequestV1>(actionId, input);
+            const transport = buildReviewCommentPublicationTransportRequestV1({ input: parsed, context, randomBytes });
+            const output = await requestReviewCommentJson(
+                actionRequest,
+                '/v1/reviews/comments/publication/claim',
+                withJsonBody(transport),
+            );
+            return openReviewCommentPublicationTransportResponseV1({ plan: parsed, context, response: output });
+        }
+        if (actionId === 'reviews.comments.list' || actionId === 'reviews.comments.get' || storage.mode === 'e2ee') {
+            return executeReviewCommentTransportV1({
+                actionId,
+                input: parseReviewCommentInput<Record<string, unknown>>(actionId, input),
+                context,
+                actor: { kind: 'user', userId: storage.accountId },
+                randomBytes,
+                request: async ({ method, path, query, body }) => {
+                    const search = new URLSearchParams();
+                    for (const [key, value] of Object.entries(query ?? {})) appendQueryValue(search, key, value);
+                    const suffix = search.toString();
+                    return requestReviewCommentJson(
+                        actionRequest,
+                        suffix ? `${path}?${suffix}` : path,
+                        body === undefined ? { method: method.toUpperCase() } : withJsonBody(body),
+                    );
+                },
+            });
+        }
         switch (actionId) {
-            case 'reviews.comments.list': {
-                const parsed = parseReviewCommentInput<ReviewCommentListRequestV1>(actionId, input);
-                const output = await requestReviewCommentJson(actionRequest, listPath(parsed), { method: 'GET' });
-                return parseReviewCommentOutput(actionId, output);
-            }
-            case 'reviews.comments.get': {
-                const parsed = parseReviewCommentInput<ReviewCommentGetRequestV1>(actionId, input);
-                const query = new URLSearchParams({ includeHistory: String(parsed.includeHistory) });
-                const output = await requestReviewCommentJson(
-                    actionRequest,
-                    `/v1/reviews/comments/${encodeURIComponent(parsed.commentId)}?${query.toString()}`,
-                    { method: 'GET' },
-                );
-                return parseReviewCommentOutput(actionId, output);
-            }
             case 'reviews.comments.create': {
                 const parsed = parseReviewCommentInput<ReviewCommentCreateRequestV1>(actionId, input);
                 const sealed = await sealReviewCommentMutationInput({
                     actionId,
                     input: parsed,
-                    resolveEventStorageContext,
-                    randomBytes,
+                    context: storage,
                 });
                 const output = await requestReviewCommentJson(actionRequest, '/v1/reviews/comments', withJsonBody(sealed));
                 return parseReviewCommentOutput(actionId, output);
             }
             case 'reviews.comments.edit': {
                 const parsed = parseReviewCommentInput<ReviewCommentEditRequestV1>(actionId, input);
-                const sealed = await sealReviewCommentMutationInput({ actionId, input: parsed, resolveEventStorageContext, randomBytes });
+                const sealed = await sealReviewCommentMutationInput({ actionId, input: parsed, context: storage });
                 const output = await requestReviewCommentJson(
                     actionRequest,
                     `/v1/reviews/comments/${encodeURIComponent(parsed.commentId)}`,
@@ -234,7 +212,7 @@ export function createReviewCommentsHttpActionExecutor(
             }
             case 'reviews.comments.transition': {
                 const parsed = parseReviewCommentInput<ReviewCommentTransitionRequestV1>(actionId, input);
-                const sealed = await sealReviewCommentMutationInput({ actionId, input: parsed, resolveEventStorageContext, randomBytes });
+                const sealed = await sealReviewCommentMutationInput({ actionId, input: parsed, context: storage });
                 const output = await requestReviewCommentJson(
                     actionRequest,
                     `/v1/reviews/comments/${encodeURIComponent(parsed.commentId)}/transition`,
@@ -244,7 +222,7 @@ export function createReviewCommentsHttpActionExecutor(
             }
             case 'reviews.comments.reply': {
                 const parsed = parseReviewCommentInput<ReviewCommentReplyRequestV1>(actionId, input);
-                const sealed = await sealReviewCommentMutationInput({ actionId, input: parsed, resolveEventStorageContext, randomBytes });
+                const sealed = await sealReviewCommentMutationInput({ actionId, input: parsed, context: storage });
                 const output = await requestReviewCommentJson(
                     actionRequest,
                     `/v1/reviews/comments/${encodeURIComponent(parsed.parentCommentId)}/reply`,
@@ -254,7 +232,7 @@ export function createReviewCommentsHttpActionExecutor(
             }
             case 'reviews.comments.redact': {
                 const parsed = parseReviewCommentInput<ReviewCommentRedactRequestV1>(actionId, input);
-                const sealed = await sealReviewCommentMutationInput({ actionId, input: parsed, resolveEventStorageContext, randomBytes });
+                const sealed = await sealReviewCommentMutationInput({ actionId, input: parsed, context: storage });
                 const output = await requestReviewCommentJson(
                     actionRequest,
                     `/v1/reviews/comments/${encodeURIComponent(parsed.commentId)}/redact`,
@@ -264,7 +242,7 @@ export function createReviewCommentsHttpActionExecutor(
             }
             case 'reviews.comments.setDisposition': {
                 const parsed = parseReviewCommentInput<ReviewCommentSetDispositionRequestV1>(actionId, input);
-                const sealed = await sealReviewCommentMutationInput({ actionId, input: parsed, resolveEventStorageContext, randomBytes });
+                const sealed = await sealReviewCommentMutationInput({ actionId, input: parsed, context: storage });
                 const output = await requestReviewCommentJson(
                     actionRequest,
                     `/v1/reviews/comments/${encodeURIComponent(parsed.commentId)}/disposition`,
@@ -274,7 +252,7 @@ export function createReviewCommentsHttpActionExecutor(
             }
             case 'reviews.comments.attachEvidence': {
                 const parsed = parseReviewCommentInput<ReviewCommentAttachEvidenceRequestV1>(actionId, input);
-                const sealed = await sealReviewCommentMutationInput({ actionId, input: parsed, resolveEventStorageContext, randomBytes });
+                const sealed = await sealReviewCommentMutationInput({ actionId, input: parsed, context: storage });
                 const output = await requestReviewCommentJson(
                     actionRequest,
                     `/v1/reviews/comments/${encodeURIComponent(parsed.commentId)}/evidence`,
@@ -284,25 +262,13 @@ export function createReviewCommentsHttpActionExecutor(
             }
             case 'reviews.comments.bulkTransition': {
                 const parsed = parseReviewCommentInput<ReviewCommentBulkTransitionRequestV1>(actionId, input);
-                const sealed = await sealReviewCommentMutationInput({ actionId, input: parsed, resolveEventStorageContext, randomBytes });
+                const sealed = await sealReviewCommentMutationInput({ actionId, input: parsed, context: storage });
                 const output = await requestReviewCommentJson(
                     actionRequest,
                     '/v1/reviews/comments/bulkTransition',
                     withJsonBody(sealed),
                 );
                 return parseReviewCommentOutput(actionId, output);
-            }
-            case 'reviews.comments.claimPublicationDispatch': {
-                const parsed = parseReviewCommentInput<ReviewCommentClaimPublicationDispatchRequestV1>(actionId, input);
-                const storage = await resolveEventStorageContext();
-                const context = { ...storage, material: storage.mode === 'plain' ? null : storage.material ?? null };
-                const transport = buildReviewCommentPublicationTransportRequestV1({ input: parsed, context, randomBytes });
-                const output = await requestReviewCommentJson(
-                    actionRequest,
-                    '/v1/reviews/comments/publication/claim',
-                    withJsonBody(transport),
-                );
-                return openReviewCommentPublicationTransportResponseV1({ plan: parsed, context, response: output });
             }
         }
     };

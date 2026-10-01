@@ -28,12 +28,15 @@ import { installSettingsViewCommonModuleMocks } from '../../settingsViewTestHelp
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 const routerPush = vi.hoisted(() => vi.fn());
+const routerReplace = vi.hoisted(() => vi.fn());
+/** How the list was reached: `entry: 'settings'` from the Settings navigation, nothing for the list itself. */
+const routeParams = vi.hoisted(() => ({ value: { entry: 'settings' } as Record<string, string> }));
 
 installSettingsViewCommonModuleMocks({
     router: async () => ({
-        useRouter: () => ({ push: routerPush, back: vi.fn() }),
+        useRouter: () => ({ push: routerPush, replace: routerReplace, back: vi.fn() }),
         useNavigation: () => ({ setOptions: vi.fn() }),
-        useLocalSearchParams: () => ({}),
+        useLocalSearchParams: () => routeParams.value,
         usePathname: () => '/settings/home',
     }),
 });
@@ -59,6 +62,8 @@ beforeEach(async () => {
     await harness.reset();
     await harness.selectHomes([]);
     routerPush.mockReset();
+    routerReplace.mockReset();
+    routeParams.value = { entry: 'settings' };
 });
 
 afterEach(() => {
@@ -84,9 +89,40 @@ describe('HomeAdministrationHomesScreen', () => {
 
         screen.pressByTestId(`home-admin-home:${homeB}`);
         expect(routerPush).toHaveBeenCalledWith(`/settings/home/${homeB}`);
+        // Two Homes to choose from: the list stays.
+        expect(routerReplace).not.toHaveBeenCalled();
     });
 
-    it('leaves out a Home this account cannot administer while keeping its capable sibling', async () => {
+    it('keeps the list for one Home when the list itself is opened (All Homes, a link to it, back)', async () => {
+        routeParams.value = {};
+        const home = await harness.addHome({ name: 'Home A', serverUrl: 'https://home-a.example' });
+        await harness.selectHomes([home]);
+        harness.answer(home, GOVERNANCE_PATH, { body: homeGovernanceProjectionFixture() });
+
+        const screen = await renderHomes();
+        await waitForHomeGovernance(() => {
+            expect(collectRenderedTestIds(screen.tree.toJSON())).toContain(`home-admin-home:${home}`);
+        });
+        expect(routerReplace).not.toHaveBeenCalled();
+    });
+
+    it('waits for a Home still being read before opening the only one answered so far', async () => {
+        const homeA = await harness.addHome({ name: 'Home A', serverUrl: 'https://home-a.example' });
+        const homeB = await harness.addHome({ name: 'Home B', serverUrl: 'https://home-b.example' });
+        await harness.selectHomes([homeA, homeB]);
+        harness.answer(homeB, GOVERNANCE_PATH, { body: homeGovernanceProjectionFixture() });
+        harness.answer(homeA, GOVERNANCE_PATH, { status: 502, body: { error: 'bad gateway' } });
+
+        const screen = await renderHomes();
+        await waitForHomeGovernance(() => {
+            expect(collectRenderedTestIds(screen.tree.toJSON())).toContain(`home-admin-home-unresolved:${homeA}`);
+        });
+        // A Home that is not answering may be administrable too: the choice stays with the person.
+        expect(collectRenderedTestIds(screen.tree.toJSON())).toContain(`home-admin-home:${homeB}`);
+        expect(routerReplace).not.toHaveBeenCalled();
+    });
+
+    it('leaves out a Home this account cannot administer, and opens the one capable Home directly', async () => {
         const homeA = await harness.addHome({ name: 'Home A', serverUrl: 'https://home-a.example' });
         const homeB = await harness.addHome({ name: 'Home B', serverUrl: 'https://home-b.example' });
         await harness.selectHomes([homeA, homeB]);
@@ -102,9 +138,11 @@ describe('HomeAdministrationHomesScreen', () => {
         harness.answer(homeB, GOVERNANCE_PATH, { body: homeGovernanceProjectionFixture() });
 
         const screen = await renderHomes();
+        // One Home to administer is nothing to choose: its console opens in place of a one-entry list.
         await waitForHomeGovernance(() => {
-            expect(collectRenderedTestIds(screen.tree.toJSON())).toContain(`home-admin-home:${homeB}`);
+            expect(routerReplace).toHaveBeenCalledWith(`/settings/home/${homeB}`);
         });
+        expect(routerReplace).toHaveBeenCalledTimes(1);
         const ids = collectRenderedTestIds(screen.tree.toJSON());
         expect(ids).not.toContain(`home-admin-home:${homeA}`);
         expect(ids).not.toContain(`home-admin-home-unresolved:${homeA}`);
@@ -126,8 +164,9 @@ describe('HomeAdministrationHomesScreen', () => {
         });
 
         const screen = await renderHomes();
+        // Offered, so as the only Home it opens; the list itself carries no claim action.
         await waitForHomeGovernance(() => {
-            expect(collectRenderedTestIds(screen.tree.toJSON())).toContain(`home-admin-home:${home}`);
+            expect(routerReplace).toHaveBeenCalledWith(`/settings/home/${home}`);
         });
         expect(collectRenderedTestIds(screen.tree.toJSON()).some((id) => id.includes('claim'))).toBe(false);
     });
@@ -166,14 +205,46 @@ describe('HomeAdministrationHomesScreen', () => {
         });
     });
 
+    it('lists an unanswered Home among the Homes, in one state, and retries a Home that is not answering', async () => {
+        const admitted = await harness.addHome({ name: 'Home A', serverUrl: 'https://home-a.example' });
+        const down = await harness.addHome({ name: 'Home B', serverUrl: 'https://home-b.example' });
+        await harness.selectHomes([admitted, down]);
+        harness.answer(admitted, GOVERNANCE_PATH, { body: homeGovernanceProjectionFixture() });
+        harness.answer(down, GOVERNANCE_PATH, { status: 502, body: { error: 'bad gateway' } });
+
+        const screen = await renderHomes();
+        await waitForHomeGovernance(() => {
+            const ids = collectRenderedTestIds(screen.tree.toJSON());
+            expect(ids).toContain(`home-admin-home:${admitted}`);
+            expect(ids).toContain(`home-admin-home-unresolved:${down}`);
+        });
+
+        // One section: a Home that has not answered is not a second, contradictory heading.
+        expect(screen.getTextContent()).not.toContain('homeGovernance.homesUnresolved');
+        // One state per row: it says which Home is not answering, with Retry, and is no longer busy.
+        expect(screen.getTextContent()).toContain('homeGovernance.homeNotAnswering(home=Home B)');
+        expect(screen.findHostByTestId(`home-admin-home-unresolved:${down}`)?.props.accessibilityState?.busy).not.toBe(true);
+
+        const before = harness.requestsFor(GOVERNANCE_PATH).filter((request) => request.serverId === down).length;
+        harness.answer(down, GOVERNANCE_PATH, { body: homeGovernanceProjectionFixture() });
+        await screen.pressByTestIdAsync(`home-admin-home-unresolved:${down}-retry`);
+        await waitForHomeGovernance(() => {
+            expect(harness.requestsFor(GOVERNANCE_PATH).filter((request) => request.serverId === down).length)
+                .toBeGreaterThan(before);
+            expect(collectRenderedTestIds(screen.tree.toJSON())).toContain(`home-admin-home:${down}`);
+        });
+    });
+
     it('stops offering a Home that refuses after it had already answered', async () => {
         const home = await harness.addHome({
             name: 'Home A',
             serverUrl: 'https://home-a.example',
             accountId: 'account-ada',
         });
-        await harness.selectHomes([home]);
+        const sibling = await harness.addHome({ name: 'Home B', serverUrl: 'https://home-b.example' });
+        await harness.selectHomes([home, sibling]);
         harness.answer(home, GOVERNANCE_PATH, { body: homeGovernanceProjectionFixture() });
+        harness.answer(sibling, GOVERNANCE_PATH, { body: homeGovernanceProjectionFixture() });
 
         const screen = await renderHomes();
         await waitForHomeGovernance(() => {
@@ -197,6 +268,8 @@ describe('HomeAdministrationHomesScreen', () => {
             expect(collectRenderedTestIds(screen.tree.toJSON()))
                 .not.toContain(`home-admin-home:${home}`);
         });
+        // What is left is one Home to administer, which opens.
+        expect(routerReplace).toHaveBeenCalledWith(`/settings/home/${sibling}`);
     });
 
     it('says so plainly when no selected Home grants administration', async () => {

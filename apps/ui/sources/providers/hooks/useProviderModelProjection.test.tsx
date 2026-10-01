@@ -68,7 +68,7 @@ describe('useProviderModelProjection', () => {
             enabled: true,
             machineId: 'machine-a',
             serverId: 'server-a',
-            agentTargetKey: 'backend:codex',
+            agentTargetKey: 'agent:happier.agent.codex/codex',
         }));
         const refreshFromAccountA = rendered.getCurrent().refresh;
         expect(describeProviderModels).toHaveBeenCalledTimes(1);
@@ -84,13 +84,13 @@ describe('useProviderModelProjection', () => {
         expect(describeProviderModels).toHaveBeenCalledTimes(2);
 
         await act(async () => {
-            resolveA({ status: 'success', agentTargetKey: 'backend:codex', groups: [{ connectionId: 'pc_a' }] });
+            resolveA({ status: 'success', agentTargetKey: 'agent:happier.agent.codex/codex', groups: [{ connectionId: 'pc_a' }] });
         });
         expect(rendered.getCurrent().data).toBeNull();
 
         await act(async () => {
             resolveB({
-                status: 'success', agentTargetKey: 'backend:codex', groups: [{ connectionId: 'pc_b' }],
+                status: 'success', agentTargetKey: 'agent:happier.agent.codex/codex', groups: [{ connectionId: 'pc_b' }],
             });
         });
         expect(rendered.getCurrent().data?.groups).toEqual([{ connectionId: 'pc_b' }]);
@@ -104,11 +104,11 @@ describe('useProviderModelProjection', () => {
         let resolveB!: (value: unknown) => void;
         const observed: Array<Readonly<{ machineId: string; connectionIds: readonly string[]; status?: string }>> = [];
         describeProviderModels
-            .mockResolvedValueOnce({ status: 'success', agentTargetKey: 'backend:codex', groups: [{ connectionId: 'machine-a' }] })
+            .mockResolvedValueOnce({ status: 'success', agentTargetKey: 'agent:happier.agent.codex/codex', groups: [{ connectionId: 'machine-a' }] })
             .mockImplementationOnce(() => new Promise((resolve) => { resolveB = resolve; }));
         const rendered = await renderHook((props: { machineId: string }) => {
             const projection = useProviderModelProjection({
-                enabled: true, machineId: props.machineId, serverId: 'server-a', agentTargetKey: 'backend:codex',
+                enabled: true, machineId: props.machineId, serverId: 'server-a', agentTargetKey: 'agent:happier.agent.codex/codex',
             });
             observed.push({
                 machineId: props.machineId,
@@ -128,26 +128,26 @@ describe('useProviderModelProjection', () => {
         expect(observed.slice(scopeChangeRenderStart).every((entry) => (
             entry.machineId !== 'machine-b' || !entry.connectionIds.includes('machine-a')
         ))).toBe(true);
-        await act(async () => resolveB({ status: 'success', agentTargetKey: 'backend:codex', groups: [] }));
+        await act(async () => resolveB({ status: 'success', agentTargetKey: 'agent:happier.agent.codex/codex', groups: [] }));
     });
 
     it('drops a delayed old-machine response after the target machine changes', async () => {
         let resolveA!: (value: unknown) => void;
         describeProviderModels
             .mockImplementationOnce(() => new Promise((resolve) => { resolveA = resolve; }))
-            .mockResolvedValueOnce({ status: 'success', agentTargetKey: 'backend:codex', groups: [] });
+            .mockResolvedValueOnce({ status: 'success', agentTargetKey: 'agent:happier.agent.codex/codex', groups: [] });
         const rendered = await renderHook((props: { machineId: string }) => useProviderModelProjection({
-            enabled: true, machineId: props.machineId, serverId: 'server-a', agentTargetKey: 'backend:codex',
+            enabled: true, machineId: props.machineId, serverId: 'server-a', agentTargetKey: 'agent:happier.agent.codex/codex',
         }), { initialProps: { machineId: 'machine-a' } });
 
         await rendered.rerender({ machineId: 'machine-b' });
         await flushHookEffects({ cycles: 2, turns: 2 });
         expect(rendered.getCurrent().data).toEqual({
-            status: 'success', agentTargetKey: 'backend:codex', groups: [],
+            status: 'success', agentTargetKey: 'agent:happier.agent.codex/codex', groups: [],
         });
 
         await act(async () => {
-            resolveA({ status: 'success', agentTargetKey: 'backend:codex', groups: [{ connectionId: 'stale-a' }] });
+            resolveA({ status: 'success', agentTargetKey: 'agent:happier.agent.codex/codex', groups: [{ connectionId: 'stale-a' }] });
         });
         await flushHookEffects({ cycles: 2, turns: 2 });
         expect(rendered.getCurrent().data?.groups).toEqual([]);
@@ -156,7 +156,7 @@ describe('useProviderModelProjection', () => {
 
     it('does no RPC work when disabled or no target machine exists', async () => {
         const rendered = await renderHook(() => useProviderModelProjection({
-            enabled: false, machineId: null, serverId: null, agentTargetKey: 'backend:codex',
+            enabled: false, machineId: null, serverId: null, agentTargetKey: 'agent:happier.agent.codex/codex',
         }));
         await flushHookEffects({ cycles: 2, turns: 2 });
         expect(describeProviderModels).not.toHaveBeenCalled();
@@ -177,7 +177,7 @@ describe('useProviderModelProjection', () => {
             enabled: true,
             machineId: 'machine-a',
             serverId: 'server-a',
-            agentTargetKey: 'backend:codex',
+            agentTargetKey: 'agent:happier.agent.codex/codex',
         }));
         await flushHookEffects({ cycles: 2, turns: 2 });
 
@@ -190,10 +190,10 @@ describe('useProviderModelProjection', () => {
     });
 
     it('requests the daemon-owned hidden-row management projection explicitly', async () => {
-        describeProviderModels.mockResolvedValueOnce({ status: 'success', agentTargetKey: 'backend:codex', groups: [] });
+        describeProviderModels.mockResolvedValueOnce({ status: 'success', agentTargetKey: 'agent:happier.agent.codex/codex', groups: [] });
         await renderHook(() => useProviderModelProjection({
             enabled: true, machineId: 'machine-a', serverId: 'server-a',
-            agentTargetKey: 'backend:codex', mode: 'management',
+            agentTargetKey: 'agent:happier.agent.codex/codex', mode: 'management',
         }));
         await flushHookEffects({ cycles: 2, turns: 2 });
         expect(describeProviderModels).toHaveBeenCalledWith(expect.objectContaining({ mode: 'management' }));
@@ -201,11 +201,11 @@ describe('useProviderModelProjection', () => {
 
     it('preserves the last successful same-scope projection and exposes a typed retryable transport error', async () => {
         describeProviderModels.mockResolvedValueOnce({
-            status: 'success', agentTargetKey: 'backend:codex', groups: [{ connectionId: 'pc_a' }],
+            status: 'success', agentTargetKey: 'agent:happier.agent.codex/codex', groups: [{ connectionId: 'pc_a' }],
         });
         const rendered = await renderHook(() => useProviderModelProjection({
             enabled: true, machineId: 'machine-a', serverId: 'server-a',
-            agentTargetKey: 'backend:codex', mode: 'management',
+            agentTargetKey: 'agent:happier.agent.codex/codex', mode: 'management',
         }));
         await flushHookEffects({ cycles: 2, turns: 2 });
         expect(rendered.getCurrent().data?.groups).toEqual([{ connectionId: 'pc_a' }]);
@@ -224,11 +224,11 @@ describe('useProviderModelProjection', () => {
 
     it('preserves the last successful same-scope projection when the daemon returns a typed error', async () => {
         describeProviderModels.mockResolvedValueOnce({
-            status: 'success', agentTargetKey: 'backend:codex', groups: [{ connectionId: 'pc_a' }],
+            status: 'success', agentTargetKey: 'agent:happier.agent.codex/codex', groups: [{ connectionId: 'pc_a' }],
         });
         const rendered = await renderHook(() => useProviderModelProjection({
             enabled: true, machineId: 'machine-a', serverId: 'server-a',
-            agentTargetKey: 'backend:codex', mode: 'management',
+            agentTargetKey: 'agent:happier.agent.codex/codex', mode: 'management',
         }));
         await flushHookEffects({ cycles: 2, turns: 2 });
 
@@ -248,7 +248,7 @@ describe('useProviderModelProjection', () => {
     it('keeps mixed cold-refresh groups authoritative while exposing their typed partial failure', async () => {
         describeProviderModels.mockResolvedValueOnce({
             status: 'success',
-            agentTargetKey: 'backend:codex',
+            agentTargetKey: 'agent:happier.agent.codex/codex',
             groups: [{ connectionId: 'pc_warm' }],
             refreshFailures: [{
                 connectionId: 'pc_cold',
@@ -266,7 +266,7 @@ describe('useProviderModelProjection', () => {
             enabled: true,
             machineId: 'machine-a',
             serverId: 'server-a',
-            agentTargetKey: 'backend:codex',
+            agentTargetKey: 'agent:happier.agent.codex/codex',
         }));
         await flushHookEffects({ cycles: 2, turns: 2 });
 
@@ -284,7 +284,7 @@ describe('useProviderModelProjection', () => {
     it('keeps every per-connection refresh failure and forces only explicit retry reads', async () => {
         describeProviderModels.mockResolvedValue({
             status: 'success',
-            agentTargetKey: 'backend:codex',
+            agentTargetKey: 'agent:happier.agent.codex/codex',
             groups: [],
             refreshFailures: [
                 {
@@ -307,7 +307,7 @@ describe('useProviderModelProjection', () => {
             enabled: true,
             machineId: 'machine-a',
             serverId: 'server-a',
-            agentTargetKey: 'backend:codex',
+            agentTargetKey: 'agent:happier.agent.codex/codex',
         }));
         await flushHookEffects({ cycles: 2, turns: 2 });
 

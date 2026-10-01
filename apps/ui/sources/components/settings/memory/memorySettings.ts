@@ -52,7 +52,7 @@ export const MEMORY_SETTINGS = defineSettingsPage({
                 documentPrefix: { titleKey: 'memorySearchSettings.embeddings.documentPrefixTitle' },
                 baseUrl: { titleKey: 'memorySearchSettings.embeddings.openAi.baseUrlTitle' },
                 remoteModel: { titleKey: 'memorySearchSettings.embeddings.openAi.modelTitle' },
-                apiKey: { titleKey: 'memorySearchSettings.embeddings.openAi.apiKeyTitle' },
+                apiKey: { titleKey: 'memorySearchSettings.embeddings.openAi.apiKeyTitle', sensitive: true },
                 dimensions: { titleKey: 'memorySearchSettings.embeddings.openAi.dimensionsTitle' },
                 textWeight: { titleKey: 'memorySearchSettings.embeddings.advanced.ftsWeightTitle' },
                 embeddingWeight: { titleKey: 'memorySearchSettings.embeddings.advanced.embeddingWeightTitle' },

@@ -3,23 +3,25 @@ import { View } from 'react-native';
 
 import {
     WEBVIEW_LOAD_FAILED_ERROR_CODE,
-    type BrowserControlViewState,
     type BrowserViewLifecycleEmitter,
-} from '@/sync/domains/browser/control';
+} from '@/sync/domains/browser/control/lifecycle';
+import type { BrowserControlViewState } from '@/sync/domains/browser/control/state';
 import {
     buildOpenExternalTabSelection,
     openBrowserExternalTabSelection,
 } from '@/sync/domains/browser/adapters/selection';
 import { resolveExternalUrlIframeSandbox } from '@/sync/domains/browser/adapters/targets/localPreview';
+import { t } from '@/text';
 
-import { BrowserFrameExternalEscape } from '../frame/BrowserFrameExternalEscape';
 import { BrowserFrameNonFramable } from '../frame/BrowserFrameNonFramable';
+import { BrowserFrameStatusCapsule } from '../frame/BrowserFrameStatusCapsule';
 import { BrowserFrameUnavailable } from '../frame/BrowserFrameUnavailable';
 import { BrowserViewFrame } from '../frame/BrowserViewFrame.web';
 import { browserFrameStyles } from '../frame/styles';
 import { DesktopWebViewEngine, type DesktopWebViewEngineBridge } from '../frame/engines/DesktopWebViewEngine';
 import { useWebIframeFramability } from '../frame/engines/useWebIframeFramability';
 import type {
+    BrowserAutomationEngineBridgeConfig,
     BrowserDiagnosticsEngineBridgeConfig,
     BrowserFrameNavigationCommand,
 } from '../frame/types';
@@ -35,10 +37,11 @@ function resolveExternalUrl(view: BrowserControlViewState): string | null {
 /**
  * The web-platform external-URL frame (also the Tauri web bundle). Three render paths:
  * - `desktopWebView` engine (Tauri desktop): a real Wry child WebView hosts arbitrary sites.
- * - `webIframe` engine (plain browser): embed the site in a sandboxed iframe, with the engine's
- *   load-vs-timeout framability heuristic. On the non-framable outcome render the fulfilled
- *   open-in-system-browser fallback (BRW-4 / §3.4) — framability is decided HERE, not by the
- *   selector.
+ * - `webIframe` engine (plain browser): embed the site in a sandboxed iframe. A frame error renders
+ *   the fulfilled open-in-system-browser fallback (BRW-4 / §3.4); a slow load keeps the page and
+ *   offers the same escape in a quiet status capsule — framability is decided HERE, not by the
+ *   selector. The escape is always also in the chrome's `⋯` ("Open in your browser"), so nothing
+ *   floats over the page's own controls.
  * - otherwise fail closed with the resolved reason code.
  */
 export function ExternalUrlTarget(props: Readonly<{
@@ -46,6 +49,7 @@ export function ExternalUrlTarget(props: Readonly<{
     view?: BrowserControlViewState | null;
     profileId?: string | null;
     diagnostics?: BrowserDiagnosticsEngineBridgeConfig | null;
+    automation?: BrowserAutomationEngineBridgeConfig;
     bridge?: DesktopWebViewEngineBridge;
     navigationKey?: string;
     navigationCommand?: BrowserFrameNavigationCommand;
@@ -63,7 +67,7 @@ export function ExternalUrlTarget(props: Readonly<{
         navigationKey: props.navigationKey,
     });
     // R-3: ONE open-in-system-browser action for every branch of this target — the definitive
-    // non-framable fallback, the always-present iframe escape, AND the unavailable card. All three
+    // non-framable fallback, the slow-load hint, AND the unavailable card. All three
     // fulfil the identical OWNER-OPEN external path, so an unavailable in-app engine can never
     // dead-end while the URL is still known.
     const openInSystemBrowser = React.useCallback(() => {
@@ -88,6 +92,7 @@ export function ExternalUrlTarget(props: Readonly<{
                 profileId={props.profileId}
                 testID={props.testID}
                 diagnostics={props.diagnostics}
+                automation={props.automation}
                 bridge={props.bridge}
                 // G8 break #2: the Wry child view dispatches reload/stop SOLELY from this prop. It
                 // was declared here and forwarded only into the webIframe config below, so the
@@ -110,9 +115,8 @@ export function ExternalUrlTarget(props: Readonly<{
                 />
             );
         }
-        // The iframe renders for the pending/framable verdict; the escape is always overlaid
-        // because the verdict can be a false "framable" for an X-Frame-Options site that fires
-        // onLoad on a blank document — the user must always be able to escape to their browser.
+        // The iframe renders for every verdict but a definite error. A slow page keeps loading under
+        // a quiet hint that offers the escape; a late load removes it.
         return (
             <View style={browserFrameStyles.root}>
                 <BrowserViewFrame
@@ -137,11 +141,15 @@ export function ExternalUrlTarget(props: Readonly<{
                             onLifecycle?.({ kind: 'loadFailed', errorCode: WEBVIEW_LOAD_FAILED_ERROR_CODE, url: externalUrl });
                         },
                         ...(props.diagnostics ? { diagnostics: props.diagnostics } : {}),
+                        ...(props.automation ? { automation: props.automation } : {}),
                     }}
                 />
-                <BrowserFrameExternalEscape
-                    testID={props.testID}
-                    onOpenInSystemBrowser={openInSystemBrowser}
+                <BrowserFrameStatusCapsule
+                    visible={framability.verdict === 'slow'}
+                    testID={`${props.testID}-slow-hint`}
+                    text={t('browserPresence.slowPage')}
+                    busy
+                    action={{ label: t('browserPresence.openInYourBrowser'), onPress: openInSystemBrowser }}
                 />
             </View>
         );

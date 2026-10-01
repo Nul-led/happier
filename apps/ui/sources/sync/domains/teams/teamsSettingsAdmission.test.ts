@@ -3,7 +3,10 @@ import { FeaturesResponseSchema, type FeaturesResponse } from '@happier-dev/prot
 
 import type { ServerFeaturesSnapshot } from '@/sync/api/capabilities/serverFeaturesClient';
 
-import { resolveTeamsSettingsAdmission as resolveTeamsSettingsAdmissionOwner } from './teamsSettingsAdmission';
+import {
+    resolveTeamsDestinationShown,
+    resolveTeamsSettingsAdmission as resolveTeamsSettingsAdmissionOwner,
+} from './teamsSettingsAdmission';
 
 function resolveTeamsSettingsAdmission(
     params: Omit<Parameters<typeof resolveTeamsSettingsAdmissionOwner>[0], 'settings'>,
@@ -178,5 +181,20 @@ describe('resolveTeamsSettingsAdmission', () => {
         const admission = resolveTeamsSettingsAdmission({ serverIds: [], snapshotsByServerId: {} });
         expect(admission.admitted).toBe(false);
         expect(admission.homes).toEqual([]);
+    });
+});
+
+describe('resolveTeamsDestinationShown', () => {
+    it('hides Teams only when every capable Home says this viewer is not shown it', () => {
+        const shown = (entries: ReadonlyArray<[string, boolean | undefined]>, capable = entries.map(([id]) => id)) =>
+            resolveTeamsDestinationShown({ capableServerIds: capable, showTeamsByServerId: new Map(entries) });
+
+        expect(shown([['a', false]])).toBe(false);
+        expect(shown([['a', false], ['b', true]])).toBe(true);
+        // Not answered yet, or a Home that predates the answer: a Home that never chose shows Teams.
+        expect(shown([['a', false], ['b', undefined]])).toBe(true);
+        expect(shown([], ['a'])).toBe(true);
+        // No capable Home is the feature admission's answer, not a visibility choice.
+        expect(shown([], [])).toBe(false);
     });
 });

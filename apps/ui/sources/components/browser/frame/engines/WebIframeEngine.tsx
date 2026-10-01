@@ -93,6 +93,11 @@ export function WebIframeEngine(props: Readonly<{
 }> & WebIframeSource): React.ReactElement {
     const iframeRef = React.useRef<HTMLIFrameElement | null>(null);
     const hasLoadedCurrentNavigationRef = React.useRef(false);
+    const [loadedDocumentRevision, setLoadedDocumentRevision] = React.useState(0);
+    const diagnosticsRef = React.useRef(props.diagnostics);
+    const automationRef = React.useRef(props.automation);
+    diagnosticsRef.current = props.diagnostics;
+    automationRef.current = props.automation;
     const bridgeDocumentRetiredRef = React.useRef(false);
     const bridgeSendRef = React.useRef<((message: unknown) => void) | null>(null);
     const webMessageBridgeRef = React.useRef(props.webMessageBridge);
@@ -102,6 +107,32 @@ export function WebIframeEngine(props: Readonly<{
     const bridgeTargetOrigin = props.webMessageBridge?.targetOrigin;
     const bridgeAllowsWildcardTargetOrigin = props.webMessageBridge?.allowWildcardTargetOrigin === true;
     const bridgeAttachHostMessages = props.webMessageBridge?.attachHostMessages;
+    const collectorScript = React.useMemo(() => {
+        const diagnostics = props.diagnostics;
+        const targetOrigin = normalizePostMessageOrigin(diagnostics?.webPostMessageTargetOrigin);
+        if (!diagnostics || !targetOrigin) return null;
+        return buildInjectedBrowserDiagnosticsScript({
+            browserSessionId: diagnostics.browserSessionId,
+            viewId: diagnostics.viewId,
+            navigationGeneration: diagnostics.navigationGeneration,
+            collectorId: diagnostics.collectorId,
+            nonce: diagnostics.nonce,
+            version: diagnostics.collectorVersion,
+            webPostMessageTargetOrigin: targetOrigin,
+            ownerConsoleValueCapture: diagnostics.consoleValueCapture === true,
+            ownerDiagnosticsValueCapture: diagnostics.valueCapture === true,
+        });
+    }, [
+        props.diagnostics?.browserSessionId,
+        props.diagnostics?.viewId,
+        props.diagnostics?.navigationGeneration,
+        props.diagnostics?.collectorId,
+        props.diagnostics?.nonce,
+        props.diagnostics?.collectorVersion,
+        props.diagnostics?.webPostMessageTargetOrigin,
+        props.diagnostics?.consoleValueCapture,
+        props.diagnostics?.valueCapture,
+    ]);
 
     React.useLayoutEffect(() => {
         hasLoadedCurrentNavigationRef.current = false;
@@ -120,17 +151,7 @@ export function WebIframeEngine(props: Readonly<{
             return;
         }
 
-        diagnostics.onCollectorScriptReady?.(buildInjectedBrowserDiagnosticsScript({
-            browserSessionId: diagnostics.browserSessionId,
-            viewId: diagnostics.viewId,
-            navigationGeneration: diagnostics.navigationGeneration,
-            collectorId: diagnostics.collectorId,
-            nonce: diagnostics.nonce,
-            version: diagnostics.collectorVersion,
-            webPostMessageTargetOrigin,
-            ownerConsoleValueCapture: diagnostics.consoleValueCapture === true,
-            ownerDiagnosticsValueCapture: diagnostics.valueCapture === true,
-        }));
+        if (collectorScript) diagnostics.onCollectorScriptReady?.(collectorScript);
 
         if (typeof window === 'undefined') return;
 
@@ -189,22 +210,79 @@ export function WebIframeEngine(props: Readonly<{
         return () => {
             window.removeEventListener('message', listener);
         };
-    }, [props.diagnostics]);
+    }, [props.diagnostics, collectorScript]);
 
+    // Callback/request changes do not reinstall the collector or retire in-flight actions.
+    const automationActionsKey = JSON.stringify(props.automation?.supportedActions ?? []);
     React.useEffect(() => {
-        const automation = props.automation;
-        if (!automation) return;
-        if (automation.supportedActions.length === 0) return;
+        if (!hasLoadedCurrentNavigationRef.current) return;
         if (typeof window === 'undefined') return;
-
-        const sourceOrigin = normalizePostMessageOrigin(automation.sourceOrigin);
-        if (!sourceOrigin) {
-            automation.onRejectedMessage?.('unsupported_web_post_message');
+        const diagnostics = diagnosticsRef.current;
+        const automation = automationRef.current;
+        if (!diagnostics || !collectorScript) {
+            automation?.onRegistrationRejected?.('runtime_unavailable');
             return;
         }
-
+        const sourceOrigin = normalizePostMessageOrigin(diagnostics.sourceOrigin);
         const targetWindow = iframeRef.current?.contentWindow ?? null;
-        if (!targetWindow) return;
+        // An opaque or cross-origin guest cannot be injected by its parent. Keep its isolation;
+        // a contentWindow/postMessage primitive alone is not evidence of a collector.
+        const sandboxTokens = props.sandbox.split(/\s+/);
+        if (!sourceOrigin || !targetWindow || !sandboxTokens.includes('allow-scripts') || !sandboxTokens.includes('allow-same-origin')) {
+            automation?.onRegistrationRejected?.('cross_origin_frame_unavailable');
+            return;
+        }
+        let targetDocument: Document;
+        let previousRuntime: unknown;
+        try {
+            targetDocument = targetWindow.document;
+            if (targetWindow.location.origin !== sourceOrigin) throw new Error('origin_mismatch');
+            previousRuntime = Reflect.get(targetWindow, '__happierBrowserRuntime');
+        } catch {
+            automation?.onRegistrationRejected?.('cross_origin_frame_unavailable');
+            return;
+        }
+        let runtime: unknown;
+        try {
+            const script = targetDocument.createElement('script');
+            script.textContent = collectorScript;
+            try {
+                (targetDocument.head ?? targetDocument.documentElement).appendChild(script);
+            } finally {
+                script.remove();
+            }
+            runtime = Reflect.get(targetWindow, '__happierBrowserRuntime');
+        } catch {
+            automation?.onRegistrationRejected?.('runtime_unavailable');
+            return;
+        }
+        if (!runtime || runtime === previousRuntime || typeof runtime !== 'object'
+            || !('browserSessionId' in runtime) || runtime.browserSessionId !== diagnostics.browserSessionId
+            || !('viewId' in runtime) || runtime.viewId !== diagnostics.viewId
+            || !('navigationGeneration' in runtime) || runtime.navigationGeneration !== diagnostics.navigationGeneration
+            || !('teardown' in runtime) || typeof runtime.teardown !== 'function'
+            || !('modules' in runtime) || !runtime.modules || typeof runtime.modules !== 'object'
+            || !('automation' in runtime.modules) || !runtime.modules.automation || typeof runtime.modules.automation !== 'object'
+            || !('execute' in runtime.modules.automation) || typeof runtime.modules.automation.execute !== 'function') {
+            automation?.onRegistrationRejected?.('runtime_unavailable');
+            return;
+        }
+        const teardownRuntime = runtime.teardown;
+        const retireRuntime = () => {
+            try {
+                if (Reflect.get(targetWindow, '__happierBrowserRuntime') === runtime) teardownRuntime();
+            } catch {
+                // Navigating away may already have destroyed the guest realm.
+            }
+        };
+        if (!automation || automation.supportedActions.length === 0) return retireRuntime;
+        if (automation.browserSessionId !== diagnostics.browserSessionId || automation.viewId !== diagnostics.viewId
+            || automation.navigationGeneration !== diagnostics.navigationGeneration
+            || automation.collectorId !== diagnostics.collectorId || automation.nonce !== diagnostics.nonce
+            || normalizePostMessageOrigin(automation.sourceOrigin) !== sourceOrigin) {
+            automation.onRegistrationRejected?.('runtime_unavailable');
+            return retireRuntime;
+        }
 
         const ownerId = [
             'browser_automation_owner',
@@ -223,14 +301,25 @@ export function WebIframeEngine(props: Readonly<{
             nonce: automation.nonce,
             capabilityVersion: automation.capabilityVersion,
             supportedActions: automation.supportedActions,
-            targetWindow,
+            targetWindow: {
+                postMessage(message, origin) {
+                    try {
+                        if (targetWindow.document !== targetDocument || targetWindow.location.origin !== sourceOrigin) {
+                            throw new Error('cross_origin_frame_unavailable');
+                        }
+                    } catch {
+                        throw new Error('cross_origin_frame_unavailable');
+                    }
+                    targetWindow.postMessage(message, origin);
+                },
+            },
             targetOrigin: sourceOrigin,
             subscribeToMessages(listener) {
                 const handler = (event: MessageEvent) => {
                     if (event.origin !== sourceOrigin) return;
                     if (event.source !== targetWindow) return;
                     if (typeof event.data !== 'string') {
-                        automation.onRejectedMessage?.('schema_invalid');
+                        automationRef.current?.onRejectedMessage?.('schema_invalid');
                         return;
                     }
                     listener(event.data);
@@ -244,8 +333,8 @@ export function WebIframeEngine(props: Readonly<{
         });
         const registration = automation.controlService.registerOwner(owner);
         if (!registration.ok) {
-            automation.onRegistrationRejected?.(registration.reasonCode);
-            return;
+            automationRef.current?.onRegistrationRejected?.(registration.reasonCode);
+            return retireRuntime;
         }
 
         return () => {
@@ -253,8 +342,28 @@ export function WebIframeEngine(props: Readonly<{
                 ownerId,
                 reasonCode: 'owner_disconnected',
             });
+            retireRuntime();
         };
-    }, [props.automation]);
+    }, [
+        collectorScript,
+        loadedDocumentRevision,
+        props.navigationKey,
+        props.url,
+        props.html,
+        props.sandbox,
+        props.diagnostics?.sourceOrigin,
+        props.automation?.browserSessionId,
+        props.automation?.viewId,
+        props.automation?.navigationGeneration,
+        props.automation?.collectorId,
+        props.automation?.nonce,
+        props.automation?.capabilityVersion,
+        props.automation?.adapterKind,
+        props.automation?.sourceOrigin,
+        props.automation?.controlService,
+        props.automation?.nowMs,
+        automationActionsKey,
+    ]);
 
     React.useEffect(() => {
         const diagnostics = props.diagnostics;
@@ -463,6 +572,7 @@ export function WebIframeEngine(props: Readonly<{
             return;
         }
         hasLoadedCurrentNavigationRef.current = true;
+        setLoadedDocumentRevision((revision) => revision + 1);
         props.onLoad?.();
     }, [props.onLoad, props.onUnexpectedNavigation, props.revokeOnUnexpectedNavigation]);
 

@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { MAX_AUTOMATION_MATERIALIZED_INPUT_UTF8_BYTES } from '@happier-dev/protocol';
 
 import { fetchAccountEncryptionMode } from '@/sync/api/account/apiAccountEncryptionMode';
 
@@ -40,6 +41,19 @@ describe('buildAutomationRecipeFromSessionAuthoring', () => {
             encryptRaw: vi.fn(async () => 'sealed-program'),
             isCurrent: () => currentness.shift() ?? false,
         })).rejects.toThrow('authority changed');
+    });
+
+    it.each(['plain', 'e2ee'] as const)('enforces the template input bound before sealing for a %s Account', async (mode) => {
+        vi.mocked(fetchAccountEncryptionMode).mockResolvedValue({ mode, updatedAt: 1 });
+        const encryptRaw = vi.fn(async () => 'sealed-program');
+        await expect(buildAutomationRecipeFromSessionAuthoring({
+            credentials: { token: 'token' },
+            templateVersion: 1,
+            prompt: 'x'.repeat(MAX_AUTOMATION_MATERIALIZED_INPUT_UTF8_BYTES + 1),
+            target: { kind: 'existingSession', sessionId: 'target-session' },
+            encryptRaw,
+        })).rejects.toThrow();
+        expect(encryptRaw).not.toHaveBeenCalled();
     });
 
 });

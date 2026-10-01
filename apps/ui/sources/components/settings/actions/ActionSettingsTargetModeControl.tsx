@@ -42,12 +42,6 @@ export type ActionSettingsTargetModeControlProps = Readonly<{
 
 export const ActionSettingsTargetModeControl = React.memo(function ActionSettingsTargetModeControl(props: ActionSettingsTargetModeControlProps) {
     const styles = stylesheet;
-    const approvalTabs: readonly SegmentedTab<ActionSettingsApprovalControlValue>[] = [
-        { id: 'off', label: t('settingsActions.modes.off') },
-        { id: 'default', label: t('common.default') },
-        { id: 'ask_first', label: t('settingsActions.modes.askFirst') },
-        { id: 'allowed', label: t('settingsActions.modes.allowed') },
-    ];
 
     if (props.controlState.kind === 'unavailable') {
         return (
@@ -69,6 +63,17 @@ export const ActionSettingsTargetModeControl = React.memo(function ActionSetting
             />
         );
     }
+    const approvalTabs: readonly SegmentedTab<ActionSettingsApprovalControlValue>[] = props.controlState.approvalWaivable
+        ? [
+            { id: 'off', label: t('settingsActions.modes.off') },
+            { id: 'default', label: t('common.default') },
+            { id: 'ask_first', label: t('settingsActions.modes.askFirst') },
+            { id: 'allowed', label: t('settingsActions.modes.allowed') },
+        ]
+        : [
+            { id: 'off', label: t('settingsActions.modes.off') },
+            { id: 'ask_first', label: t('settingsActions.modes.askFirst') },
+        ];
     return (
         <View
             testID={`${props.testIDPrefix}:mode`}
@@ -78,6 +83,7 @@ export const ActionSettingsTargetModeControl = React.memo(function ActionSetting
             ]}
         >
             <SegmentedTabBar
+                role="radiogroup"
                 accessibilityLabel={props.accessibilityLabel}
                 disabled={props.disabled}
                 testIDPrefix={`${props.testIDPrefix}:mode`}

@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createHmac } from 'node:crypto';
 import * as pinnedHttp from '@/network/pinnedHttp';
+import { createSessionNotificationContextFixture } from '@/testkit/backends/sessionFixtures';
+
 
 import {
   accountSettingsParse,
@@ -11,6 +13,8 @@ import {
 import { BasePermissionHandler, type PermissionResult } from './BasePermissionHandler';
 import type { AgentStateRequestResponseTarget } from './agentStateRequestStore';
 import { ServerBoundPermissionRpcHandlerManager } from './testkit/serverBoundPermissionRpcHandlerManager';
+
+const fetchSessionNotificationContext = async (sessionId: string) => createSessionNotificationContextFixture(sessionId);
 
 class FakeSession {
   sessionId = 'session-test';
@@ -89,7 +93,7 @@ describe('BasePermissionHandler push notifications', () => {
         notificationsSettingsV1: { v: 1, pushEnabled: true, ready: true, permissionRequest: true },
     });
     const handler = new TestPermissionHandler(session as any, {
-      pushSender: { sendToAllDevicesAsync },
+      pushSender: { fetchSessionNotificationContext, sendToAllDevicesAsync },
       getAccountSettings: () => settings,
     } as any);
 
@@ -120,7 +124,7 @@ describe('BasePermissionHandler push notifications', () => {
         notificationsSettingsV1: { v: 1, pushEnabled: true, ready: true, permissionRequest: false },
     });
     const handler = new TestPermissionHandler(session as any, {
-      pushSender: { sendToAllDevicesAsync },
+      pushSender: { fetchSessionNotificationContext, sendToAllDevicesAsync },
       getAccountSettings: () => settings,
     } as any);
 
@@ -141,7 +145,7 @@ describe('BasePermissionHandler push notifications', () => {
         notificationsSettingsV1: { v: 1, pushEnabled: true, ready: true, permissionRequest: true },
     });
     const handler = new TestPermissionHandler(session as any, {
-      pushSender: { sendToAllDevicesAsync },
+      pushSender: { fetchSessionNotificationContext, sendToAllDevicesAsync },
       getAccountSettings: () => settings,
     } as any);
 
@@ -173,7 +177,7 @@ describe('BasePermissionHandler push notifications', () => {
       notificationsSettingsV1: { v: 1, pushEnabled: true, ready: true, permissionRequest: true },
     });
     const handler = new TestPermissionHandler(session1 as any, {
-      pushSender: { sendToAllDevicesAsync },
+      pushSender: { fetchSessionNotificationContext, sendToAllDevicesAsync },
       getAccountSettings: () => settings,
     } as any);
 
@@ -288,7 +292,7 @@ describe('BasePermissionHandler push notifications', () => {
       ],
     });
     const handler = new TestPermissionHandler(session as any, {
-      pushSender: { sendToAllDevicesAsync: vi.fn(async () => {}) },
+      pushSender: { fetchSessionNotificationContext, sendToAllDevicesAsync: vi.fn(async () => {}) },
       getAccountSettings: () => settings,
       getAccountSettingsSecretsReadKeys: () => [settingsSecretsKey],
     } as any);

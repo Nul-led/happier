@@ -1,7 +1,9 @@
 import * as React from 'react';
 import { View, useWindowDimensions } from 'react-native';
-import { StyleSheet, useUnistyles } from 'react-native-unistyles';
+import { StyleSheet } from 'react-native-unistyles';
 
+import { useAppShellColumn } from '@/components/navigation/shell/appRail/appShellColumnContext';
+import { appShellColumnSurface } from '@/components/navigation/shell/appRail/appShellColumnSurface';
 import { isRenderableElementType } from '@/components/ui/icons/isRenderableElementType';
 import { ResizableDockedPane } from '@/components/ui/panels/ResizableDockedPane';
 import { resolveScaledPaneWidthPx } from '@/components/appShell/panes/layout/paneSizing';
@@ -9,7 +11,8 @@ import { resolveViewportMinEdgePx, VIEWPORT_CLASS_MIN_EDGE_BREAKPOINTS_PX } from
 import { useLocalSetting, useLocalSettingMutable } from '@/sync/domains/state/storage';
 
 import { SettingsSidebar } from '@/components/settings/shell/SettingsSidebar';
-import { SettingsModalFloatingControls } from '@/components/settings/shell/SettingsModalFloatingControls';
+import { SettingsFloatingControlsHost } from '@/components/settings/shell/SettingsModalFloatingControls';
+import { SettingsRailVisibilityContext } from '@/components/settings/shell/settingsRailVisibility';
 import {
     SETTINGS_NAV_SIDEBAR_DEFAULT_WIDTH_PX,
     SETTINGS_NAV_SIDEBAR_MAX_WIDTH_PX,
@@ -65,6 +68,12 @@ const stylesheet = StyleSheet.create((theme) => ({
         flex: 1,
         minHeight: 0,
     },
+    // Outside the app shell this shell owns the navigation column, so it paints the column's plane
+    // (`appShellColumnSurface`); the navigation list inside paints nothing.
+    sidebarColumn: {
+        flex: 1,
+        minHeight: 0,
+    },
 }));
 
 /**
@@ -77,8 +86,6 @@ const stylesheet = StyleSheet.create((theme) => ({
 export const SettingsShell = React.memo(function SettingsShell(props: Readonly<{ children: React.ReactNode }>) {
     const styles = stylesheet;
     const { width: windowWidth, height: windowHeight } = useWindowDimensions();
-    const { theme } = useUnistyles();
-
     const settingsNavSidebarEnabled = useLocalSetting('settingsNavSidebarEnabled');
     const isTabletViewport = resolveViewportMinEdgePx({ width: windowWidth, height: windowHeight }) >= VIEWPORT_CLASS_MIN_EDGE_BREAKPOINTS_PX.tabletMin;
     const enabled = isTabletViewport && settingsNavSidebarEnabled !== false;
@@ -114,31 +121,17 @@ export const SettingsShell = React.memo(function SettingsShell(props: Readonly<{
     const ResizableDockedPaneComponent = isRenderableElementType(ResizableDockedPane) ? ResizableDockedPane : null;
     const SettingsSidebarComponent = isRenderableElementType(SettingsSidebar) ? SettingsSidebar : null;
 
-    const showRail = enabled && !sidebarFallbackActive && !!ResizableDockedPaneComponent && !!SettingsSidebarComponent;
+    // Beside the app rail, the settings navigation is the app shell's column (a destination, not a
+    // modal): this shell then hosts the page only, and never draws a second copy of the navigation.
+    const appShell = useAppShellColumn();
+    const showRail = enabled && !appShell.present && !sidebarFallbackActive && !!ResizableDockedPaneComponent && !!SettingsSidebarComponent;
 
-    // Phone / non-modal: the navigator header still provides chrome, so render content
-    // full-screen with no floating controls.
-    if (!isTabletViewport) {
-        return <View style={styles.root}>{props.children}</View>;
-    }
-
-    // Modal mode (tablet/desktop): the navigator header is removed, so the content pane
-    // carries floating close/back controls above the scrollable content.
-    const contentPane = (
-        <View style={styles.content}>
-            {props.children}
-            <SettingsModalFloatingControls />
-        </View>
-    );
-
-    if (!showRail) {
-        return <View style={styles.root}>{contentPane}</View>;
-    }
-
+    // Keep the nested navigator under the same wrappers and at the same sibling
+    // position. Replacing this tree on resize resets its route and unsaved forms.
     return (
         <View style={styles.root}>
             <View style={styles.row}>
-                <SettingsShellSidebarCrashBoundary onSidebarError={handleSidebarRenderError}>
+                {showRail ? <SettingsShellSidebarCrashBoundary onSidebarError={handleSidebarRenderError}>
                     <ResizableDockedPaneComponent
                         testID="settings-shell.sidebarPane"
                         widthPx={effectiveSidebarWidthPx}
@@ -150,13 +143,19 @@ export const SettingsShell = React.memo(function SettingsShell(props: Readonly<{
                             setSidebarWidthBasisPx(windowWidth);
                         }}
                     >
-                        <View style={{ flex: 1, minHeight: 0, borderRightWidth: StyleSheet.hairlineWidth, borderRightColor: theme.colors.border.default }}>
+                        <View style={[appShellColumnSurface.column, styles.sidebarColumn]}>
                             <SettingsSidebarComponent />
                         </View>
                     </ResizableDockedPaneComponent>
-                </SettingsShellSidebarCrashBoundary>
+                </SettingsShellSidebarCrashBoundary> : null}
 
-                {contentPane}
+                <View style={styles.content}>
+                    <SettingsRailVisibilityContext.Provider value={showRail || appShell.columnVisible}>
+                        <SettingsFloatingControlsHost enabled={isTabletViewport}>
+                            {props.children}
+                        </SettingsFloatingControlsHost>
+                    </SettingsRailVisibilityContext.Provider>
+                </View>
             </View>
         </View>
     );

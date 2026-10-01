@@ -6,9 +6,24 @@ import { renderScreen, standardCleanup } from '@/dev/testkit';
 const pushMock = vi.hoisted(() => vi.fn());
 const githubAppsStateMock = vi.hoisted(() => ({ current: null as null | Record<string, unknown> }));
 
-vi.mock('expo-router', () => ({ useRouter: () => ({ push: pushMock }) }));
-vi.mock('@/components/ui/lists/Item', () => ({ Item: 'Item' }));
-vi.mock('@/components/ui/lists/ItemGroup', () => ({ ItemGroup: 'ItemGroup' }));
+vi.mock('expo-router', async () => {
+    const { createExpoRouterMock } = await import('@/dev/testkit/mocks/router');
+    return createExpoRouterMock({ router: { push: pushMock } }).module;
+});
+// Rows render their right-hand control, as the real row does; page fields are text inputs.
+vi.mock('@/components/ui/lists/Item', async () => {
+    const React = await import('react');
+    return { Item: (props: { rightElement?: unknown }) => React.createElement('Item', props, props.rightElement as never) };
+});
+vi.mock('@/components/ui/forms/FieldTextInput', () => ({ FieldTextInput: 'TextInput' }));
+vi.mock('@/components/ui/lists/ItemGroup', async () => {
+    const React = await import('react');
+    // The section's trailing action (Add) renders with the section, as the real ItemGroup does.
+    return {
+        ItemGroup: (props: { action?: unknown; children?: unknown }) =>
+            React.createElement('ItemGroup', props, props.action as never, props.children as never),
+    };
+});
 vi.mock('@/text', () => ({ t: (key: string) => key }));
 vi.mock('./useManagedGitHubApps', () => ({
     HOME_GITHUB_APP_OWNER: { kind: 'home' },

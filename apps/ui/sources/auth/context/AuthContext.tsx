@@ -1,4 +1,5 @@
 import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
+import { readCredentialAuthorityKind, type CredentialAuthorityKind } from './credentialAuthority';
 import { TokenStorage, type AuthCredentials } from '@/auth/storage/tokenStorage';
 import { loadLocalSettings } from '@/sync/domains/state/persistence';
 import { forgetPluginAccountAvailabilityArtifacts } from '@/sync/domains/plugins/availability/projection';
@@ -57,11 +58,14 @@ export type AuthCredentialPersistenceOptions = Readonly<{
          * when the token finally arrives.
          */
         target?: HomeCredentialTarget;
+        /** Refuse adoption when another Account replaced the captured one. */
+        expectedCredentials?: AuthCredentials;
     }>;
 
 interface AuthContextType {
     isAuthenticated: boolean;
     credentials: AuthCredentials | null;
+    credentialAuthorityKind: CredentialAuthorityKind;
     login: (
         token: string,
         secret: string,
@@ -78,6 +82,35 @@ interface AuthContextType {
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
+
+async function refuseInjectedCredentialMutation(): Promise<AuthCredentialLifecycleResult> {
+    throw new Error('Injected credentials are controlled by the embedding host');
+}
+
+async function keepInjectedCredential(): Promise<void> {}
+
+/** Bridge-owned credentials use the same auth projection without the Account persistence lifecycle. */
+export function InjectedAuthProvider(props: Readonly<{
+    credentials: AuthCredentials | null;
+    children: ReactNode;
+}>) {
+    const value = React.useMemo<AuthContextType>(() => ({
+        isAuthenticated: props.credentials !== null,
+        credentials: props.credentials,
+        credentialAuthorityKind: readCredentialAuthorityKind(props.credentials?.token),
+        login: refuseInjectedCredentialMutation,
+        loginWithCredentials: refuseInjectedCredentialMutation,
+        logout: refuseInjectedCredentialMutation,
+        refreshFromActiveServer: keepInjectedCredential,
+    }), [props.credentials]);
+    useEffect(() => {
+        setCurrentAuth(value);
+        return () => {
+            if (getCurrentAuth() === value) setCurrentAuth(null);
+        };
+    }, [value]);
+    return <AuthContext.Provider value={value}>{props.children}</AuthContext.Provider>;
+}
 
 function resolveActiveServerKey(snapshot: Readonly<{
     serverId?: string | null;
@@ -113,6 +146,7 @@ function isSameServerTarget(
 export function AuthProvider({ children, initialCredentials }: { children: ReactNode; initialCredentials: AuthCredentials | null }) {
     const [isAuthenticated, setIsAuthenticated] = useState(!!initialCredentials);
     const [credentials, setCredentials] = useState<AuthCredentials | null>(initialCredentials);
+    const credentialAuthorityKind = React.useMemo(() => readCredentialAuthorityKind(credentials?.token), [credentials?.token]);
     const activeServerKeyRef = React.useRef<string | null>(
         resolveActiveServerKey(getActiveServerSnapshot()),
     );
@@ -163,7 +197,10 @@ export function AuthProvider({ children, initialCredentials }: { children: React
         const success = target
             ? await TokenStorage.setCredentialsForServerUrl(
                 target.serverUrl,
-                target.serverId ? { serverId: target.serverId } : {},
+                {
+                    ...(target.serverId ? { serverId: target.serverId } : {}),
+                    ...(options?.expectedCredentials ? { expectedCredentials: options.expectedCredentials } : {}),
+                },
                 newCredentials,
             )
             : await TokenStorage.setCredentials(newCredentials);
@@ -370,11 +407,12 @@ export function AuthProvider({ children, initialCredentials }: { children: React
     const value = React.useMemo<AuthContextType>(() => ({
         isAuthenticated,
         credentials,
+        credentialAuthorityKind,
         login,
         loginWithCredentials,
         logout,
         refreshFromActiveServer,
-    }), [isAuthenticated, credentials, login, loginWithCredentials, logout, refreshFromActiveServer]);
+    }), [isAuthenticated, credentials, credentialAuthorityKind, login, loginWithCredentials, logout, refreshFromActiveServer]);
 
     // Update global auth state when local state changes
     useEffect(() => {
@@ -434,6 +472,10 @@ export function AuthProvider({ children, initialCredentials }: { children: React
             {children}
         </AuthContext.Provider>
     );
+}
+
+export function useOptionalAuth(): AuthContextType | null {
+    return useContext(AuthContext) ?? null;
 }
 
 export function useAuth() {

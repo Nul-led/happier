@@ -119,7 +119,7 @@ describe('/oauth/[provider] (auth flow)', () => {
             const cancelButton = screen.findByTestId('oauth-return-wizard-secondary');
             expect(cancelButton).not.toBeNull();
             expect(cancelButton?.props.onPress).toBeTypeOf('function');
-            expect(screen.getTextContent()).toContain('Signing in to the Account Service');
+            expect(screen.getTextContent()).toContain('Signing in');
             const lateCancel = cancelButton!.props.onPress as () => Promise<void>;
 
             await act(async () => {

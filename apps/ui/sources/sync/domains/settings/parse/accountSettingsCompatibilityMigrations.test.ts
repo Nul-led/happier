@@ -146,17 +146,17 @@ describe('applyAccountSettingsCompatibilityMigrations', () => {
         const codexTargetKey = resolveBackendTargetKeyV2({ kind: 'backend', backendId: 'codex' });
         const input = {
             backendEnabledByTargetKey: {
-                'backend:codex': false,
+                'agent:happier.agent.codex/codex': false,
             },
             backendCliSourcePreferenceByTargetKey: {
-                'backend:codex': 'managed-first',
+                'agent:happier.agent.codex/codex': 'managed-first',
                 [codexTargetKey]: 'system-first',
             },
             sessionDefaultPermissionModeByTargetKey: {
-                'backend:codex': 'read-only',
+                'agent:happier.agent.codex/codex': 'read-only',
             },
             newSessionDefaultPersistenceModeByTargetKeyV1: {
-                'backend:codex': 'direct',
+                'agent:happier.agent.codex/codex': 'direct',
             },
         };
         const migrated = applyAccountSettingsCompatibilityMigrations({

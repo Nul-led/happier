@@ -53,7 +53,7 @@ export function resolveKeyboardShortcutCommandGroupId(commandId: KeyboardCommand
             return 'composer';
         case 'transcript':
             return 'transcript';
-        case 'splitCanvas':
+        case 'workspace':
             return 'splitView';
         case 'browser':
             return 'browser';

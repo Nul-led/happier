@@ -19,6 +19,11 @@ import { installSettingsViewCommonModuleMocks } from '../../settingsViewTestHelp
 
 const routerReplace = vi.hoisted(() => vi.fn());
 
+vi.mock('@react-navigation/native', async () => {
+    const { createReactNavigationNativeMock } = await import('@/dev/testkit/mocks/reactNavigation');
+    return createReactNavigationNativeMock();
+});
+
 installSettingsViewCommonModuleMocks({
     router: async () => ({
         useRouter: () => ({ push: vi.fn(), back: vi.fn(), replace: routerReplace }),
@@ -76,6 +81,25 @@ afterEach(() => {
 });
 
 describe('TeamGroupCreateScreen', () => {
+    it('UX keeps a new Group draft when navigation is canceled', async () => {
+        const serverId = await addHome({ manageGroups: true });
+        const screen = await renderCreate(serverId);
+        await waitForTestId(screen, 'team-group-create-name');
+        act(() => screen.changeTextByTestId('team-group-create-name', 'Unfinished'));
+        const { Modal } = await import('@/modal');
+        vi.mocked(Modal.alert).mockImplementation((_title, _message, buttons) => {
+            buttons?.find((button) => button.style === 'cancel')?.onPress?.();
+        });
+        const { runGuardedNavigation } = await import('@/utils/navigation/runGuardedNavigation');
+        const leave = vi.fn();
+        let departed: boolean | undefined;
+        await act(async () => { departed = await runGuardedNavigation(leave); });
+        expect(departed).toBe(false);
+        expect(leave).not.toHaveBeenCalled();
+        expect(screen.findByTestId('team-group-create-name')?.props.value).toBe('Unfinished');
+        expect(harness.requestsFor(GROUP_CREATE_PATH)).toHaveLength(0);
+    });
+
     it('starts only one create when activated twice before the busy state renders', async () => {
         let releaseCreate = (): void => {};
         const respondAfter = new Promise<void>((resolve) => { releaseCreate = resolve; });

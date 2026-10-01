@@ -7,11 +7,43 @@ import {
     type AutomationRunTemplateV1,
     type MentionRefV1,
 } from '@happier-dev/protocol';
+import type { z } from 'zod';
 
 import type { AuthCredentials } from '@/auth/storage/tokenStorage';
 import { fetchAccountEncryptionMode } from '@/sync/api/account/apiAccountEncryptionMode';
 
 import { AutomationTemplateEncryptionMaterialUnavailableError } from './automationTemplateAvailability';
+
+/** Schema-specific recipe callers share the Account envelope and currentness owner. */
+export async function openAutomationRecipePayloadForAuthoring<T>(params: Readonly<{
+    envelope: Readonly<{ t: 'plain'; v: unknown }> | Readonly<{ t: 'encrypted'; c: string }>;
+    schema: z.ZodType<T>;
+    decryptRaw?: (ciphertext: string) => Promise<unknown | null>;
+    isCurrent?: () => boolean;
+}>): Promise<T> {
+    const opened = params.envelope.t === 'plain'
+        ? params.envelope.v
+        : params.decryptRaw ? await params.decryptRaw(params.envelope.c) : null;
+    if (params.isCurrent && !params.isCurrent()) throw new Error('Automation authoring authority changed');
+    const parsed = params.schema.safeParse(opened);
+    if (!parsed.success) throw new AutomationTemplateEncryptionMaterialUnavailableError();
+    return parsed.data;
+}
+
+export async function sealAutomationRecipePayloadForAuthoring(params: Readonly<{
+    credentials: AuthCredentials;
+    payload: unknown;
+    encryptRaw?: (value: unknown) => Promise<string>;
+    isCurrent?: () => boolean;
+}>): Promise<unknown> {
+    const mode = await fetchAccountEncryptionMode(params.credentials);
+    if (params.isCurrent && !params.isCurrent()) throw new Error('Automation authoring authority changed');
+    if (mode.mode === 'plain') return { t: 'plain', v: params.payload };
+    if (!params.encryptRaw) throw new AutomationTemplateEncryptionMaterialUnavailableError();
+    const ciphertext = await params.encryptRaw(params.payload);
+    if (params.isCurrent && !params.isCurrent()) throw new Error('Automation authoring authority changed');
+    return { t: 'encrypted', c: ciphertext };
+}
 
 /** Opens the current private program for the mounted editor; it persists nowhere. */
 export async function openAutomationRecipeForAuthoring(params: Readonly<{
@@ -20,16 +52,7 @@ export async function openAutomationRecipeForAuthoring(params: Readonly<{
     isCurrent?: () => boolean;
 }>): Promise<AutomationRunTemplateV1> {
     const recipe = AutomationStoredDefinitionExecutionRecipeV1Schema.parse(params.recipe);
-    const isCurrent = params.isCurrent ?? (() => true);
-    const opened = recipe.template.t === 'plain'
-        ? recipe.template.v
-        : params.decryptRaw
-            ? await params.decryptRaw(recipe.template.c)
-            : null;
-    if (!isCurrent()) throw new Error('Automation authoring authority changed');
-    const parsed = AutomationRunTemplateV1Schema.safeParse(opened);
-    if (!parsed.success) throw new AutomationTemplateEncryptionMaterialUnavailableError();
-    return parsed.data;
+    return openAutomationRecipePayloadForAuthoring({ ...params, envelope: recipe.template, schema: AutomationRunTemplateV1Schema });
 }
 
 /**
@@ -46,31 +69,17 @@ export async function buildAutomationRecipeFromSessionAuthoring(params: Readonly
     encryptRaw?: (value: unknown) => Promise<string>;
     isCurrent?: () => boolean;
 }>): Promise<AutomationStoredDefinitionExecutionRecipeV1> {
-    const isCurrent = params.isCurrent ?? (() => true);
     const target = AutomationRunExecutionTargetV1Schema.parse(params.target);
-    const mode = await fetchAccountEncryptionMode(params.credentials);
-    if (!isCurrent()) throw new Error('Automation authoring authority changed');
 
-    const program = {
+    const program = AutomationRunTemplateV1Schema.parse({
         v: 1 as const,
         prompt: params.prompt,
         ...(params.mentions?.length ? { mentions: [...params.mentions] } : {}),
-    };
+    });
 
-    // The recipe schema below is the canonical JSON-envelope admission owner;
-    // keep this pre-parse value opaque so MentionRef passthrough fields cannot
-    // be asserted to be JSON-safe merely from their wider runtime type.
-    let template: unknown;
-    if (mode.mode === 'plain') {
-        template = { t: 'plain', v: program };
-    } else {
-        if (!params.encryptRaw) {
-            throw new AutomationTemplateEncryptionMaterialUnavailableError();
-        }
-        const ciphertext = await params.encryptRaw(program);
-        if (!isCurrent()) throw new Error('Automation authoring authority changed');
-        template = { t: 'encrypted', c: ciphertext };
-    }
+    // Validate the private program before encryption makes it opaque to the
+    // outer recipe schema. Plain and E2EE Accounts share the same admission.
+    const template = await sealAutomationRecipePayloadForAuthoring({ ...params, payload: program });
 
     return AutomationStoredDefinitionExecutionRecipeV1Schema.parse({
         v: 1,

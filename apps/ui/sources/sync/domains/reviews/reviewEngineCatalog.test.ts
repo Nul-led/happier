@@ -1,8 +1,17 @@
 import { describe, expect, it } from 'vitest';
 
-import { buildAvailableReviewEngineOptions } from './reviewEngineCatalog';
+import { buildAvailableReviewEngineOptions, resolveReviewEngineTarget } from './reviewEngineCatalog';
 
 describe('buildAvailableReviewEngineOptions', () => {
+  it('preserves configured review target keys while routing catalog Agent ids as backends', () => {
+    expect(resolveReviewEngineTarget('backend:review-bot:configured:review-bot')).toEqual({
+      kind: 'backend', backendId: 'review-bot', configuredBackendId: 'review-bot', sourceKind: 'configured',
+    });
+    expect(resolveReviewEngineTarget('acme.review/reviewer')).toEqual({
+      kind: 'backend', backendId: 'acme.review/reviewer',
+    });
+  });
+
   it('includes enabled review-capable engines from the execution-run backend snapshot', () => {
     const opts = buildAvailableReviewEngineOptions({
       enabledAgentIds: ['claude', 'codex'],
@@ -62,6 +71,19 @@ describe('buildAvailableReviewEngineOptions', () => {
     ]);
   });
 
+  it('does not offer a built-in Agent when the machine inventory omits review intent', () => {
+    const opts = buildAvailableReviewEngineOptions({
+      enabledAgentIds: ['claude', 'codex'],
+      resolveAgentLabel: (id) => `agent:${id}`,
+      executionRunsBackends: {
+        claude: { available: true, intents: ['review'] },
+        codex: { available: true, intents: ['delegate'] },
+      },
+    });
+
+    expect(opts.map((option) => option.id)).toEqual(['claude']);
+  });
+
   it('falls back to the backend id when a discovered review backend has no canonical agent label', () => {
     const opts = buildAvailableReviewEngineOptions({
       enabledAgentIds: ['claude'],
@@ -79,5 +101,19 @@ describe('buildAvailableReviewEngineOptions', () => {
       { id: 'claude', label: 'agent:claude' },
       { id: 'customAcp', label: 'customAcp' },
     ]);
+  });
+
+  it('shows only engines that advertise exact path support for a paths scope', () => {
+    const opts = buildAvailableReviewEngineOptions({
+      enabledAgentIds: ['claude'],
+      resolveAgentLabel: (id) => id,
+      scope: 'paths',
+      executionRunsBackends: {
+        claude: { available: true, intents: ['review'], reviewScopes: ['worktree', 'paths'] },
+        coderabbit: { available: true, intents: ['review'], reviewScopes: ['worktree'] },
+      },
+    });
+
+    expect(opts).toEqual([{ id: 'claude', label: 'claude' }]);
   });
 });

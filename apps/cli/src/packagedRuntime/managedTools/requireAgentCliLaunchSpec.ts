@@ -1,6 +1,7 @@
 import {
   buildMissingAgentCliCommandErrorMessage,
   resolveAgentCliRuntimeSpecForLookupId,
+  type AgentCliResolutionOptions,
 } from './requireAgentCliCommand';
 import {
   resolveAgentCliLaunchSpecForRuntime,
@@ -10,17 +11,17 @@ export type { AgentCliLaunchSpec } from './agentCliLaunchSpec';
 
 export function resolveAgentCliLaunchSpec(
   agentId: string,
-  opts: Readonly<{ processEnv?: NodeJS.ProcessEnv }> = {},
+  opts: AgentCliResolutionOptions = {},
 ): AgentCliLaunchSpec | null {
   return resolveAgentCliLaunchSpecForRuntime(
-    resolveAgentCliRuntimeSpecForLookupId(agentId),
+    resolveAgentCliRuntimeSpecForLookupId(agentId, opts),
     opts,
   );
 }
 
 export function requireAgentCliLaunchSpec(
   agentId: string,
-  opts: Readonly<{ processEnv?: NodeJS.ProcessEnv }> = {},
+  opts: AgentCliResolutionOptions = {},
 ): AgentCliLaunchSpec {
   const resolved = resolveAgentCliLaunchSpec(agentId, opts);
   if (resolved) return resolved;

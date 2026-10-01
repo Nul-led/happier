@@ -30,6 +30,10 @@ import {
 } from '@/activity/notifications/permission/pushNotificationAccess';
 import { runPushNotificationPermissionPriming } from '@/activity/notifications/permission/pushNotificationPermissionPriming';
 import { Icon } from '@/components/ui/icons/Icon';
+import { SettingsPageHeader } from '@/components/settings/shell/SettingsPageHeader';
+import { SettingAnchor } from '@/components/settings/shell/SettingRow';
+import { RoundButton } from '@/components/ui/buttons/RoundButton';
+import { NOTIFICATIONS_PUSH_SETTINGS } from '@/components/settings/notifications/notificationsPushSettings';
 
 export const PushNotificationTroubleshootingView = React.memo(function PushNotificationTroubleshootingView() {
     const { theme } = useUnistyles();
@@ -154,6 +158,10 @@ export const PushNotificationTroubleshootingView = React.memo(function PushNotif
     const currentTokenPresentOnServer = Boolean(currentToken && tokens.some((row) => row.token === currentToken));
     const permissionDetail = resolvePermissionDetail(permission);
     const permissionSubtitle = resolvePermissionSubtitle(permission);
+    const permissionState = permission?.ok ? permission.permission : null;
+    const permissionGranted = permissionState?.granted === true;
+    // The OS will not ask again: the only way forward is system settings.
+    const permissionBlocked = Boolean(permissionState && !permissionState.granted && permissionState.status !== 'unsupported' && !permissionState.canAskAgain);
 
     const devicesFooter = t('settingsNotifications.pushTroubleshooting.devices.footer', {
         count: String(tokens.length),
@@ -161,10 +169,28 @@ export const PushNotificationTroubleshootingView = React.memo(function PushNotif
     });
 
     return (
-        <ItemList testID="settings-notifications-push-troubleshooting">
+        <ItemList testID="settings-notifications-push-troubleshooting" presentation="page">
+            <SettingsPageHeader description={t('settingsNotifications.pushTroubleshooting.pageDescription')} />
             <ItemGroup
                 title={t('settingsNotifications.pushTroubleshooting.status.title')}
-                footer={t('settingsNotifications.pushTroubleshooting.status.footer')}
+                description={t('settingsNotifications.pushTroubleshooting.status.footer')}
+                action={(
+                    <SettingAnchor setting={NOTIFICATIONS_PUSH_SETTINGS.settings.refresh}>
+                        <RoundButton
+                            testID="settings-notifications-push-troubleshooting-refresh"
+                            size="small"
+                            display="inverted"
+                            title={t(NOTIFICATIONS_PUSH_SETTINGS.settings.refresh.titleKey)}
+                            // Progress is shown without disabling: the recovery action must stay
+                            // reachable precisely when a load is misbehaving.
+                            leading={loading
+                                ? <ActivitySpinner size="small" color={theme.colors.text.secondary} />
+                                : <Icon name="arrows-clockwise" size={14} color={theme.colors.text.secondary} />}
+                            disabled={!auth.credentials}
+                            onPress={() => { void loadTroubleshootingState({ showErrors: true }); }}
+                        />
+                    </SettingAnchor>
+                )}
             >
                 <Item
                     title={t('settingsNotifications.pushTroubleshooting.status.accountSettingTitle')}
@@ -172,77 +198,58 @@ export const PushNotificationTroubleshootingView = React.memo(function PushNotif
                         ? t('settingsNotifications.pushTroubleshooting.status.accountSettingEnabledSubtitle')
                         : t('settingsNotifications.pushTroubleshooting.status.accountSettingDisabledSubtitle')}
                     detail={pushEnabled ? t('common.enabled') : t('common.disabled')}
-                    icon={<Icon name="sliders-horizontal" size={29} color={theme.colors.text.secondary} />}
                     showChevron={false}
                     mode="info"
                 />
                 <Item
                     title={t('settingsNotifications.pushTroubleshooting.permission.title')}
                     subtitle={permissionSubtitle}
+                    subtitleLines={0}
                     detail={permissionDetail}
-                    icon={<Icon name="bell" size={29} color={theme.colors.text.secondary} />}
                     showChevron={false}
-                    mode="info"
                     loading={loading && permission == null}
+                    rightElement={permissionGranted ? undefined : (
+                        <RoundButton
+                            testID="settings-notifications-push-troubleshooting-request-permission"
+                            size="small"
+                            display="secondary"
+                            title={permissionBlocked
+                                ? t('settingsNotifications.pushPriming.openSettings')
+                                : t('settingsNotifications.pushTroubleshooting.actions.requestPermissionTitle')}
+                            accessibilityHint={t('settingsNotifications.pushTroubleshooting.actions.requestPermissionSubtitle')}
+                            disabled={!isPushNotificationRuntimeSupported()}
+                            onPress={() => { void requestPermission(); }}
+                        />
+                    )}
                 />
                 <Item
                     title={t('settingsNotifications.pushTroubleshooting.token.title')}
                     subtitle={resolveTokenSubtitle(tokenOutcome, tokenFingerprint)}
                     subtitleLines={0}
                     detail={currentTokenPresentOnServer ? t('settingsNotifications.pushTroubleshooting.token.registered') : undefined}
-                    icon={<Icon name="key" size={29} color={theme.colors.text.secondary} />}
                     showChevron={false}
-                    mode="info"
-                />
-            </ItemGroup>
-
-            <ItemGroup
-                title={t('settingsNotifications.pushTroubleshooting.actions.title')}
-                footer={t('settingsNotifications.pushTroubleshooting.actions.footer')}
-            >
-                <Item
-                    testID="settings-notifications-push-troubleshooting-request-permission"
-                    title={t('settingsNotifications.pushTroubleshooting.actions.requestPermissionTitle')}
-                    subtitle={t('settingsNotifications.pushTroubleshooting.actions.requestPermissionSubtitle')}
-                    icon={<Icon name="shield-check" size={29} color={theme.colors.accent.blue} />}
-                    onPress={() => { void requestPermission(); }}
-                    disabled={!isPushNotificationRuntimeSupported()}
-                    showChevron={false}
-                />
-                <Item
-                    testID="settings-notifications-push-troubleshooting-reregister"
-                    title={t('settingsNotifications.pushTroubleshooting.actions.reregisterTitle')}
-                    subtitle={t('settingsNotifications.pushTroubleshooting.actions.reregisterSubtitle')}
-                    icon={<Icon name="arrow-clockwise" size={29} color={theme.colors.state.neutral.foreground} />}
-                    onPress={() => { void reregister(); }}
-                    disabled={!auth.credentials}
-                    showChevron={false}
-                />
-                <Item
-                    testID="settings-notifications-push-troubleshooting-refresh"
-                    title={t('settingsNotifications.pushTroubleshooting.actions.refreshTitle')}
-                    subtitle={t('settingsNotifications.pushTroubleshooting.actions.refreshSubtitle')}
-                    icon={<Icon name="cloud-arrow-down" size={29} color={theme.colors.text.secondary} />}
-                    onPress={() => { void loadTroubleshootingState({ showErrors: true }); }}
-                    // Progress is shown without `loading`, which would also disable the row: the
-                    // recovery action must stay reachable precisely when a load is misbehaving.
-                    rightElement={loading
-                        ? <ActivitySpinner size="small" color={theme.colors.text.secondary} />
-                        : undefined}
-                    disabled={!auth.credentials}
-                    showChevron={false}
+                    rightElement={(
+                        <RoundButton
+                            testID="settings-notifications-push-troubleshooting-reregister"
+                            size="small"
+                            display="secondary"
+                            title={t('settingsNotifications.pushTroubleshooting.actions.reregisterTitle')}
+                            accessibilityHint={t('settingsNotifications.pushTroubleshooting.actions.reregisterSubtitle')}
+                            disabled={!auth.credentials}
+                            onPress={() => { void reregister(); }}
+                        />
+                    )}
                 />
             </ItemGroup>
 
             <ItemGroup
                 title={t('settingsNotifications.pushTroubleshooting.devices.title')}
-                footer={devicesFooter}
+                description={devicesFooter}
             >
                 {tokens.length === 0 ? (
                     <Item
                         title={t('settingsNotifications.pushTroubleshooting.devices.emptyTitle')}
                         subtitle={t('settingsNotifications.pushTroubleshooting.devices.emptySubtitle')}
-                        icon={<Icon name="device-mobile" size={29} color={theme.colors.text.secondary} />}
                         showChevron={false}
                         mode="info"
                         loading={loading}

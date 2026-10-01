@@ -1,8 +1,10 @@
 import * as React from 'react';
-import { useRouter } from 'expo-router';
+import { useRouter } from '@/components/appShell/workspace/destinationRoute';
 import type { IdentityConnectionTestDiagnosticsV1 } from '@happier-dev/protocol';
 
 import { IdentityTestDiagnosticsGroup } from '@/components/settings/identity/IdentityTestDiagnosticsGroup';
+import { HOME_IDENTITY_PROVIDER_SETTINGS } from '@/components/settings/identity/identitySettings';
+import { SettingAnchor, SettingSection } from '@/components/settings/shell/SettingRow';
 import { identityAdministrationFailureMessage } from '@/components/settings/identity/identityAdministrationFailure';
 import { announceAccessibilityMessage } from '@/components/ui/accessibility/announceAccessibilityMessage';
 import { CopiedPill } from '@/components/ui/copy/CopiedPill';
@@ -25,7 +27,8 @@ import { HomeAdministrationSection } from '../governance/HomeAdministrationSecti
 import type { HomeAdministrationContext } from '../governance/homeAdministrationContext';
 import {
     homeAdministrationIdentityProviderEditPath,
-    homeAdministrationPoliciesPath,
+    homeAdministrationIdentityProviderPath,
+    homeAdministrationSignInProvidersPath,
 } from '../governance/homeAdministrationRoutes';
 import {
     consumeIdentityProviderTestReturn,
@@ -42,27 +45,26 @@ const DetailContent = React.memo(function DetailContent(props: Readonly<{
     const router = useRouter();
     const mountedRef = useMountedRef();
     const client = useManagedIdentityProviderClient(props.context.scope);
-    const { state, refresh } = useManagedIdentityProviders(props.context.scope);
     const [pending, setPending] = React.useState<string | null>(null);
     const [error, setError] = React.useState<string | null>(null);
-    const [notice, setNotice] = React.useState<string | null>(null);
     const [testDiagnostics, setTestDiagnostics] = React.useState<IdentityConnectionTestDiagnosticsV1 | null>(null);
     // The outcome is rendered in a group below the pressed control, so it is
     // announced through the canonical live region as well as shown.
-    const reportFailure = (code: string) => {
+    const reportFailure = React.useCallback((code: string) => {
         if (!mountedRef.current) return;
-        setNotice(null);
         setError(code);
         announceAccessibilityMessage(identityAdministrationFailureMessage(code));
-    };
-    const reportApprovalPending = (registration: ActionApprovalRegistration) => {
+    }, [mountedRef]);
+    const reportApprovalPending = React.useCallback((registration: ActionApprovalRegistration) => {
         if (!mountedRef.current) return;
         props.context.requestApproval?.(registration);
-        const message = t('connect.waitingForApproval');
         setError(null);
-        setNotice(message);
-        announceAccessibilityMessage(message);
-    };
+    }, [mountedRef, props.context.requestApproval]);
+    const { state, refresh } = useManagedIdentityProviders(
+        props.context.scope,
+        { kind: 'home' },
+        reportApprovalPending,
+    );
     // The shared OAuth route has already consumed the one-time server handle.
     // Its process-local handoff is claimed only by this exact Home, Account,
     // and provider. Deferred execution is bound here to the same mounted
@@ -81,7 +83,6 @@ const DetailContent = React.memo(function DetailContent(props: Readonly<{
             if (!mountedRef.current) return;
             setTestDiagnostics(value.diagnostics ?? null);
             setError(null);
-            setNotice(null);
             refresh();
         };
         if (returned.kind === 'completed') {
@@ -121,7 +122,6 @@ const DetailContent = React.memo(function DetailContent(props: Readonly<{
     const runLifecycle = async (actionId: 'identity.providers.enable' | 'identity.providers.disable') => {
         setPending(actionId);
         setError(null);
-        setNotice(null);
         try {
             const refreshCurrentProvider = () => {
                 if (mountedRef.current) refresh();
@@ -145,8 +145,7 @@ const DetailContent = React.memo(function DetailContent(props: Readonly<{
 
     const beginProviderTest = async (value: Readonly<{ attemptId: string; authorizeUrl: string }>) => {
         if (!mountedRef.current) return;
-        const returnTo = homeAdministrationPoliciesPath(props.context.scope.serverId)
-            + `/identity/${encodeURIComponent(provider.id)}`;
+        const returnTo = homeAdministrationIdentityProviderPath(props.context.scope.serverId, provider.id);
         recordPendingIdentityProviderTest({
             kind: 'home',
             serverId: props.context.scope.serverId,
@@ -164,7 +163,6 @@ const DetailContent = React.memo(function DetailContent(props: Readonly<{
     const test = async () => {
         setPending('test');
         setError(null);
-        setNotice(null);
         setTestDiagnostics(null);
         try {
             const result = await client.execute('identity.providers.test.start', {
@@ -193,19 +191,23 @@ const DetailContent = React.memo(function DetailContent(props: Readonly<{
     const remove = async () => {
         setPending('remove');
         setError(null);
-        setNotice(null);
         try {
             const completeRemoval = () => {
                 if (!mountedRef.current) return;
-                router.replace(homeAdministrationPoliciesPath(props.context.scope.serverId));
+                router.replace(homeAdministrationSignInProvidersPath(props.context.scope.serverId));
             };
             const outcome = await runManagedIdentityProviderRemoval({
                 providerId: provider.id,
-                readPreflight: async () => await client.execute('identity.providers.remove.preview', {
-                    owner: { kind: 'home' },
-                    id: provider.id,
-                    expectedRevision: provider.revision,
-                }),
+                readPreflight: async (options) => await client.execute(
+                    'identity.providers.remove.preview',
+                    {
+                        owner: { kind: 'home' },
+                        id: provider.id,
+                        expectedRevision: provider.revision,
+                    },
+                    options,
+                ),
+                onApprovalPending: reportApprovalPending,
                 confirm: async () => await Modal.confirm(
                     t('identityAdministration.removeTitle', { name: provider.displayName }),
                     t('identityAdministration.removeBody', { name: provider.displayName }),
@@ -248,11 +250,14 @@ const DetailContent = React.memo(function DetailContent(props: Readonly<{
     const busy = pending !== null || !props.context.mutationsAvailable || !projectionCurrent;
     return (
         <>
-            {state.stale ? <ItemGroup footer={t('homeGovernance.offlineNotice')}><Item title={t('common.retry')} onPress={refresh} showChevron={false} /></ItemGroup> : null}
-            <ItemGroup title={provider.displayName}>
+            {state.stale ? <ItemGroup description={t('homeGovernance.offlineNotice')}><Item title={t('common.retry')} onPress={refresh} showChevron={false} /></ItemGroup> : null}
+            <SettingSection
+                section={HOME_IDENTITY_PROVIDER_SETTINGS.sectionRefs.configuration}
+                answersFor={[HOME_IDENTITY_PROVIDER_SETTINGS.sectionRefs.consumers]}
+            ><ItemGroup title={provider.displayName}>
                 <Item title={t('identityAdministration.configuration')} detail={provider.enabled ? t('identityAdministration.active') : t('identityAdministration.disabled')} showChevron={false} />
                 {callbackUrl ? (
-                    <Item
+                    <SettingAnchor setting={HOME_IDENTITY_PROVIDER_SETTINGS.settings.callbackUrl}><Item
                         testID="identity-provider-callback-url"
                         title={t('identityAdministration.callbackUrl')}
                         subtitle={callbackUrl}
@@ -260,13 +265,13 @@ const DetailContent = React.memo(function DetailContent(props: Readonly<{
                         accessibilityHint={t('identityAdministration.callbackUrlHint')}
                         onPress={() => void copyCallbackUrl(callbackUrl)}
                         showChevron={false}
-                    />
+                    /></SettingAnchor>
                 ) : null}
                 {provider.kind === 'oidc' ? (
                     <>
-                        <Item title={t('identityAdministration.issuer')} detail={provider.config.issuer} showChevron={false} />
-                        <Item title={t('identityAdministration.clientId')} detail={provider.config.clientId} showChevron={false} />
-                        <Item
+                        <SettingAnchor setting={HOME_IDENTITY_PROVIDER_SETTINGS.settings.issuer}><Item title={t('identityAdministration.issuer')} detail={provider.config.issuer} showChevron={false} /></SettingAnchor>
+                        <SettingAnchor setting={HOME_IDENTITY_PROVIDER_SETTINGS.settings.clientId}><Item title={t('identityAdministration.clientId')} detail={provider.config.clientId} showChevron={false} /></SettingAnchor>
+                        <SettingAnchor setting={HOME_IDENTITY_PROVIDER_SETTINGS.settings.clientSecret}><Item
                             title={t('identityAdministration.clientSecret')}
                             detail={provider.secret.health === 'unreadable'
                                 ? t('identityAdministration.secretNeedsAttention')
@@ -274,15 +279,15 @@ const DetailContent = React.memo(function DetailContent(props: Readonly<{
                                     ? t('identityAdministration.secretSet')
                                     : t('identityAdministration.secretNotSet')}
                             showChevron={false}
-                        />
+                        /></SettingAnchor>
                         {provider.secret.health === 'unreadable' ? (
-                            <Item
+                            <SettingAnchor setting={HOME_IDENTITY_PROVIDER_SETTINGS.settings.secretRepair}><Item
                                 testID="identity-provider-secret-repair"
                                 title={t('identityAdministration.secretNeedsAttention')}
                                 detail={t('identityAdministration.secretRepair')}
                                 disabled={busy}
                                 onPress={() => router.push(homeAdministrationIdentityProviderEditPath(props.context.scope.serverId, provider.id))}
-                            />
+                            /></SettingAnchor>
                         ) : null}
                     </>
                 ) : (
@@ -295,11 +300,11 @@ const DetailContent = React.memo(function DetailContent(props: Readonly<{
                 {provider.kind === 'oidc' ? (
                     <Item title={t('identityAdministration.test')} detail={provider.lastSuccessfulTest?.current ? t('identityAdministration.tested') : provider.lastSuccessfulTest ? t('identityAdministration.staleTest') : t('identityAdministration.needsTest')} showChevron={false} />
                 ) : null}
-            </ItemGroup>
+            </ItemGroup></SettingSection>
             {provider.teamConsumers.length > 0 ? (
-                <ItemGroup
+                <SettingAnchor setting={HOME_IDENTITY_PROVIDER_SETTINGS.settings.teamConsumers}><ItemGroup
                     title={t('identityAdministration.teamConsumers')}
-                    footer={t('identityAdministration.teamConsumersSubtitle')}
+                    description={t('identityAdministration.teamConsumersSubtitle')}
                 >
                     {provider.teamConsumers.map((consumer) => (
                         <Item
@@ -313,28 +318,27 @@ const DetailContent = React.memo(function DetailContent(props: Readonly<{
                             showChevron={false}
                         />
                     ))}
-                </ItemGroup>
+                </ItemGroup></SettingAnchor>
             ) : null}
             {provider.kind === 'oidc' && testDiagnostics ? <IdentityTestDiagnosticsGroup diagnostics={testDiagnostics} /> : null}
-            {notice ? <ItemGroup><Item testID="identity-provider-notice" title={notice} showChevron={false} /></ItemGroup> : null}
             {error ? <ItemGroup><Item testID="identity-provider-failure" title={identityAdministrationFailureMessage(error)} showChevron={false} /></ItemGroup> : null}
-            <ItemGroup title={t('identityAdministration.actions')}>
+            <SettingSection section={HOME_IDENTITY_PROVIDER_SETTINGS.sectionRefs.actions}><ItemGroup title={t('identityAdministration.actions')}>
                 {provider.kind === 'oidc' ? (
-                    <Item testID="identity-provider-test" title={pending === 'test' ? t('identityAdministration.testing') : t('identityAdministration.test')} loading={pending === 'test'} disabled={busy} onPress={() => void test()} showChevron={false} />
+                    <SettingAnchor setting={HOME_IDENTITY_PROVIDER_SETTINGS.settings.test}><Item testID="identity-provider-test" title={pending === 'test' ? t('identityAdministration.testing') : t('identityAdministration.test')} loading={pending === 'test'} disabled={busy} onPress={() => void test()} showChevron={false} /></SettingAnchor>
                 ) : null}
                 {provider.kind === 'oidc' ? (
-                    <Item testID="identity-provider-edit" title={t('identityAdministration.edit')} disabled={busy} onPress={() => router.push(homeAdministrationIdentityProviderEditPath(props.context.scope.serverId, provider.id))} showChevron={false} />
+                    <SettingAnchor setting={HOME_IDENTITY_PROVIDER_SETTINGS.settings.edit}><Item testID="identity-provider-edit" title={t('identityAdministration.edit')} disabled={busy} onPress={() => router.push(homeAdministrationIdentityProviderEditPath(props.context.scope.serverId, provider.id))} showChevron={false} /></SettingAnchor>
                 ) : null}
                 {provider.enabled ? (
-                    <Item testID="identity-provider-disable" title={t('identityAdministration.disable')} disabled={busy} onPress={() => void (async () => {
+                    <SettingAnchor setting={HOME_IDENTITY_PROVIDER_SETTINGS.settings.disable}><Item testID="identity-provider-disable" title={t('identityAdministration.disable')} disabled={busy} onPress={() => void (async () => {
                         if (!await Modal.confirm(t('identityAdministration.disableTitle', { name: provider.displayName }), t('identityAdministration.disableBody', { name: provider.displayName }), { cancelText: t('common.cancel'), confirmText: t('identityAdministration.disable') })) return;
                         await runLifecycle('identity.providers.disable');
-                    })()} showChevron={false} />
+                    })()} showChevron={false} /></SettingAnchor>
                 ) : (
-                    <Item testID="identity-provider-enable" title={t('identityAdministration.enable')} disabled={busy} onPress={() => void runLifecycle('identity.providers.enable')} showChevron={false} />
+                    <SettingAnchor setting={HOME_IDENTITY_PROVIDER_SETTINGS.settings.enable}><Item testID="identity-provider-enable" title={t('identityAdministration.enable')} disabled={busy} onPress={() => void runLifecycle('identity.providers.enable')} showChevron={false} /></SettingAnchor>
                 )}
-                <Item testID="identity-provider-remove" title={t('identityAdministration.remove')} destructive disabled={busy} onPress={() => void remove()} showChevron={false} />
-            </ItemGroup>
+                <SettingAnchor setting={HOME_IDENTITY_PROVIDER_SETTINGS.settings.remove}><Item testID="identity-provider-remove" title={t('identityAdministration.remove')} destructive disabled={busy} onPress={() => void remove()} showChevron={false} /></SettingAnchor>
+            </ItemGroup></SettingSection>
         </>
     );
 });
@@ -344,10 +348,10 @@ export const ManagedIdentityProviderDetailScreen = React.memo(function ManagedId
     providerId: string;
 }>) {
     return (
-        <HomeAdministrationSection serverId={props.serverId} title={t('identityAdministration.title')}>
+        <HomeAdministrationSection serverId={props.serverId} title={t('identityAdministration.title')} description={t('homeGovernance.pages.identityProvider')}>
             {(context) => context.projection.capabilities.manageAuthentication
                 ? <DetailContent key={`${serverAccountScopeKeySuffix(context.scope)}:${props.providerId}`} context={context} providerId={props.providerId} />
-                : <ItemGroup><Item title={t('homeGovernance.forbiddenTitle')} showChevron={false} /></ItemGroup>}
+                : <SettingSection section={HOME_IDENTITY_PROVIDER_SETTINGS.sectionRefs.configuration} answersFor={[HOME_IDENTITY_PROVIDER_SETTINGS.sectionRefs.consumers, HOME_IDENTITY_PROVIDER_SETTINGS.sectionRefs.actions]}><ItemGroup><Item title={t('homeGovernance.forbiddenTitle')} showChevron={false} /></ItemGroup></SettingSection>}
         </HomeAdministrationSection>
     );
 });

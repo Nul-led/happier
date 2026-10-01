@@ -17,10 +17,16 @@ export type CheckAccountServiceEndpointResult =
         endpoint: AccountServiceEndpointV1;
         discovery: AccountDirectoryAuthMethodDiscovery;
     }>
+    | Readonly<{
+        kind: 'home_endpoint';
+        homeServerIdentityId: string;
+        homeUrl: string;
+    }>
     | Readonly<{ kind: 'invalid' | 'unsupported' | 'unavailable' }>;
 
 export type SelectAccountServiceEndpointResult =
     | Readonly<{ kind: 'selected' }>
+    | Extract<CheckAccountServiceEndpointResult, { kind: 'home_endpoint' }>
     | Readonly<{ kind: 'invalid' | 'unsupported' | 'unavailable' }>;
 
 /**
@@ -42,8 +48,18 @@ export async function checkAccountServiceEndpoint(
             ...transport,
             signal,
         });
+        if (discovery.kind === 'not_account_service') {
+            const homeServerIdentityId = discovery.serverIdentityId?.trim() ?? '';
+            const homeUrl = normalizeAccountDirectoryEndpoint(
+                discovery.snapshot.features.capabilities.server.canonicalServerUrl ?? '',
+            );
+            if (homeServerIdentityId && homeUrl && !signal.aborted) {
+                return { kind: 'home_endpoint', homeServerIdentityId, homeUrl };
+            }
+            return { kind: 'unsupported' };
+        }
         if (discovery.kind !== 'supported_account_service') {
-            return { kind: discovery.kind === 'not_account_service' ? 'unsupported' : 'unavailable' };
+            return { kind: 'unavailable' };
         }
         if (signal.aborted) return { kind: 'unavailable' };
         // The default service keeps its own name and provenance; any other is the user's choice.

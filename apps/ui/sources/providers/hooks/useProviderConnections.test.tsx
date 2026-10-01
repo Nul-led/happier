@@ -1,10 +1,12 @@
 import * as React from 'react';
 import { createProviderErrorV1 } from '@happier-dev/protocol';
+import { RPC_METHODS } from '@happier-dev/protocol/rpc';
 import { act } from 'react-test-renderer';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
     createProviderConnectionsDescribeFixture,
     createProviderConnectionViewFixture,
+    flushHookEffects,
     renderHook,
     renderScreen,
     standardCleanup,
@@ -51,13 +53,59 @@ vi.mock('@/sync/domains/scope/activeServerAccountScope', () => ({
 }));
 
 import { useProviderConnections } from './useProviderConnections';
+import { useProviderConnectionMutation } from './useProviderConnectionMutation';
 
 describe('useProviderConnections', () => {
     afterEach(() => {
         activeAccountLifetime.current.value = null;
         standardCleanup();
     });
-    beforeEach(() => machineRpcWithServerScope.mockReset());
+    beforeEach(() => { machineRpcWithServerScope.mockReset(); });
+
+    it('refreshes visible peers after a same-route mutation and refreshes hidden projections only when revealed', async () => {
+        let connectionExists = true;
+        machineRpcWithServerScope.mockImplementation(async (request: { method: string; machineId: string; serverId: string }) => {
+            if (request.method === RPC_METHODS.DAEMON_PROVIDERS_CONNECTION_MUTATE) {
+                connectionExists = false;
+                return { status: 'success', action: 'delete', deletedConnectionId: 'pc_a' };
+            }
+            return createProviderConnectionsDescribeFixture({
+                connections: connectionExists ? [createProviderConnectionViewFixture({ connectionId: 'pc_a' })] : [],
+            });
+        });
+        const resolveTarget = () => ({ machineId: 'machine-a', serverId: 'server-a' });
+        const hook = await renderHook(({ visible }: { visible: boolean }) => {
+            const list = useProviderConnections({ enabled: true, active: visible, ...resolveTarget() });
+            const detail = useProviderConnections({ enabled: true, ...resolveTarget(), connectionId: 'pc_a' });
+            const otherServer = useProviderConnections({ enabled: true, machineId: 'machine-a', serverId: 'server-b' });
+            const otherMachine = useProviderConnections({ enabled: true, machineId: 'machine-b', serverId: 'server-a' });
+            const refresh = React.useCallback(async () => { await detail.refresh(); }, [detail.refresh]);
+            const mutation = useProviderConnectionMutation({ resolveTarget, refresh });
+            return { list, detail, otherServer, otherMachine, mutation };
+        }, { initialProps: { visible: true } });
+        expect(hook.getCurrent().list.data?.connections).toHaveLength(1);
+        machineRpcWithServerScope.mockClear();
+
+        await act(async () => {
+            await hook.getCurrent().mutation.run({ action: 'delete', machineId: 'machine-a', connectionId: 'pc_a' });
+        });
+        expect(hook.getCurrent().detail.data?.connections).toHaveLength(0);
+        expect(hook.getCurrent().list.data?.connections).toHaveLength(0);
+        expect(hook.getCurrent().otherServer.data?.connections).toHaveLength(1);
+        expect(hook.getCurrent().otherMachine.data?.connections).toHaveLength(1);
+        expect(machineRpcWithServerScope.mock.calls.map(([request]) => request)).toHaveLength(3);
+        expect(machineRpcWithServerScope.mock.calls.every(([request]) => request.machineId === 'machine-a' && request.serverId === 'server-a')).toBe(true);
+
+        await hook.rerender({ visible: false });
+        connectionExists = true;
+        machineRpcWithServerScope.mockClear();
+        await act(async () => { await hook.getCurrent().detail.refresh(); });
+        expect(machineRpcWithServerScope).toHaveBeenCalledOnce();
+        expect(hook.getCurrent().list.data?.connections).toHaveLength(0);
+        await hook.rerender({ visible: true });
+        expect(hook.getCurrent().list.data?.connections).toHaveLength(1);
+        expect(machineRpcWithServerScope).toHaveBeenCalledTimes(2);
+    });
 
     it('performs no Provider RPC when the canonical root feature decision is disabled', async () => {
         const hook = await renderHook(() => useProviderConnections({
@@ -68,6 +116,34 @@ describe('useProviderConnections', () => {
 
         expect(hook.getCurrent()).toMatchObject({ data: null, error: null, loading: false });
         expect(machineRpcWithServerScope).not.toHaveBeenCalled();
+    });
+
+    it('does not hold the selected query refresh open while a supporting pane is still reading', async () => {
+        let holdCollection = false;
+        let finishCollection!: (response: ReturnType<typeof createProviderConnectionsDescribeFixture>) => void;
+        machineRpcWithServerScope.mockImplementation(async (request: { payload: { connectionId?: string } }) => {
+            if (holdCollection && !request.payload.connectionId) {
+                return await new Promise((resolve) => { finishCollection = resolve; });
+            }
+            return createProviderConnectionsDescribeFixture({ connections: [] });
+        });
+        const hook = await renderHook(() => {
+            useProviderConnections({ enabled: true, machineId: 'machine-a', serverId: 'server-a' });
+            return useProviderConnections({ enabled: true, machineId: 'machine-a', serverId: 'server-a', connectionId: 'pc_a' });
+        });
+        holdCollection = true;
+        let completed = false;
+        await act(async () => {
+            void hook.getCurrent().refresh().then(() => { completed = true; });
+            await flushHookEffects();
+        });
+        try {
+            expect(completed).toBe(true);
+        } finally {
+            await act(async () => {
+                finishCollection(createProviderConnectionsDescribeFixture({ connections: [] }));
+            });
+        }
     });
 
     it('clears machine A projection before awaiting machine B', async () => {
@@ -169,7 +245,7 @@ describe('useProviderConnections', () => {
         expect(hook.getCurrent().data?.connections[0]?.connectionId).toBe('pc_b');
     });
 
-    it('retains the same-scope projection while exposing a refresh transport failure', async () => {
+    it('retains the same-scope projection while exposing an untyped refresh transport failure', async () => {
         machineRpcWithServerScope
             .mockResolvedValueOnce(createProviderConnectionsDescribeFixture({
                 connections: [createProviderConnectionViewFixture({ connectionId: 'pc_a' })],
@@ -181,7 +257,7 @@ describe('useProviderConnections', () => {
         await act(async () => { await hook.getCurrent().refresh(); });
         expect(hook.getCurrent()).toMatchObject({
             data: { connections: [{ connectionId: 'pc_a' }] },
-            error: createProviderErrorV1('provider_machine_unavailable', {
+            error: createProviderErrorV1('provider_rpc_response_invalid', {
                 machineId: 'machine-a',
             }),
             loading: false,

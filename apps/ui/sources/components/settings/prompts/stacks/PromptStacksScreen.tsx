@@ -1,57 +1,56 @@
 import * as React from 'react';
-import { ScrollView, View } from 'react-native';
-import { StyleSheet, useUnistyles } from 'react-native-unistyles';
-import { useRouter } from 'expo-router';
+import { useRouter } from '@/components/appShell/workspace/destinationRoute';
 
-import { ItemGroup } from '@/components/ui/lists/ItemGroup';
+import { SettingsPageHeader } from '@/components/settings/shell/SettingsPageHeader';
 import { Item } from '@/components/ui/lists/Item';
-import { layout } from '@/components/ui/layout/layout';
+import { ItemGroup } from '@/components/ui/lists/ItemGroup';
+import { ItemList } from '@/components/ui/lists/ItemList';
 import { useSetting } from '@/sync/domains/state/storage';
 import { t } from '@/text';
 import { Icon } from '@/components/ui/icons/Icon';
 
-const styles = StyleSheet.create((theme) => ({
-  container: {
-    flex: 1,
-    backgroundColor: theme.colors.background.canvas,
-  },
-}));
-
+/**
+ * `/settings/prompts/stacks`: where prompts and skills are added to an agent's instructions — every
+ * coding session, every voice conversation, or sessions started with a given profile.
+ */
 export const PromptStacksScreen = React.memo(() => {
-  const { theme } = useUnistyles();
   const router = useRouter();
   const promptStacks = useSetting('promptStacksV1');
 
   const profileCount = Object.keys(promptStacks?.surfaces?.profilesById ?? {}).length;
+  const codingCount = promptStacks?.surfaces?.coding?.length ?? 0;
+  const voiceCount = promptStacks?.surfaces?.voice?.length ?? 0;
 
   return (
-    <View style={styles.container}>
-      <ScrollView contentContainerStyle={{ paddingVertical: 12, maxWidth: layout.maxWidth, width: '100%', alignSelf: 'center' }}>
-        <ItemGroup title={t('promptLibrary.stacks')}>
-          <Item
-            testID="promptStacks.coding"
-            title={t('promptLibrary.codingStack')}
-            subtitle={t('promptLibrary.codingStackSubtitle')}
-            icon={<Icon name="terminal" size={29} color={theme.colors.accent.blue} />}
-            onPress={() => router.push('/settings/prompts/stacks/coding')}
-          />
-          <Item
-            testID="promptStacks.voice"
-            title={t('promptLibrary.voiceStack')}
-            subtitle={t('promptLibrary.voiceStackSubtitle')}
-            icon={<Icon name="microphone" size={29} color={theme.colors.accent.indigo} />}
-            onPress={() => router.push('/settings/prompts/stacks/voice')}
-          />
-          <Item
-            testID="promptStacks.profiles"
-            title={t('promptLibrary.profileStacks')}
-            subtitle={t('promptLibrary.profileStacksSubtitle', { count: profileCount })}
-            icon={<Icon name="user-circle" size={29} color={theme.colors.text.secondary} />}
-            onPress={() => router.push('/settings/prompts/stacks/profiles')}
-          />
-        </ItemGroup>
-      </ScrollView>
-    </View>
+    <ItemList presentation="page">
+      <SettingsPageHeader description={t('promptLibrary.surface.stacksPageDescription')} />
+      <ItemGroup title={t('promptLibrary.surface.stacksSection')} description={t('promptLibrary.surface.stacksSectionDescription')}>
+        <Item
+          testID="promptStacks.coding"
+          icon={<Icon name="terminal" />}
+          title={t('promptLibrary.codingStack')}
+          subtitle={t('promptLibrary.codingStackSubtitle')}
+          detail={t('promptLibrary.profileStackCount', { count: codingCount })}
+          onPress={() => router.push('/settings/prompts/stacks/coding')}
+        />
+        <Item
+          testID="promptStacks.voice"
+          icon={<Icon name="microphone" />}
+          title={t('promptLibrary.voiceStack')}
+          subtitle={t('promptLibrary.voiceStackSubtitle')}
+          detail={t('promptLibrary.profileStackCount', { count: voiceCount })}
+          onPress={() => router.push('/settings/prompts/stacks/voice')}
+        />
+        <Item
+          testID="promptStacks.profiles"
+          icon={<Icon name="user-circle" />}
+          title={t('promptLibrary.profileStacks')}
+          subtitle={t('promptLibrary.surface.profileStacksDescription')}
+          detail={t('promptLibrary.profileStacksSubtitle', { count: profileCount })}
+          onPress={() => router.push('/settings/prompts/stacks/profiles')}
+        />
+      </ItemGroup>
+    </ItemList>
   );
 });
 

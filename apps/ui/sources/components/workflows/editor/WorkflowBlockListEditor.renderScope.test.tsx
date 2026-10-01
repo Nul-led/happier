@@ -79,6 +79,10 @@ describe('workflow authoring render scope', () => {
         const { WorkflowBlockListEditor } = await import('./WorkflowBlockListEditor');
         const { createWorkflowEditorDraft } = await import('@/sync/domains/workflows/workflowEditorDraft');
         const { validateWorkflowEditorDraft } = await import('@/sync/domains/workflows/workflowAuthoring');
+        const { createWorkflowAuthoringComposerCustody } = await import(
+            '@/components/sessions/authoring/authoringComposerCustody'
+        );
+        const composerCustody = createWorkflowAuthoringComposerCustody('draft-1');
 
         const initialDraft = createWorkflowEditorDraft({
             draftId: 'draft-1',
@@ -109,6 +113,7 @@ describe('workflow authoring render scope', () => {
                     directory: '/repo/project',
                     machineHomeDir: '/Users/me',
                 },
+                composerCustody,
                 validation,
                 onChange: setDraft,
                 onSelect: () => {},

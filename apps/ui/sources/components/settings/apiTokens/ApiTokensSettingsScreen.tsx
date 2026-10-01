@@ -1,44 +1,44 @@
 import * as React from 'react';
-import { useLocalSearchParams, useRouter } from 'expo-router';
-import { Platform, RefreshControl, View } from 'react-native';
+import type { AccountApiTokenSummaryV1 } from '@happier-dev/protocol';
+import { useRouter } from '@/components/appShell/workspace/destinationRoute';
+import { RefreshControl, View } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 import { announceAccessibilityMessage } from '@/components/ui/accessibility/announceAccessibilityMessage';
 import { RoundButton } from '@/components/ui/buttons/RoundButton';
-import { ShimmerView } from '@/components/ui/feedback/ShimmerView';
+import { ItemLoadStateRows } from '@/components/ui/lists/ItemLoadStateRows';
 import { Icon } from '@/components/ui/icons/Icon';
+import { EmptyState } from '@/components/ui/empty/EmptyState';
 import { CenteredInfoTile } from '@/components/ui/lists/CenteredInfoTile';
 import { Item } from '@/components/ui/lists/Item';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
 import { ItemList } from '@/components/ui/lists/ItemList';
-import { ItemRowActions } from '@/components/ui/lists/ItemRowActions';
-import { useLayoutMaxWidthStyle } from '@/components/ui/layout/layout';
-import { SoftSlideTransitionFrame } from '@/components/ui/motion';
-import { RelativeTimeText } from '@/components/ui/selectionList/accessories/RelativeTimeText';
-import { StatusPill } from '@/components/ui/status/StatusPill';
+import { SectionButtonRow } from '@/components/ui/lists/SectionButtonRow';
+import { StepTransitionFrame } from '@/components/ui/motion';
 import { Text } from '@/components/ui/text/Text';
 import { Typography } from '@/constants/Typography';
-import { useReducedMotionPreference } from '@/hooks/ui/useReducedMotionPreference';
-import { Modal } from '@/modal';
-import { useActiveServerAccountScope } from '@/sync/domains/state/storage';
-import { getActiveServerSnapshot } from '@/sync/domains/server/serverRuntime';
-import { createServerUrlComparableKey } from '@/sync/domains/server/url/serverUrlCanonical';
 import { t } from '@/text';
 import { useHostActivelyViewed } from '@/utils/runtime/useHostActivelyViewed';
-import { formatWithCachedDateTimeFormatter } from '@/utils/datetime/cachedIntlFormatters';
 
+import { runGuardedNavigation } from '@/utils/navigation/runGuardedNavigation';
+import { fireAndForget } from '@/utils/system/fireAndForget';
+
+import type { ApiTokenSettingsController, ApiTokenSettingsErrorCode } from './apiTokenSettingsController';
 import {
-    createApiTokenSettingsController,
-    type ApiTokenSettingsController,
-    type ApiTokenSettingsErrorCode,
-} from './apiTokenSettingsController';
-import {
-    buildApiTokenRowPresentation,
     resolveApiTokenListPresentation,
     resolveApiTokenOperationErrorMessageKey,
 } from './apiTokenSettingsPresentation';
-import { showApiTokenCreateModal } from './showApiTokenCreateModal';
+import { ApiTokenRow } from './ApiTokenRow';
+import { apiTokenRowHref } from './collection/apiTokensCollection';
+import { ApiTokenSettingsScope, useOptionalApiTokenSettingsScopeController } from './collection/ApiTokenSettingsScope';
+import { useApiTokenGrantNames } from './grant/useApiTokenGrantCatalogs';
+import { useApiTokenOperations } from './useApiTokenOperations';
+import { useApiTokenSettingsClock } from './useApiTokenSettingsClock';
 import { useApiTokenSettingsControllerState } from './useApiTokenSettingsControllerState';
+import { SettingsPageHeader } from '@/components/settings/shell/SettingsPageHeader';
+import { SettingAnchor } from '@/components/settings/shell/SettingRow';
+import { ApiTokensCliPolicy } from './ApiTokensCliPolicySection';
+import { API_TOKEN_SETTINGS } from './apiTokensSettings';
 
 function resolveOperationNotice(notice: 'revoked' | 'revokedAll' | 'signedOutEverywhere'): string {
     if (notice === 'revoked') return t('settingsApiTokens.notices.revoked');
@@ -46,136 +46,12 @@ function resolveOperationNotice(notice: 'revoked' | 'revokedAll' | 'signedOutEve
     return t('settingsApiTokens.notices.signedOutEverywhere');
 }
 
-const MINUTE_MS = 60_000;
-const HOUR_MS = 60 * MINUTE_MS;
-const DAY_MS = 24 * HOUR_MS;
-const SKELETON_TITLE = '██████████';
-const SKELETON_PREFIX = '████████';
-const SKELETON_METADATA = '████████';
-
-function resolveNextRelativeTimeChangeAt(atMs: number, nowMs: number): number | null {
-    if (!Number.isFinite(atMs)) return null;
-    const elapsedMs = nowMs - atMs;
-    if (elapsedMs < MINUTE_MS) return atMs + MINUTE_MS;
-
-    const minutes = Math.floor(elapsedMs / MINUTE_MS);
-    if (minutes < 60) return atMs + (minutes + 1) * MINUTE_MS;
-
-    const hours = Math.floor(elapsedMs / HOUR_MS);
-    if (hours < 24) return atMs + (hours + 1) * HOUR_MS;
-
-    const days = Math.floor(elapsedMs / DAY_MS);
-    return atMs + (days + 1) * DAY_MS;
-}
-
-function resolveNextApiTokenPresentationChangeAt(
-    tokens: readonly Readonly<{ createdAt: string; lastUsedAt: string | null; expiresAt: string | null }>[],
-    nowMs: number,
-): number | null {
-    let nextAt: number | null = null;
-    const consider = (candidate: number | null): void => {
-        if (candidate === null || !Number.isFinite(candidate) || candidate <= nowMs) return;
-        nextAt = nextAt === null ? candidate : Math.min(nextAt, candidate);
-    };
-
-    for (const token of tokens) {
-        consider(resolveNextRelativeTimeChangeAt(Date.parse(token.createdAt), nowMs));
-        if (token.lastUsedAt) consider(resolveNextRelativeTimeChangeAt(Date.parse(token.lastUsedAt), nowMs));
-
-        const expiresAtMs = token.expiresAt ? Date.parse(token.expiresAt) : Number.NaN;
-        if (!Number.isFinite(expiresAtMs)) continue;
-        if (nowMs < expiresAtMs) consider(expiresAtMs);
-    }
-
-    return nextAt;
-}
-
-function useApiTokenSettingsClock(
-    tokens: readonly Readonly<{ createdAt: string; lastUsedAt: string | null; expiresAt: string | null }>[],
-    active: boolean,
-): number {
-    const [nowMs, setNowMs] = React.useState(() => Date.now());
-    const tokensRef = React.useRef(tokens);
-    tokensRef.current = tokens;
-    const timingKey = tokens.map((token) => [
-        token.createdAt,
-        token.lastUsedAt ?? '',
-        token.expiresAt ?? '',
-    ].join('\u001f')).join('\u001e');
-
-    React.useEffect(() => {
-        if (!active || tokensRef.current.length === 0) return undefined;
-
-        let timeout: ReturnType<typeof setTimeout> | undefined;
-        let disposed = false;
-        const scheduleNextChange = () => {
-            const currentNowMs = Date.now();
-            setNowMs((previousNowMs) => previousNowMs === currentNowMs ? previousNowMs : currentNowMs);
-
-            const nextAtMs = resolveNextApiTokenPresentationChangeAt(tokensRef.current, currentNowMs);
-            if (nextAtMs === null || disposed) return;
-            timeout = setTimeout(scheduleNextChange, Math.max(1, nextAtMs - currentNowMs + 1));
-        };
-
-        scheduleNextChange();
-        return () => {
-            disposed = true;
-            if (timeout) clearTimeout(timeout);
-        };
-    }, [active, timingKey]);
-
-    return nowMs;
-}
-
 const stylesheet = StyleSheet.create((theme) => ({
-    intro: {
-        paddingHorizontal: Platform.select({ ios: 32, default: 24 }),
-        paddingTop: 24,
-        paddingBottom: 4,
-        gap: 6,
-        alignItems: 'flex-start',
-        alignSelf: 'center',
-        width: '100%',
-    },
-    heading: {
-        ...Typography.default('semiBold'),
-        color: theme.colors.text.primary,
-        fontSize: 24,
-        lineHeight: 30,
-    },
-    introBody: {
+    refreshing: {
         ...Typography.default(),
         color: theme.colors.text.secondary,
-        lineHeight: 20,
-    },
-    headerActions: {
-        width: '100%',
-        flexDirection: 'row',
-        alignItems: 'center',
-        justifyContent: 'space-between',
-        gap: 12,
-        marginTop: 10,
-    },
-    rowMetadata: {
-        flexDirection: 'row',
-        flexWrap: 'wrap',
-        alignItems: 'center',
-        gap: 7,
-        minWidth: 0,
-    },
-    prefix: {
-        ...Typography.mono(),
-        color: theme.colors.text.secondary,
-        fontSize: 12,
-    },
-    metadataLabel: {
-        ...Typography.default(),
-        color: theme.colors.text.secondary,
-        fontSize: 12,
-    },
-    separator: {
-        color: theme.colors.text.secondary,
-        opacity: 0.55,
+        fontSize: 13,
+        lineHeight: 18,
     },
     feedback: {
         ...Typography.default(),
@@ -195,156 +71,22 @@ const stylesheet = StyleSheet.create((theme) => ({
         alignItems: 'center',
         marginTop: 12,
     },
-    emptyState: {
-        alignItems: 'center',
-        gap: 14,
-        paddingVertical: 22,
-    },
     tokenListTransition: {
         overflow: 'visible',
     },
 }));
 
-function TokenRow(props: Readonly<{
-    controller: ApiTokenSettingsController;
-    token: ReturnType<typeof buildApiTokenRowPresentation>['token'];
-    nowMs: number;
-    operation: 'revoke' | 'revokeAll' | 'signOutEverywhere' | null;
-    operationTokenId: string | null;
-    actionsPending: boolean;
-}>) {
-    const { theme } = useUnistyles();
-    const styles = stylesheet;
-    const presentation = buildApiTokenRowPresentation({ token: props.token, nowMs: props.nowMs });
-    const createdAt = Date.parse(props.token.createdAt);
-    const lastUsedAt = props.token.lastUsedAt ? Date.parse(props.token.lastUsedAt) : null;
-    const statusLabel = presentation.status === 'expired'
-        ? t('settingsApiTokens.status.expired')
-        : null;
-    const exactExpiry = props.token.expiresAt
-        ? formatWithCachedDateTimeFormatter(new Date(props.token.expiresAt), undefined, { dateStyle: 'medium', timeStyle: 'short' })
-        : t('settingsApiTokens.create.expiryOptions.none');
-    const revokingThisToken = props.operation === 'revoke' && props.operationTokenId === props.token.tokenId;
-
-    const revoke = React.useCallback(async () => {
-        const confirmed = await Modal.confirm(
-            t('settingsApiTokens.revoke.title', { label: props.token.label }),
-            t('settingsApiTokens.revoke.body'),
-            {
-                cancelText: t('common.cancel'),
-                confirmText: t('settingsApiTokens.revoke.confirm'),
-                destructive: true,
-            },
-        );
-        if (confirmed) await props.controller.revokeToken(props.token.tokenId);
-    }, [props.controller, props.token.label, props.token.tokenId]);
-
-    const rowActions = React.useMemo(() => [{
-        id: `settings-api-tokens-revoke:${props.token.tokenId}`,
-        title: t('settingsApiTokens.revoke.confirm'),
-        icon: 'trash' as const,
-        destructive: true,
-        disabled: props.actionsPending,
-        onPress: revoke,
-    }], [props.actionsPending, props.token.tokenId, revoke]);
-
-    return (
-        <Item
-            key={props.token.tokenId}
-            testID={`settings-api-tokens-row:${props.token.tokenId}`}
-            mode="info"
-            title={props.token.label}
-            titleStyle={{ flexShrink: 1, color: presentation.status === 'expired' ? theme.colors.text.secondary : theme.colors.text.primary }}
-            accessibilityLabel={t('settingsApiTokens.rowAccessibilityLabel', {
-                label: props.token.label,
-                state: statusLabel ?? t('settingsApiTokens.status.active'),
-            })}
-            subtitle={(
-                <View style={styles.rowMetadata}>
-                    <Text style={styles.prefix}>{presentation.displayPrefix}</Text>
-                    <Text style={styles.metadataLabel}>{t(`settingsApiTokens.encryption.${presentation.encryptionAccess}`)}</Text>
-                    <Text style={styles.separator}>·</Text>
-                    <Text style={styles.metadataLabel}>{t(`settingsApiTokens.unattended.${presentation.unattendedTeamAccess}`)}</Text>
-                    <Text style={styles.separator}>·</Text>
-                    <Text style={styles.metadataLabel}>{t('settingsApiTokens.created')}</Text>
-                    <RelativeTimeText atMs={createdAt} nowMs={props.nowMs} />
-                    <Text style={styles.separator}>·</Text>
-                    {lastUsedAt === null ? (
-                        <Text style={styles.metadataLabel}>{t('settingsApiTokens.neverUsed')}</Text>
-                    ) : (
-                        <>
-                            <Text style={styles.metadataLabel}>{t('settingsApiTokens.lastUsed')}</Text>
-                            <RelativeTimeText atMs={lastUsedAt} nowMs={props.nowMs} />
-                        </>
-                    )}
-                    <Text style={styles.separator}>·</Text>
-                    <Text style={styles.metadataLabel}>{t('connect.expiresAtLabel')}</Text>
-                    <Text style={styles.metadataLabel}>{exactExpiry}</Text>
-                    {statusLabel ? (
-                        <StatusPill
-                            testID={`settings-api-tokens-status:${props.token.tokenId}`}
-                            variant={presentation.statusVariant}
-                            label={statusLabel}
-                            accessibilityLabel={statusLabel}
-                        />
-                    ) : null}
-                </View>
-            )}
-            subtitleLines={0}
-            icon={<Icon name="key" size={24} color={theme.colors.text.secondary} />}
-            rightElement={(
-                <ItemRowActions
-                    title={props.token.label}
-                    actions={rowActions}
-                    layoutWidthPx={320}
-                    compactActionIds={[]}
-                    overflowTriggerTestID={`settings-api-tokens-overflow:${props.token.tokenId}`}
-                    overflowTriggerAccessibilityLabel={t('settingsApiTokens.moreActionsAccessibilityLabel', {
-                        label: props.token.label,
-                    })}
-                />
-            )}
-            rightElementOutsidePressable
-            disabled={props.actionsPending}
-            loading={revokingThisToken}
-            showChevron={false}
-        />
-    );
-}
-
 function SkeletonRows() {
-    const styles = stylesheet;
+    // The shared quiet placeholder rows: the token rows' final box in the sheet's hairline tone.
     return (
         <ItemGroup title={t('settingsApiTokens.tokens')}>
-            {[0, 1, 2].map((index) => (
-                <View
-                    key={index}
-                    testID={`settings-api-tokens-skeleton:${index}`}
-                    aria-hidden={true}
-                    accessibilityElementsHidden={true}
-                    importantForAccessibility="no-hide-descendants"
-                >
-                    <ShimmerView animationEnabled={false}>
-                        <Item
-                            testID={`settings-api-tokens-skeleton-row:${index}`}
-                            mode="info"
-                            title={SKELETON_TITLE}
-                            subtitle={(
-                                <View style={styles.rowMetadata}>
-                                    <Text style={styles.prefix}>{SKELETON_PREFIX}</Text>
-                                    <Text style={styles.separator}>·</Text>
-                                    <Text style={styles.metadataLabel}>{SKELETON_METADATA}</Text>
-                                    <Text style={styles.separator}>·</Text>
-                                    <Text style={styles.metadataLabel}>{SKELETON_METADATA}</Text>
-                                </View>
-                            )}
-                            icon={<Icon name="key" size={24} />}
-                            showChevron={false}
-                            showDivider={false}
-                        />
-                    </ShimmerView>
-                </View>
-            ))}
+            <ItemLoadStateRows
+                testID="settings-api-tokens-skeleton"
+                state={{ kind: 'loading' }}
+                rows={3}
+                lines={2}
+                accessibilityLabel={t('settingsApiTokens.tokens')}
+            />
         </ItemGroup>
     );
 }
@@ -387,31 +129,40 @@ function ApiTokenListRetry(props: Readonly<{
     );
 }
 
+/**
+ * `/settings/account/api-tokens` as a page: the token list where no rail shows (phones, narrow
+ * windows, or no tokens yet). Inside the collection it reads the collection's controller; mounted on
+ * its own it scopes one itself.
+ */
 export const ApiTokensSettingsScreen = React.memo(function ApiTokensSettingsScreen(props: Readonly<{
     controller?: ApiTokenSettingsController;
 }> = {}) {
+    const scoped = useOptionalApiTokenSettingsScopeController();
+    if (scoped && !props.controller) return <ApiTokensListPage controller={scoped} />;
+    return (
+        <ApiTokenSettingsScope controller={props.controller}>
+            <ScopedApiTokensListPage />
+        </ApiTokenSettingsScope>
+    );
+});
+
+function ScopedApiTokensListPage() {
+    const controller = useOptionalApiTokenSettingsScopeController();
+    return controller ? <ApiTokensListPage controller={controller} /> : null;
+}
+
+const ApiTokensListPage = React.memo(function ApiTokensListPage(props: Readonly<{
+    controller: ApiTokenSettingsController;
+}>) {
     const { theme } = useUnistyles();
     const router = useRouter();
-    const resumeParams = useLocalSearchParams<{
-        resumeCreate?: string | string[];
-        label?: string | string[];
-        expiry?: string | string[];
-        targetServerId?: string | string[];
-        targetServerUrl?: string | string[];
-        expectedAccountId?: string | string[];
-    }>();
     const styles = stylesheet;
-    const contentMaxWidthStyle = useLayoutMaxWidthStyle();
-    const ownedControllerRef = React.useRef<ApiTokenSettingsController | null>(null);
-    if (!props.controller && !ownedControllerRef.current) {
-        ownedControllerRef.current = createApiTokenSettingsController();
-    }
-    const controller = props.controller ?? ownedControllerRef.current!;
-    const activeServerAccountScope = useActiveServerAccountScope();
+    const controller = props.controller;
     const state = useApiTokenSettingsControllerState(controller);
     const presentation = resolveApiTokenListPresentation(state);
-    const reducedMotion = useReducedMotionPreference();
     const hostActivelyViewed = useHostActivelyViewed();
+    const names = useApiTokenGrantNames();
+    const operations = useApiTokenOperations(controller);
     const tokenListTransitionKey = state.tokens.map((token) => token.tokenId).join(',') || 'empty';
     const showsTokenList = presentation === 'list' || presentation === 'listWithRetry';
     const showsEmptyState = presentation === 'empty' || presentation === 'emptyWithRetry';
@@ -422,78 +173,6 @@ export const ApiTokensSettingsScreen = React.memo(function ApiTokensSettingsScre
         || state.createPending
         || state.operation !== null;
     const announcedOperationNoticeRef = React.useRef<typeof state.operationNotice | null>(null);
-    const resumedCreateRef = React.useRef(false);
-
-    React.useEffect(() => {
-        if (resumedCreateRef.current) return;
-        const resume = Array.isArray(resumeParams.resumeCreate) ? resumeParams.resumeCreate[0] : resumeParams.resumeCreate;
-        if (resume !== '1') return;
-        const label = Array.isArray(resumeParams.label) ? resumeParams.label[0] : resumeParams.label;
-        const expiryRaw = Array.isArray(resumeParams.expiry) ? resumeParams.expiry[0] : resumeParams.expiry;
-        const expiryPreset = expiryRaw === '30d' || expiryRaw === '90d' || expiryRaw === '1y' || expiryRaw === 'none'
-            ? expiryRaw : '90d';
-        const targetServerId = String(Array.isArray(resumeParams.targetServerId)
-            ? resumeParams.targetServerId[0] ?? ''
-            : resumeParams.targetServerId ?? '').trim();
-        const targetServerUrl = String(Array.isArray(resumeParams.targetServerUrl)
-            ? resumeParams.targetServerUrl[0] ?? ''
-            : resumeParams.targetServerUrl ?? '').trim();
-        const expectedAccountId = String(Array.isArray(resumeParams.expectedAccountId)
-            ? resumeParams.expectedAccountId[0] ?? ''
-            : resumeParams.expectedAccountId ?? '').trim();
-        const clearResumeParams = () => router.setParams({
-            resumeCreate: undefined,
-            label: undefined,
-            expiry: undefined,
-            targetServerId: undefined,
-            targetServerUrl: undefined,
-            expectedAccountId: undefined,
-        });
-        resumedCreateRef.current = true;
-        const activeServer = getActiveServerSnapshot();
-        const targetMatchesActiveAccount = Boolean(
-            targetServerId
-            && targetServerUrl
-            && expectedAccountId
-            && activeServerAccountScope
-            && activeServerAccountScope.serverId === targetServerId
-            && activeServerAccountScope.accountId === expectedAccountId
-            && activeServer.serverId === targetServerId
-            && createServerUrlComparableKey(activeServer.serverUrl) === createServerUrlComparableKey(targetServerUrl),
-        );
-        if (!targetMatchesActiveAccount) {
-            clearResumeParams();
-            return;
-        }
-        controller.setCreateDraft({ label: String(label ?? '').slice(0, 256), expiryPreset });
-        showApiTokenCreateModal(controller);
-        clearResumeParams();
-    }, [
-        activeServerAccountScope,
-        controller,
-        resumeParams.expectedAccountId,
-        resumeParams.expiry,
-        resumeParams.label,
-        resumeParams.resumeCreate,
-        resumeParams.targetServerId,
-        resumeParams.targetServerUrl,
-        router,
-    ]);
-
-    React.useEffect(() => {
-        void controller.refresh();
-    }, [
-        activeServerAccountScope?.accountId,
-        activeServerAccountScope?.serverId,
-        controller,
-    ]);
-
-    React.useInsertionEffect(() => {
-        if (props.controller) return undefined;
-        return () => {
-            controller.retire();
-        };
-    }, [controller, props.controller]);
 
     React.useEffect(() => {
         const previousNotice = announcedOperationNoticeRef.current;
@@ -508,18 +187,12 @@ export const ApiTokensSettingsScreen = React.memo(function ApiTokensSettingsScre
         return () => clearTimeout(timeout);
     }, [controller, state.operationError, state.operationNotice]);
 
-    const revokeAll = React.useCallback(async () => {
-        const confirmed = await Modal.confirm(
-            t('settingsApiTokens.revokeAll.title'),
-            t('settingsApiTokens.revokeAll.body'),
-            { cancelText: t('common.cancel'), confirmText: t('settingsApiTokens.revokeAll.confirm'), destructive: true },
-        );
-        if (confirmed) await controller.revokeAllTokens();
-    }, [controller]);
-
-    const openCreate = React.useCallback(() => {
-        showApiTokenCreateModal(controller);
-    }, [controller]);
+    const revokeAll = operations.revokeAll;
+    const openCreate = operations.create;
+    const openToken = React.useCallback((token: AccountApiTokenSummaryV1) => {
+        const result = runGuardedNavigation(() => router.push(apiTokenRowHref(token) as never));
+        if (result !== true) fireAndForget(result, { tag: 'ApiTokensSettingsScreen.openToken' });
+    }, [router]);
 
     return (
         <ItemList
@@ -532,27 +205,22 @@ export const ApiTokensSettingsScreen = React.memo(function ApiTokensSettingsScre
                     tintColor={theme.colors.text.secondary}
                 />
             )}
+            presentation="page"
         >
-            <View testID="settings-api-tokens-intro" style={[styles.intro, contentMaxWidthStyle]}>
-                <Text style={styles.heading}>{t('settingsApiTokens.title')}</Text>
-                <Text style={styles.introBody}>{t('settingsApiTokens.description')}</Text>
-                <View style={styles.headerActions}>
-                    {!showsEmptyState ? (
-                        <RoundButton
-                            size="normal"
-                            title={t('settingsApiTokens.create.button')}
-                            testID="settings-api-tokens-create"
-                            disabled={actionsPending}
-                            onPress={openCreate}
-                        />
-                    ) : null}
-                    {state.isRefreshing ? (
-                        <Text accessibilityLiveRegion="polite" style={styles.introBody} testID="settings-api-tokens-refreshing">
-                            {t('settingsApiTokens.refreshing')}
-                        </Text>
-                    ) : null}
-                </View>
-            </View>
+            <SettingsPageHeader
+                description={t('settingsApiTokens.entrySubtitle')}
+                details={state.isRefreshing ? (
+                    <Text accessibilityLiveRegion="polite" style={styles.refreshing} testID="settings-api-tokens-refreshing">
+                        {t('settingsApiTokens.refreshing')}
+                    </Text>
+                ) : undefined}
+                primaryAction={!showsEmptyState ? {
+                    title: t('settingsApiTokens.create.button'),
+                    testID: 'settings-api-tokens-create',
+                    disabled: actionsPending,
+                    onPress: openCreate,
+                } : undefined}
+            />
 
             {presentation === 'skeleton' ? <SkeletonRows /> : null}
             {presentation === 'error' ? (
@@ -565,46 +233,45 @@ export const ApiTokensSettingsScreen = React.memo(function ApiTokensSettingsScre
                 />
             ) : null}
             {showsTokenList || showsEmptyState ? (
-                <SoftSlideTransitionFrame
+                <StepTransitionFrame
                     direction="forward"
-                    reducedMotion={reducedMotion}
                     style={styles.tokenListTransition}
                     testID="settings-api-tokens-list-transition"
                     transitionKey={tokenListTransitionKey}
                 >
                     {showsEmptyState ? (
-                        <ItemGroup>
-                            <View testID="settings-api-tokens-empty" style={styles.emptyState}>
-                                <CenteredInfoTile
-                                    icon={<Icon name="key" size={32} color={theme.colors.text.secondary} />}
-                                    title={t('settingsApiTokens.emptyTitle')}
-                                    description={t('settingsApiTokens.emptyBody')}
-                                />
-                                <RoundButton
-                                    size="normal"
-                                    title={t('settingsApiTokens.create.button')}
-                                    testID="settings-api-tokens-empty-create"
-                                    disabled={actionsPending}
-                                    onPress={openCreate}
-                                />
-                            </View>
+                        <ItemGroup surface="none">
+                            <EmptyState
+                                testID="settings-api-tokens-empty"
+                                layout="page"
+                                variant="add"
+                                iconName="key"
+                                title={t('settingsApiTokens.emptyTitle')}
+                                subtitle={t('settingsApiTokens.emptyBody')}
+                                primaryAction={{
+                                    label: t('settingsApiTokens.create.button'),
+                                    testID: 'settings-api-tokens-empty-create',
+                                    disabled: actionsPending,
+                                    onPress: openCreate,
+                                }}
+                            />
                         </ItemGroup>
                     ) : (
                         <ItemGroup title={t('settingsApiTokens.tokens')}>
                             {state.tokens.map((token) => (
-                                <TokenRow
+                                <ApiTokenRow
                                     key={token.tokenId}
-                                    controller={controller}
                                     token={token}
+                                    names={names}
                                     nowMs={nowMs}
-                                    operation={state.operation}
-                                    operationTokenId={state.operationTokenId}
-                                    actionsPending={actionsPending}
+                                    variant="page"
+                                    disabled={state.operation !== null && state.operationTokenId === token.tokenId}
+                                    onPress={openToken}
                                 />
                             ))}
                         </ItemGroup>
                     )}
-                </SoftSlideTransitionFrame>
+                </StepTransitionFrame>
             ) : null}
             {showsRefreshRetry ? (
                 <ApiTokenListRetry
@@ -637,18 +304,32 @@ export const ApiTokensSettingsScreen = React.memo(function ApiTokensSettingsScre
                 </ItemGroup>
             ) : null}
 
-            <ItemGroup title={t('settingsApiTokens.securityTitle')} footer={t('settingsApiTokens.securityFooter')}>
-                <Item
-                    testID="settings-api-tokens-revoke-all"
-                    title={t('settingsApiTokens.revokeAll.title')}
-                    subtitle={t('settingsApiTokens.revokeAll.subtitle')}
-                    icon={<Icon name="trash" size={24} color={theme.colors.state.danger.foreground} />}
-                    destructive
-                    disabled={state.tokens.length === 0 || actionsPending}
-                    loading={state.operation === 'revokeAll'}
-                    onPress={revokeAll}
-                />
-            </ItemGroup>
+            {/* What commands on this account's computers may do with its sign-in (plan 01 §6.1). */}
+            <ApiTokensCliPolicy />
+
+            {/* Leaving and destroying close the page as a quiet button row, and only when there is
+                something to revoke (a control over an empty set is not offered). */}
+            {state.tokens.length > 0 ? (
+                <ItemGroup surface="none" accessibilityLabel={t('settingsApiTokens.securityTitle')}>
+                    <SettingAnchor setting={API_TOKEN_SETTINGS.settings.revokeAll}>
+                        <SectionButtonRow
+                            testID="settings-api-tokens-closing"
+                            footnote={t('settingsApiTokens.revokeAll.subtitle')}
+                        >
+                            <RoundButton
+                                testID="settings-api-tokens-revoke-all"
+                                size="small"
+                                display="destructive"
+                                title={t('settingsApiTokens.revokeAll.title')}
+                                accessibilityHint={t('settingsApiTokens.securityFooter')}
+                                disabled={actionsPending}
+                                loading={state.operation === 'revokeAll'}
+                                onPress={revokeAll}
+                            />
+                        </SectionButtonRow>
+                    </SettingAnchor>
+                </ItemGroup>
+            ) : null}
         </ItemList>
     );
 });

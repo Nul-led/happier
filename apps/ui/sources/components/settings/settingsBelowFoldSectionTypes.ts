@@ -1,8 +1,6 @@
-import { useRouter } from 'expo-router';
-import { useUnistyles } from 'react-native-unistyles';
+import { useRouter } from '@/components/appShell/workspace/destinationRoute';
 
 type SettingsBelowFoldSectionsRouter = ReturnType<typeof useRouter>;
-type SettingsBelowFoldSectionsTheme = ReturnType<typeof useUnistyles>['theme'];
 
 export type SettingsBelowFoldSectionsProps = Readonly<{
     appVersion: string;
@@ -14,10 +12,12 @@ export type SettingsBelowFoldSectionsProps = Readonly<{
     /** Preserves host navigation behavior when the catalog renders a generic root group. */
     onNavigate?: (route: string) => void | Promise<void>;
     router: SettingsBelowFoldSectionsRouter;
+    /** The catalog's category sections; off where the settings rail already shows them. */
+    showCatalogGroups: boolean;
     showAutomations: boolean;
     showChangelog: boolean;
     showRateUs: boolean;
     stage: number;
-    terminalUseTmux: boolean | null | undefined;
-    theme: SettingsBelowFoldSectionsTheme;
+    /** The unfinished "Support us" entry, shown only in developer mode. */
+    supportUs: Readonly<{ subtitle: string; onPress: () => void }> | null;
 }>;

@@ -32,6 +32,8 @@ const boundaries = vi.hoisted(() => ({
     update: vi.fn<(serverId: string, input: Record<string, unknown>) => Promise<unknown>>(),
     remove: vi.fn<(serverId: string, input: Record<string, unknown>) => Promise<void>>(),
     back: vi.fn(),
+    // The native stack header the page hands its phone actions to (a platform navigation boundary).
+    navigation: { setOptions: vi.fn<(options: Record<string, unknown>) => void>() },
     push: vi.fn(),
     replace: vi.fn(),
     dismissTo: vi.fn(),
@@ -76,6 +78,7 @@ vi.mock('react-native', async () => {
 vi.mock('expo-router', async () => {
     const { createExpoRouterMock } = await import('@/dev/testkit/mocks/router');
     return createExpoRouterMock({
+      navigation: boundaries.navigation,
       pathname: () => boundaries.routeStack.at(-1)?.split('?')[0] ?? '/',
       params: () => {
         const route = boundaries.routeStack.at(-1) ?? '/';
@@ -124,7 +127,7 @@ vi.mock('@react-navigation/native', async () => {
     return createReactNavigationNativeMock({ isFocused: true });
 });
 
-const poolView = (revision: number, memberState: 'connected' | 'offline' = 'connected') => ({
+const poolView = (revision: number, memberState: 'connected' | 'offline' | 'revoked' = 'connected') => ({
     pool: {
         id: '00000000-0000-4000-8000-000000000002',
         name: 'Development',
@@ -231,6 +234,20 @@ async function actionResponse(url: string, init?: RequestInit): Promise<Response
     }
 }
 
+/** Delete lives in the saved pool's `⋯` menu: choose it there, as a person would. */
+async function chooseDelete(screen: Awaited<ReturnType<typeof renderScreen>>): Promise<void> {
+    const menu = screen.root.findAll((node) => node.props?.testID === 'settings.machinePools.editor.menu'
+        && typeof node.props?.onSelect === 'function')[0];
+    if (!menu) throw new Error('Expected the pool ⋯ menu');
+    await act(async () => { await menu.props.onSelect('delete'); });
+}
+function chooseDeleteWithoutAwaiting(screen: Awaited<ReturnType<typeof renderScreen>>): void {
+    const menu = screen.root.findAll((node) => node.props?.testID === 'settings.machinePools.editor.menu'
+        && typeof node.props?.onSelect === 'function')[0];
+    if (!menu) throw new Error('Expected the pool ⋯ menu');
+    void menu.props.onSelect('delete');
+}
+
 async function publishBoundaryState(): Promise<void> {
     const { storage } = await import('@/sync/domains/state/storage');
     storage.setState({
@@ -279,22 +296,107 @@ describe('MachinePoolEditorScreen', () => {
         await act(async () => publishBoundaryState());
     });
 
-    it('routes a blank name through localized validation, focuses Name, and sends no request', async () => {
+    it('keeps Create disabled until the pool has a name, and sends nothing for a blank one', async () => {
         const { MachinePoolEditorScreen } = await import('./MachinePoolEditorScreen');
         const screen = await renderScreen(<MachinePoolEditorScreen serverId={boundaries.serverId} />);
-        await act(async () => screen.changeTextByTestId('settings.machinePools.editor.name', '   '));
         boundaries.request.mockClear();
 
+        expect(screen.findByTestId('settings.machinePools.editor.save')?.props.disabled).toBe(true);
+        await act(async () => screen.changeTextByTestId('settings.machinePools.editor.name', '   '));
+        expect(screen.findByTestId('settings.machinePools.editor.save')?.props.disabled).toBe(true);
+        await act(async () => screen.changeTextByTestId('settings.machinePools.editor.name', 'Build farm'));
         expect(screen.findByTestId('settings.machinePools.editor.save')?.props.disabled).toBe(false);
+        expect(boundaries.create).not.toHaveBeenCalled();
+    });
+
+    it('hands Create and Cancel to the native header on a phone instead of stacking them under the title', async () => {
+        const [{ MachinePoolEditorScreen }, { NavigationTitleChromeProvider }] = await Promise.all([
+            import('./MachinePoolEditorScreen'),
+            import('@/components/ui/layout/PageHeader'),
+        ]);
+        const screen = await renderScreen(
+            <NavigationTitleChromeProvider showsTitle>
+                <MachinePoolEditorScreen serverId={boundaries.serverId} />
+            </NavigationTitleChromeProvider>,
+        );
+
+        const published = boundaries.navigation.setOptions.mock.calls
+            .map(([options]) => options as { headerRight?: () => React.ReactElement; headerLeft?: () => React.ReactElement })
+            .filter((options) => options.headerRight || options.headerLeft);
+        expect(published.length).toBeGreaterThan(0);
+        const options = published.at(-1)!;
+        // The page itself keeps neither button: one primary lives in the chrome, beside the title it shows.
+        expect(screen.findByTestId('settings.machinePools.editor.save')).toBeNull();
+        expect(screen.findByTestId('settings.machinePools.editor.cancel')).toBeNull();
+
+        const header = await renderScreen(<>{options.headerLeft?.()}{options.headerRight?.()}</>);
+        expect(header.findByTestId('settings.machinePools.editor.save')?.props.disabled).toBe(true);
+        await header.pressByTestIdAsync('settings.machinePools.editor.cancel');
+        // Cancel leaves the form (back, or the Machines fallback when there is no history).
+        expect(boundaries.back.mock.calls.length + boundaries.replace.mock.calls.length).toBeGreaterThan(0);
+    });
+
+    it('keeps Save disabled on a saved pool until something changes', async () => {
+        boundaries.pools = [twoTierPool(1)];
+        boundaries.machines = [
+            createMachineFixture({ id: 'machine-a', metadata: machineMetadata('Mac Studio') }),
+            createMachineFixture({ id: 'machine-b', metadata: machineMetadata('Linux box') }),
+        ];
+        await publishBoundaryState();
+        const { MachinePoolEditorScreen } = await import('./MachinePoolEditorScreen');
+        const screen = await renderScreen(<MachinePoolEditorScreen serverId={boundaries.serverId} poolId={twoTierPool(1).pool.id} />);
+
+        await vi.waitFor(() => expect(screen.findByTestId('settings.machinePools.editor.name')?.props.value).toBe('Development'));
+        expect(screen.findByTestId('settings.machinePools.editor.save')?.props.disabled).toBe(true);
+        await act(async () => screen.changeTextByTestId('settings.machinePools.editor.name', 'Development 2'));
+        expect(screen.findByTestId('settings.machinePools.editor.save')?.props.disabled).toBe(false);
+    });
+
+    it('adds machines into the tier whose Add row was used', async () => {
+        boundaries.pools = [twoTierPool(1)];
+        boundaries.machines = [
+            createMachineFixture({ id: 'machine-a', metadata: machineMetadata('Mac Studio') }),
+            createMachineFixture({ id: 'machine-b', metadata: machineMetadata('Linux box') }),
+            createMachineFixture({ id: 'machine-c', metadata: machineMetadata('Build runner') }),
+        ];
+        await publishBoundaryState();
+        boundaries.update.mockResolvedValue(twoTierPool(2));
+        const { MachinePoolEditorScreen } = await import('./MachinePoolEditorScreen');
+        const screen = await renderScreen(<MachinePoolEditorScreen serverId={boundaries.serverId} poolId={twoTierPool(1).pool.id} />);
+
+        await vi.waitFor(() => expect(screen.findByTestId('settings.machinePools.editor.addMachines.tier.1')).not.toBeNull());
+        await screen.pressByTestIdAsync('settings.machinePools.editor.addMachines.tier.1');
+        const onSelect = vi.mocked(Modal.show).mock.calls.at(-1)?.[0]?.props?.onSelect as ((optionId: string) => void) | undefined;
+        await act(async () => onSelect?.('machine-c'));
         await screen.pressByTestIdAsync('settings.machinePools.editor.save');
 
-        await vi.waitFor(() => expect(screen.findAll(
-            (node) => node.children.includes('Enter a name before saving.'),
-        ).length).toBeGreaterThan(0));
-        expect(boundaries.textInputFocus).toHaveBeenCalledWith('settings.machinePools.editor.name');
-        expect(boundaries.accessibilityFocus).toHaveBeenCalledWith(41);
-        expect(boundaries.request).not.toHaveBeenCalled();
-        expect(boundaries.create).not.toHaveBeenCalled();
+        await vi.waitFor(() => expect(boundaries.update).toHaveBeenCalledOnce());
+        expect(boundaries.update.mock.calls[0]?.[1].members).toEqual(expect.arrayContaining([
+            { machineId: 'machine-c', priorityTier: 1, enabled: true },
+        ]));
+    });
+
+    it('pauses a member for new sessions from its row menu', async () => {
+        boundaries.pools = [twoTierPool(1)];
+        boundaries.machines = [
+            createMachineFixture({ id: 'machine-a', metadata: machineMetadata('Mac Studio') }),
+            createMachineFixture({ id: 'machine-b', metadata: machineMetadata('Linux box') }),
+        ];
+        await publishBoundaryState();
+        boundaries.update.mockResolvedValue(twoTierPool(2));
+        const { MachinePoolEditorScreen } = await import('./MachinePoolEditorScreen');
+        const screen = await renderScreen(<MachinePoolEditorScreen serverId={boundaries.serverId} poolId={twoTierPool(1).pool.id} />);
+
+        await vi.waitFor(() => expect(screen.findByTestId('settings.machinePools.editor.member.machine-a.menu')).not.toBeNull());
+        await screen.pressByTestIdAsync('settings.machinePools.editor.member.machine-a.menu');
+        const onSelect = vi.mocked(Modal.show).mock.calls.at(-1)?.[0]?.props?.onSelect as ((optionId: string) => void) | undefined;
+        await act(async () => onSelect?.('pause'));
+        await screen.pressByTestIdAsync('settings.machinePools.editor.save');
+
+        await vi.waitFor(() => expect(boundaries.update).toHaveBeenCalledOnce());
+        expect(boundaries.update.mock.calls[0]?.[1].members).toEqual(expect.arrayContaining([
+            { machineId: 'machine-a', priorityTier: 0, enabled: false },
+        ]));
     });
 
     it.each([
@@ -344,10 +446,12 @@ describe('MachinePoolEditorScreen', () => {
                 ? `/settings/machines/pools/new?serverId=${encodeURIComponent(boundaries.serverId)}`
                 : `/settings/machines/pools/${current.pool.id}?serverId=${encodeURIComponent(boundaries.serverId)}`);
         }
-        if (action === 'create') {
-            await act(async () => screen.changeTextByTestId('settings.machinePools.editor.name', 'Development'));
+        if (action !== 'delete') {
+            // Save is the pool's one primary action and stays disabled until the draft changes.
+            await act(async () => screen.changeTextByTestId('settings.machinePools.editor.name', action === 'create' ? 'Development' : 'Development renamed'));
         }
-        await screen.pressByTestIdAsync(action === 'delete' ? 'settings.machinePools.editor.delete' : 'settings.machinePools.editor.save');
+        if (action === 'delete') await chooseDelete(screen);
+        else await screen.pressByTestIdAsync('settings.machinePools.editor.save');
         await vi.waitFor(() => expect(boundaries.artifacts.size).toBe(1));
         expect(boundaries[action === 'create' ? 'create' : action === 'update' ? 'update' : 'remove']).not.toHaveBeenCalled();
 
@@ -416,11 +520,11 @@ describe('MachinePoolEditorScreen', () => {
         const screen = await renderScreen(<MachinePoolEditorScreen serverId={boundaries.serverId} poolId={poolView(1).pool.id} />);
         await act(async () => screen.changeTextByTestId('settings.machinePools.editor.name', 'Unsaved change'));
         vi.mocked(Modal.confirm).mockResolvedValueOnce(false);
-        await screen.pressByTestIdAsync('settings.machinePools.editor.delete');
+        await chooseDelete(screen);
         expect(boundaries.artifacts.size).toBe(0);
         expect(boundaries.remove).not.toHaveBeenCalled();
 
-        await screen.pressByTestIdAsync('settings.machinePools.editor.delete');
+        await chooseDelete(screen);
         await vi.waitFor(() => expect(boundaries.artifacts.size).toBe(1));
         expect(screen.findByTestId('settings.machinePools.editor.save')?.props.disabled).toBe(true);
         expect(boundaries.remove).not.toHaveBeenCalled();
@@ -472,6 +576,7 @@ describe('MachinePoolEditorScreen', () => {
         boundaries.pools = [poolView(9)];
         await act(async () => publishBoundaryState());
         await act(async () => screen.tree.update(element));
+        await act(async () => screen.changeTextByTestId('settings.machinePools.editor.name', 'Development renamed'));
         await screen.pressByTestIdAsync('settings.machinePools.editor.save');
         await vi.waitFor(() => expect(boundaries.update).toHaveBeenCalledOnce());
 
@@ -581,7 +686,7 @@ describe('MachinePoolEditorScreen', () => {
         );
         // Start the deliberately unresolved confirmation without keeping React's global `act`
         // scope open across the credential mutation below.
-        screen.findByTestId('settings.machinePools.editor.delete')?.props.onPress();
+        chooseDeleteWithoutAwaiting(screen);
         await vi.waitFor(() => expect(Modal.confirm).toHaveBeenCalledOnce());
 
         const accountBCredentials = { token: createAccountTokenForTests('account-b') };
@@ -613,7 +718,7 @@ describe('MachinePoolEditorScreen', () => {
         boundaries.pools = [poolView(7)];
         await act(async () => publishBoundaryState());
         await act(async () => screen.tree.update(element));
-        await screen.pressByTestIdAsync('settings.machinePools.editor.delete');
+        await chooseDelete(screen);
         await vi.waitFor(() => expect(boundaries.remove).toHaveBeenCalledOnce());
         expect(boundaries.remove.mock.calls[0]?.[1].expectedRevision).toBe(3);
 
@@ -652,6 +757,24 @@ describe('MachinePoolEditorScreen', () => {
         const screen = await renderScreen(<MachinePoolEditorScreen serverId={boundaries.serverId} poolId={offline.pool.id} />);
 
         expect(screen.findByTestId('settings.machinePools.editor.member.machine-a.status')?.props.accessibilityLabel).toBe('offline');
+    });
+
+    it('names a member removed from this Home as removed, never locked, and still offers Remove', async () => {
+        const removed = poolView(1, 'revoked');
+        boundaries.pools = [removed];
+        boundaries.machines = [];
+        await publishBoundaryState();
+        const { MachinePoolEditorScreen } = await import('./MachinePoolEditorScreen');
+        const screen = await renderScreen(<MachinePoolEditorScreen serverId={boundaries.serverId} poolId={removed.pool.id} />);
+
+        const row = screen.findAll((node) => node.props?.testID === 'settings.machinePools.editor.member.machine-a'
+            && typeof node.props?.title === 'string')[0];
+        expect(row?.props.title).toBe('Removed machine');
+        await screen.pressByTestIdAsync('settings.machinePools.editor.member.machine-a');
+        const config = vi.mocked(Modal.show).mock.calls.at(-1)?.[0];
+        const rootStep = config?.props?.rootStep as SelectionListStep | undefined;
+        const options = (rootStep?.sections ?? []).flatMap((section) => section.kind === 'static' ? section.options : []);
+        expect(options.map((option) => option.id)).toContain('remove');
     });
 
     it('presents equal-tier members by stable display label with Machine ID as the tie-break', async () => {
@@ -717,8 +840,9 @@ describe('MachinePoolEditorScreen', () => {
         // disabled action still has to say why it is disabled.
         await vi.waitFor(() => {
             expect(screen.findByTestId('settings.machinePools.editor.member.machine-a')).not.toBeNull();
-            expect(screen.findAllByTestId('settings.machinePools.editor.addMachines')[0]?.props.disabled).toBe(true);
+            // One line says why nothing can be added, in place of a dead "Add machines" row.
             expect(screen.findAllByTestId('settings.machinePools.editor.allMachinesAdded')).not.toHaveLength(0);
+            expect(screen.findAllByTestId('settings.machinePools.editor.addMachines')).toHaveLength(0);
         });
         expect(screen.findAllByTestId('settings.machinePools.editor.noMachines')).toHaveLength(0);
     });
@@ -793,6 +917,7 @@ describe('MachinePoolEditorScreen', () => {
         const screen = await renderScreen(
             <MachinePoolEditorScreen serverId={boundaries.serverId} poolId={sameTierPool(1).pool.id} />,
         );
+        await act(async () => screen.changeTextByTestId('settings.machinePools.editor.name', 'Development renamed'));
         const savePromise = screen.pressByTestIdAsync('settings.machinePools.editor.save');
         await vi.waitFor(() => expect(boundaries.update).toHaveBeenCalledOnce());
         await act(async () => rejectUpdate?.(actionError));
@@ -804,7 +929,7 @@ describe('MachinePoolEditorScreen', () => {
         expect(boundaries.pressableFocus).not.toHaveBeenCalledWith(
             'settings.machinePools.editor.member.machine-a',
         );
-        expect(screen.findByTestId('settings.machinePools.editor.name')?.props.value).toBe('Development');
+        expect(screen.findByTestId('settings.machinePools.editor.name')?.props.value).toBe('Development renamed');
     });
 
     it('retargets successful deletion to the next Pool row', async () => {
@@ -840,7 +965,7 @@ describe('MachinePoolEditorScreen', () => {
                 </FocusReturnProvider>,
             );
         });
-        await screen.pressByTestIdAsync('settings.machinePools.editor.delete');
+        await chooseDelete(screen);
         await vi.waitFor(() => expect(boundaries.back).toHaveBeenCalledOnce());
 
         await act(async () => {
@@ -865,7 +990,9 @@ describe('MachinePoolEditorScreen', () => {
         const { MachinePoolEditorScreen } = await import('./MachinePoolEditorScreen');
         const screen = await renderScreen(<MachinePoolEditorScreen serverId={boundaries.serverId} poolId={twoTierPool(1).pool.id} />);
 
-        expect(screen.findByTestId('settings.machinePools.editor.placementChangeNotice')).not.toBeNull();
+        // The placement notice is the Machines section's description, above the tiers.
+        expect(screen.findAll((node) => typeof node.children[0] === 'string'
+            && String(node.children[0]).startsWith('Changes apply to sessions that start after you save')).length).toBeGreaterThan(0);
         expect(screen.findAllByTestId('settings.machinePools.editor.member.machine-a.remove')).toHaveLength(0);
         await screen.pressByTestIdAsync('settings.machinePools.editor.member.machine-a');
 
@@ -873,7 +1000,7 @@ describe('MachinePoolEditorScreen', () => {
         // The generic modal mock erases the displayed component's props type.
         const rootStep = config?.props?.rootStep as SelectionListStep | undefined;
         const options = (rootStep?.sections ?? []).flatMap((section) => section.kind === 'static' ? section.options : []);
-        expect(options.map((option) => option.id)).toEqual(['tier:1', 'remove']);
+        expect(options.map((option) => option.id)).toEqual(['tier:1', 'pause', 'remove']);
         expect(options[0]?.accessibilityLabel).toContain('Mac Studio');
 
         const onSelect = config?.props?.onSelect as ((optionId: string) => void) | undefined;
@@ -908,6 +1035,8 @@ describe('MachinePoolEditorScreen', () => {
         // already presented in Fallback 1, and that is exactly what the aggregate persists.
         expect(screen.findByTestId('settings.machinePools.editor.member.machine-b')?.props.accessibilityLabel)
             .toContain('Fallback 1');
+        // The collapsed structure equals the loaded one, so a real edit is what enables Save.
+        await act(async () => screen.changeTextByTestId('settings.machinePools.editor.name', 'Development renamed'));
         await screen.pressByTestIdAsync('settings.machinePools.editor.save');
 
         await vi.waitFor(() => expect(boundaries.update).toHaveBeenCalledOnce());
@@ -950,7 +1079,8 @@ describe('MachinePoolEditorScreen', () => {
         expect(editScreen.findByTestId('settings.machinePools.editor.featureUnavailable')).not.toBeNull();
         expect(editScreen.findByTestId('settings.machinePools.editor.name')?.props.editable).toBe(false);
         expect(editScreen.findByTestId('settings.machinePools.editor.save')?.props.disabled).toBe(true);
-        expect(editScreen.findByTestId('settings.machinePools.editor.delete')).toBeNull();
+        // Nothing can be deleted where the Home offers no pools: the page has no `⋯` menu.
+        expect(editScreen.findByTestId('settings.machinePools.editor.menu.trigger')).toBeNull();
         expect(boundaries.remove).not.toHaveBeenCalled();
     });
 

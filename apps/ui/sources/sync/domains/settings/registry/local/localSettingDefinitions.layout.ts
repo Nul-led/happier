@@ -1,6 +1,7 @@
 import { z } from 'zod';
 
 import { SessionCompanionPreferencesV1Schema } from '@/components/sessions/companion/state/sessionCompanionPreference';
+import { normalizeSessionMobileSurface, type SessionMobileSurface } from '@/components/workspaceCockpit/session/sessionCockpitState';
 
 import {
     EMPTY_PERSISTED_PANE_SCOPE_STATE,
@@ -9,10 +10,9 @@ import {
     serializeNormalizedPaneSizeWithBasisKey,
 } from './localSettingDefinitions.shared';
 
-const sessionMobileSurfaceSchema = z.union([
-    z.enum(['chat', 'browse', 'git', 'navigation', 'board', 'collaboration', 'companion', 'tabs', 'browser', 'services', 'terminal']),
-    z.custom<`plugin:${string}:${string}`>((value) => typeof value === 'string' && /^plugin:[^:]+:.+$/.test(value)),
-]);
+const sessionMobileSurfaceSchema = z.custom<SessionMobileSurface>((value) => (
+    typeof value === 'string' && normalizeSessionMobileSurface(value) === value
+));
 
 const compactAppDestinationIdSchema = z.string().trim().min(1).max(256);
 const compactAppDestinationPreferencesSchema = z.object({
@@ -21,6 +21,22 @@ const compactAppDestinationPreferencesSchema = z.object({
 }).strict();
 
 export const LAYOUT_LOCAL_SETTING_DEFINITIONS = {
+    widgetFrameStyleHome: {
+        schema: z.enum(['card', 'plain']).catch('card'), default: 'card',
+        description: 'Default Home widget frame style on this device', storageScope: 'local',
+    },
+    widgetFrameStyleBoard: {
+        schema: z.enum(['card', 'plain']).catch('card'), default: 'card',
+        description: 'Default Board widget frame style on this device', storageScope: 'local',
+    },
+    widgetFrameStyleCompanion: {
+        schema: z.enum(['card', 'plain']).catch('plain'), default: 'plain',
+        description: 'Default Companion widget frame style on this device', storageScope: 'local',
+    },
+    widgetGalleryViewV1: {
+        schema: z.enum(['grid', 'list']).catch('grid'), default: 'grid',
+        description: 'Widget gallery view on this device', storageScope: 'local',
+    },
     uiContentWidthMode: {
         schema: z.enum(['compact', 'medium', 'full']),
         default: 'compact',
@@ -228,6 +244,20 @@ export const LAYOUT_LOCAL_SETTING_DEFINITIONS = {
         schema: z.record(z.string(), paneScopeStateSchema.catch(EMPTY_PERSISTED_PANE_SCOPE_STATE)).default({}),
         default: {},
         description: 'Persisted app pane scope state by scope id',
+        storageScope: 'local',
+        analytics: {
+            trackCurrentState: true,
+            trackChanges: true,
+            valueKind: 'count',
+            privacy: 'count_only',
+            identityScope: 'device_user',
+            serializeCurrent: objectKeyCount,
+        },
+    },
+    workspaceLayoutV1: {
+        schema: z.record(z.string(), z.unknown()).default({}),
+        default: {},
+        description: 'Current workspace layout by Account and window on this device',
         storageScope: 'local',
         analytics: {
             trackCurrentState: true,

@@ -1,9 +1,12 @@
-import type { AuthCredentials } from '@/auth/storage/tokenStorage';
+import { TokenStorage, type AuthCredentials } from '@/auth/storage/tokenStorage';
+import { decodeBase64 } from '@/encryption/base64';
+import { parseToken } from '@/utils/auth/parseToken';
 import { resolveAuthCredentialsScopeKey } from '@/auth/storage/resolveAuthCredentialsScopeKey';
 import { backoff } from '@/utils/timing/time';
 import { serverFetch } from '@/sync/http/client';
 import {
     getActiveServerSnapshot,
+    getActiveServerHomeCarrier,
     type ActiveServerSnapshot,
 } from '@/sync/domains/server/serverRuntime';
 import { HappyError } from '@/utils/errors/errors';
@@ -121,24 +124,84 @@ export async function fetchAccountEncryptionCurrentness(
         signal?: AbortSignal;
     }> = {},
 ): Promise<AccountEncryptionCurrentnessResponse> {
-    const response = await (options.request ?? ((path, init) =>
-        serverFetch(path, init, { includeAuth: false })))(
-        '/v1/account/encryption/currentness',
-        {
-            method: 'GET',
-            headers: {
-                Authorization: `Bearer ${credentials.token}`,
-                'Content-Type': 'application/json',
-            },
-            signal: options.signal,
+    const request = options.request ?? ((path: string, init: RequestInit) =>
+        serverFetch(path, init, { includeAuth: false }));
+    const readCurrentness = async () => await request('/v1/account/encryption/currentness', {
+        method: 'GET',
+        headers: {
+            Authorization: `Bearer ${credentials.token}`,
+            'Content-Type': 'application/json',
         },
-    );
+        signal: options.signal,
+    });
+    let response = await readCurrentness();
     if (!response.ok) {
         if (response.status === 400) {
             const recovery = AccountEncryptionCurrentnessErrorResponseSchema.safeParse(
                 await response.json().catch(() => null),
             );
             if (recovery.success) {
+                if (
+                    recovery.data.recipientEnvelopeReadiness.reason === 'encryption_setup_required'
+                    && 'secret' in credentials
+                    // A captured request cannot authorize recovery through the
+                    // independently selected Home and its stored credentials.
+                    && !options.request
+                ) {
+                    const target = getActiveServerSnapshot();
+                    const stored = target.serverUrl
+                        ? await TokenStorage.getCredentialsForServerUrl(target.serverUrl, { serverId: target.serverId }).catch(() => null)
+                        : null;
+                    let secret: Uint8Array | null = null;
+                    let expectedAccountId: string | null = null;
+                    try {
+                        secret = stored?.token === credentials.token && 'secret' in stored && stored.secret === credentials.secret
+                            ? decodeBase64(credentials.secret)
+                            : null;
+                        expectedAccountId = parseToken(credentials.token);
+                    } catch {
+                        // Malformed retained material never becomes a recovery proof.
+                    }
+                    if (secret?.length === 32 && expectedAccountId && target.serverUrl) {
+                        try {
+                            const { authGetTokenAtEndpoint } = await import('@/auth/flows/getToken');
+                            const homeCarrier = getActiveServerHomeCarrier();
+                            // The missing-binding repair uses requireExistingAccount;
+                            // compare the issued Account with the stored bearer below.
+                            const repaired = await authGetTokenAtEndpoint({
+                                endpointUrl: target.serverUrl,
+                                ...(target.runtimeOrigin ? { runtimeOrigin: target.runtimeOrigin } : {}),
+                                ...(homeCarrier ? { homeCarrier } : {}),
+                                serverId: target.serverId,
+                                addressAnchorUrl: target.serverUrl,
+                                secret,
+                                requireExistingAccount: true,
+                                requireKeyChallengeV2: true,
+                                ...(options.signal ? { signal: options.signal } : {}),
+                            });
+                            const current = getActiveServerSnapshot();
+                            if (
+                                parseToken(repaired.token) === expectedAccountId
+                                && current.serverId === target.serverId
+                                && current.serverUrl === target.serverUrl
+                                && current.generation === target.generation
+                            ) {
+                                response = await readCurrentness();
+                            }
+                        } catch {
+                            if (options.signal?.aborted) options.signal.throwIfAborted();
+                            // Keep the original typed recovery result when proof fails.
+                        } finally {
+                            secret.fill(0);
+                        }
+                    }
+                }
+                if (response.ok) {
+                    const repaired = AccountEncryptionCurrentnessResponseSchema.safeParse(
+                        await response.json().catch(() => null),
+                    );
+                    if (repaired.success) return repaired.data;
+                }
                 throw new AccountEncryptionCurrentnessReadinessError(recovery.data.recipientEnvelopeReadiness);
             }
         }
@@ -263,6 +326,17 @@ export async function fetchAccountEncryptionMode(
         }
         throw error;
     }
+}
+
+/**
+ * The Account mode this device last read for these credentials, without asking the server; `null`
+ * when it has not been read (or the read expired). For summaries that must not issue a request.
+ */
+export function getCachedAccountEncryptionMode(credentials: AuthCredentials): AccountEncryptionMode | null {
+    const now = Date.now();
+    pruneAccountEncryptionModeCache(now);
+    const cached = accountEncryptionModeCache.get(getAccountEncryptionModeScopeKey(credentials));
+    return cached?.value && (cached.expiresAt ?? 0) > now ? cached.value.mode : null;
 }
 
 export async function updateAccountEncryptionMode(

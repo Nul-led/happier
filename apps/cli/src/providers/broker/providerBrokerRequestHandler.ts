@@ -191,8 +191,8 @@ async function observeExternalTerminalResponse(
         // a failed or cancelled one leaves the request's usage unknown.
         const observed = outcome === 'succeeded'
             ? tokenReader.read()
-            : { actualModelId: null, tokens: null };
-        await terminalUsage.record({ outcome, ...observed }).catch(() => undefined);
+            : { outcome, actualModelId: null, tokens: null };
+        await terminalUsage.record(observed).catch(() => undefined);
     };
     if (!response.body) {
         await record(response.ok ? 'succeeded' : 'failed');

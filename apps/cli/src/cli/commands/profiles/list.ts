@@ -3,7 +3,7 @@ import { cyan, dim, emphasis, gray, kv, sectionTitle } from '@happier-dev/cli-co
 import { wantsJson, printJsonEnvelope } from '@/cli/output/jsonEnvelope';
 import { bootstrapAccountSettingsContext } from '@/settings/accountSettings/bootstrapAccountSettingsContext';
 import { readStoredCredentials } from '@/persistence';
-import { readProfilesFromAccountSettings } from '@/settings/profiles/readProfilesFromAccountSettings';
+import { readAccountLaunchProfiles, readProfilesFromAccountSettings } from '@/settings/profiles/readProfilesFromAccountSettings';
 import { mapProfileToListItem, type ProfilesListItem } from '@/settings/profiles/profileListProjection';
 
 function printProfilesHuman(profiles: ReadonlyArray<ProfilesListItem>, authenticated: boolean): void {
@@ -55,7 +55,7 @@ export async function runProfilesListCommand(args: string[]): Promise<void> {
     refresh: refreshSettings ? 'force' : 'auto',
   });
 
-  const profiles = readProfilesFromAccountSettings(snapshot.settings).visibleProfiles
+  const profiles = (await readAccountLaunchProfiles(snapshot.settings, credentials)).visibleProfiles
     .map(mapProfileToListItem)
     .sort((a, b) => a.name.localeCompare(b.name));
 

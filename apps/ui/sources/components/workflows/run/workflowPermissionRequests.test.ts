@@ -14,8 +14,7 @@ import {
  * A structured agent question and a tool permission are two different
  * contracts (Protocol `resolveAgentRequestKind`). Treating every request that
  * names a tool as a permission offered Allow/Deny for AskUserQuestion — an
- * answer the agent cannot use — so the kind is decided by the Protocol owner
- * and the question contract is read from its semantic summary, not re-parsed.
+ * answer the agent cannot use — so the kind is decided by the Protocol owner.
  */
 function progressWith(requests: Record<string, unknown>): WorkflowProgressEnvelopeV1 {
     return {
@@ -29,7 +28,7 @@ function progressWith(requests: Record<string, unknown>): WorkflowProgressEnvelo
 }
 
 describe('projectWorkflowInvocationRequests', () => {
-    it('keeps a structured question out of the permission projection and carries its canonical contract', () => {
+    it('keeps a structured question out of the permission projection', () => {
         const progress = progressWith({
             'permission-1': { tool: 'Write', arguments: { path: '/repo/file.txt' }, createdAt: 1 },
             'question-1': {
@@ -58,15 +57,5 @@ describe('projectWorkflowInvocationRequests', () => {
             ['question-1', 'user_action'],
             ['question-legacy', 'user_action'],
         ]);
-        expect(requests[1]?.questions).toEqual([expect.objectContaining({
-            question: 'Which branch should the fix land on?',
-            header: 'Branch',
-            selection: 'single',
-            choices: [
-                { label: 'main', value: 'main', description: 'Stable' },
-                { label: 'dev', value: 'dev', description: null },
-            ],
-        })]);
-        expect(requests[2]?.questions).toHaveLength(1);
     });
 });

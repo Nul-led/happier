@@ -1,15 +1,12 @@
 import * as React from 'react';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { act } from 'react-test-renderer';
-import { renderScreen, standardCleanup } from '@/dev/testkit';
+import { measureMountedCollections, renderScreen, standardCleanup } from '@/dev/testkit';
 import { installSettingsViewCommonModuleMocks } from '../settingsViewTestHelpers';
 import type { PluginMarketplaceCatalogEntry } from './readPluginMarketplaceCatalog';
 import type { InstalledPluginEntry } from './model/pluginMarketplaceModel';
 
-const modal = vi.hoisted(() => ({ show: vi.fn(() => 'catalog-detail'), hide: vi.fn(), update: vi.fn() }));
-installSettingsViewCommonModuleMocks({
-    modal: async () => (await import('@/dev/testkit/mocks/modal')).createModalModuleMock({ spies: modal }).module,
-});
+installSettingsViewCommonModuleMocks();
 vi.mock('react-native-reanimated', async () => (await import('@/dev/testkit/mocks/reanimated')).createReanimatedModuleMock());
 
 const entry: PluginMarketplaceCatalogEntry = {
@@ -25,40 +22,61 @@ const installed: InstalledPluginEntry = {
     compatibility: { status: 'compatible', diagnostics: [] }, diagnostics: [],
 };
 
+/** Browse is one Collection: it lays its grid out at the width it measured, as the page does on its first layout. */
+async function renderMeasured(element: React.ReactElement) {
+    const screen = await renderScreen(element);
+    await measureMountedCollections(screen);
+    return screen;
+}
+
 describe('DiscoverListingsSection', () => {
-    beforeEach(() => { modal.show.mockClear(); modal.hide.mockClear(); modal.update.mockClear(); });
     afterEach(standardCleanup);
 
-    it('keeps an open listing current and closes it when the administration target changes', async () => {
+    it('opens the listing page from the card body without installing', async () => {
         const { DiscoverListingsSection } = await import('./PluginMarketplaceSections');
-        const props = {
-            entries: [entry], loading: false, loadingMore: false, canLoadMore: false,
-            installedPluginById: new Map<string, InstalledPluginEntry>(), canRunActions: true,
-            isPluginActionInFlight: () => false, onAction: vi.fn(), onLoadMore: () => {}, onNavigateToPlugin: vi.fn(),
-            administrationTargetKey: 'server:machine-1', administrationTargetLabel: { machine: 'Machine 1', server: 'Server' },
-        };
-        const screen = await renderScreen(<DiscoverListingsSection {...props} />);
+        const onOpenListing = vi.fn();
+        const onAction = vi.fn();
+        const screen = await renderMeasured(<DiscoverListingsSection entries={[entry]} loading={false} loadingMore={false}
+            canLoadMore={false} installedPluginById={new Map()} canRunActions isPluginActionInFlight={() => false}
+            onAction={onAction} onLoadMore={() => {}} onNavigateToPlugin={() => {}} onOpenListing={onOpenListing} />);
         await screen.pressByTestIdAsync('settings.plugins.marketplace.entry.community.acme.plugin');
-        expect(modal.show).toHaveBeenCalledOnce();
-        expect(props.onAction).not.toHaveBeenCalled();
-        await act(async () => { screen.update(<DiscoverListingsSection {...props} loading />); });
-        expect(modal.update).toHaveBeenLastCalledWith('catalog-detail', expect.objectContaining({ disabled: true }));
-        await act(async () => { screen.update(<DiscoverListingsSection {...props} administrationTargetKey="server:machine-2" />); });
-        expect(modal.hide).toHaveBeenCalledWith('catalog-detail');
-        expect(props.onAction).not.toHaveBeenCalled();
+        expect(onOpenListing).toHaveBeenCalledWith(entry);
+        expect(onAction).not.toHaveBeenCalled();
     });
 
-    it('keeps benefit, source and trust visible and manages installed listings without installation', async () => {
+    it('keeps shelves compact with See all, and narrows them by category chip', async () => {
+        const { DiscoverListingsSection } = await import('./PluginMarketplaceSections');
+        const curated = (id: string, categories: string[]) => ({
+            ...entry, id, sourceId: 'curated', sourceKind: 'curated' as const, reviewStatus: 'approved' as const, warning: undefined, categories,
+        });
+        const entries = [curated('a.one', ['code']), curated('a.two', ['agents']), curated('a.three', ['code']), curated('a.four', ['code'])];
+        const { ListPresentationProvider } = await import('@/components/ui/lists/listPresentation');
+        // Browse always renders inside the Plugins page, where sections carry their actions.
+        const screen = await renderMeasured(<ListPresentationProvider value="page"><DiscoverListingsSection entries={entries} loading={false} loadingMore={false}
+            canLoadMore={false} installedPluginById={new Map()} canRunActions isPluginActionInFlight={() => false}
+            onAction={() => {}} onLoadMore={() => {}} onNavigateToPlugin={() => {}} onOpenListing={() => {}} /></ListPresentationProvider>);
+        const cards = () => entries.filter((e) => screen.findByTestId(`settings.plugins.marketplace.entry.curated.${e.id}`) !== null).map((e) => e.id);
+        expect(cards()).toEqual(['a.one', 'a.two', 'a.three']);
+
+        await screen.pressByTestIdAsync('settings.plugins.marketplace.discover:group:curated:action');
+        expect(cards()).toEqual(['a.one', 'a.two', 'a.three', 'a.four']);
+
+        await screen.pressByTestIdAsync('settings.plugins.marketplace.category:agents');
+        expect(cards()).toEqual(['a.two']);
+    });
+
+    it('keeps benefit and source visible and opens installed listings without installation', async () => {
         const { DiscoverListingsSection } = await import('./PluginMarketplaceSections');
         const navigate = vi.fn();
         const action = vi.fn();
-        const screen = await renderScreen(<DiscoverListingsSection administrationTargetKey="target" administrationTargetLabel={null} entries={[entry]} loading={false} loadingMore={false}
+        const screen = await renderMeasured(<DiscoverListingsSection entries={[entry]} loading={false} loadingMore={false}
             canLoadMore={false} installedPluginById={new Map([[entry.id, installed]])} canRunActions={false}
-            isPluginActionInFlight={() => false} onAction={action} onLoadMore={() => {}} onNavigateToPlugin={navigate} />);
-        const rowId = 'settings.plugins.marketplace.entry.community.acme.plugin';
-        expect(screen.findAllByTestId(rowId).some((node) => node.props.subtitle === entry.description)).toBe(true);
-        expect(screen.findByTestId('settings.plugins.marketplace.reviewStatus.community.acme.plugin')).not.toBeNull();
-        expect(screen.findByTestId('settings.plugins.marketplace.source.community.acme.plugin')).not.toBeNull();
+            isPluginActionInFlight={() => false} onAction={action} onLoadMore={() => {}} onNavigateToPlugin={navigate}
+            onOpenListing={() => {}} />);
+        expect(screen.getTextContent()).toContain(entry.description);
+        // Installed replaces the review state in the footer: the trust decision was already made.
+        expect(screen.findByTestId('settings.plugins.marketplace.installedStatus.community.acme.plugin')).not.toBeNull();
+        expect(screen.getTextContent()).toContain('Acme · Community');
         await screen.pressByTestIdAsync('settings.plugins.marketplace.action.manage.community.acme.plugin');
         expect(navigate).toHaveBeenCalledWith(entry.id);
         expect(action).not.toHaveBeenCalled();
@@ -67,13 +85,54 @@ describe('DiscoverListingsSection', () => {
     it('keeps install review reachable without expanding details and blocks new withdrawn installs', async () => {
         const { DiscoverListingsSection } = await import('./PluginMarketplaceSections');
         const action = vi.fn();
-        const screen = await renderScreen(<DiscoverListingsSection administrationTargetKey="target" administrationTargetLabel={null}
+        const screen = await renderMeasured(<DiscoverListingsSection
             entries={[entry, { ...entry, id: 'withdrawn.plugin', installable: false, warning: 'withdrawn', reviewStatus: 'withdrawn' }]}
             loading={false} loadingMore={false} canLoadMore={false} installedPluginById={new Map()} canRunActions
-            isPluginActionInFlight={() => false} onAction={action} onLoadMore={() => {}} onNavigateToPlugin={() => {}} />);
+            isPluginActionInFlight={() => false} onAction={action} onLoadMore={() => {}} onNavigateToPlugin={() => {}}
+            onOpenListing={() => {}} />);
+        expect(screen.findByTestId('settings.plugins.marketplace.reviewStatus.community.withdrawn.plugin')).not.toBeNull();
         expect(screen.findByTestId('settings.plugins.marketplace.action.install.community.withdrawn.plugin')).toBeNull();
-        expect(screen.findByTestId('settings.plugins.marketplace.source.community.acme.plugin')).not.toBeNull();
+        expect(screen.getTextContent()).toContain('Acme · Community');
         await screen.pressByTestIdAsync('settings.plugins.marketplace.action.install.community.acme.plugin');
         expect(action).toHaveBeenCalledWith({ method: 'install', pluginId: entry.id, sourceId: entry.sourceId });
+    });
+    it('lists the same listings as rows, with the same open and install targets', async () => {
+        const { DiscoverListingsSection } = await import('./PluginMarketplaceSections');
+        const onOpenListing = vi.fn();
+        const onAction = vi.fn();
+        const screen = await renderMeasured(<DiscoverListingsSection entries={[entry]} presentation="list" loading={false}
+            loadingMore={false} canLoadMore={false} installedPluginById={new Map()} canRunActions
+            isPluginActionInFlight={() => false} onAction={onAction} onLoadMore={() => {}} onNavigateToPlugin={() => {}}
+            onOpenListing={onOpenListing} />);
+        await screen.pressByTestIdAsync('settings.plugins.marketplace.entry.community.acme.plugin');
+        expect(onOpenListing).toHaveBeenCalledWith(entry);
+        await screen.pressByTestIdAsync('settings.plugins.marketplace.action.install.community.acme.plugin');
+        expect(onAction).toHaveBeenCalledWith({ method: 'install', pluginId: entry.id, sourceId: entry.sourceId });
+    });
+
+    it('does not snap back to a stale chip or "See all" when the results change and change back', async () => {
+        const { DiscoverListingsSection } = await import('./PluginMarketplaceSections');
+        const { ListPresentationProvider } = await import('@/components/ui/lists/listPresentation');
+        const curated = (id: string, categories: string[]) => ({
+            ...entry, id, sourceId: 'curated', sourceKind: 'curated' as const, reviewStatus: 'approved' as const, warning: undefined, categories,
+        });
+        const curatedResults = [curated('a.one', ['agents']), curated('a.two', ['agents']), curated('a.three', ['agents']), curated('a.four', ['agents'])];
+        const communityResults = [{ ...entry, id: 'n.one', categories: [] }];
+        const render = (entries: readonly PluginMarketplaceCatalogEntry[]) => (
+            <ListPresentationProvider value="page"><DiscoverListingsSection entries={entries} loading={false} loadingMore={false}
+                canLoadMore={false} installedPluginById={new Map()} canRunActions isPluginActionInFlight={() => false}
+                onAction={() => {}} onLoadMore={() => {}} onNavigateToPlugin={() => {}} onOpenListing={() => {}} /></ListPresentationProvider>
+        );
+        const screen = await renderMeasured(render(curatedResults));
+        await screen.pressByTestIdAsync('settings.plugins.marketplace.category:agents');
+        await screen.pressByTestIdAsync('settings.plugins.marketplace.discover:group:curated:action');
+
+        await act(async () => { screen.update(render(communityResults)); });
+        expect(screen.findByTestId('settings.plugins.marketplace.entry.community.n.one')).not.toBeNull();
+
+        await act(async () => { screen.update(render(curatedResults)); });
+        // The shelf is compact again with its "See all"; the old focus and chip are gone.
+        expect(screen.findByTestId('settings.plugins.marketplace.discover:group:curated:action')).not.toBeNull();
+        expect(screen.findByTestId('settings.plugins.marketplace.entry.curated.a.four')).toBeNull();
     });
 });

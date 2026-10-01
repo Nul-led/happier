@@ -12,7 +12,8 @@ import {
   createPluginTrustRecord,
 } from '@/plugins/store/install/trustIdentity';
 import type { PluginCatalogEntry } from '@/plugins/projection/catalog/installed';
-import type { PluginFinalPolicyCurrentGeneration } from '@/plugins/runtime/policy/facts';
+import type { PluginFinalPolicyCurrentRuntime } from '@/plugins/runtime/policy/facts';
+import { createPluginRuntimeOccurrenceId } from '@/plugins/runtime/runtimeSlots';
 
 import {
   type DaemonVoiceModelPackPluginRecordV1,
@@ -74,9 +75,9 @@ const sourceIntegrity = (integrity = `sha512-${'b'.repeat(86)}==`) => ({
   integrity,
 });
 
-const materialization = (immutableGenerationId = 'generation-local-7') => ({
+const materialization = (registeredRootId = 'development-root-7') => ({
   kind: 'materialization' as const,
-  immutableGenerationId,
+  sourceCustody: { kind: 'development' as const, registeredRootId },
 });
 
 function installedCatalogEntry(options?: Readonly<{
@@ -141,19 +142,26 @@ function installedCatalogEntry(options?: Readonly<{
   };
 }
 
-function currentGeneration(
-  overrides: Partial<PluginFinalPolicyCurrentGeneration> = {},
-): PluginFinalPolicyCurrentGeneration {
-  const immutableGenerationId = overrides.immutableGenerationId ?? 'generation-7';
+function currentRuntime(
+  overrides: Partial<PluginFinalPolicyCurrentRuntime> = {},
+): PluginFinalPolicyCurrentRuntime {
+  const occurrenceId = overrides.occurrenceId
+    ?? createPluginRuntimeOccurrenceId('acme.speech-current');
   const applied = overrides.applied ?? true;
+  const sourceCustody: PluginFinalPolicyCurrentRuntime['sourceCustody'] =
+    overrides.sourceCustody ?? {
+      kind: 'managed',
+      immutableGenerationId: 'generation-7',
+      installSource: 'archive',
+    };
   return Object.freeze({
-    immutableGenerationId,
-    desiredImmutableGenerationId: overrides.desiredImmutableGenerationId ?? immutableGenerationId,
-    appliedImmutableGenerationId: overrides.appliedImmutableGenerationId
-      ?? (applied ? immutableGenerationId : null),
+    occurrenceId,
+    sourceCustody,
+    desiredOccurrenceId: overrides.desiredOccurrenceId ?? occurrenceId,
+    appliedOccurrenceId: overrides.appliedOccurrenceId
+      ?? (applied ? occurrenceId : null),
     applied,
-    selectedAccess: Object.freeze([]),
-    ...overrides,
+    selectedAccess: overrides.selectedAccess ?? Object.freeze([]),
   });
 }
 
@@ -243,7 +251,7 @@ describe('daemon public voice model-pack catalog projection', () => {
     const entry = installedCatalogEntry();
     const projected = await projectInstalledDaemonPluginVoiceModelPackCatalogV1({
       installedPlugins: [entry],
-      currentPluginGenerations: new Map([[entry.pluginId, currentGeneration()]]),
+      currentPluginRuntimes: new Map([[entry.pluginId, currentRuntime()]]),
       host,
     });
     expect(projected[0]).toMatchObject({ status: 'available', installable: true });
@@ -254,7 +262,7 @@ describe('daemon public voice model-pack catalog projection', () => {
     const entry = installedCatalogEntry({ admittedIntegrity: null });
     await expect(projectInstalledDaemonPluginVoiceModelPackCatalogV1({
       installedPlugins: [entry],
-      currentPluginGenerations: new Map([[entry.pluginId, currentGeneration()]]),
+      currentPluginRuntimes: new Map([[entry.pluginId, currentRuntime()]]),
       host,
     })).resolves.toEqual([]);
   });
@@ -263,8 +271,8 @@ describe('daemon public voice model-pack catalog projection', () => {
     const entry = installedCatalogEntry();
     await expect(projectInstalledDaemonPluginVoiceModelPackCatalogV1({
       installedPlugins: [entry],
-      currentPluginGenerations: new Map([[entry.pluginId, currentGeneration({
-        immutableGenerationId: 'generation-8',
+      currentPluginRuntimes: new Map([[entry.pluginId, currentRuntime({
+        sourceCustody: { kind: 'managed', immutableGenerationId: 'generation-8', installSource: 'archive' },
       })]]),
       host,
     })).resolves.toEqual([]);
@@ -274,7 +282,7 @@ describe('daemon public voice model-pack catalog projection', () => {
     const entry = installedCatalogEntry({ optionalNetwork: true });
     const projected = await projectInstalledDaemonPluginVoiceModelPackCatalogV1({
       installedPlugins: [entry],
-      currentPluginGenerations: new Map([[entry.pluginId, currentGeneration()]]),
+      currentPluginRuntimes: new Map([[entry.pluginId, currentRuntime()]]),
       host,
     });
     expect(projected[0]).toMatchObject({
@@ -288,7 +296,7 @@ describe('daemon public voice model-pack catalog projection', () => {
     const entry = installedCatalogEntry();
     const projected = await projectInstalledDaemonPluginVoiceModelPackCatalogV1({
       installedPlugins: [entry],
-      currentPluginGenerations: new Map([[entry.pluginId, currentGeneration({ applied: false })]]),
+      currentPluginRuntimes: new Map([[entry.pluginId, currentRuntime({ applied: false })]]),
       host,
     });
 
@@ -331,8 +339,8 @@ describe('daemon public voice model-pack catalog projection', () => {
         desiredGeneration: 'generation-8',
         appliedGeneration: 'generation-8',
       }],
-      currentPluginGenerations: new Map([[entry.pluginId, currentGeneration({
-        immutableGenerationId: 'generation-8',
+      currentPluginRuntimes: new Map([[entry.pluginId, currentRuntime({
+        sourceCustody: { kind: 'managed', immutableGenerationId: 'generation-8', installSource: 'archive' },
       })]]),
       host,
       licenseScope,
@@ -355,8 +363,8 @@ describe('daemon public voice model-pack catalog projection', () => {
         appliedGeneration: 'generation-9',
         admittedIntegrity: newIntegrity,
       }],
-      currentPluginGenerations: new Map([[entry.pluginId, currentGeneration({
-        immutableGenerationId: 'generation-9',
+      currentPluginRuntimes: new Map([[entry.pluginId, currentRuntime({
+        sourceCustody: { kind: 'managed', immutableGenerationId: 'generation-9', installSource: 'archive' },
       })]]),
       host,
       licenseScope,
@@ -375,14 +383,14 @@ describe('daemon public voice model-pack catalog projection', () => {
     });
   });
 
-  it('binds local/path consent and installed lifecycle to immutable materialization generation', async () => {
+  it('retains local/path consent and installed lifecycle across runtime generations for one registered source root', async () => {
     const entry = installedCatalogEntry({
       sourceKind: 'path',
       admittedIntegrity: null,
       requiresLicenseAcceptance: true,
     });
     const contribution = entry.manifest!.contributes.voiceModelPacks![0]!;
-    const oldBinding = materialization('generation-7');
+    const oldBinding = materialization('development-root-7');
     const licenseScope = { accountId: 'account-a', executionHost: 'daemon' as const, hostId: 'machine-a' };
     const acceptedLicenses = [{
       ...licenseScope,
@@ -407,7 +415,8 @@ describe('daemon public voice model-pack catalog projection', () => {
 
     const current = await projectInstalledDaemonPluginVoiceModelPackCatalogV1({
       installedPlugins: [entry],
-      currentPluginGenerations: new Map([[entry.pluginId, currentGeneration()]]),
+      currentPluginRuntimes: new Map([[entry.pluginId, currentRuntime()]]),
+      resolvePluginSourceCustody: () => oldBinding.sourceCustody,
       host,
       licenseScope,
       acceptedLicenses,
@@ -426,21 +435,20 @@ describe('daemon public voice model-pack catalog projection', () => {
         desiredGeneration: 'generation-local-8',
         appliedGeneration: 'generation-local-8',
       }],
-      currentPluginGenerations: new Map([[entry.pluginId, currentGeneration({
-        immutableGenerationId: 'generation-local-8',
+      currentPluginRuntimes: new Map([[entry.pluginId, currentRuntime({
+        sourceCustody: { kind: 'managed', immutableGenerationId: 'generation-local-8', installSource: 'localPath' },
       })]]),
+      resolvePluginSourceCustody: () => oldBinding.sourceCustody,
       host,
       licenseScope,
       acceptedLicenses,
       installedMetadata,
     });
     expect(rematerialized[0]).toMatchObject({
-      status: 'blocked',
-      reason: 'license_acceptance_required',
-      artifactBinding: materialization('generation-local-8'),
-      lifecycleState: 'orphaned',
-      lifecycleReason: 'artifact_binding_changed',
-      loadable: false,
+      status: 'available',
+      artifactBinding: oldBinding,
+      lifecycleState: 'active',
+      loadable: true,
     });
   });
 

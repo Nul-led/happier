@@ -6,15 +6,18 @@ import { basename, isAbsolute, join, relative } from 'node:path';
 import {
   createManagedToolScratchDir,
   downloadGitHubReleaseAsset,
+  AgentCliDownloadError,
   promoteManagedCurrentInstall,
+  resolveHappyHomeDirFromEnvironment,
 } from '@happier-dev/cli-common/agents';
-import { extractReleasePayloadRootFromArchive } from '@happier-dev/cli-common/firstPartyRuntime';
+import { ExecFileTerminationError } from '@happier-dev/cli-common/process';
+import { ArchiveExtractionTimeoutError, extractArchivePayloadToDirectory } from '@happier-dev/release-runtime/archiveExtraction';
 
 import type { InstallableDependencyDescriptor } from '@happier-dev/protocol/installables';
 
 import { configuration } from '@/configuration';
 import { writeBytesAtomic } from '@/utils/fs/writeJsonAtomic';
-import type { RuntimeInstallableAdapter } from '../registry';
+import type { RuntimeInstallableAdapter, RuntimeInstallableCapabilityStatusParams, RuntimeInstallableInstallErrorCode, RuntimeInstallableInstallOptions, RuntimeInstallableLaunchCommandParams } from '../registry';
 
 export type PinnedArchiveAsset = Readonly<{
   archiveUrl: string;
@@ -25,25 +28,27 @@ export type PinnedArchiveAsset = Readonly<{
 
 export type PinnedArchiveInstallResult =
   | Readonly<{ ok: true; executablePath: string; version: string; integrityDigest: string }>
-  | Readonly<{ ok: false; errorMessage: string }>;
+  | Readonly<{ ok: false; errorMessage: string; errorCode?: RuntimeInstallableInstallErrorCode }>;
 
-function installRoot(installId: string): string {
-  return join(configuration.happyHomeDir, 'tools', installId);
+function installRoot(installId: string, env?: NodeJS.ProcessEnv): string {
+  return join(env ? resolveHappyHomeDirFromEnvironment(env) : configuration.happyHomeDir, 'tools', installId);
 }
 
 const MANAGED_VERSION_FILENAME = '.happier-managed-version';
 const MANAGED_EXECUTABLE_DIGEST_FILENAME = '.happier-managed-executable-sha256';
 
-async function computeFileSha256Hex(path: string): Promise<string> {
+async function computeFileSha256Hex(path: string, signal?: AbortSignal): Promise<string> {
+  signal?.throwIfAborted();
   const hash = createHash('sha256');
-  for await (const chunk of createReadStream(path)) {
+  for await (const chunk of createReadStream(path, { signal })) {
+    signal?.throwIfAborted();
     hash.update(chunk);
   }
   return hash.digest('hex');
 }
 
-function currentRoot(installId: string): string {
-  return join(installRoot(installId), 'current');
+function currentRoot(installId: string, env?: NodeJS.ProcessEnv): string {
+  return join(installRoot(installId, env), 'current');
 }
 
 function safeExecutablePath(root: string, executableSubpath: string): string | null {
@@ -61,16 +66,17 @@ export async function resolveInstalledPinnedArchiveExecutable(params: Readonly<{
   executableSubpath: string;
   version?: string;
   platform?: NodeJS.Platform | string;
+  env?: NodeJS.ProcessEnv;
 }>): Promise<string | null> {
   if (params.version) {
     try {
-      const installedVersion = await readFile(join(currentRoot(params.installId), MANAGED_VERSION_FILENAME), 'utf8');
+      const installedVersion = await readFile(join(currentRoot(params.installId, params.env), MANAGED_VERSION_FILENAME), 'utf8');
       if (installedVersion !== params.version) return null;
     } catch {
       return null;
     }
   }
-  const candidate = safeExecutablePath(currentRoot(params.installId), params.executableSubpath);
+  const candidate = safeExecutablePath(currentRoot(params.installId, params.env), params.executableSubpath);
   if (!candidate) return null;
   try {
     await access(candidate, (params.platform ?? process.platform) === 'win32' ? fsConstants.F_OK : fsConstants.X_OK);
@@ -78,7 +84,7 @@ export async function resolveInstalledPinnedArchiveExecutable(params: Readonly<{
     return null;
   }
   try {
-    const storedDigest = (await readFile(join(currentRoot(params.installId), MANAGED_EXECUTABLE_DIGEST_FILENAME), 'utf8')).trim();
+    const storedDigest = (await readFile(join(currentRoot(params.installId, params.env), MANAGED_EXECUTABLE_DIGEST_FILENAME), 'utf8')).trim();
     if (!/^sha256:[0-9a-f]{64}$/i.test(storedDigest)) return null;
     const actualDigest = `sha256:${await computeFileSha256Hex(candidate)}`;
     if (actualDigest.toLowerCase() !== storedDigest.toLowerCase()) return null;
@@ -92,47 +98,76 @@ export async function installPinnedArchive(params: Readonly<{
   installId: string;
   version: string;
   asset: PinnedArchiveAsset;
+  archiveExtractionLimits?: Extract<InstallableDependencyDescriptor['source'], { kind: 'pinned_archive' }>['archiveExtractionLimits'];
   platform?: NodeJS.Platform | string;
-}>): Promise<PinnedArchiveInstallResult> {
+}> & RuntimeInstallableInstallOptions): Promise<PinnedArchiveInstallResult> {
   const platform = params.platform ?? process.platform;
-  const root = installRoot(params.installId);
+  const root = installRoot(params.installId, params.env);
   const scratchDir = await createManagedToolScratchDir({ installDir: root, prefix: params.installId });
+  let errorCode: RuntimeInstallableInstallErrorCode = 'download-failed';
   try {
+    params.signal?.throwIfAborted();
     const archiveName = basename(new URL(params.asset.archiveUrl).pathname) || 'archive.zip';
     const archivePath = join(scratchDir, archiveName);
     const extractDir = join(scratchDir, 'extract');
     const candidateDir = join(scratchDir, 'candidate');
     await downloadGitHubReleaseAsset({
+      signal: params.signal,
+      onProgress: params.onProgress,
       url: params.asset.archiveUrl,
       destinationPath: archivePath,
       digest: `sha256:${params.asset.sha256}`,
       userAgent: 'happier-cli',
     });
-    const payloadRoot = await extractReleasePayloadRootFromArchive({ archivePath, archiveName, extractDir });
-    await rename(payloadRoot, candidateDir);
+    params.signal?.throwIfAborted();
+    errorCode = 'verification-failed';
+    params.onProgress?.({ t: 'log', line: 'Extracting archive' });
+    await extractArchivePayloadToDirectory({
+      signal: params.signal,
+      archivePath,
+      archiveName,
+      extractDir,
+      limits: params.archiveExtractionLimits,
+    });
+    params.signal?.throwIfAborted();
+    // Pinned descriptors name executables from the archive root. Preserve that
+    // root verbatim so flat companion files and explicit wrapper paths agree.
+    await rename(extractDir, candidateDir);
     const candidateExecutable = safeExecutablePath(candidateDir, params.asset.executableSubpath);
     if (!candidateExecutable) {
-      return { ok: false, errorMessage: 'Pinned archive executable path is unsafe' };
+      return { ok: false, errorMessage: 'Pinned archive executable path is unsafe', errorCode };
     }
     try {
       await access(candidateExecutable, fsConstants.F_OK);
     } catch {
-      return { ok: false, errorMessage: `Pinned archive executable missing at ${params.asset.executableSubpath}` };
+      return { ok: false, errorMessage: `Pinned archive executable missing at ${params.asset.executableSubpath}`, errorCode };
     }
     if (platform !== 'win32') await chmod(candidateExecutable, 0o755);
-    const executableDigest = `sha256:${await computeFileSha256Hex(candidateExecutable)}`;
+    params.onProgress?.({ t: 'log', line: 'Verifying executable' });
+    const executableDigest = `sha256:${await computeFileSha256Hex(candidateExecutable, params.signal)}`;
     await writeBytesAtomic(join(candidateDir, MANAGED_VERSION_FILENAME), new TextEncoder().encode(params.version));
     await writeBytesAtomic(join(candidateDir, MANAGED_EXECUTABLE_DIGEST_FILENAME), new TextEncoder().encode(executableDigest));
     await promoteManagedCurrentInstall({
+      signal: params.signal,
       installRoot: root,
       candidatePath: candidateDir,
-      currentPath: currentRoot(params.installId),
+      currentPath: currentRoot(params.installId, params.env),
     });
-    const executablePath = safeExecutablePath(currentRoot(params.installId), params.asset.executableSubpath);
+    const executablePath = safeExecutablePath(currentRoot(params.installId, params.env), params.asset.executableSubpath);
     if (!executablePath) return { ok: false, errorMessage: 'Pinned archive executable path is unsafe' };
     return { ok: true, executablePath, version: params.version, integrityDigest: `sha256:${params.asset.sha256}` };
   } catch (error) {
-    return { ok: false, errorMessage: error instanceof Error ? error.message : 'Pinned archive install failed' };
+    if (error instanceof ExecFileTerminationError) throw error;
+    if (!(error instanceof AgentCliDownloadError) && !(error instanceof ArchiveExtractionTimeoutError)
+      && ((params.signal?.aborted && error === params.signal.reason)
+        || (error instanceof Error && error.name === 'AbortError'))) throw error;
+    return {
+      ok: false,
+      errorMessage: error instanceof Error ? error.message : 'Pinned archive install failed',
+      errorCode: error instanceof ArchiveExtractionTimeoutError
+        ? 'command-timed-out'
+        : error instanceof AgentCliDownloadError ? error.errorCode : errorCode,
+    };
   } finally {
     await rm(scratchDir, { recursive: true, force: true });
   }
@@ -142,9 +177,11 @@ export function createPinnedArchiveRuntimeInstallableAdapter(params: Readonly<{
   installId: `dep.${string}`;
   version: string;
   asset: PinnedArchiveAsset;
+  archiveExtractionLimits?: Extract<InstallableDependencyDescriptor['source'], { kind: 'pinned_archive' }>['archiveExtractionLimits'];
   platform?: NodeJS.Platform | string;
 }>): RuntimeInstallableAdapter {
-  const resolve = async () => await resolveInstalledPinnedArchiveExecutable({
+  const resolve = async (env?: NodeJS.ProcessEnv) => await resolveInstalledPinnedArchiveExecutable({
+    env,
     installId: params.installId,
     executableSubpath: params.asset.executableSubpath,
     version: params.version,
@@ -153,8 +190,8 @@ export function createPinnedArchiveRuntimeInstallableAdapter(params: Readonly<{
   return Object.freeze({
     key: params.installId,
     capabilityId: params.installId,
-    async detectCapabilityStatus() {
-      const executablePath = await resolve();
+    async detectCapabilityStatus(options: RuntimeInstallableCapabilityStatusParams = {}) {
+      const executablePath = await resolve(options.env);
       // One status shape for both readers: the managed-dependency host reads
       // `version`/`availableVersion`, the capability/UI installables path reads
       // the `installed` projection. A pinned artifact has no update discovery,
@@ -169,8 +206,8 @@ export function createPinnedArchiveRuntimeInstallableAdapter(params: Readonly<{
         ...(executablePath ? { version: params.version, availableVersion: params.version } : {}),
       });
     },
-    async detectLaunchResolution() {
-      const executablePath = await resolve();
+    async detectLaunchResolution(options: Readonly<{ env?: NodeJS.ProcessEnv }> = {}) {
+      const executablePath = await resolve(options.env);
       return Object.freeze({
         availability: executablePath
           ? Object.freeze({ ok: true as const })
@@ -179,17 +216,17 @@ export function createPinnedArchiveRuntimeInstallableAdapter(params: Readonly<{
         canBackgroundAutoUpdate: false,
       });
     },
-    async resolveLaunchCommand() {
-      const command = await resolve();
+    async resolveLaunchCommand(options: RuntimeInstallableLaunchCommandParams = {}) {
+      const command = await resolve(options.env);
       return command
         ? Object.freeze({ ok: true as const, command, args: Object.freeze([...(params.asset.args ?? [])]), source: 'managed' as const })
         : Object.freeze({ ok: false as const, errorMessage: 'Pinned archive executable is not installed', canAutoInstall: true });
     },
-    async installOrUpgrade() {
-      const result = await installPinnedArchive(params);
+    async installOrUpgrade(options: RuntimeInstallableInstallOptions = {}) {
+      const result = await installPinnedArchive({ ...params, ...options });
       return result.ok
         ? Object.freeze({ ok: true as const, logPath: null })
-        : Object.freeze({ ok: false as const, errorMessage: result.errorMessage, logPath: null });
+        : Object.freeze({ ok: false as const, errorMessage: result.errorMessage, errorCode: result.errorCode, logPath: null });
     },
     async removeManagedInstall() {
       await rm(installRoot(params.installId), { recursive: true, force: true });
@@ -223,6 +260,7 @@ export function getPinnedArchiveRuntimeInstallableAdapter(
     installId: descriptor.capabilityId,
     version: descriptor.source.version,
     asset,
+    archiveExtractionLimits: descriptor.source.archiveExtractionLimits,
     platform,
   });
 }

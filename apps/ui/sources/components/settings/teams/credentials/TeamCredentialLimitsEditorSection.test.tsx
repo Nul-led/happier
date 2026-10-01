@@ -1,20 +1,45 @@
 import * as React from 'react';
 import { act } from 'react-test-renderer';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { renderScreen, standardCleanup, teamCredentialResourceFixture } from '@/dev/testkit';
+import { accountDisplayProfileFixture, createDeferred, createHomeGovernanceHarness, installHomeGovernanceBoundaries, renderScreen, standardCleanup, teamCredentialResourceFixture, teamGroupFixture, teamMembershipFixture } from '@/dev/testkit';
 
 import { installSettingsViewCommonModuleMocks } from '../../settingsViewTestHelpers';
 import type { TeamSectionContext } from '../teamSectionContext';
-import { EMPTY_TEAM_CREDENTIAL_RESOURCE_DRAFT, type TeamCredentialResourceDraft } from './teamCredentialEditorDraft';
+import type { TeamCredentialResourceDraft } from './teamCredentialEditorDraft';
+
+let EMPTY_TEAM_CREDENTIAL_RESOURCE_DRAFT: typeof import('./teamCredentialEditorDraft')['EMPTY_TEAM_CREDENTIAL_RESOURCE_DRAFT'];
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
-installSettingsViewCommonModuleMocks();
+installSettingsViewCommonModuleMocks({
+    storage: async (importOriginal) => {
+        const { createStorageModuleMock } = await import('@/dev/testkit/mocks/storage');
+        return createStorageModuleMock({ importOriginal, overrides: {} });
+    },
+});
+const harness = createHomeGovernanceHarness();
+installHomeGovernanceBoundaries(harness);
+
+beforeEach(async () => {
+    // Load the production graph after the canonical HTTP boundary is installed.
+    ({ EMPTY_TEAM_CREDENTIAL_RESOURCE_DRAFT } = await import('./teamCredentialEditorDraft'));
+    const { resetTeamsSnapshotsForTests } = await import('@/sync/store/teams/teamsSnapshots');
+    const { resetTeamsDirectoryEngineForTests } = await import('@/sync/engine/teams/teamsDirectoryEngine');
+    const { resetTeamActionClientForTests } = await import('@/sync/ops/teams/teamActionClient');
+    resetTeamsSnapshotsForTests();
+    resetTeamsDirectoryEngineForTests();
+    resetTeamActionClientForTests();
+    await harness.reset();
+    const serverId = await harness.addHome({ name: 'Limits Home', serverUrl: 'https://credential-limits.test', accountId: 'account-owner', teamsEnabled: true });
+    context = { ...context, scope: { serverId, accountId: 'account-owner' }, address: { serverId, teamId: 'team-1' } };
+    harness.answer(serverId, '/v1/teams/members/list', { body: { items: [], nextCursor: null } });
+    harness.answer(serverId, '/v1/teams/groups/list', { body: { items: [], nextCursor: null } });
+});
 
 afterEach(() => standardCleanup());
 
-const context = {
+let context = {
     scope: { serverId: 'server-1', accountId: 'account-owner' },
     address: { serverId: 'server-1', teamId: 'team-1' },
 } as TeamSectionContext;
@@ -47,6 +72,38 @@ async function mount(initial: TeamCredentialResourceDraft) {
 }
 
 describe('TeamCredentialLimitsEditorSection', () => {
+    it('names each saved member and group rule in the list and when reopened', async () => {
+        const firstPage = createDeferred<void>();
+        harness.answer(context.scope.serverId, '/v1/teams/members/list', { body: { items: [
+            teamMembershipFixture({ accountId: 'account-ada', account: accountDisplayProfileFixture('Ada') }),
+        ], nextCursor: 'page-two' }, respondAfter: firstPage.promise });
+        harness.answer(context.scope.serverId, '/v1/teams/groups/list', { body: { items: [teamGroupFixture({ id: 'group-platform', name: 'Platform' })], nextCursor: null } });
+        const initial: TeamCredentialResourceDraft = {
+            ...EMPTY_TEAM_CREDENTIAL_RESOURCE_DRAFT,
+            limits: [
+                { id: 'ada', subjectKind: 'team_member', subjectId: 'account-ada', metric: 'inference_requests', period: 'month', maximum: '10', enabled: true },
+                { id: 'maya', subjectKind: 'team_member', subjectId: 'account-maya', metric: 'inference_requests', period: 'month', maximum: '10', enabled: true },
+                { id: 'platform', subjectKind: 'team_group', subjectId: 'group-platform', metric: 'inference_requests', period: 'month', maximum: '10', enabled: true },
+            ],
+        };
+        const { screen } = await mount(initial);
+        // The second target lives beyond page one; the owning roster must resolve it too.
+        await vi.waitFor(() => expect(harness.requestsFor('/v1/teams/members/list')).toHaveLength(1));
+        harness.answer(context.scope.serverId, '/v1/teams/members/list', { body: { items: [
+            teamMembershipFixture({ id: 'membership-maya', accountId: 'account-maya', account: accountDisplayProfileFixture('Maya') }),
+        ], nextCursor: null } });
+        firstPage.resolve();
+        const rowText = (id: string) => JSON.stringify(screen.findAllByTestId(id)[0]?.props);
+        await vi.waitFor(() => expect(rowText('team-credential-limit-edit:ada')).toContain('Ada'));
+        await vi.waitFor(() => expect(rowText('team-credential-limit-edit:maya')).toContain('Maya'));
+        expect(rowText('team-credential-limit-edit:platform')).toContain('Platform');
+        await screen.pressByTestIdAsync('team-credential-limit-edit:maya');
+        expect(rowText('team-credential-limit-member-account:account-maya')).toContain('Maya');
+        await screen.pressByTestIdAsync('team-credential-limit-cancel');
+        await screen.pressByTestIdAsync('team-credential-limit-edit:platform');
+        expect(rowText('team-credential-limit-group:group-platform')).toContain('Platform');
+    });
+
     it('edits and removes saved rules through the complete controlled resource draft', async () => {
         const initial = {
             ...EMPTY_TEAM_CREDENTIAL_RESOURCE_DRAFT,
@@ -78,6 +135,23 @@ describe('TeamCredentialLimitsEditorSection', () => {
         expect(draft().audience).toBe(initial.audience);
     });
 
+    it('retries a failed principal read while preserving saved limits', async () => {
+        harness.answer(context.scope.serverId, '/v1/teams/members/list', { status: 503 });
+        const initial: TeamCredentialResourceDraft = {
+            ...EMPTY_TEAM_CREDENTIAL_RESOURCE_DRAFT,
+            limits: [{ id: 'ada', subjectKind: 'team_member', subjectId: 'account-ada', metric: 'inference_requests', period: 'month', maximum: '10', enabled: true }],
+        };
+        const { screen, draft } = await mount(initial);
+        await vi.waitFor(() => expect(screen.findByTestId('team-credential-limit-members-retry')).not.toBeNull());
+        expect(draft()).toEqual(initial);
+        harness.answer(context.scope.serverId, '/v1/teams/members/list', { body: { items: [
+            teamMembershipFixture({ accountId: 'account-ada', account: accountDisplayProfileFixture('Ada') }),
+        ], nextCursor: null } });
+        await screen.pressByTestIdAsync('team-credential-limit-members-retry');
+        await vi.waitFor(() => expect(screen.findAllByTestId('team-credential-limit-edit:ada')[0]?.props.title).toContain('Ada'));
+        expect(draft()).toEqual(initial);
+    });
+
     it('adds a named-member rule with the picker actor Account id and only canonical metrics', async () => {
         const { screen, draft } = await mount(EMPTY_TEAM_CREDENTIAL_RESOURCE_DRAFT);
 
@@ -104,5 +178,8 @@ describe('TeamCredentialLimitsEditorSection', () => {
             metric: 'inference_requests',
             maximum: '10',
         })]);
+        expect(screen.findAllByTestId('team-credential-limit-edit:new-0')[0]?.props.title).toContain('Maya');
+        await screen.pressByTestIdAsync('team-credential-limit-edit:new-0');
+        expect(screen.findAllByTestId('team-credential-limit-member-account:account-maya')[0]?.props.title).toBe('Maya');
     });
 });

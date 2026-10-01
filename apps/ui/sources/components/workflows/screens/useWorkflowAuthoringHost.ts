@@ -1,15 +1,13 @@
 import * as React from 'react';
 
-import type { WorkflowProjectTargetV1 } from '@happier-dev/protocol/workflows';
+import type { WorkflowAuthoringTarget } from '@/sync/domains/workflows/workflowProjectTarget';
 
 import type { AuthoringComposerScope } from '@/components/sessions/authoring/ScopedAuthoringComposer';
 import type { SessionAuthoringControlFacts } from '@/components/sessions/authoring/controls/sessionAuthoringFieldControls';
 import { useSessionAuthoringControlFacts } from '@/components/sessions/authoring/controls/useSessionAuthoringControlFacts';
-import { isAutomationSessionCandidate } from '@/sync/domains/automations/isAutomationSessionCandidate';
-import { useAllMachines, useSessions, useSettings } from '@/sync/domains/state/storage';
-import { readDisplayMachineIdForSession } from '@/sync/ops/sessionMachineTarget';
+import { useAllMachines } from '@/sync/domains/state/storage';
 import type { WorkflowExistingSessionOption } from '@/sync/domains/workflows/workflowAuthoring';
-import { getSessionName } from '@/utils/sessions/sessionUtils';
+import { useWorkflowExistingSessionOptions } from './useWorkflowExistingSessionOptions';
 
 export type WorkflowAuthoringHostContext = Readonly<{
     /** Option sources for the shared Session-authoring controls. */
@@ -23,6 +21,8 @@ export type WorkflowAuthoringHostContext = Readonly<{
      * Machine are offered, because the coordinator refuses any other.
      */
     existingSessions: readonly WorkflowExistingSessionOption[];
+    /** Every continuable Session on any Machine: what the Session drop target resolves against. */
+    sessionDropCandidates: readonly WorkflowExistingSessionOption[];
 }>;
 
 /**
@@ -43,12 +43,12 @@ export type WorkflowAuthoringHostContext = Readonly<{
 export function useWorkflowAuthoringHost(params: Readonly<{
     /** Present only for a Session-origin draft that captured its Session. */
     capturedSession?: Readonly<{ sessionId: string; serverId?: string | null }> | undefined;
-    projectTarget: WorkflowProjectTargetV1 | null | undefined;
+    projectTarget: WorkflowAuthoringTarget | null | undefined;
     serverId: string | null;
 }>): WorkflowAuthoringHostContext {
     const { capturedSession, serverId } = params;
     const machineId = params.projectTarget?.machineId ?? null;
-    const directory = params.projectTarget?.directory ?? null;
+    const directory = typeof params.projectTarget?.directory === 'string' ? params.projectTarget.directory : null;
     const machines = useAllMachines();
     const machineHomeDir = React.useMemo(() => (
         machineId === null
@@ -58,26 +58,7 @@ export function useWorkflowAuthoringHost(params: Readonly<{
 
     const authoringFacts = useSessionAuthoringControlFacts({ machineId, serverId, directory });
 
-    const sessions = useSessions();
-    const settings = useSettings();
-    const existingSessions = React.useMemo<readonly WorkflowExistingSessionOption[]>(() => {
-        const options: WorkflowExistingSessionOption[] = [];
-        for (const session of sessions ?? []) {
-            if (serverId !== null && session.serverId !== serverId) continue;
-            if (!isAutomationSessionCandidate(session, settings)) continue;
-            const sessionMachineId = readDisplayMachineIdForSession({ sessionId: session.id, metadata: session.metadata });
-            // A Session whose Machine the canonical owner cannot name is not
-            // offered: the selection records the exact Machine, and guessing
-            // one would author a continuation the coordinator refuses.
-            if (sessionMachineId.length === 0) continue;
-            if (machineId !== null && sessionMachineId !== machineId) continue;
-            options.push({ sessionId: session.id, machineId: sessionMachineId, label: getSessionName(session) });
-        }
-        return options;
-        // `machines` is read imperatively by the canonical target owner, so it
-        // is a dependency even though it is not referenced here.
-        // eslint-disable-next-line react-hooks/exhaustive-deps -- see above
-    }, [machineId, machines, serverId, sessions, settings]);
+    const { existingSessions, sessionDropCandidates } = useWorkflowExistingSessionOptions({ serverId, machineId });
 
     const capturedSessionId = capturedSession?.sessionId ?? null;
     const capturedServerId = capturedSession?.serverId ?? null;
@@ -88,7 +69,7 @@ export function useWorkflowAuthoringHost(params: Readonly<{
     ), [capturedServerId, capturedSessionId, directory, machineHomeDir, machineId, serverId]);
 
     return React.useMemo(
-        () => ({ authoringFacts, composerScope, existingSessions }),
-        [authoringFacts, composerScope, existingSessions],
+        () => ({ authoringFacts, composerScope, existingSessions, sessionDropCandidates }),
+        [authoringFacts, composerScope, existingSessions, sessionDropCandidates],
     );
 }

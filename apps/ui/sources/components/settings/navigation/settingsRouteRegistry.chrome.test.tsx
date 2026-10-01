@@ -11,11 +11,12 @@ import {
 
 const pathnameState = vi.hoisted(() => ({ value: '/settings' }));
 const navigateSpy = vi.hoisted(() => vi.fn());
+const dismissToSpy = vi.hoisted(() => vi.fn());
 
 // Minimal, self-contained mocks so the registry module imports without the shared testkit.
 vi.mock('expo-router', () => ({
     usePathname: () => pathnameState.value,
-    useRouter: () => ({ navigate: navigateSpy, back: () => {} }),
+    useRouter: () => ({ navigate: navigateSpy, dismissTo: dismissToSpy, back: () => {} }),
 }));
 vi.mock('@expo/vector-icons', () => ({ Ionicons: 'Ionicons' }));
 
@@ -24,6 +25,7 @@ const identity = (key: string): string => key;
 afterEach(() => {
     pathnameState.value = '/settings';
     navigateSpy.mockReset();
+    dismissToSpy.mockReset();
     clearActiveUnsavedChangesGuard();
 });
 
@@ -65,8 +67,8 @@ describe('getSettingsStackScreenDefinitions', () => {
             tag: 'SettingsParentBackButton.test',
         });
         const { getSettingsStackScreenDefinitions } = await import('./settingsRouteRegistry');
-        const definition = getSettingsStackScreenDefinitions(identity)
-            .find((candidate) => candidate.name === 'providers/new');
+        const definition = getSettingsStackScreenDefinitions(identity, { navigator: 'providers' })
+            .find((candidate) => candidate.name === 'new');
         const headerLeft = definition?.options.headerLeft;
         expect(headerLeft).toBeTypeOf('function');
 
@@ -89,6 +91,31 @@ describe('getSettingsStackScreenDefinitions', () => {
         });
 
         expect(requestDecision).toHaveBeenCalledTimes(1);
+        expect(navigateSpy).not.toHaveBeenCalled();
+        expect(dismissToSpy).not.toHaveBeenCalled();
+    });
+});
+
+describe('settings header Back', () => {
+    it('returns to the parent screen already in the stack rather than stacking a new one', async () => {
+        // Phone: Settings (with a search query) → a search result → header Back must land on that
+        // same Settings screen, query and all, as browser Back does.
+        pathnameState.value = '/settings/appearance';
+        const { getSettingsStackScreenDefinitions } = await import('./settingsRouteRegistry');
+        const headerLeft = getSettingsStackScreenDefinitions(identity)
+            .find((candidate) => candidate.name === 'appearance')?.options.headerLeft;
+        let tree!: ReactTestRenderer;
+        await act(async () => {
+            tree = create(React.createElement(headerLeft as React.ElementType, { tintColor: '#111111' }));
+        });
+        const back = tree.root.findAll((node) => (
+            node.props?.accessibilityLabel === 'common.back' && typeof node.props?.onPress === 'function'
+        ))[0];
+        await act(async () => {
+            back.props.onPress();
+        });
+
+        expect(dismissToSpy).toHaveBeenCalledWith('/settings');
         expect(navigateSpy).not.toHaveBeenCalled();
     });
 });

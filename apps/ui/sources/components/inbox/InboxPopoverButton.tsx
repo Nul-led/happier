@@ -1,18 +1,20 @@
 import { useRouter } from 'expo-router';
 import * as React from 'react';
 import { Platform, Pressable, View } from 'react-native';
+import Animated from 'react-native-reanimated';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
-import type { InboxModel } from '@/hooks/inbox/useInboxModel';
+import type { InboxSummary } from '@/hooks/inbox/useInboxSummary';
 import { t } from '@/text';
 import { fireAndForget } from '@/utils/system/fireAndForget';
 import { runGuardedNavigation } from '@/utils/navigation/runGuardedNavigation';
 
 import { Icon } from '@/components/ui/icons/Icon';
+import { usePressFeedback } from '@/components/ui/interactions/usePressFeedback';
 import { InboxPopover, type InboxPopoverAnchorRect } from './InboxPopover';
 
 export const InboxPopoverButton = React.memo(function InboxPopoverButton(props: Readonly<{
-    model: InboxModel;
+    summary: InboxSummary;
     buttonSize: number;
     iconSize: number;
     testID?: string;
@@ -23,6 +25,8 @@ export const InboxPopoverButton = React.memo(function InboxPopoverButton(props: 
     const [anchorRect, setAnchorRect] = React.useState<InboxPopoverAnchorRect | null>(null);
     const focusReturnRef = React.useRef<HTMLElement | null>(null);
     const close = React.useCallback(() => setOpen(false), []);
+    // Icon-sized mark: the glyph mode pairs the scale with the opacity dip.
+    const feedback = usePressFeedback({ glyph: true });
     const openFullInbox = React.useCallback(() => {
         const result = runGuardedNavigation(() => router.push('/(app)/inbox'));
         if (result !== true) {
@@ -57,32 +61,32 @@ export const InboxPopoverButton = React.memo(function InboxPopoverButton(props: 
                 accessibilityState={{ expanded: open }}
                 hitSlop={8}
                 onPress={toggle}
-                style={({ pressed }) => [
+                onPressIn={feedback.onPressIn}
+                onPressOut={feedback.onPressOut}
+                style={[
                     styles.button,
                     {
                         width: props.buttonSize,
                         height: props.buttonSize,
                         borderRadius: props.buttonSize / 2,
                     },
-                    pressed ? styles.buttonPressed : null,
                 ]}
             >
-                <View style={styles.glyph}>
+                <Animated.View style={[styles.glyph, feedback.animatedStyle]}>
                     <Icon
                         name="mailbox"
                         size={props.iconSize}
                         color={theme.colors.chrome.header.foreground}
                     />
-                    {props.model.hasContent ? (
+                    {props.summary.hasContent ? (
                         <View testID="sidebar-inbox-attention-dot" style={styles.attentionDot} />
                     ) : null}
-                </View>
+                </Animated.View>
             </Pressable>
             <InboxPopover
                 open={open}
                 anchorRect={anchorRect}
                 focusReturnRef={focusReturnRef}
-                model={props.model}
                 onRequestClose={close}
                 onOpenInbox={openFullInbox}
             />
@@ -94,10 +98,6 @@ const styles = StyleSheet.create((theme) => ({
     button: {
         alignItems: 'center',
         justifyContent: 'center',
-    },
-    buttonPressed: {
-        opacity: 0.68,
-        transform: [{ scale: 0.96 }],
     },
     glyph: {
         position: 'relative',

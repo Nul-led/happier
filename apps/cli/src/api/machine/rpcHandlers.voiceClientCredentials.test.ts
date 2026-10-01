@@ -34,18 +34,9 @@ const request = Object.freeze({
   headerNames: Object.freeze(['authorization']),
 });
 const identity = Object.freeze({
-  pluginId: contribution.pluginId,
-  contributionId: contribution.localId,
   artifactDigest: `sha256:${'b'.repeat(64)}`,
-  hostAppVersion: '2.0.0',
-  hostUiApiVersion: '1.0.0',
-  reactVersion: '19.0.0',
-  reactNativeVersion: '0.83.4',
-  platform: 'web' as const,
-  channel: 'internal' as const,
-  nativeCapabilitiesDigest: `sha256:${'c'.repeat(64)}`,
-  projectionGeneration: 12,
 });
+const selection = Object.freeze({ contribution, platform: 'web' as const, cacheIdentity: identity });
 
 function manifest() {
   const parsed = readCanonicalPluginManifest(createPluginManifestV2Fixture({
@@ -67,7 +58,7 @@ function manifest() {
             rawGrants: [{ realm: 'web', phase: 'connection', request }],
           }],
         },
-        client: { artifactId: 'browser-client', modulePath: './voice', exportName: 'activate' },
+        client: { artifactId: 'browser-client', exportName: 'activate' },
       }],
     },
   }));
@@ -203,7 +194,7 @@ describe('Voice client raw credential machine RPC', () => {
     });
 
     await expect(handlers.get(RPC_METHODS.DAEMON_VOICE_CLIENT_RAW_CREDENTIAL_MATERIALIZE)?.({
-      cacheIdentity: identity,
+      ...selection,
       phase: 'connection',
       request,
     })).resolves.toEqual({
@@ -222,7 +213,7 @@ describe('Voice client raw credential machine RPC', () => {
       RPC_METHODS.DAEMON_VOICE_CLIENT_RAW_CREDENTIAL_MATERIALIZE,
     );
     await expect(materializeRaw?.({
-      cacheIdentity: identity,
+      ...selection,
       phase: 'connection',
       expectedCredentialRevision: null,
       request,
@@ -234,7 +225,7 @@ describe('Voice client raw credential machine RPC', () => {
 
     credentialRevision = revisionB;
     await expect(materializeRaw?.({
-      cacheIdentity: identity,
+      ...selection,
       phase: 'connection',
       expectedCredentialRevision: revisionA,
       request,
@@ -243,7 +234,7 @@ describe('Voice client raw credential machine RPC', () => {
       errorCode: 'plugin_voice_credential_access_unavailable',
     });
     await expect(materializeRaw?.({
-      cacheIdentity: identity,
+      ...selection,
       phase: 'connection',
       expectedCredentialRevision: null,
       request,
@@ -255,7 +246,7 @@ describe('Voice client raw credential machine RPC', () => {
 
     materialize.mockRejectedValueOnce(new Error('must-not-reflect-secret-cause'));
     const failed = await handlers.get(RPC_METHODS.DAEMON_VOICE_CLIENT_RAW_CREDENTIAL_MATERIALIZE)?.({
-      cacheIdentity: identity,
+      ...selection,
       phase: 'connection',
       request,
     });
@@ -313,18 +304,18 @@ describe('Voice client raw credential machine RPC', () => {
     const invoke = handlers.get(RPC_METHODS.DAEMON_VOICE_CLIENT_RAW_CREDENTIAL_MATERIALIZE);
 
     await expect(invoke?.({
-      cacheIdentity: identity,
+      ...selection,
       phase: 'connection',
       request: { kind: 'environment', keys: ['VOICE_TOKEN'] },
     })).resolves.toEqual({
       ok: false,
       errorCode: 'plugin_voice_provider_result_invalid',
     });
-    await expect(invoke?.({ cacheIdentity: identity, phase: 'settings', request })).resolves.toEqual({
+    await expect(invoke?.({ ...selection, phase: 'settings', request })).resolves.toEqual({
       ok: false,
       errorCode: 'plugin_voice_provider_result_invalid',
     });
-    await expect(invoke?.({ cacheIdentity: identity, phase: 'connection', request })).resolves.toEqual({
+    await expect(invoke?.({ ...selection, phase: 'connection', request })).resolves.toEqual({
       ok: false,
       errorCode: 'plugin_voice_credential_access_unavailable',
     });

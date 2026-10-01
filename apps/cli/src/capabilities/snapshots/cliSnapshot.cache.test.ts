@@ -309,6 +309,43 @@ process.exit(0);
     }
   }, 20_000);
 
+  it('reports what is installed now after an update invalidates the cached snapshots', async () => {
+    vi.resetModules();
+
+    vi.doMock('@/agent/catalog/registry', () => ({
+      AGENTS: {
+        opencode: { id: 'opencode' },
+      },
+    }));
+
+    const fixture = await createProbeTempDir('happier-cli-snapshot-invalidate');
+    const binDir = resolve(join(fixture.dir, 'bin'));
+    await mkdir(binDir, { recursive: true });
+    const opencodePath = resolve(join(binDir, 'opencode'));
+    const writeVersion = async (version: string) => {
+      await writeExecutableScript(opencodePath, `#!/bin/sh\necho "opencode ${version}"\n`);
+    };
+    await writeVersion('1.2.3');
+
+    const prevPath = process.env.PATH;
+    const prevPnpmBin = process.env.HAPPIER_PNPM_BIN;
+    process.env.PATH = `${binDir}${delimiter}${prevPath ?? ''}`;
+    process.env.HAPPIER_PNPM_BIN = await writePnpmNodeBridge({ dir: fixture.dir, pathLookup: prevPath });
+    try {
+      const { detectCliSnapshotOnDaemonPath, invalidateCliSnapshots } = await import('./cliSnapshot');
+
+      expect((await detectCliSnapshotOnDaemonPath({ includeLoginStatus: false })).clis.opencode.version).toBe('1.2.3');
+      await writeVersion('1.2.4');
+      invalidateCliSnapshots();
+      expect((await detectCliSnapshotOnDaemonPath({ includeLoginStatus: false })).clis.opencode.version).toBe('1.2.4');
+    } finally {
+      process.env.PATH = prevPath;
+      if (typeof prevPnpmBin === 'string') process.env.HAPPIER_PNPM_BIN = prevPnpmBin;
+      else delete process.env.HAPPIER_PNPM_BIN;
+      await fixture.cleanup();
+    }
+  }, 20_000);
+
   it('invalidates cache when HAPPIER_*_PATH override changes', async () => {
     vi.resetModules();
 

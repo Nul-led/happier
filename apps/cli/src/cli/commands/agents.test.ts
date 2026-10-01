@@ -5,9 +5,14 @@ import { createEnvKeyScope } from '@/testkit/env/envScope';
 import { createTempDir, removeTempDir } from '@/testkit/fs/tempDir';
 import { captureConsoleLogAndMuteStdout } from '@/testkit/logger/captureOutput';
 
-const { createCliCapabilitiesServiceMock, resolveMergedContributionRegistryMock } = vi.hoisted(() => ({
+const { authenticateDeclaredAcpAgentMock, createCliCapabilitiesServiceMock, resolveMergedContributionRegistryMock } = vi.hoisted(() => ({
+  authenticateDeclaredAcpAgentMock: vi.fn(),
   createCliCapabilitiesServiceMock: vi.fn(),
   resolveMergedContributionRegistryMock: vi.fn(),
+}));
+
+vi.mock('@/agent/acp/authenticateDeclaredAcpAgent', () => ({
+  authenticateDeclaredAcpAgent: authenticateDeclaredAcpAgentMock,
 }));
 
 vi.mock('@/plugins/projection/registry/createResolvedContributionRegistry', async (importOriginal) => {
@@ -33,6 +38,8 @@ describe('happier agents --json', () => {
   let envScope = createEnvKeyScope(['HAPPIER_HOME_DIR', 'PATH']);
 
   beforeEach(async () => {
+    authenticateDeclaredAcpAgentMock.mockReset();
+    authenticateDeclaredAcpAgentMock.mockResolvedValue(undefined);
     createCliCapabilitiesServiceMock.mockReset();
     resolveMergedContributionRegistryMock.mockReset();
     envScope = createEnvKeyScope(['HAPPIER_HOME_DIR', 'PATH']);
@@ -174,6 +181,25 @@ describe('happier agents --json', () => {
       expect(text).toContain('Acme Providers List');
       expect(text).toContain('acme.providers.list');
       expect(text).toContain('happier agents install acme.providers.list');
+    } finally {
+      output.restore();
+    }
+  });
+
+  it('routes managed ACP login through the declared authentication owner', async () => {
+    const output = captureConsoleLogAndMuteStdout();
+    try {
+      await handleAgentsCommand(['auth', 'login', 'acme.providers.list']);
+
+      expect(authenticateDeclaredAcpAgentMock).toHaveBeenCalledWith(expect.objectContaining({
+        agentId: 'acme.providers.list',
+        registry: expect.any(Object),
+        cwd: expect.any(String),
+        env: process.env,
+        signal: expect.any(AbortSignal),
+        onStderr: expect.any(Function),
+      }));
+      expect(output.logs.join('\n')).toContain('login completed');
     } finally {
       output.restore();
     }

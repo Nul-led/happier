@@ -1,6 +1,5 @@
 import * as React from 'react';
 
-import { useRelayDriftBanner } from '@/components/settings/server/useRelayDriftBanner';
 import { useActiveSelectionMachineGroups } from '@/components/settings/machines/hooks/useActiveSelectionMachineGroups';
 import { getActiveServerSnapshot } from '@/sync/domains/server/serverRuntime';
 import { listServerProfiles } from '@/sync/domains/server/serverProfiles';
@@ -10,9 +9,11 @@ import {
     useMachineListStatusByServerId,
 } from '@/sync/domains/state/storage';
 import { useHomeViewSelectionSettings } from '@/hooks/server/useHomeViewSelectionSettings';
+import { getMachineDisplayName } from '@/utils/sessions/machineDisplayNames';
+
+export type MachinesSettingsViewModel = ReturnType<typeof useMachinesSettingsViewModel>;
 
 export function useMachinesSettingsViewModel() {
-    const relayDriftBanner = useRelayDriftBanner();
     const allMachines = useAllMachines();
     const machineListByServerId = useMachineListByServerId();
     const machineListStatusByServerId = useMachineListStatusByServerId();
@@ -53,7 +54,7 @@ export function useMachinesSettingsViewModel() {
         return activeSelectionMachineGroups.visibleMachineGroups.flatMap((group) =>
             group.machines.map((machine) => ({
                 id: machine.id,
-                title: machine.metadata?.displayName || machine.metadata?.host || machine.id,
+                title: getMachineDisplayName(machine) ?? machine.id,
                 subtitle: machine.metadata?.host,
                 serverId: group.serverId,
             })),
@@ -66,7 +67,6 @@ export function useMachinesSettingsViewModel() {
         hasMachines: activeSelectionMachineGroups.hasAnyVisibleMachines,
         isLoadingMachines,
         machineRows,
-        relayDriftBanner,
         showMachinesGroupedByServer: activeSelectionMachineGroups.showMachinesGroupedByServer,
         visibleMachineGroups: activeSelectionMachineGroups.visibleMachineGroups,
     };

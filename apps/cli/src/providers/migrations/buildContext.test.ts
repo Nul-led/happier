@@ -48,10 +48,21 @@ const contribution = ProviderContributionV1Schema.parse({
 const registry = new Map([['happier.provider.deepseek/deepseek', { definition: contribution }]]);
 
 describe('buildLegacyProfileMigrationContext', () => {
+  it('uses canonical authoring memory rather than a retired raw last-used profile', () => {
+    const context = buildLegacyProfileMigrationContext({
+      rawSettings: { lastUsedProfile: 'deepseek' },
+      authoringMemory: { lastUsedProfile: 'codex' },
+      providersByContributionKey: registry,
+      allocatedConnectionIdsBySourceProfileId: { deepseek: 'pc-deepseek' },
+      migratedAt: 20,
+    });
+    expect(context.candidates).toEqual([{ kind: 'default_environment', sourceProfileId: 'codex' }]);
+  });
+
   it.each([
-    ['deepseek', 'agent:claude', 'backend:claude'],
-    ['zai', 'agent:claude', 'backend:claude'],
-    ['openai', 'agent:codex', 'backend:codex'],
+    ['deepseek', 'agent:claude', 'agent:happier.agent.claude/claude'],
+    ['zai', 'agent:claude', 'agent:happier.agent.claude/claude'],
+    ['openai', 'agent:codex', 'agent:happier.agent.codex/codex'],
   ])('projects the bundled %s legacy target into the current Provider target identity', (
     sourceProfileId,
     legacyAgentTargetKey,
@@ -70,7 +81,7 @@ describe('buildLegacyProfileMigrationContext', () => {
         },
       }],
     });
-    const context = buildLegacyProfileMigrationContext({
+    const context = buildLegacyProfileMigrationContext({ authoringMemory: { lastUsedProfile: null },
       rawSettings: { favoriteProfiles: [sourceProfileId] },
       providersByContributionKey: new Map([[
         `happier.provider.${sourceProfileId}/${sourceProfileId}`,
@@ -97,7 +108,7 @@ describe('buildLegacyProfileMigrationContext', () => {
           : undefined,
       })),
     });
-    const context = buildLegacyProfileMigrationContext({
+    const context = buildLegacyProfileMigrationContext({ authoringMemory: { lastUsedProfile: null },
       rawSettings: { favoriteProfiles: ['deepseek'] },
       providersByContributionKey: new Map([[
         'happier.provider.deepseek/deepseek',
@@ -113,13 +124,13 @@ describe('buildLegacyProfileMigrationContext', () => {
   });
 
   it('requires positive evidence, preserves the exact secret id, and derives plugin-owned model facts', () => {
-    const none = buildLegacyProfileMigrationContext({
+    const none = buildLegacyProfileMigrationContext({ authoringMemory: { lastUsedProfile: null },
       rawSettings: { schemaVersion: 7 }, providersByContributionKey: registry,
       allocatedConnectionIdsBySourceProfileId: { deepseek: 'pc-deepseek' }, migratedAt: 20,
     });
     expect(none.candidates).toEqual([]);
 
-    const unrelatedBinding = buildLegacyProfileMigrationContext({
+    const unrelatedBinding = buildLegacyProfileMigrationContext({ authoringMemory: { lastUsedProfile: null },
       rawSettings: { secretBindingsByProfileId: { deepseek: { UNRELATED_TOKEN: 'secret-id' } } },
       providersByContributionKey: registry,
       allocatedConnectionIdsBySourceProfileId: { deepseek: 'pc-deepseek' },
@@ -127,7 +138,7 @@ describe('buildLegacyProfileMigrationContext', () => {
     });
     expect(unrelatedBinding.candidates).toEqual([]);
 
-    const context = buildLegacyProfileMigrationContext({
+    const context = buildLegacyProfileMigrationContext({ authoringMemory: { lastUsedProfile: null },
       rawSettings: {
         schemaVersion: 7,
         favoriteProfiles: ['deepseek'],
@@ -144,7 +155,7 @@ describe('buildLegacyProfileMigrationContext', () => {
       connection: { id: 'pc-deepseek', source: { contributionKey: 'happier.provider.deepseek/deepseek' } },
       secretBindings: { account: { apiKey: 'same-saved-secret-id' } },
       manualModels: [{ id: 'deepseek-custom' }],
-      selectedModel: { agentTargetKey: 'backend:claude', modelId: 'deepseek-custom' },
+      selectedModel: { agentTargetKey: 'agent:happier.agent.claude/claude', modelId: 'deepseek-custom' },
       sourceRevision: 2,
       selectedModelOrigin: 'explicit_process_environment',
       retainedLaunchProfile: {
@@ -157,7 +168,7 @@ describe('buildLegacyProfileMigrationContext', () => {
   });
 
   it('migrates deterministic defaults to the verified replacement while preserving explicit retired aliases as stale', () => {
-    const implicit = buildLegacyProfileMigrationContext({
+    const implicit = buildLegacyProfileMigrationContext({ authoringMemory: { lastUsedProfile: null },
       rawSettings: { favoriteProfiles: ['deepseek'] },
       providersByContributionKey: registry,
       allocatedConnectionIdsBySourceProfileId: { deepseek: 'pc-deepseek' },
@@ -171,7 +182,7 @@ describe('buildLegacyProfileMigrationContext', () => {
       selectedModel: { modelId: 'deepseek-v4-flash' },
     });
 
-    const explicit = buildLegacyProfileMigrationContext({
+    const explicit = buildLegacyProfileMigrationContext({ authoringMemory: { lastUsedProfile: null },
       rawSettings: { favoriteProfiles: ['deepseek'] },
       providersByContributionKey: registry,
       allocatedConnectionIdsBySourceProfileId: { deepseek: 'pc-deepseek' },
@@ -192,13 +203,13 @@ describe('buildLegacyProfileMigrationContext', () => {
       favoriteProfiles: ['deepseek'],
       lastUsedProfile: 'deepseek',
     };
-    const context = buildLegacyProfileMigrationContext({
+    const context = buildLegacyProfileMigrationContext({ authoringMemory: { lastUsedProfile: null },
       rawSettings,
       providersByContributionKey: registry,
       allocatedConnectionIdsBySourceProfileId: { deepseek: 'pc-deepseek' },
       migratedAt: 20,
     });
-    const migrated = migrateLegacyAiLaunchProfilesV1(rawSettings, context);
+    const migrated = migrateLegacyAiLaunchProfilesV1(rawSettings, context, { lastUsedProfile: null });
     expect(migrated.ok).toBe(true);
     if (!migrated.ok) throw new Error('expected migration');
     expect(migrated.settings).toMatchObject({
@@ -207,14 +218,14 @@ describe('buildLegacyProfileMigrationContext', () => {
           completedSources: [{
             sourceProfileId: 'deepseek', sourceRevision: 2,
             modelSelectionOrigin: 'implicit_default',
-            modelSelection: { agentTargetKey: 'backend:claude', modelId: 'deepseek-v4-flash' },
+            modelSelection: { agentTargetKey: 'agent:happier.agent.claude/claude', modelId: 'deepseek-v4-flash' },
           }],
         },
       },
-      favoriteModelSelectionsV1: [{ selection: { ref: { agentTargetKey: 'backend:claude', modelId: 'deepseek-v4-flash' } } }],
+      favoriteModelSelectionsV1: [{ selection: { ref: { agentTargetKey: 'agent:happier.agent.claude/claude', modelId: 'deepseek-v4-flash' } } }],
       profiles: [{
         id: 'deepseek',
-        preferredModelSelection: { ref: { agentTargetKey: 'backend:claude', modelId: 'deepseek-v4-flash' } },
+        preferredModelSelection: { ref: { agentTargetKey: 'agent:happier.agent.claude/claude', modelId: 'deepseek-v4-flash' } },
         extraEnvironmentVariables: expect.arrayContaining([
           { name: 'ANTHROPIC_SMALL_FAST_MODEL', value: '${DEEPSEEK_SMALL_FAST_MODEL:-deepseek-v4-flash}' },
         ]),
@@ -228,7 +239,7 @@ describe('buildLegacyProfileMigrationContext', () => {
       lastUsedProfile: 'deepseek',
       secretBindingsByProfileId: { deepseek: { DEEPSEEK_AUTH_TOKEN: 'same-saved-secret-id' } },
     };
-    const legacyContext = buildLegacyProfileMigrationContext({
+    const legacyContext = buildLegacyProfileMigrationContext({ authoringMemory: { lastUsedProfile: null },
       rawSettings,
       providersByContributionKey: registry,
       allocatedConnectionIdsBySourceProfileId: { deepseek: 'pc-deepseek' },
@@ -244,17 +255,17 @@ describe('buildLegacyProfileMigrationContext', () => {
               : undefined,
           }
         : candidate),
-    });
+    }, { lastUsedProfile: null });
     expect(legacyWritten.ok).toBe(true);
     if (!legacyWritten.ok) throw new Error('expected legacy current-Dev output');
 
-    const repairContext = buildLegacyProfileMigrationContext({
+    const repairContext = buildLegacyProfileMigrationContext({ authoringMemory: { lastUsedProfile: null },
       rawSettings: legacyWritten.settings,
       providersByContributionKey: registry,
       allocatedConnectionIdsBySourceProfileId: { deepseek: 'pc-must-not-replace' },
       migratedAt: 30,
     });
-    const repaired = migrateLegacyAiLaunchProfilesV1(legacyWritten.settings, repairContext);
+    const repaired = migrateLegacyAiLaunchProfilesV1(legacyWritten.settings, repairContext, { lastUsedProfile: null });
     expect(repaired.ok).toBe(true);
     if (!repaired.ok) throw new Error('expected current-Dev repair');
     expect(repaired.changed).toBe(true);
@@ -268,18 +279,18 @@ describe('buildLegacyProfileMigrationContext', () => {
           sourceProfileId: 'deepseek',
           connectionId: 'pc-deepseek',
           modelSelection: {
-            agentTargetKey: 'backend:claude',
+            agentTargetKey: 'agent:happier.agent.claude/claude',
             providerConnectionId: 'pc-deepseek',
           },
         }] },
       },
       favoriteModelSelectionsV1: [{ selection: { ref: {
-        agentTargetKey: 'backend:claude',
+        agentTargetKey: 'agent:happier.agent.claude/claude',
         providerConnectionId: 'pc-deepseek',
       } } }],
       profiles: [{
         id: 'deepseek',
-        preferredModelSelection: { ref: { agentTargetKey: 'backend:claude' } },
+        preferredModelSelection: { ref: { agentTargetKey: 'agent:happier.agent.claude/claude' } },
       }],
     });
   });
@@ -290,7 +301,7 @@ describe('buildLegacyProfileMigrationContext', () => {
       lastUsedProfile: 'deepseek',
       secretBindingsByProfileId: { deepseek: { DEEPSEEK_AUTH_TOKEN: 'same-saved-secret-id' } },
     };
-    const initialContext = buildLegacyProfileMigrationContext({
+    const initialContext = buildLegacyProfileMigrationContext({ authoringMemory: { lastUsedProfile: null },
       rawSettings: initialSettings,
       providersByContributionKey: registry,
       allocatedConnectionIdsBySourceProfileId: { deepseek: 'pc-deepseek' },
@@ -306,7 +317,7 @@ describe('buildLegacyProfileMigrationContext', () => {
               : undefined,
           }
         : candidate),
-    });
+    }, { lastUsedProfile: null });
     expect(legacyWritten.ok).toBe(true);
     if (!legacyWritten.ok) throw new Error('expected legacy current-Dev output');
 
@@ -333,13 +344,13 @@ describe('buildLegacyProfileMigrationContext', () => {
       profiles: [opaqueProfile],
       opaqueTopLevel: { preserve: true },
     };
-    const repairContext = buildLegacyProfileMigrationContext({
+    const repairContext = buildLegacyProfileMigrationContext({ authoringMemory: { lastUsedProfile: null },
       rawSettings: repairInput,
       providersByContributionKey: registry,
       allocatedConnectionIdsBySourceProfileId: { deepseek: 'pc-must-not-replace' },
       migratedAt: 30,
     });
-    const repaired = migrateLegacyAiLaunchProfilesV1(repairInput, repairContext);
+    const repaired = migrateLegacyAiLaunchProfilesV1(repairInput, repairContext, { lastUsedProfile: null });
     expect(repaired.ok).toBe(true);
     if (!repaired.ok) throw new Error('expected opaque Profile repair');
 
@@ -360,13 +371,13 @@ describe('buildLegacyProfileMigrationContext', () => {
           sourceProfileId: 'deepseek',
           connectionId: 'pc-deepseek',
           modelSelection: {
-            agentTargetKey: 'backend:claude',
+            agentTargetKey: 'agent:happier.agent.claude/claude',
             providerConnectionId: 'pc-deepseek',
           },
         }] },
       },
       favoriteModelSelectionsV1: [{ selection: { ref: {
-        agentTargetKey: 'backend:claude',
+        agentTargetKey: 'agent:happier.agent.claude/claude',
         providerConnectionId: 'pc-deepseek',
       } } }],
     });
@@ -377,7 +388,7 @@ describe('buildLegacyProfileMigrationContext', () => {
     ['control\u0000id', 'control'],
     ['x'.repeat(257), 'oversized'],
   ])('does not treat a malformed %s SavedSecret id as migration evidence', (savedSecretId) => {
-    const context = buildLegacyProfileMigrationContext({
+    const context = buildLegacyProfileMigrationContext({ authoringMemory: { lastUsedProfile: null },
       rawSettings: {
         secretBindingsByProfileId: { deepseek: { DEEPSEEK_AUTH_TOKEN: savedSecretId } },
       },
@@ -391,7 +402,7 @@ describe('buildLegacyProfileMigrationContext', () => {
   it('does not read inherited profile or environment binding properties as evidence', () => {
     const inheritedEnvironmentBinding = Object.create({ DEEPSEEK_AUTH_TOKEN: 'inherited-secret' });
     const inheritedProfileBindings = Object.create({ deepseek: inheritedEnvironmentBinding });
-    const context = buildLegacyProfileMigrationContext({
+    const context = buildLegacyProfileMigrationContext({ authoringMemory: { lastUsedProfile: null },
       rawSettings: { secretBindingsByProfileId: inheritedProfileBindings },
       providersByContributionKey: registry,
       allocatedConnectionIdsBySourceProfileId: { deepseek: 'pc-deepseek' },
@@ -401,7 +412,7 @@ describe('buildLegacyProfileMigrationContext', () => {
   });
 
   it('records explicit false as terminal skipped intent and recognizes historical placeholders', () => {
-    const context = buildLegacyProfileMigrationContext({
+    const context = buildLegacyProfileMigrationContext({ authoringMemory: { lastUsedProfile: null },
       rawSettings: {
         schemaVersion: 6,
         profileEnabledById: { deepseek: false },
@@ -418,7 +429,7 @@ describe('buildLegacyProfileMigrationContext', () => {
   });
 
   it('does not auto-migrate a deterministic id whose persisted source row is opaque or future-versioned', () => {
-    const context = buildLegacyProfileMigrationContext({
+    const context = buildLegacyProfileMigrationContext({ authoringMemory: { lastUsedProfile: null },
       rawSettings: {
         profiles: [{ v: 99, id: 'deepseek', payload: { preserve: true } }],
         secretBindingsByProfileId: { deepseek: { DEEPSEEK_AUTH_TOKEN: 'same-saved-secret-id' } },
@@ -442,7 +453,7 @@ describe('buildLegacyProfileMigrationContext', () => {
       ],
       envVarRequirements: [{ name: 'DEEPSEEK_AUTH_TOKEN', kind: 'secret', required: true }],
     };
-    const context = buildLegacyProfileMigrationContext({
+    const context = buildLegacyProfileMigrationContext({ authoringMemory: { lastUsedProfile: null },
       rawSettings: { profiles: [base], lastUsedProfile: 'deepseek' },
       providersByContributionKey: registry,
       allocatedConnectionIdsBySourceProfileId: { deepseek: 'pc-deepseek' },
@@ -452,7 +463,7 @@ describe('buildLegacyProfileMigrationContext', () => {
   });
 
   it('marks routing-like custom profiles pending without inferring a protocol or connection', () => {
-    const context = buildLegacyProfileMigrationContext({
+    const context = buildLegacyProfileMigrationContext({ authoringMemory: { lastUsedProfile: null },
       rawSettings: {
         profiles: [{
           id: 'company', name: 'Company',

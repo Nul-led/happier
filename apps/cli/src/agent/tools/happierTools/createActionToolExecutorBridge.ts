@@ -3,6 +3,7 @@ import {
   type ActionsSettingsV1,
   type ApprovalRequestOriginV1,
   type ResolvedActionOption,
+  type ReviewCommentPrincipalHeaderV1,
 } from '@happier-dev/protocol';
 import { createActionToolNameToIdMap } from './actionToolCatalog';
 import { normalizeExecutionRunToolResult } from './executionRunToolResult';
@@ -29,10 +30,12 @@ type ActionExecutorLike = Readonly<{
       causalPermissionAuthority?: unknown;
       sessionInputSource?: unknown;
       sessionAgentSpawnPolicyV1?: unknown;
+      runtimeRunId?: string;
       actionsSettings?: ActionsSettingsV1 | null;
       actionRequestId?: string | null;
-      expectedContributorImmutableGenerationId?: string;
-      sessionListAccess?: 'current_session';
+      expectedContributorOccurrenceId?: string;
+      sessionListAccess?: 'current_session' | 'led_subtree';
+      reviewCommentPrincipal?: ReviewCommentPrincipalHeaderV1;
     }>,
   ) => Promise<ActionExecutorResult>;
 }>;
@@ -117,9 +120,11 @@ async function buildActionExecutorContext(params: Readonly<{
   sessionInputVia?: 'action' | 'mcp';
   sessionAgentSpawnPolicyV1?: unknown;
   getSessionAgentSpawnPolicyV1?: (() => unknown) | null;
+  resolveRuntimeRunId?: () => string | undefined;
   actionsSettings?: ActionsSettingsV1 | null;
-  expectedContributorImmutableGenerationId?: string;
-  sessionListAccess?: 'current_session';
+  expectedContributorOccurrenceId?: string;
+  sessionListAccess?: 'current_session' | 'led_subtree';
+  resolveReviewCommentActor?: (() => Extract<ReviewCommentPrincipalHeaderV1['actor'], { kind: 'agent' }> | null) | null;
 }>): Promise<Readonly<{
   defaultSessionId: string;
   defaultSessionMachineId?: string | null;
@@ -131,13 +136,16 @@ async function buildActionExecutorContext(params: Readonly<{
   sessionInputSource?: unknown;
   sessionAgentSpawnPolicyV1?: unknown;
   actionsSettings?: ActionsSettingsV1 | null;
+  runtimeRunId?: string;
   actionRequestId?: string | null;
-  expectedContributorImmutableGenerationId?: string;
-  sessionListAccess?: 'current_session';
+  expectedContributorOccurrenceId?: string;
+  sessionListAccess?: 'current_session' | 'led_subtree';
+  reviewCommentPrincipal?: ReviewCommentPrincipalHeaderV1;
 }>> {
   const callerPermissionMode = params.surface === 'agent' && params.resolveCallerPermissionMode
     ? await params.resolveCallerPermissionMode()
     : null;
+  const reviewActor = params.surface !== 'cli' ? params.resolveReviewCommentActor?.() : null;
   const hasActiveTurnPermissionWitnessResolver =
     params.surface === 'agent'
     && typeof params.resolveActiveTurnPermissionWitness === 'function';
@@ -162,6 +170,7 @@ async function buildActionExecutorContext(params: Readonly<{
       ? params.getSessionAgentSpawnPolicyV1()
       : params.sessionAgentSpawnPolicyV1;
   const origin = params.options?.approvalOrigin;
+  const runtimeRunId = params.surface === 'agent' ? params.resolveRuntimeRunId?.() : undefined;
   const explicitActionRequestId = params.options?.actionRequestId;
   const actionRequestId = typeof explicitActionRequestId === 'string'
     && explicitActionRequestId.trim().length > 0
@@ -173,13 +182,15 @@ async function buildActionExecutorContext(params: Readonly<{
       : null;
   return {
     defaultSessionId: params.defaultSessionId,
+    ...(runtimeRunId ? { runtimeRunId } : {}),
     ...(params.defaultSessionMachineId ? { defaultSessionMachineId: params.defaultSessionMachineId } : {}),
     surface: params.surface,
+    ...(reviewActor && reviewActor.sessionId === params.defaultSessionId ? { reviewCommentPrincipal: { actor: reviewActor } } : {}),
     ...(params.surface === 'agent' ? { authority: 'account_automation' as const } : {}),
     ...(params.sessionListAccess
       ? { sessionListAccess: params.sessionListAccess }
       : params.surface === 'agent'
-        ? { sessionListAccess: 'current_session' as const }
+        ? { sessionListAccess: 'led_subtree' as const }
         : {}),
     ...(params.options?.approvalOrigin ? { approvalOrigin: params.options.approvalOrigin } : {}),
     ...(actionRequestId ? { actionRequestId } : {}),
@@ -199,28 +210,28 @@ async function buildActionExecutorContext(params: Readonly<{
     ...(sessionAgentSpawnPolicyV1 !== undefined
       ? { sessionAgentSpawnPolicyV1 }
       : {}),
-    ...(params.expectedContributorImmutableGenerationId
-      ? { expectedContributorImmutableGenerationId: params.expectedContributorImmutableGenerationId }
+    ...(params.expectedContributorOccurrenceId
+      ? { expectedContributorOccurrenceId: params.expectedContributorOccurrenceId }
       : {}),
     actionsSettings: params.actionsSettings ?? null,
   };
 }
 
-function resolveExpectedContributorImmutableGenerationId(params: Readonly<{
+function resolveExpectedContributorOccurrenceId(params: Readonly<{
   actionId: string;
   toolName?: string;
   pluginToolCatalog?: readonly ProjectedPluginToolCatalogEntry[];
 }>): string | undefined {
-  const generations = new Set(
+  const occurrences = new Set(
     (params.pluginToolCatalog ?? [])
       .filter((tool) => (
         tool.actionId === params.actionId
         && (params.toolName === undefined || tool.name === params.toolName)
       ))
-      .map((tool) => tool.expectedContributorImmutableGenerationId?.trim())
+      .map((tool) => tool.expectedContributorOccurrenceId?.trim())
       .filter((value): value is string => Boolean(value)),
   );
-  return generations.size === 1 ? [...generations][0] : undefined;
+  return occurrences.size === 1 ? [...occurrences][0] : undefined;
 }
 
 function normalizeActionExecuteInput(input: unknown): unknown {
@@ -272,15 +283,18 @@ export function createActionToolExecutorBridge(params: Readonly<{
   getActionsSettings?: (() => ActionsSettingsV1 | null) | null;
   resolveCallerPermissionMode?: (() => Promise<string | null> | string | null) | null;
   resolveActiveTurnPermissionWitness?: (() => Promise<unknown> | unknown) | null;
+  /** Reads identity from the live host Session client, never tool arguments. */
+  resolveReviewCommentActor?: (() => Extract<ReviewCommentPrincipalHeaderV1['actor'], { kind: 'agent' }> | null) | null;
   sessionInputVia?: 'action' | 'mcp';
   sessionAgentSpawnPolicyV1?: unknown;
   getSessionAgentSpawnPolicyV1?: (() => unknown) | null;
+  resolveRuntimeRunId?: () => string | undefined;
   registry?: ResolvedContributionRegistry;
   pluginToolCatalog?: readonly ProjectedPluginToolCatalogEntry[];
   requiredDirectActionIds?: readonly ActionId[];
   defaultSessionMachineId?: string | null;
   /** Exact host-owned Session corpus available to non-Agent tool surfaces. */
-  resolveSessionListAccess?: (defaultSessionId: string) => 'current_session' | undefined;
+  resolveSessionListAccess?: (defaultSessionId: string) => 'current_session' | 'led_subtree' | undefined;
 }>): Readonly<{
   executeActionByToolName: (
     toolName: string,
@@ -330,13 +344,15 @@ export function createActionToolExecutorBridge(params: Readonly<{
             options,
             resolveCallerPermissionMode: params.resolveCallerPermissionMode,
             resolveActiveTurnPermissionWitness: params.resolveActiveTurnPermissionWitness,
+            resolveReviewCommentActor: params.resolveReviewCommentActor,
             sessionInputVia: params.sessionInputVia,
             sessionAgentSpawnPolicyV1: params.sessionAgentSpawnPolicyV1,
             getSessionAgentSpawnPolicyV1: params.getSessionAgentSpawnPolicyV1 ?? null,
+            resolveRuntimeRunId: params.resolveRuntimeRunId,
             actionsSettings: readActionsSettings(),
             sessionListAccess: params.resolveSessionListAccess?.(defaultSessionId),
-            expectedContributorImmutableGenerationId:
-              resolveExpectedContributorImmutableGenerationId({
+            expectedContributorOccurrenceId:
+              resolveExpectedContributorOccurrenceId({
                 actionId,
                 pluginToolCatalog: params.pluginToolCatalog,
               }),
@@ -366,13 +382,15 @@ export function createActionToolExecutorBridge(params: Readonly<{
           options,
           resolveCallerPermissionMode: params.resolveCallerPermissionMode,
           resolveActiveTurnPermissionWitness: params.resolveActiveTurnPermissionWitness,
+          resolveReviewCommentActor: params.resolveReviewCommentActor,
           sessionInputVia: params.sessionInputVia,
           sessionAgentSpawnPolicyV1: params.sessionAgentSpawnPolicyV1,
           getSessionAgentSpawnPolicyV1: params.getSessionAgentSpawnPolicyV1 ?? null,
+          resolveRuntimeRunId: params.resolveRuntimeRunId,
           actionsSettings: readActionsSettings(),
           sessionListAccess: params.resolveSessionListAccess?.(defaultSessionId),
-          expectedContributorImmutableGenerationId:
-            resolveExpectedContributorImmutableGenerationId({
+          expectedContributorOccurrenceId:
+            resolveExpectedContributorOccurrenceId({
               actionId,
               toolName,
               pluginToolCatalog: params.pluginToolCatalog,

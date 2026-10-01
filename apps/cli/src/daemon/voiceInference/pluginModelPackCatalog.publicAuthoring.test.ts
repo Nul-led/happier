@@ -57,7 +57,7 @@ function projectLoadedPlugins(
       pluginVersion: plugin.manifest.version,
       artifactBinding: {
         kind: 'materialization',
-        immutableGenerationId: 'public-authoring-fixture-local-generation',
+        sourceCustody: { kind: 'development', registeredRootId: 'public-authoring-fixture-local-generation' },
       },
       enabled: true,
       authorization: { outcome: 'visible', code: 'plugin_final_available', requiresCurrentIntent: false },

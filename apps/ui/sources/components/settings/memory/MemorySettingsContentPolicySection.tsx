@@ -1,13 +1,13 @@
 import * as React from 'react';
-import { useUnistyles } from 'react-native-unistyles';
 
-import { Item } from '@/components/ui/lists/Item';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
 import { Switch } from '@/components/ui/forms/Switch';
-import { t, type TranslationKeyNoParams } from '@/text';
+import { t } from '@/text';
 
 import type { MemoryContentPolicyV1, MemorySettingsV1 } from '@happier-dev/protocol';
-import { Icon, type IconName } from '@/components/ui/icons/Icon';
+import { SettingRow } from '@/components/settings/shell/SettingRow';
+import type { SettingRef } from '@/components/settings/catalog/settingDeclarations';
+import { MEMORY_SETTINGS } from '@/components/settings/memory/memorySettings';
 import {
     readMemoryContentPolicy,
     withMemoryContentPolicy,
@@ -16,61 +16,28 @@ import {
 type MemoryContentPolicyKey = keyof MemoryContentPolicyV1;
 
 const CONTENT_ROWS = [
-    {
-        key: 'includeUserMessages',
-        testID: 'memory-settings-content-user-messages',
-        titleKey: 'memorySearchSettings.contentPolicy.userMessagesTitle',
-        subtitleKey: 'memorySearchSettings.contentPolicy.userMessagesSubtitle',
-        iconName: 'person',
-    },
-    {
-        key: 'includeAssistantMessages',
-        testID: 'memory-settings-content-assistant-messages',
-        titleKey: 'memorySearchSettings.contentPolicy.assistantMessagesTitle',
-        subtitleKey: 'memorySearchSettings.contentPolicy.assistantMessagesSubtitle',
-        iconName: 'chat-circle-dots',
-    },
-    {
-        key: 'includeReasoning',
-        testID: 'memory-settings-content-reasoning',
-        titleKey: 'memorySearchSettings.contentPolicy.reasoningTitle',
-        subtitleKey: 'memorySearchSettings.contentPolicy.reasoningSubtitle',
-        iconName: 'lightbulb',
-    },
-    {
-        key: 'includeToolSummaries',
-        testID: 'memory-settings-content-tool-summaries',
-        titleKey: 'memorySearchSettings.contentPolicy.toolSummariesTitle',
-        subtitleKey: 'memorySearchSettings.contentPolicy.toolSummariesSubtitle',
-        iconName: 'wrench',
-    },
-] as const satisfies ReadonlyArray<Readonly<{
-    key: MemoryContentPolicyKey;
-    testID: string;
-    titleKey: TranslationKeyNoParams;
-    subtitleKey: TranslationKeyNoParams;
-    iconName: IconName;
-}>>;
+    { key: 'includeUserMessages', testID: 'memory-settings-content-user-messages', setting: MEMORY_SETTINGS.settings.userMessages },
+    { key: 'includeAssistantMessages', testID: 'memory-settings-content-assistant-messages', setting: MEMORY_SETTINGS.settings.assistantMessages },
+    { key: 'includeReasoning', testID: 'memory-settings-content-reasoning', setting: MEMORY_SETTINGS.settings.reasoning },
+    { key: 'includeToolSummaries', testID: 'memory-settings-content-tool-summaries', setting: MEMORY_SETTINGS.settings.toolSummaries },
+] as const satisfies ReadonlyArray<Readonly<{ key: MemoryContentPolicyKey; testID: string; setting: SettingRef }>>;
 
 export const MemorySettingsContentPolicySection = React.memo(function MemorySettingsContentPolicySection(props: Readonly<{
     settings: MemorySettingsV1;
     writeSettings: (next: MemorySettingsV1) => void | Promise<void>;
 }>) {
-    const { theme } = useUnistyles();
     const contentPolicy = readMemoryContentPolicy(props.settings);
 
     return (
         <ItemGroup
             title={t('memorySearchSettings.contentPolicy.title')}
-            footer={t('memorySearchSettings.contentPolicy.footer')}
+            description={t('memorySearchSettings.contentPolicy.footer')}
         >
             {CONTENT_ROWS.map((row) => (
-                <Item
+                <SettingRow
                     key={row.key}
                     testID={`${row.testID}-item`}
-                    title={t(row.titleKey)}
-                    subtitle={t(row.subtitleKey)}
-                    icon={<Icon name={row.iconName} size={29} color={theme.colors.accent.blue} />}
+                    setting={row.setting}
                     rightElement={(
                         <Switch
                             testID={row.testID}

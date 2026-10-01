@@ -14,3 +14,4 @@ export {
   type TriagePostMutationCompletionV1,
   type TriagePostMutationProviderStateClassifierV1,
 } from './ui/postMutation.js';
+export { TriageDetailPanel } from './ui/detailPanel.js';

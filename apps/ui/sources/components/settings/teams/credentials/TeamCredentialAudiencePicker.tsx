@@ -7,7 +7,7 @@ import { SelectionList, resolvePopoverSelectionListHeightBehavior, type Selectio
 import { Modal } from '@/modal';
 import type { ServerAccountScope } from '@/sync/domains/scope/serverAccountScope';
 import type { TeamAddress } from '@/sync/domains/teams/teamAddress';
-import { t } from '@/text';
+import { getPreferredLanguage, t } from '@/text';
 
 export type TeamCredentialAudiencePrincipal =
     | Readonly<{ kind: 'group'; id: string; name: string }>
@@ -137,6 +137,7 @@ export const TeamCredentialAudiencePicker = React.memo(function TeamCredentialAu
     testID: string;
 }>) {
     const modalIdRef = React.useRef<string | null>(null);
+    const locale = getPreferredLanguage();
     const close = React.useCallback(() => {
         if (!modalIdRef.current) return;
         Modal.hide(modalIdRef.current);
@@ -152,7 +153,7 @@ export const TeamCredentialAudiencePicker = React.memo(function TeamCredentialAu
             chrome: { kind: 'card', title: label, testID: 'team-credential-audience-picker:modal', scrollHost: 'body', bodyScroll: 'none' },
             closeOnBackdrop: true,
         });
-    }, [close, props]);
+    }, [close, locale, props]);
     React.useEffect(() => close, [close]);
     const label = props.label ?? t('teams.credentials.audience.add');
     return <Item testID={props.testID} title={label}

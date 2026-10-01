@@ -7,7 +7,7 @@ export const PLUGINS_SETTINGS = defineSettingsPage({
         updates: {
             titleKey: 'settingsPlugins.surfaces.updatesTitle',
             settings: {
-                updateReview: { titleKey: 'settingsPlugins.updateReview.title' },
+                updateReview: { storage: { scope: 'account', key: 'pluginUpdateReviewModeV1', access: 'read_write' }, titleKey: 'settingsPlugins.updateReview.title' },
             },
         },
         // Native apps only, and only while a plugin offers an app panel (page state).

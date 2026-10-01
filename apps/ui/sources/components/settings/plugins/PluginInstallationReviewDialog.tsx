@@ -12,7 +12,17 @@ import { Typography } from '@/constants/Typography';
 import { Modal, type CustomModalInjectedProps } from '@/modal';
 import { createDeferredOnce } from '@/modal/async/createDeferredOnce';
 import { t } from '@/text';
-import type { PluginInstallationReview } from '@happier-dev/protocol/marketplace/internal';
+import type {
+    PluginChangePendingReviewResult,
+    PluginInstallationReview,
+} from '@happier-dev/protocol/marketplace/internal';
+import { motionTokens } from '@/components/ui/motion/motionTokens';
+import { resolveHappierFocusRingVisible } from '@happier-dev/plugin-ui/presentation';
+
+type AuthorityExpansion = Extract<PluginChangePendingReviewResult, Readonly<{
+    kind: 'reviewRequired';
+    reviewKind: 'installation';
+}>>['authorityExpansion'];
 
 export type PluginInstallationReviewResolution =
     | Readonly<{
@@ -26,6 +36,9 @@ export type PluginInstallationReviewResolution =
 
 type PluginInstallationReviewDialogProps = CustomModalInjectedProps & Readonly<{
     review: PluginInstallationReview;
+    reason?: 'firstInstall' | 'authorityExpansion';
+    currentVersion?: string | null;
+    authorityExpansion?: AuthorityExpansion;
     /**
      * The exact machine and server this install-and-trust decision lands on.
      *
@@ -216,12 +229,6 @@ function credentialPhaseLabel(phase: PluginInstallationReview['rawCredentialAcce
     return t('settingsPlugins.installReviewSections.phase.connection');
 }
 
-function updatePolicyLabel(policy: PluginInstallationReview['updatePolicy']): string {
-    if (policy === 'pinned') return t('settingsPlugins.updatePolicy.pinned');
-    if (policy === 'reviewSensitiveChanges') return t('settingsPlugins.updatePolicy.reviewSensitiveChanges');
-    return t('settingsPlugins.updatePolicy.reviewEveryUpdate');
-}
-
 function sourceEvidence(review: PluginInstallationReview): readonly string[] {
     const integrity = review.source.kind === 'path'
         ? t('common.none')
@@ -340,6 +347,20 @@ export function PluginInstallationReviewDialog(props: PluginInstallationReviewDi
     const minimumInteractiveTargetSize = resolveMinimumInteractiveTargetSize(Platform.OS);
     const [selectedByAccessId, setSelectedByAccessId] = React.useState<Readonly<Record<string, boolean>>>({});
     const [evidenceExpanded, setEvidenceExpanded] = React.useState(false);
+    const isAuthorityExpansion = props.reason === 'authorityExpansion';
+    const authorityExpansion = new Set(props.authorityExpansion ?? []);
+    // Code changes of already-trusted plugins never reopen review, so a
+    // delta-only decision shows only the widened access.
+    const showsExecutableCode = !isAuthorityExpansion;
+    const showsRequiredAccess = !isAuthorityExpansion
+        || authorityExpansion.has('requiredHostAccess')
+        || authorityExpansion.has('connectedAccountPurpose');
+    const showsOptionalAccess = !isAuthorityExpansion
+        || authorityExpansion.has('selectedOptionalHostAccess');
+    const showsRequestInterceptors = !isAuthorityExpansion
+        || authorityExpansion.has('requestInterceptor');
+    const showsRawCredentials = !isAuthorityExpansion
+        || authorityExpansion.has('rawCredentialAccess');
 
     const resolve = React.useCallback((resolution: PluginInstallationReviewResolution) => {
         props.onResolve(resolution);
@@ -347,14 +368,17 @@ export function PluginInstallationReviewDialog(props: PluginInstallationReviewDi
     }, [props]);
 
     const approve = React.useCallback(() => {
-        resolve({
-            approved: true,
-            optionalSelections: props.review.optionalHostAccess.map((entry) => ({
+        const optionalSelections = isAuthorityExpansion
+            ? Object.entries(selectedByAccessId).map(([accessId, selected]) => ({ accessId, selected }))
+            : props.review.optionalHostAccess.map((entry) => ({
                 accessId: entry.id,
                 selected: selectedByAccessId[entry.id] === true,
-            })),
+            }));
+        resolve({
+            approved: true,
+            optionalSelections: showsOptionalAccess ? optionalSelections : [],
         });
-    }, [props.review.optionalHostAccess, resolve, selectedByAccessId]);
+    }, [isAuthorityExpansion, props.review.optionalHostAccess, resolve, selectedByAccessId, showsOptionalAccess]);
 
     return (
         <ScrollView
@@ -366,8 +390,10 @@ export function PluginInstallationReviewDialog(props: PluginInstallationReviewDi
                 testID="settings.plugins.installReview.identity"
                 title={t('settingsPlugins.installReviewSections.identity')}
                 lines={[
-                    `${props.review.displayName} · ${props.review.pluginId}`,
-                    `${props.review.packageIdentity.name ?? t('common.unavailable')} · ${props.review.packageIdentity.version}`,
+                    `${props.review.displayName} · ${props.review.version}`,
+                    ...(isAuthorityExpansion && props.currentVersion
+                        ? [`${props.currentVersion} → ${props.review.version}`]
+                        : []),
                     t('settingsPlugins.installReviewSections.source', {
                         kind: sourceKindLabel(props.review.source.kind),
                         locator: props.review.source.locator,
@@ -395,12 +421,12 @@ export function PluginInstallationReviewDialog(props: PluginInstallationReviewDi
                     {t('settingsPlugins.installReviewSections.archiveUrlRetention')}
                 </Text>
             ) : null}
-            <ReviewSection
+            {!isAuthorityExpansion ? <ReviewSection
                 testID="settings.plugins.installReview.trustedCode"
                 title={t('settingsPlugins.installReviewSections.trustedCodeTitle')}
                 lines={[t('settingsPlugins.installReviewSections.trustedCodeDisclosure')]}
-            />
-            <ReviewSection
+            /> : null}
+            {showsExecutableCode ? <ReviewSection
                 testID="settings.plugins.installReview.executableCode"
                 title={t('settingsPlugins.installReviewSections.executableCode')}
                 lines={[
@@ -413,8 +439,8 @@ export function PluginInstallationReviewDialog(props: PluginInstallationReviewDi
                         })]
                         : [uiArtifactStatusLabel(props.review.uiArtifacts.status)]),
                 ]}
-            />
-            <ReviewSection
+            /> : null}
+            {showsRequiredAccess ? <ReviewSection
                 testID="settings.plugins.installReview.requiredAccess"
                 title={t('settingsPlugins.installReviewSections.requiredAccess')}
                 lines={props.review.requiredHostAccess.map((entry) => (
@@ -422,8 +448,8 @@ export function PluginInstallationReviewDialog(props: PluginInstallationReviewDi
                         scope: formatNormalizedScope(entry.normalizedScope),
                     })}`
                 ))}
-            />
-            {props.review.optionalHostAccess.length > 0 ? (
+            /> : null}
+            {showsOptionalAccess && props.review.optionalHostAccess.length > 0 ? (
                 <View testID="settings.plugins.installReview.optionalAccess" style={styles.optionalList}>
                     <Text style={styles.sectionTitle} accessibilityRole="header">{t('settingsPlugins.installReviewSections.optionalAccess')}</Text>
                     {props.review.optionalHostAccess.map((entry) => {
@@ -459,18 +485,18 @@ export function PluginInstallationReviewDialog(props: PluginInstallationReviewDi
                     })}
                 </View>
             ) : null}
-            <ReviewSection
+            {showsRequestInterceptors ? <ReviewSection
                 testID="settings.plugins.installReview.requestInterceptors"
                 title={t('settingsPlugins.installReviewSections.requestInterceptors')}
                 lines={props.review.requestInterceptors.map((entry) => (
                     `${entry.id}\n${entry.origins.join(', ')}\n${entry.methods?.join(', ') ?? t('common.all')} · ${t('settingsPlugins.installReviewSections.priority', { priority: entry.priority })}`
                 ))}
-            />
-            <ReviewSection
+            /> : null}
+            {showsRawCredentials ? <ReviewSection
                 testID="settings.plugins.installReview.rawCredentials"
                 title={t('settingsPlugins.installReviewSections.rawCredentials')}
                 lines={props.review.rawCredentialAccess.flatMap(credentialSourceLines)}
-            />
+            /> : null}
             <ExpandableItem
                 expanded={evidenceExpanded}
                 onExpandedChange={setEvidenceExpanded}
@@ -487,23 +513,18 @@ export function PluginInstallationReviewDialog(props: PluginInstallationReviewDi
                 )}
             >
                 <View testID="settings.plugins.installReview.evidence" style={styles.section}>
-                    <Text style={styles.sectionBody}>{valueOrNone(sourceEvidence(props.review))}</Text>
+                    <Text style={styles.sectionBody}>{valueOrNone([
+                        ...sourceEvidence(props.review),
+                        props.review.compatibility.happier ?? t('common.notProvided'),
+                        t('settingsPlugins.installReviewSections.runtimeApi', {
+                            version: props.review.compatibility.runtimeApiVersion,
+                        }),
+                        ...(props.review.compatibility.blockedNewerVersions ?? []).map((entry) => (
+                            `${entry.version}: ${entry.diagnostics.map((diagnostic) => diagnostic.message).join('; ')}`
+                        )),
+                    ])}</Text>
                 </View>
             </ExpandableItem>
-            <ReviewSection
-                testID="settings.plugins.installReview.compatibility"
-                title={t('settingsPlugins.installReviewSections.compatibility')}
-                lines={[
-                    props.review.compatibility.happier ?? t('common.notProvided'),
-                    t('settingsPlugins.installReviewSections.runtimeApi', {
-                        version: props.review.compatibility.runtimeApiVersion,
-                    }),
-                    updatePolicyLabel(props.review.updatePolicy),
-                    ...(props.review.compatibility.blockedNewerVersions ?? []).map((entry) => (
-                        `${entry.version}: ${entry.diagnostics.map((diagnostic) => diagnostic.message).join('; ')}`
-                    )),
-                ]}
-            />
             <View style={styles.actions}>
                 <Pressable
                     testID="settings.plugins.installReview.cancel"
@@ -516,8 +537,8 @@ export function PluginInstallationReviewDialog(props: PluginInstallationReviewDi
                             styles.action,
                             { minHeight: minimumInteractiveTargetSize },
                             styles.cancelAction,
-                            { opacity: interactionState.pressed ? 0.75 : 1 },
-                            webState.focused === true ? styles.actionFocused : null,
+                            { opacity: interactionState.pressed ? motionTokens.press.opacity : 1 },
+                            resolveHappierFocusRingVisible(webState.focused) ? styles.actionFocused : null,
                         ];
                     }}
                 >
@@ -526,7 +547,7 @@ export function PluginInstallationReviewDialog(props: PluginInstallationReviewDi
                 <Pressable
                     testID="settings.plugins.installReview.confirm"
                     accessibilityRole="button"
-                    accessibilityLabel={t('settingsPlugins.installAndTrust')}
+                    accessibilityLabel={isAuthorityExpansion ? t('common.update') : t('settingsPlugins.installAndTrust')}
                     onPress={approve}
                     style={(interactionState) => {
                         const webState = interactionState as typeof interactionState & { focused?: boolean };
@@ -534,12 +555,12 @@ export function PluginInstallationReviewDialog(props: PluginInstallationReviewDi
                             styles.action,
                             { minHeight: minimumInteractiveTargetSize },
                             styles.confirmAction,
-                            { opacity: interactionState.pressed ? 0.8 : 1 },
-                            webState.focused === true ? styles.actionFocused : null,
+                            { opacity: interactionState.pressed ? motionTokens.press.opacitySubtle : 1 },
+                            resolveHappierFocusRingVisible(webState.focused) ? styles.actionFocused : null,
                         ];
                     }}
                 >
-                    <Text style={styles.confirmText}>{t('settingsPlugins.installAndTrust')}</Text>
+                    <Text style={styles.confirmText}>{isAuthorityExpansion ? t('common.update') : t('settingsPlugins.installAndTrust')}</Text>
                 </Pressable>
             </View>
         </ScrollView>
@@ -549,6 +570,9 @@ export function PluginInstallationReviewDialog(props: PluginInstallationReviewDi
 export async function showPluginInstallationReviewDialog(params: Readonly<{
     title: string;
     review: PluginInstallationReview;
+    reason?: 'firstInstall' | 'authorityExpansion';
+    currentVersion?: string | null;
+    authorityExpansion?: AuthorityExpansion;
     target: Readonly<{ machine: string; server: string }>;
 }>): Promise<PluginInstallationReviewResolution> {
     const deferred = createDeferredOnce<PluginInstallationReviewResolution>();
@@ -556,6 +580,9 @@ export async function showPluginInstallationReviewDialog(params: Readonly<{
         component: PluginInstallationReviewDialog,
         props: {
             review: params.review,
+            reason: params.reason,
+            currentVersion: params.currentVersion,
+            authorityExpansion: params.authorityExpansion,
             target: params.target,
             onResolve: deferred.resolve,
         },

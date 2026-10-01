@@ -18,6 +18,10 @@ const groupBindingRowsMock = vi.hoisted(() => ({
 }));
 const nativeGroupsMock = vi.hoisted(() => ({
     current: [] as Array<Readonly<{ id: string; name: string; memberCount: number }>>,
+    enabled: false,
+    status: 'ready' as 'loading' | 'ready' | 'error',
+    error: null as null | { kind: 'unreachable'; retryable: boolean; code: null },
+    reload: vi.fn(),
 }));
 const refreshMock = vi.hoisted(() => vi.fn());
 const routerReplaceMock = vi.hoisted(() => vi.fn());
@@ -64,9 +68,20 @@ const identityStateMock = vi.hoisted(() => ({
     },
 }));
 
-vi.mock('expo-router', () => ({
-    useRouter: () => ({ replace: routerReplaceMock, push: routerPushMock, back: vi.fn() }),
-}));
+vi.mock('expo-router', async () => {
+    const { createExpoRouterMock } = await import('@/dev/testkit/mocks/router');
+    return createExpoRouterMock({ router: { replace: routerReplaceMock, push: routerPushMock } }).module;
+});
+// Navigation focus is the router runtime boundary; route-focus behavior itself is
+// proven against the real projection owner in `.workosReturn.test.tsx`.
+vi.mock('@react-navigation/native', async () => {
+    const ReactModule = await import('react');
+    return {
+        useFocusEffect: (effect: () => void | (() => void)) => {
+            ReactModule.useEffect(effect, [effect]);
+        },
+    };
+});
 vi.mock('react-native', async (importOriginal) => {
     const original = await importOriginal<typeof import('react-native')>();
     return {
@@ -80,7 +95,12 @@ vi.mock('react-native', async (importOriginal) => {
         },
     };
 });
-vi.mock('@/components/ui/lists/Item', () => ({ Item: 'Item' }));
+// Rows render their right-hand control, as the real row does; page fields are text inputs.
+vi.mock('@/components/ui/lists/Item', async () => {
+    const React = await import('react');
+    return { Item: (props: { rightElement?: unknown }) => React.createElement('Item', props, props.rightElement as never) };
+});
+vi.mock('@/components/ui/forms/FieldTextInput', () => ({ FieldTextInput: 'TextInput' }));
 vi.mock('@/components/ui/lists/ItemGroup', () => ({ ItemGroup: 'ItemGroup' }));
 vi.mock('@/components/ui/feedback/ActivitySpinner', () => ({ ActivitySpinner: 'ActivitySpinner' }));
 vi.mock('@/utils/url/openExternalUrl', () => ({ openExternalUrl: openExternalUrlMock }));
@@ -97,7 +117,8 @@ vi.mock('@/components/settings/home/identity/useManagedIdentityProviders', () =>
     }),
 }));
 vi.mock('./TeamAuthenticationSettingsScreen', () => ({ connectionStateLabel: (value: string) => value }));
-vi.mock('./identityAdministrationClient', () => ({
+vi.mock('./identityAdministrationClient', async (importOriginal) => ({
+    ...await importOriginal<typeof import('./identityAdministrationClient')>(),
     createIdentityAdministrationClient: () => ({
         execute: executeMock,
         executeExternalGroupBinding: executeBindingMock,
@@ -107,12 +128,14 @@ vi.mock('@/components/ui/accessibility/announceAccessibilityMessage', () => ({
     announceAccessibilityMessage: announceMock,
 }));
 vi.mock('@/hooks/teams/useTeamGroups', () => ({
-    useTeamGroups: () => ({
+    useTeamGroups: (params: { enabled: boolean }) => ({
+        enabled: (nativeGroupsMock.enabled = params.enabled),
         rows: nativeGroupsMock.current,
-        status: 'ready',
+        status: nativeGroupsMock.status,
+        isCurrent: nativeGroupsMock.status === 'ready' && nativeGroupsMock.error === null,
         hasMore: false,
-        error: null,
-        reload: vi.fn(),
+        error: nativeGroupsMock.error,
+        reload: nativeGroupsMock.reload,
         loadMore: vi.fn(),
     }),
 }));
@@ -147,6 +170,10 @@ beforeEach(() => {
     executeMock.mockReset();
     groupBindingRowsMock.current = [];
     nativeGroupsMock.current = [];
+    nativeGroupsMock.enabled = false;
+    nativeGroupsMock.status = 'ready';
+    nativeGroupsMock.error = null;
+    nativeGroupsMock.reload.mockReset();
     announceMock.mockReset();
     executeBindingMock.mockReset();
     executeBindingMock.mockImplementation(async (actionId: string) => actionId === 'teams.externalGroupBindings.list'
@@ -190,6 +217,35 @@ beforeEach(() => {
 });
 
 describe('IdentityConnectionDetailScreen test return', () => {
+    it('keeps a failed mapping read distinct from an empty mapping list', async () => {
+        executeBindingMock.mockImplementation(async (actionId: string) => actionId === 'teams.externalGroupBindings.list'
+            ? { ok: false, failure: { code: 'home_unreachable', retryable: true } }
+            : { ok: true, value: { v: 1, outcome: 'removed' } });
+        const screen = await renderScreen(<IdentityConnectionDetailScreen serverId="home-1" teamId="team-1" connectionId="connection-1" />);
+
+        await vi.waitFor(() => expect(screen.findByTestId('identity-group-bindings-retry')).not.toBeNull());
+        expect(screen.getTextContent()).not.toContain(t('identityAdministration.unmapped'));
+    });
+    it('loads native Groups only for the open mapping chooser and distinguishes loading, empty, and retryable failure', async () => {
+        const screen = await renderScreen(<IdentityConnectionDetailScreen serverId="home-1" teamId="team-1" connectionId="connection-1" />);
+        expect(nativeGroupsMock.enabled).toBe(false);
+
+        nativeGroupsMock.status = 'loading';
+        await screen.pressByTestIdAsync('identity-group-map-existing');
+        expect(nativeGroupsMock.enabled).toBe(true);
+        expect(screen.findByTestId('identity-group-native-loading')).not.toBeNull();
+
+        nativeGroupsMock.status = 'ready';
+        await act(async () => { identityStateMock.publish(); });
+        expect(screen.findByTestId('identity-group-native-empty')).not.toBeNull();
+
+        nativeGroupsMock.status = 'error';
+        nativeGroupsMock.error = { kind: 'unreachable', retryable: true, code: null };
+        await act(async () => { identityStateMock.publish(); });
+        expect(screen.findByTestId('identity-group-native-error')).not.toBeNull();
+        await screen.pressByTestIdAsync('identity-group-native-retry');
+        expect(nativeGroupsMock.reload).toHaveBeenCalledOnce();
+    });
     it('gives every Team identity restriction field its translated accessible name', async () => {
         const screen = await renderScreen(<IdentityConnectionDetailScreen
             serverId="home-1"
@@ -455,57 +511,6 @@ describe('IdentityConnectionDetailScreen test return', () => {
             deferred.resolve({ ok: true, value: { connection: { id: 'connection-1' }, diagnostics: null } });
         });
         await vi.waitFor(() => expect(routerReplaceMock).toHaveBeenCalledOnce());
-    });
-
-    it('shows WorkOS return checking and reconciles only after the refreshed projection permits it', async () => {
-        identityStateMock.current.items[0]!.allowedActions = [
-            'teams.identity.workos.adminPortalLink.create',
-            'teams.identity.connections.test.start',
-        ];
-        executeMock
-            .mockResolvedValueOnce({ ok: true, value: { url: 'https://workos.example/portal' } })
-            .mockResolvedValueOnce({ ok: true, value: { outcome: 'reconciled' } });
-        refreshMock.mockImplementation(async () => {
-            identityStateMock.current.refreshing = true;
-            await act(async () => {
-                identityStateMock.publish();
-            });
-        });
-        const screen = await renderScreen(<IdentityConnectionDetailScreen
-            serverId="home-1"
-            teamId="team-1"
-            connectionId="connection-1"
-        />);
-
-        await screen.pressByTestIdAsync('team-identity-workos-sso');
-        await act(async () => appStateChangeMock.current?.('active'));
-
-        expect(screen.findByTestId('identity-workos-return-checking')).not.toBeNull();
-        expect(screen.findByTestId('team-identity-test')?.props.disabled).toBe(true);
-        expect(executeMock).toHaveBeenCalledTimes(1);
-
-        await act(async () => {
-            identityStateMock.current.refreshing = false;
-            identityStateMock.current = {
-                ...identityStateMock.current,
-                items: identityStateMock.current.items.map((item) => item.id === 'connection-1'
-                    ? {
-                        ...item,
-                        allowedActions: [
-                            'teams.identity.workos.reconcile',
-                            'teams.identity.connections.test.start',
-                        ],
-                    }
-                    : item),
-            };
-            identityStateMock.publish();
-        });
-
-        await vi.waitFor(() => expect(executeMock).toHaveBeenCalledWith(
-            'teams.identity.workos.reconcile',
-            expect.objectContaining({ connectionId: 'connection-1' }),
-            expect.any(Object),
-        ));
     });
 
     it('opens the exact Team test URL when an approved Action settles, using the same completion as immediate success', async () => {

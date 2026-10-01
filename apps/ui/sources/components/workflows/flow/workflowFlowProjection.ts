@@ -1,12 +1,14 @@
 import type {
   WorkflowBlock,
   WorkflowDefinitionV1,
+  WorkflowMaxIterationsV1,
   WorkflowRepetition,
 } from '@happier-dev/protocol/workflows/workflowV1';
 import type { WorkflowInvocationLifecycleV1 } from '@happier-dev/protocol/workflows/workflowProgressV1';
 import type { SessionWorkflowAgentStatusV1, SessionWorkflowRunSnapshotV1 } from '@happier-dev/protocol';
 import { t } from '@/text';
-import { workflowStepPromptLabel } from '@/sync/domains/workflows/workflowBlockLabel';
+import { workflowStepPromptLabel } from '@happier-dev/protocol/workflows';
+import { buildHappierWorkMap, type HappierWorkMap, type HappierWorkMapPlaced } from '@happier-dev/plugin-ui/presentation';
 
 /**
  * The one derived Flow projection.
@@ -16,6 +18,10 @@ import { workflowStepPromptLabel } from '@/sync/domains/workflows/workflowBlockL
  * not an engine input, and has no independently editable edges, node positions
  * or inferred dependencies. Structure is carried by parent/ordinal rails, so a
  * renderer never needs a directional edge it cannot justify.
+ *
+ * This is the workflow producer of the neutral Work map: it owns the grammar
+ * and labels and declares each node's parent; placement (depth, ordinal,
+ * children) comes from the map contract.
  */
 
 export type WorkflowFlowNodeKind =
@@ -36,7 +42,7 @@ export type WorkflowFlowRepetitionSummary = Readonly<{
   maxConcurrent?: number;
   itemExecution?: 'sequential' | 'parallel';
   failurePolicy?: 'fail_stop' | 'collect_outcomes';
-  maxIterations?: number;
+  maxIterations?: WorkflowMaxIterationsV1;
 }>;
 
 /**
@@ -53,7 +59,7 @@ export type WorkflowFlowEditTarget = Readonly<{
   blockId: string;
 }>;
 
-export type WorkflowFlowNode = Readonly<{
+export type WorkflowFlowNodeDeclaration = Readonly<{
   /** Stable join key across Steps, Flow, Activity and the inspector. */
   nodeId: string;
   /** The authored block or branch this node presents; branches carry their own id. */
@@ -61,11 +67,9 @@ export type WorkflowFlowNode = Readonly<{
   kind: WorkflowFlowNodeKind;
   editTarget: WorkflowFlowEditTarget | null;
   label: string;
-  depth: number;
-  /** 1-based position within the node's own sibling list, for the rail ordinal. */
-  ordinal: number;
   parentNodeId: string | null;
-  childNodeIds: readonly string[];
+  /** Opening a Flow node selects it in the workflow surface that shows it. */
+  open: Readonly<{ kind: 'workflow-step'; nodeId: string }>;
   /** Authored container policy shown compactly on collapsed groups. */
   failurePolicy?: 'fail_stop' | 'collect_outcomes';
   maxConcurrent?: number;
@@ -76,18 +80,24 @@ export type WorkflowFlowNode = Readonly<{
   observedStatus?: SessionWorkflowAgentStatusV1;
 }>;
 
-export type WorkflowFlowProjection = Readonly<{
+/** A Flow node placed on the Work map: `depth`, 1-based rail `ordinal`, `childNodeIds`. */
+export type WorkflowFlowNode = HappierWorkMapPlaced<WorkflowFlowNodeDeclaration>;
+
+/**
+ * `relationships` says whether executable relationships between nodes are
+ * known. An observed snapshot records phases and agents but not dataflow, so
+ * its relationships stay explicitly unknown rather than being inferred from
+ * order or timing.
+ */
+export type WorkflowFlowProjection = HappierWorkMap<WorkflowFlowNode> & Readonly<{
   source: 'definition' | 'observed';
-  nodes: readonly WorkflowFlowNode[];
-  nodesById: ReadonlyMap<string, WorkflowFlowNode>;
-  rootNodeIds: readonly string[];
-  /**
-   * Whether executable relationships between nodes are known. An observed
-   * snapshot records phases and agents but not dataflow, so its relationships
-   * stay explicitly unknown rather than being inferred from order or timing.
-   */
-  relationships: 'authored' | 'unknown';
 }>;
+
+type WorkflowFlowNodeInput = Omit<WorkflowFlowNodeDeclaration, 'open'>;
+
+function declareFlowNode(node: WorkflowFlowNodeInput): WorkflowFlowNodeDeclaration {
+  return { ...node, open: { kind: 'workflow-step', nodeId: node.nodeId } };
+}
 
 function labelForBlock(block: WorkflowBlock, fallback: string): string {
   if (block.kind === 'step') return workflowStepPromptLabel(block) ?? fallback;
@@ -118,19 +128,14 @@ function summarizeRepetition(repetition: WorkflowRepetition): WorkflowFlowRepeti
  * author did not write.
  */
 export function projectWorkflowFlow(definition: WorkflowDefinitionV1): WorkflowFlowProjection {
-  const nodes: WorkflowFlowNode[] = [];
-  const childIdsByNode = new Map<string, string[]>();
-
-  const pushNode = (node: Omit<WorkflowFlowNode, 'childNodeIds'>): void => {
-    nodes.push({ ...node, childNodeIds: [] });
-    childIdsByNode.set(node.nodeId, []);
-    if (node.parentNodeId !== null) childIdsByNode.get(node.parentNodeId)?.push(node.nodeId);
+  const declarations: WorkflowFlowNodeDeclaration[] = [];
+  const pushNode = (node: WorkflowFlowNodeInput): void => {
+    declarations.push(declareFlowNode(node));
   };
 
   const visitList = (
     list: readonly WorkflowBlock[],
     parentNodeId: string | null,
-    depth: number,
   ): void => {
     list.forEach((block, index) => {
       const ordinal = index + 1;
@@ -142,8 +147,6 @@ export function projectWorkflowFlow(definition: WorkflowDefinitionV1): WorkflowF
             kind: 'step',
             editTarget: { kind: 'prompt', blockId: block.id },
             label: labelForBlock(block, t('workflows.editor.unnamedStep', { position: ordinal })),
-            depth,
-            ordinal,
             parentNodeId,
             observed: false,
           });
@@ -155,8 +158,6 @@ export function projectWorkflowFlow(definition: WorkflowDefinitionV1): WorkflowF
             kind: 'parallel',
             editTarget: { kind: 'block', blockId: block.id },
             label: `${t('workflows.editor.unnamedParallel')} ${ordinal}`,
-            depth,
-            ordinal,
             parentNodeId,
             failurePolicy: block.failurePolicy,
             ...(block.maxConcurrent === undefined ? {} : { maxConcurrent: block.maxConcurrent }),
@@ -172,12 +173,10 @@ export function projectWorkflowFlow(definition: WorkflowDefinitionV1): WorkflowF
               // the editor that can be revealed for it.
               editTarget: { kind: 'block', blockId: block.id },
               label: `${t('workflows.editor.branch')} ${branchIndex + 1}`,
-              depth: depth + 1,
-              ordinal: branchIndex + 1,
               parentNodeId: block.id,
               observed: false,
             });
-            visitList(branch.blocks, branchNodeId, depth + 2);
+            visitList(branch.blocks, branchNodeId);
           });
           break;
         }
@@ -188,8 +187,6 @@ export function projectWorkflowFlow(definition: WorkflowDefinitionV1): WorkflowF
             kind: 'loop',
             editTarget: { kind: 'block', blockId: block.id },
             label: `${t('workflows.editor.unnamedLoop')} ${ordinal}`,
-            depth,
-            ordinal,
             parentNodeId,
             repetition: summarizeRepetition(block.repetition),
             ...(block.repetition.kind === 'items'
@@ -202,7 +199,7 @@ export function projectWorkflowFlow(definition: WorkflowDefinitionV1): WorkflowF
               : {}),
             observed: false,
           });
-          visitList(block.body, block.id, depth + 1);
+          visitList(block.body, block.id);
           if (block.repetition.kind === 'evaluate') {
             const evaluator = block.repetition.evaluator;
             pushNode({
@@ -211,9 +208,6 @@ export function projectWorkflowFlow(definition: WorkflowDefinitionV1): WorkflowF
               kind: 'evaluator',
               editTarget: { kind: 'prompt', blockId: evaluator.id },
               label: labelForBlock(evaluator, t('workflows.editor.evaluator')),
-              depth: depth + 1,
-              // The continuation follows the body visually and runs after it.
-              ordinal: block.body.length + 1,
               parentNodeId: block.id,
               observed: false,
             });
@@ -227,8 +221,6 @@ export function projectWorkflowFlow(definition: WorkflowDefinitionV1): WorkflowF
             kind: 'if',
             editTarget: { kind: 'block', blockId: block.id },
             label: `${t('workflows.editor.unnamedIf')} ${ordinal}`,
-            depth,
-            ordinal,
             parentNodeId,
             observed: false,
           });
@@ -239,12 +231,10 @@ export function projectWorkflowFlow(definition: WorkflowDefinitionV1): WorkflowF
             kind: 'thenBranch',
             editTarget: { kind: 'block', blockId: block.id },
             label: t('workflows.editor.ifTrue'),
-            depth: depth + 1,
-            ordinal: 1,
             parentNodeId: block.id,
             observed: false,
           });
-          visitList(block.then, thenNodeId, depth + 2);
+          visitList(block.then, thenNodeId);
           if (block.otherwise.length > 0) {
             const otherwiseNodeId = `${block.id}#otherwise`;
             pushNode({
@@ -253,12 +243,10 @@ export function projectWorkflowFlow(definition: WorkflowDefinitionV1): WorkflowF
               kind: 'otherwiseBranch',
               editTarget: { kind: 'block', blockId: block.id },
               label: t('workflows.editor.otherwise'),
-              depth: depth + 1,
-              ordinal: 2,
               parentNodeId: block.id,
               observed: false,
             });
-            visitList(block.otherwise, otherwiseNodeId, depth + 2);
+            visitList(block.otherwise, otherwiseNodeId);
           }
           break;
         }
@@ -266,19 +254,9 @@ export function projectWorkflowFlow(definition: WorkflowDefinitionV1): WorkflowF
     });
   };
 
-  visitList(definition.blocks, null, 0);
+  visitList(definition.blocks, null);
 
-  const withChildren = nodes.map((node) => ({
-    ...node,
-    childNodeIds: childIdsByNode.get(node.nodeId) ?? [],
-  }));
-  return {
-    source: 'definition',
-    nodes: withChildren,
-    nodesById: new Map(withChildren.map((node) => [node.nodeId, node])),
-    rootNodeIds: withChildren.filter((node) => node.parentNodeId === null).map((node) => node.nodeId),
-    relationships: 'authored',
-  };
+  return { source: 'definition', ...buildHappierWorkMap({ relationships: 'authored', nodes: declarations }) };
 }
 
 /**
@@ -292,19 +270,16 @@ export function projectWorkflowFlow(definition: WorkflowDefinitionV1): WorkflowF
 export function projectObservedWorkflowFlow(
   snapshot: SessionWorkflowRunSnapshotV1,
 ): WorkflowFlowProjection {
-  const nodes: WorkflowFlowNode[] = [];
-  const childIdsByNode = new Map<string, string[]>();
+  const declarations: WorkflowFlowNodeDeclaration[] = [];
   const agentById = new Map(snapshot.agents.map((agent) => [agent.id, agent]));
   const placed = new Set<string>();
 
-  const pushNode = (node: Omit<WorkflowFlowNode, 'childNodeIds'>): void => {
-    nodes.push({ ...node, childNodeIds: [] });
-    childIdsByNode.set(node.nodeId, []);
-    if (node.parentNodeId !== null) childIdsByNode.get(node.parentNodeId)?.push(node.nodeId);
+  const pushNode = (node: WorkflowFlowNodeInput): void => {
+    declarations.push(declareFlowNode(node));
   };
 
   const orderedPhases = [...snapshot.phases].sort((left, right) => (left.order ?? 0) - (right.order ?? 0));
-  orderedPhases.forEach((phase, phaseIndex) => {
+  orderedPhases.forEach((phase) => {
     const phaseNodeId = `phase:${phase.id}`;
     pushNode({
       nodeId: phaseNodeId,
@@ -312,12 +287,10 @@ export function projectObservedWorkflowFlow(
       kind: 'observedPhase',
       editTarget: null,
       label: phase.title ?? phase.id,
-      depth: 0,
-      ordinal: phaseIndex + 1,
       parentNodeId: null,
       observed: true,
     });
-    phase.agentIds.forEach((agentId, agentIndex) => {
+    phase.agentIds.forEach((agentId) => {
       const agent = agentById.get(agentId);
       if (agent === undefined) return;
       placed.add(agentId);
@@ -327,8 +300,6 @@ export function projectObservedWorkflowFlow(
         kind: 'observedAgent',
         editTarget: null,
         label: agent.title,
-        depth: 1,
-        ordinal: agentIndex + 1,
         parentNodeId: phaseNodeId,
         observed: true,
         observedStatus: agent.status,
@@ -338,35 +309,21 @@ export function projectObservedWorkflowFlow(
 
   // Agents the snapshot never assigned to a phase stay visible at the root
   // rather than being attached to a phase by guesswork.
-  let rootOrdinal = orderedPhases.length;
   for (const agent of snapshot.agents) {
     if (placed.has(agent.id)) continue;
-    rootOrdinal += 1;
     pushNode({
       nodeId: `agent:${agent.id}`,
       blockId: agent.id,
       kind: 'observedAgent',
       editTarget: null,
       label: agent.title,
-      depth: 0,
-      ordinal: rootOrdinal,
       parentNodeId: null,
       observed: true,
       observedStatus: agent.status,
     });
   }
 
-  const withChildren = nodes.map((node) => ({
-    ...node,
-    childNodeIds: childIdsByNode.get(node.nodeId) ?? [],
-  }));
-  return {
-    source: 'observed',
-    nodes: withChildren,
-    nodesById: new Map(withChildren.map((node) => [node.nodeId, node])),
-    rootNodeIds: withChildren.filter((node) => node.parentNodeId === null).map((node) => node.nodeId),
-    relationships: 'unknown',
-  };
+  return { source: 'observed', ...buildHappierWorkMap({ relationships: 'unknown', nodes: declarations }) };
 }
 
 /**

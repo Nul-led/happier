@@ -12,10 +12,9 @@ import {
 } from 'react-native';
 
 import {
-    isWorkflowResultDeliveryUnavailableV1,
-    type StructuredQuestionAnswersV1,
     type WorkflowDefinitionV1,
     type WorkflowInvocationRecoveryV1,
+    type WorkflowInvocationRecoveryAvailabilityV1,
     type WorkflowRunInvocationIndexV1,
     type WorkflowRunSummaryV1,
     type WorkflowProgressEnvelopeV1,
@@ -33,11 +32,7 @@ import {
     summarizeWorkflowInvocationCoverage,
 } from '@/components/workflows/presentation/workflowLifecyclePresentation';
 import { t } from '@/text';
-import {
-    indexWorkflowFlowRunStates,
-    projectWorkflowFlow,
-    type WorkflowFlowNodeRunState,
-} from '@/components/workflows/flow/workflowFlowProjection';
+import { projectWorkflowFlow } from '@/components/workflows/flow/workflowFlowProjection';
 import { WorkflowFlowView } from '@/components/workflows/flow/WorkflowFlowView';
 import type { VirtualizedListRef } from '@/components/ui/lists/virtualized';
 import { useLayoutMaxWidthStyle } from '@/components/ui/layout/layout';
@@ -49,6 +44,7 @@ import { WorkflowInvocationDetail, type WorkflowInvocationDetailProps } from './
 import { useWorkflowCardModal } from './useWorkflowCardModal';
 import { WorkflowInvocationList } from './WorkflowInvocationList';
 import {
+    projectWorkflowFlowRunStates,
     projectWorkflowInvocationStructure,
     type WorkflowInvocationStructureEntry,
     type WorkflowOccurrenceCoordinate,
@@ -59,6 +55,7 @@ import {
     formatWorkflowRunOutcomeLabel,
     formatWorkflowRunOutcomeSentence,
     formatWorkflowWorkspaceSourceLabel,
+    describeWorkflowInvocationCause,
     projectWorkflowInvocationRecovery,
     type WorkflowRecoveryContinuation,
 } from './workflowRunDetailPresentation';
@@ -97,6 +94,11 @@ export type WorkflowRunContentProps = Readonly<{
     title?: string | null;
     /** The frozen Machine's display name, as the machine owner resolves it; absent keeps the exact id. */
     machineName?: string | null;
+    /**
+     * Whether the machine owner currently sees that Machine online. Absent
+     * means not known here, which states nothing about contact.
+     */
+    machineReachable?: boolean;
     /** The frozen definition this Run was admitted with, when it has been read. */
     definition: WorkflowDefinitionV1 | null;
     invocations: readonly WorkflowRunInvocationIndexV1[];
@@ -121,6 +123,8 @@ export type WorkflowRunContentProps = Readonly<{
     onLoadMoreAttention?: () => void;
     loadingMoreAttention?: boolean;
     loadMoreAttentionFailed?: boolean;
+    /** True while the attention cursor still has another page: the loaded count is partial, never a total. */
+    attentionHasMore?: boolean;
     view: WorkflowRunDetailView;
     onChangeView: (view: WorkflowRunDetailView) => void;
     /** Present only when the canonical availability projection permits it. */
@@ -133,6 +137,16 @@ export type WorkflowRunContentProps = Readonly<{
      * other durable control is busy until it settles.
      */
     pendingControl?: WorkflowRunOperationKind | null;
+    /**
+     * A stop the canonical owner accepted and has not yet applied.
+     *
+     * This is durable intent, not transport lifetime: the server keeps an
+     * admitted Run active while it marks its live invocations `cancel_requested`
+     * and answers `intent: 'cancel_requested'`. Keyed to `pendingControl` the
+     * label snapped back to **Stop** the moment the request returned, telling
+     * the person to stop a Run that was already stopping.
+     */
+    cancelRequested?: boolean;
     /** Provider usage, or `null` when the provider supplied none. */
     usageLabel?: string | null;
     resultLabel?: string | null;
@@ -147,6 +161,7 @@ export type WorkflowRunContentProps = Readonly<{
      */
     firstFailedInvocationResolution?: 'loading' | 'resolved' | 'error';
     selectedInvocationProgress?: WorkflowProgressEnvelopeV1 | null;
+    selectedInvocationRecoveryAvailability?: WorkflowInvocationRecoveryAvailabilityV1 | null;
     invocationProgressById?: ReadonlyMap<string, WorkflowProgressEnvelopeV1>;
     /**
      * Navigable identity for every loaded row, derived by the canonical
@@ -158,13 +173,12 @@ export type WorkflowRunContentProps = Readonly<{
     invocationStructure?: ReadonlyMap<string, WorkflowInvocationStructureEntry>;
     onOpenSession?: (sessionId: string) => void;
     onOpenExecutionRun?: (runId: string) => void;
-    onRespondPermission?: (request: Readonly<{ requestId: string; approved: boolean }>) => void;
-    onAnswerQuestion?: (request: Readonly<{ requestId: string; answers: StructuredQuestionAnswersV1 }>) => void;
+    onRespondToRequest?: WorkflowInvocationDetailProps['onRespondToRequest'];
     /**
-     * Requests whose decision the host has sent and not seen settle. Their
+     * Requests whose answer the host has sent and not seen settle. Their
      * controls are withdrawn so an opposite press cannot race that answer.
      */
-    pendingPermissionRequestIds?: ReadonlySet<string>;
+    pendingRequestIds?: ReadonlySet<string>;
     workspaceHomeDirectory?: string | null;
     onCopyWorkspace?: (directory: string) => void;
     onOpenWorkspace?: (workspaceRefId: string, directory: string) => void;
@@ -206,6 +220,12 @@ export type WorkflowRunContentProps = Readonly<{
      */
     completionEmphasis?: boolean;
     errorLabel?: string | null;
+    /**
+     * Whether `errorLabel` interrupts something the person just did or reports
+     * something they are waiting on. It comes from the canonical Workflow
+     * problem owner so a wait does not assertively interrupt a screen reader.
+     */
+    errorSemantics?: 'alert' | 'status';
     /** Re-run the screen's one canonical detail/index/attention load. */
     onReload?: () => void;
     selectedContentUnavailable?: boolean;
@@ -252,7 +272,7 @@ function WorkflowRunPagingAction(props: Readonly<{
                     accessibilityState={{ disabled: props.loading }}
                     disabled={props.loading}
                     onPress={props.onLoadMore}
-                    style={styles.actionTarget}
+                    style={({ pressed }) => [styles.actionTarget, pressed ? styles.pressed : null]}
                 >
                     <Text style={styles.action}>{t('workflows.retry')}</Text>
                 </Pressable>
@@ -266,7 +286,7 @@ function WorkflowRunPagingAction(props: Readonly<{
             accessibilityState={{ disabled: props.loading }}
             disabled={props.loading}
             onPress={props.onLoadMore}
-            style={styles.actionTarget}
+            style={({ pressed }) => [styles.actionTarget, pressed ? styles.pressed : null]}
         >
             <Text style={styles.action}>
                 {props.loading ? t('common.loading') : t('workflows.run.loadMore')}
@@ -348,17 +368,11 @@ export function WorkflowRunContent(props: WorkflowRunContentProps): React.ReactE
             animated: false,
         });
     }, [props.view]);
-    const coverage = React.useMemo(
-        () => summarizeWorkflowInvocationCoverage(props.invocations),
-        [props.invocations],
-    );
     const attentionRows = React.useMemo(
         () => props.invocations.filter((entry) => WORKFLOW_ATTENTION_LIFECYCLES.includes(entry.lifecycle)),
         [props.invocations],
     );
-    const deliveryUnavailable = isWorkflowResultDeliveryUnavailableV1(props.run.workflowResultDeliveryState)
-        ? props.run.workflowResultDeliveryState
-        : null;
+    const attentionCount = attentionRows.length;
 
     const flowProjection = React.useMemo(
         () => (props.definition === null ? null : projectWorkflowFlow(props.definition)),
@@ -376,6 +390,12 @@ export function WorkflowRunContent(props: WorkflowRunContentProps): React.ReactE
             })),
         [props.definition, props.invocationProgressById, props.invocationStructure, props.invocations],
     );
+    const coverage = React.useMemo(() => summarizeWorkflowInvocationCoverage(props.invocations, {
+        kindsByInvocationId: new Map([...derivedStructure].map(([id, entry]) => [id, entry.coverageKind])),
+        historyComplete: props.invocationsLoaded && props.invocationHistoryComplete,
+        runState: props.run.state,
+        knownFailure: props.firstFailedInvocationId != null,
+    }), [derivedStructure, props.firstFailedInvocationId, props.invocationHistoryComplete, props.invocations, props.invocationsLoaded, props.run.state]);
 
     /**
      * Row identity comes from the authored definition, not from whether the
@@ -401,6 +421,9 @@ export function WorkflowRunContent(props: WorkflowRunContentProps): React.ReactE
             if (coordinate.kind === 'branch') {
                 return flowProjection?.nodesById.get(`${coordinate.blockId}#${coordinate.branchId}`)?.label
                     ?? coordinate.branchId;
+            }
+            if (coordinate.kind === 'workflow') {
+                return flowProjection?.nodesById.get(coordinate.blockId)?.label ?? coordinate.blockId;
             }
             const noun = coordinate.kind === 'item'
                 ? t('workflows.input.currentItem')
@@ -435,25 +458,14 @@ export function WorkflowRunContent(props: WorkflowRunContentProps): React.ReactE
     ]);
     const flowRunStates = React.useMemo(() => {
         if (flowProjection === null) return undefined;
-        // Flow renders exactly the lifecycles the invocation owner supplied; it
-        // never derives one from structure or timing. Which authored node a row
-        // belongs to is the structure owner's answer, so an occurrence stays
-        // selectable before its private detail has ever been opened. Structural
-        // frames are scopes, not executions of their block, and are excluded.
-        const states: WorkflowFlowNodeRunState[] = [];
-        for (const invocation of props.invocations) {
-            const entry = derivedStructure.get(invocation.id);
-            if (entry === undefined || entry.nodeId === null || entry.isFrame) continue;
-            const occurrenceLabel = formatOccurrence(entry.occurrence);
-            states.push({
-                nodeId: entry.nodeId,
-                invocationId: invocation.id,
-                lifecycle: invocation.lifecycle,
-                attempt: invocation.attempt,
-                ...(occurrenceLabel === undefined ? {} : { occurrenceLabel }),
-            });
-        }
-        return indexWorkflowFlowRunStates(states);
+        // Which authored node a row belongs to is the structure owner's answer,
+        // so an occurrence stays selectable before its private detail has ever
+        // been opened.
+        return projectWorkflowFlowRunStates({
+            invocations: props.invocations,
+            structure: derivedStructure,
+            formatOccurrence,
+        });
     }, [derivedStructure, flowProjection, formatOccurrence, props.invocations]);
 
     /**
@@ -497,6 +509,24 @@ export function WorkflowRunContent(props: WorkflowRunContentProps): React.ReactE
             : { kind: 'open_result', invocationId: props.finalOutputInvocationId };
     }, [props.definition, props.finalOutputInvocationId, props.firstFailedInvocationId, props.firstFailedInvocationResolution, props.invocations, props.resultLabel, props.run.state]);
 
+    /**
+     * One dominant action per state (UX §1, §3.3).
+     *
+     * Tone was assigned per capability, so a completed Run that can also be
+     * repeated drew **Open result** and **Run workflow again** as two filled
+     * primaries and the outcome region lost its state-specific answer exactly
+     * at the moment it matters. The state resolves the primary first; every
+     * other eligible action stays secondary.
+     */
+    const primaryAction: 'outcome' | 'resume' | 'run_again' | null =
+        terminalOutcome?.kind === 'open_result' || terminalOutcome?.kind === 'see_failures'
+            ? 'outcome'
+            : props.run.availability.resumeBoundary && props.onResume !== undefined
+                ? 'resume'
+                : props.onRunAgain !== undefined
+                    ? 'run_again'
+                    : null;
+
     const outcomeLabel = formatWorkflowRunOutcomeLabel({
         state: props.run.state,
         coverage,
@@ -513,6 +543,7 @@ export function WorkflowRunContent(props: WorkflowRunContentProps): React.ReactE
             run: props.run,
             invocation: selectedInvocation,
             progress: props.selectedInvocationProgress ?? null,
+            recoveryAvailability: props.selectedInvocationRecoveryAvailability ?? null,
             machineHomeDirectory: props.workspaceHomeDirectory ?? null,
             invocations: props.invocations,
             invocationHistoryComplete: props.invocationHistoryComplete,
@@ -520,13 +551,19 @@ export function WorkflowRunContent(props: WorkflowRunContentProps): React.ReactE
         return props.preparedRecovery === undefined
             ? projected
             : { ...projected, preparedRecovery: props.preparedRecovery };
-    }, [props.invocationHistoryComplete, props.invocations, props.preparedRecovery, props.run, selectedInvocation, props.selectedInvocationProgress, props.workspaceHomeDirectory]);
+    }, [props.invocationHistoryComplete, props.invocations, props.preparedRecovery, props.run, selectedInvocation, props.selectedInvocationProgress, props.selectedInvocationRecoveryAvailability, props.workspaceHomeDirectory]);
     const selectedWorkspace = recovery.workspace;
     const workspaceSourceBlockLabel = selectedWorkspace?.sourceBlockId === null
         || selectedWorkspace?.sourceBlockId === undefined
         ? null
         : flowProjection?.nodesById.get(selectedWorkspace.sourceBlockId)?.label
             ?? selectedWorkspace.sourceBlockId;
+    const selectedBlockId = props.selectedInvocationProgress?.invocationPath.blockId ?? null;
+    const selectedInvocationCause = describeWorkflowInvocationCause({
+        lifecycle: selectedInvocation?.lifecycle ?? null,
+        reasonCode: props.selectedInvocationProgress?.reason?.code ?? null,
+        blockLabel: selectedBlockId === null ? null : flowProjection?.nodesById.get(selectedBlockId)?.label ?? null,
+    });
     const workspaceSourceLabel = workspaceSourceBlockLabel === null
         ? null
         : formatWorkflowWorkspaceSourceLabel(
@@ -565,8 +602,21 @@ export function WorkflowRunContent(props: WorkflowRunContentProps): React.ReactE
                         run: props.run,
                         coverage,
                         historyComplete: props.invocationHistoryComplete,
+                        ...(props.machineReachable === undefined ? {} : {
+                            machine: {
+                                name: props.machineName ?? props.run.machineId,
+                                reachable: props.machineReachable,
+                            },
+                        }),
                     })}
                 </Text>
+                {/* Contact loss is all that is known; resume choices come from
+                    the recovery owner once the current state is. */}
+                {props.machineReachable === false && !isTerminalWorkflowRunState(props.run.state) ? (
+                    <Text testID={`${testIDPrefix}-machine-unavailable`} style={styles.provenance}>
+                        {t('workflows.run.machineUnavailableBody')}
+                    </Text>
+                ) : null}
 
                 <Text testID={`${testIDPrefix}-usage`} style={styles.metric}>
                     {props.usageLabel ?? t('workflows.run.usageUnavailable')}
@@ -610,7 +660,9 @@ export function WorkflowRunContent(props: WorkflowRunContentProps): React.ReactE
                             onPress={props.onCancel}
                             label={props.pendingControl === 'cancel'
                                 ? t('workflows.run.stopping')
-                                : props.deleteBlockedByCustody ? t('workflows.run.stopAgain') : t('workflows.run.stop')}
+                                : props.cancelRequested === true
+                                    ? t('workflows.run.stopAgain')
+                                    : t('workflows.run.stop')}
                             tone="danger"
                             size="md"
                             style={styles.actionTarget}
@@ -637,7 +689,7 @@ export function WorkflowRunContent(props: WorkflowRunContentProps): React.ReactE
                             onPress={props.onResume}
                             style={styles.actionTarget}
                             label={t('workflows.run.resume')}
-                            tone="primary"
+                            {...(primaryAction === 'resume' ? { tone: 'primary' as const } : {})}
                             size="md"
                         />
                     ) : null}
@@ -648,7 +700,7 @@ export function WorkflowRunContent(props: WorkflowRunContentProps): React.ReactE
                             onPress={props.onRunAgain}
                             style={styles.actionTarget}
                             label={t('workflows.run.runAgain')}
-                            tone="primary"
+                            {...(primaryAction === 'run_again' ? { tone: 'primary' as const } : {})}
                             size="md"
                         />
                     ) : null}
@@ -657,7 +709,7 @@ export function WorkflowRunContent(props: WorkflowRunContentProps): React.ReactE
                                 testID={`${testIDPrefix}-open-origin-session`}
                                 accessibilityRole="button"
                                 onPress={() => props.onOpenSession?.(sourceSessionId)}
-                                style={styles.actionTarget}
+                                style={({ pressed }) => [styles.actionTarget, pressed ? styles.pressed : null]}
                             >
                                 <Text style={styles.action}>{t('workflows.run.openSourceSession')}</Text>
                             </Pressable>
@@ -672,13 +724,33 @@ export function WorkflowRunContent(props: WorkflowRunContentProps): React.ReactE
                         />
                     )}
                 </View>
+                {/* The durable receipt, so the request survives its own
+                    transport and names what it is waiting on. */}
+                {props.cancelRequested === true && !isTerminalWorkflowRunState(props.run.state) ? (
+                    <Text testID={`${testIDPrefix}-cancel-requested`} style={styles.provenance}>
+                        {t('workflows.run.stopRequested', {
+                            machine: props.machineName ?? props.run.machineId,
+                        })}
+                    </Text>
+                ) : null}
                 {props.deleteBlockedByCustody ? (
                     <Text testID={`${testIDPrefix}-custody-pending`} style={styles.provenance}>
                         {t('workflows.recovery.waitingForStop')}
                     </Text>
                 ) : null}
                 {props.errorLabel === null || props.errorLabel === undefined ? null : (
-                    <Text testID={`${testIDPrefix}-error`} style={styles.provenance}>{props.errorLabel}</Text>
+                    <Text
+                        testID={`${testIDPrefix}-error`}
+                        style={styles.provenance}
+                        // The canonical problem owner already decided whether
+                        // this interrupts or reports; consumers discarded it and
+                        // a failed Stop or Retry reached nobody using a reader.
+                        accessibilityRole={(props.errorSemantics ?? 'alert') === 'alert' ? 'alert' : 'text'}
+                        accessibilityLiveRegion={(props.errorSemantics ?? 'alert') === 'alert' ? 'assertive' : 'polite'}
+                        role={props.errorSemantics ?? 'alert'}
+                    >
+                        {props.errorLabel}
+                    </Text>
                 )}
                 {props.onReload === undefined ? null : (
                     <ToolbarButton
@@ -691,24 +763,30 @@ export function WorkflowRunContent(props: WorkflowRunContentProps): React.ReactE
                 )}
             </View>
 
-            {deliveryUnavailable === null && attentionRows.length === 0 ? null : (
-                <View testID={`${testIDPrefix}-needs-you`} style={styles.section}>
-                    <Text style={styles.sectionLabel}>{t('workflows.run.needsYou')}</Text>
-                    {deliveryUnavailable === null ? null : (
-                        <View testID={`${testIDPrefix}-result-delivery-unavailable`} style={styles.attentionRow}>
-                            <Text style={styles.attentionLabel}>
-                                {t('workflows.contentUnavailable')}
-                                {deliveryUnavailable.reason ? ` (${deliveryUnavailable.reason})` : ''}
-                            </Text>
-                        </View>
-                    )}
+            {attentionRows.length === 0 ? null : (
+                <View
+                    testID={`${testIDPrefix}-needs-you`}
+                    style={styles.section}
+                    // A still-paged window cannot promise a total: the loaded
+                    // rows are stated as loaded so a reader never mistakes them
+                    // for every intervention that remains.
+                    accessibilityLabel={props.attentionHasMore === true
+                        ? `${String(attentionCount)} ${t('workflows.a11y.needsYouLoaded')}`
+                        : t('workflows.a11y.needsYou', { count: attentionCount })}
+                >
+                    <View style={styles.sectionHeading}>
+                        <Text style={styles.sectionLabel}>{t('workflows.run.needsYou')}</Text>
+                        <Text style={styles.sectionCount}>{props.attentionHasMore === true
+                            ? `${String(attentionCount)} ${t('workflows.run.needsYouLoadedCount')}`
+                            : String(attentionCount)}</Text>
+                    </View>
                     {attentionRows.map((invocation) => (
                         <Pressable
                             key={invocation.id}
                             testID={`${testIDPrefix}-needs-you-${invocation.id}`}
                             accessibilityRole="button"
                             onPress={(event) => selectInvocation(invocation.id, event)}
-                            style={styles.attentionRow}
+                            style={({ pressed }) => [styles.attentionRow, pressed ? styles.pressed : null]}
                         >
                             <Text style={styles.attentionLabel} numberOfLines={1}>
                                 {invocationLabel(invocation) ?? t('workflows.contentUnavailable')}
@@ -756,6 +834,7 @@ export function WorkflowRunContent(props: WorkflowRunContentProps): React.ReactE
             progress: props.selectedInvocationProgress ?? null,
             recovery,
             workspaceSourceLabel,
+            cause: selectedInvocationCause,
             operationPending,
             testIDPrefix,
             ...(props.selectedContentUnavailable === undefined
@@ -765,15 +844,12 @@ export function WorkflowRunContent(props: WorkflowRunContentProps): React.ReactE
             ...(props.onOpenExecutionRun === undefined
                 ? {}
                 : { onOpenExecutionRun: props.onOpenExecutionRun }),
-            ...(props.onRespondPermission === undefined
+            ...(props.onRespondToRequest === undefined
                 ? {}
-                : { onRespondPermission: props.onRespondPermission }),
-            ...(props.onAnswerQuestion === undefined
+                : { onRespondToRequest: props.onRespondToRequest }),
+            ...(props.pendingRequestIds === undefined
                 ? {}
-                : { onAnswerQuestion: props.onAnswerQuestion }),
-            ...(props.pendingPermissionRequestIds === undefined
-                ? {}
-                : { pendingPermissionRequestIds: props.pendingPermissionRequestIds }),
+                : { pendingRequestIds: props.pendingRequestIds }),
             ...(props.onCopyWorkspace === undefined ? {} : { onCopyWorkspace: props.onCopyWorkspace }),
             ...(props.onOpenWorkspace === undefined ? {} : { onOpenWorkspace: props.onOpenWorkspace }),
             ...(props.onReattach === undefined ? {} : { onReattach: props.onReattach }),
@@ -809,19 +885,19 @@ export function WorkflowRunContent(props: WorkflowRunContentProps): React.ReactE
         props.onOpenSession,
         props.onOpenWorkspace,
         props.onReattach,
-        props.onAnswerQuestion,
-        props.onRespondPermission,
+        props.onRespondToRequest,
         props.onRestoreWorkspace,
         props.onRetryFreshAgent,
         props.onRetrySameConversation,
         props.onRetryWithReplacement,
         props.onStartReviewedNewRun,
-        props.pendingPermissionRequestIds,
+        props.pendingRequestIds,
         props.selectedContentUnavailable,
         props.selectedInvocationId,
         props.selectedInvocationProgress,
         props.uncertaintyAcknowledged,
         recovery,
+        selectedInvocationCause,
         selectedRecoveryText,
         setSelectedRecoveryText,
         testIDPrefix,
@@ -861,7 +937,7 @@ export function WorkflowRunContent(props: WorkflowRunContentProps): React.ReactE
                     accessibilityRole="button"
                     accessibilityState={{ expanded: technicalOpen }}
                     onPress={() => setTechnicalOpen((open) => !open)}
-                    style={styles.actionTarget}
+                    style={({ pressed }) => [styles.actionTarget, pressed ? styles.pressed : null]}
                 >
                     <Text style={styles.sectionLabel}>{t('workflows.run.technicalDetails')}</Text>
                 </Pressable>
@@ -869,21 +945,21 @@ export function WorkflowRunContent(props: WorkflowRunContentProps): React.ReactE
                     <>
                         <View style={styles.detailRow}>
                             <Text style={styles.detailKey}>{t('workflows.run.technical.runId')}</Text>
-                            <Text testID={`${testIDPrefix}-run-id`} style={styles.detailValue} numberOfLines={1}>
+                            <Text testID={`${testIDPrefix}-run-id`} style={styles.detailValue} numberOfLines={1} selectable>
                                 {props.run.id}
                             </Text>
                         </View>
                         {props.selectedInvocationId === null ? null : (
                             <View style={styles.detailRow}>
                                 <Text style={styles.detailKey}>{t('workflows.run.technical.invocationId')}</Text>
-                                <Text testID={`${testIDPrefix}-invocation-id`} style={styles.detailValue} numberOfLines={1}>
+                                <Text testID={`${testIDPrefix}-invocation-id`} style={styles.detailValue} numberOfLines={1} selectable>
                                     {props.selectedInvocationId}
                                 </Text>
                             </View>
                         )}
                         <View style={styles.detailRow}>
                             <Text style={styles.detailKey}>{t('workflows.run.technical.machine')}</Text>
-                            <Text testID={`${testIDPrefix}-machine`} style={styles.detailValue} numberOfLines={1}>
+                            <Text testID={`${testIDPrefix}-machine`} style={styles.detailValue} numberOfLines={1} selectable>
                                 {props.machineName ?? props.run.machineId}
                             </Text>
                         </View>
@@ -893,14 +969,14 @@ export function WorkflowRunContent(props: WorkflowRunContentProps): React.ReactE
                             || props.machineName === props.run.machineId ? null : (
                             <View style={styles.detailRow}>
                                 <Text style={styles.detailKey}>{t('workflows.run.technical.machineId')}</Text>
-                                <Text testID={`${testIDPrefix}-machine-id`} style={styles.detailValue} numberOfLines={1}>
+                                <Text testID={`${testIDPrefix}-machine-id`} style={styles.detailValue} numberOfLines={1} selectable>
                                     {props.run.machineId}
                                 </Text>
                             </View>
                         )}
                         <View style={styles.detailRow}>
                             <Text style={styles.detailKey}>{t('workflows.run.technical.revision')}</Text>
-                            <Text testID={`${testIDPrefix}-revision`} style={styles.detailValue} numberOfLines={1}>
+                            <Text testID={`${testIDPrefix}-revision`} style={styles.detailValue} numberOfLines={1} selectable>
                                 {String(props.run.revision)}
                             </Text>
                         </View>

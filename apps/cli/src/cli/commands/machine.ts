@@ -3,7 +3,6 @@ import { mapUnknownErrorToControlError } from '@/cli/control/controlErrorMapping
 import { wantsJson, printJsonEnvelope, writeJsonStdout } from '@/cli/output/jsonEnvelope';
 import { cmd, createOutputBuilder, errorFrame, ok, warn } from '@happier-dev/cli-common/output';
 import { buildSshTarget, parseSshTarget } from '@happier-dev/cli-common/systemTasks';
-import { describeBackgroundServiceTargetMode } from '@happier-dev/cli-common/happierRuntime';
 import { resolveManagedCliReleaseChannelSync } from '@happier-dev/cli-common/firstPartyRuntime';
 import { getLiveSystemTasksRunnerAdapter } from '@/capabilities/systemTasks/liveSystemTasksRunner';
 import { configuration } from '@/configuration';
@@ -12,10 +11,10 @@ import type { ResolvedHomeTarget } from '@happier-dev/cli-common/homeTarget';
 import { parseCliHomeTargetArgs } from '@/server/homeTargetCliArgs';
 import { isLoopbackServerHost } from '@/server/serverUrlClassification';
 import { isInteractiveTerminal, promptInput } from '@/terminal/prompts/promptInput';
+import { promptConfirmYesNo } from '@/terminal/prompts/promptConfirmYesNo';
 import { promptSecret } from '@/terminal/prompts/promptSecret';
 import {
   parseApproveRemoteProvisioningPromptData,
-  parseReplaceRemoteBackgroundServicesPromptData,
   type SystemTaskEvent,
   type SystemTaskJsonObject,
   type SystemTaskResult,
@@ -24,6 +23,7 @@ import {
 
 import { showMachineHelp } from './machine/help';
 import {
+  answerRemoteBackgroundServiceReplacementPrompt,
   answerSshHostTrustPrompt,
   isSshHostTrustPromptKind,
   normalizeTrustedHostKeyFlag,
@@ -296,24 +296,6 @@ function formatPromptMessage(prompt: Readonly<{ kind: string; data: SystemTaskJs
     ].filter(Boolean).join('\n');
   }
 
-  if (prompt.kind === 'daemon.replaceRemoteBackgroundServices') {
-    const parsed = parseReplaceRemoteBackgroundServicesPromptData(prompt.data);
-    const formattedServices = parsed.services.map((service) => {
-      const details = [
-        service.releaseChannel,
-        describeBackgroundServiceTargetMode(service.targetMode),
-      ].filter(Boolean).join(', ');
-      return `- ${service.label}${details ? ` (${details})` : ''} — ${service.running ? 'running' : 'stopped'}`;
-    });
-    return [
-      fallbackMessage || 'Replace existing remote background services?',
-      parsed.targetServerUrl ? `Target server: ${parsed.targetServerUrl}` : '',
-      parsed.targetReleaseChannel ? `Target release channel: ${parsed.targetReleaseChannel}` : '',
-      formattedServices.length > 0 ? 'Existing services:' : '',
-      ...formattedServices,
-    ].filter(Boolean).join('\n');
-  }
-
   return fallbackMessage || `Task requires input: ${prompt.kind}`;
 }
 
@@ -338,9 +320,29 @@ async function resolvePromptAnswer(params: Readonly<{
       assumeYes: params.assumeYes,
       interactive: params.interactive,
       message: params.eventMessage,
-      confirm: async (message) => /^y(?:es)?$/i.test(
-        (await params.promptInput(`${message}\nTrust this host key? [y/N]: `)).trim(),
-      ),
+      confirm: async (message) => await promptConfirmYesNo(`${message}\nTrust this host key?`, {
+        default: 'no',
+        promptInputFn: params.promptInput,
+      }),
+    });
+  }
+
+  // Replacement is decided by the one CLI replacement policy `happier home
+  // create` also uses; machine setup's documented `--yes` replaces.
+  if (params.prompt.kind === 'daemon.replaceRemoteBackgroundServices') {
+    if (!params.assumeYes && !params.interactive) {
+      throw new Error('Non-interactive mode requires --yes for setup prompts.');
+    }
+    return await answerRemoteBackgroundServiceReplacementPrompt({
+      data: params.prompt.data,
+      assumeYes: params.assumeYes,
+      assumeYesMeans: 'replace',
+      interactive: params.interactive,
+      message: params.eventMessage,
+      confirm: async (message) => await promptConfirmYesNo(message, {
+        default: 'no',
+        promptInputFn: params.promptInput,
+      }),
     });
   }
 
@@ -357,9 +359,6 @@ async function resolvePromptAnswer(params: Readonly<{
     if (params.prompt.kind === 'auth.approveRemoteProvisioning') {
       return { approved: true };
     }
-    if (params.prompt.kind === 'daemon.replaceRemoteBackgroundServices') {
-      return { replaceExistingServices: true };
-    }
     return {};
   }
 
@@ -370,10 +369,6 @@ async function resolvePromptAnswer(params: Readonly<{
   if (params.prompt.kind === 'auth.approveRemoteProvisioning') {
     const answer = await params.promptInput(`${message}\nApprove pairing? [Y/n]: `);
     return { approved: !/^n(?:o)?$/i.test(answer.trim()) };
-  }
-  if (params.prompt.kind === 'daemon.replaceRemoteBackgroundServices') {
-    const answer = await params.promptInput(`${message}\nReplace existing background services? [Y/n]: `);
-    return { replaceExistingServices: !/^n(?:o)?$/i.test(answer.trim()) };
   }
   await params.promptInput(`${message}\nPress Enter to continue...`);
   return {};

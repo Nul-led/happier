@@ -19,6 +19,37 @@ import { BUNDLED_PLUGIN_TRANSLATIONS } from './bundledPluginTranslations.generat
 import { auditTranslations, findMissingKeys, flattenTranslationLeaves } from '../../tools/i18n/translationAudit';
 
 const IGNORED_UNTRANSLATED_KEYS = new Set([
+    // Widget Add popover: the formats a new widget is written in (Markdown, HTML) and the Plugins page.
+    'widgetAdd.noteSubtitle',
+    'widgetAdd.interactiveViewSubtitle',
+    'widgetAdd.findMoreSubtitle',
+    // Server settings groups named by product: Apple's Live Activities, WorkOS, and "Plugins", the
+    // word these locales already use for the Plugins page.
+    'homeSettings.groups.liveActivity',
+    'homeSettings.groups.workos',
+    'homeSettings.groups.plugins',
+    // Server setting choices that are product names (GitHub App) or the same technical word in the
+    // Latin-script locales (Sandbox, Production, Fatal, Debug, Trace, Error(s), Manual).
+    'homeSettings.choices.github_app',
+    'homeSettings.choices.sandbox',
+    'homeSettings.choices.production',
+    'homeSettings.choices.fatal',
+    'homeSettings.choices.debug',
+    'homeSettings.choices.trace',
+    'homeSettings.choices.error',
+    'homeSettings.choices.manual',
+    // Prompts & Skills (lane e): the value is only the `{count}` placeholder.
+    'promptLibrary.surface.itemCount',
+    // Product names: the same word in every locale.
+    'updates.happierCliTitle',
+    // Connected services: the account people have is ChatGPT in every locale (a product name).
+    'connectedServices.serviceNames.openaiCodex',
+    'updates.thisAppTitle',
+    // Source-control product and tool names (Sapling, the Pierre renderer, the Happier CLI, .gitignore).
+    'machine.thisComputer.cli.title',
+    'settingsSourceControl.page.routing.sapling',
+    'settingsSourceControl.page.files.rendererPierre',
+    'settingsAttachments.sourceControlIgnore.options.gitignore.short',
     'promptLibrary.supportingFilePathPlaceholder',
     'files.sourceControlOperations.update.remotes.namePlaceholder',
     'settingsSession.handoff.includeIgnoredMode.globsPlaceholder',
@@ -26,6 +57,8 @@ const IGNORED_UNTRANSLATED_KEYS = new Set([
     'connectedServices.serviceNames.github',
     'connectedServices.serviceNames.bitbucket',
     'deps.installable.githubCli.title',
+    // Product name, shared across locales.
+    'deps.installable.difftastic.title',
     'newSession.githubCliBanner.title',
     'files.markdown',
     'settingsSession.sessionCreation.modalModeSimpleTitle',
@@ -78,8 +111,117 @@ const IGNORED_UNTRANSLATED_KEYS_BY_LOCALE: Readonly<Record<string, ReadonlySet<s
     // Team is the canonical product noun in German and Italian as well.
     // "password" is the ordinary Italian word for it; "parola d'ordine" is not
     // what anyone types into a credential form.
-    it: new Set(['session.access.team', 'secrets.catalog.kinds.password']),
+    it: new Set([
+        // Boards (INT §5.1): the ordinary words these locales use (Board, Canvas, Offline, Online, Workflow, Session(s), Machine(s), Name, Layout).
+        'boards.header.canvas',
+        'workStatus.buckets.offline',
+        'boards.kinds.workflow',
+        'boards.card.machine.online',
+        'boards.card.machine.offline',
+        // Prompts & Skills / Voice (lane e): "Prompt" matches promptLibrary.prompts; "File" and "Provider" are the Italian terms used across the app.
+        'promptLibrary.surface.promptSection',
+        'promptLibrary.surface.fileSection',
+        'settingsVoice.providerSectionTitle',
+        // Plugins: platform names (Android, iOS, Web) are product names; the rest are the words these
+        // locales use ("Plugins", "Community", "Updates", "Links", "Website", "Support", "app", "Source", "Categories").
+        'settingsPlugins.discover.platform.android',
+        'settingsPlugins.discover.platform.ios',
+        'settingsPlugins.discover.platform.web',
+        'settingsPlugins.discover.executableRealm.client',
+        'settingsPlugins.surfaces.shelfCommunity',
+        // "App", "Browser" and "Workspace" are the words Italian UI copy uses (Keyboard groups,
+        // attachment upload location); the rest of the locale already says "workspace".
+        'settingsKeyboard.groupApp', 'settingsKeyboard.groupBrowser',
+        'settingsAttachments.uploadLocation.options.workspace.short',
+        'session.access.team', 'secrets.catalog.kinds.password', 'updates.offline',
+        // "Server" is the ordinary Italian word for a server (MCP settings section title).
+        'mcpSettings.serverSection',
+    ]),
+    // "Offline" is the ordinary word in Polish and Portuguese UI copy too.
+    pl: new Set([
+        // Boards (INT §5.1): the ordinary words these locales use (Board, Canvas, Offline, Online, Workflow, Session(s), Machine(s), Name, Layout).
+        'workStatus.buckets.offline',
+        'boards.card.machine.online',
+        'boards.card.machine.offline',
+        // Folder-less sessions: the ordinary word in this locale.
+        'session.folderless.folder',
+        // Prompts (lane e): "Prompt" (singular of "Prompty") and "Link" are Polish words.
+        'promptLibrary.surface.promptSection',
+        'promptLibrary.surface.installMethodLink',
+        // Plugins: platform names (Android, iOS, Web) are product names; the rest are the words these
+        // locales use ("Plugins", "Community", "Updates", "Links", "Website", "Support", "app", "Source", "Categories").
+        'settingsPlugins.discover.platform.android',
+        'settingsPlugins.discover.platform.ios',
+        'settingsPlugins.discover.platform.web',
+        'updates.offline',
+        // "Agent" is the Polish word too (commit-message generator section).
+        'settingsSourceControl.page.generator.agentTitle',
+    ]),
+    pt: new Set([
+        // Boards (INT §5.1): the ordinary words these locales use (Board, Canvas, Offline, Online, Workflow, Session(s), Machine(s), Name, Layout).
+        'workStatus.buckets.offline',
+        'boards.card.machine.online',
+        'boards.card.machine.offline',
+        'boards.settings.layout',
+        // Folder-less sessions: the ordinary word in this locale.
+        'session.folderless.chats',
+        // Plugins: platform names (Android, iOS, Web) are product names; the rest are the words these
+        // locales use ("Plugins", "Community", "Updates", "Links", "Website", "Support", "app", "Source", "Categories").
+        'settingsPlugins.discover.platform.android',
+        'settingsPlugins.discover.platform.ios',
+        'settingsPlugins.discover.platform.web',
+        'settingsPlugins.catalog.links',
+        'settingsPlugins.surfaces.navigationTitle',
+        // "Commits" is the developer term; "Manual" is the Portuguese word (Source control).
+        'settingsSourceControl.page.commits.title', 'settingsSourceControl.page.pushRejection.manual',
+        'updates.offline',
+        // "Endpoints" is the technical term these locales use (Providers section title; matches "Endpoint personalizado").
+        'settingsProvidersCollection.endpointsTitle',
+    ]),
     fr: new Set([
+        // Boards (INT §5.1): the ordinary words these locales use (Board, Canvas, Offline, Online, Workflow, Session(s), Machine(s), Name, Layout).
+        'boards.sections.filter.title',
+        'boards.kinds.session',
+        'boards.kinds.workflow',
+        'boards.kinds.machine',
+        'boards.add.groups.sessions',
+        'boards.add.groups.workflows',
+        'boards.add.groups.machines',
+        // Roles: "Session" is the same word in French (a role that runs as a session).
+        'roles.settings.runsAsSession',
+        // Work › Notes: "Notes" is the French word too.
+        'roles.session.notesTitle',
+        // "Services" is the French word too (Connected services section title).
+        'connectedServicesSettings.servicesTitle',
+        // Search / ⌘K group: "Actions" is the French word too.
+        'commandPalette.commands.actionsCategory',
+        // "Machines" is the French word too (plugin page Machines section).
+        'settingsPlugins.surfaces.machinesTitle',
+        // Sub-agents (lane e): "Agents" is French.
+        'subAgentGuidance.settings.related.agentsTitle',
+        // Plugins: platform names (Android, iOS, Web) are product names; the rest are the words these
+        // locales use ("Plugins", "Community", "Updates", "Links", "Website", "Support", "app", "Source", "Categories").
+        'settingsPlugins.discover.platform.android',
+        'settingsPlugins.discover.platform.ios',
+        'settingsPlugins.discover.platform.web',
+        'settingsPlugins.surfaces.listingSource',
+        'settingsPlugins.surfaces.navigationTitle',
+        // Source control and Keyboard: developer vocabulary and French cognates.
+        'settingsKeyboard.groupSessions',
+        'settingsSourceControl.page.commits.title',
+        'settingsSourceControl.page.files.compact',
+        'settingsSourceControl.page.files.simple',
+        'settingsSourceControl.page.generator.agentTitle',
+        'settingsSourceControl.page.generator.instructionsTitle',
+        // "Endpoints" is the French technical term too (Providers section title).
+        'settingsProvidersCollection.endpointsTitle',
+        // "Session" is the French word too (MCP preview section title).
+        'mcpSettings.previewContextSection',
+        // "Session" is the French word too (the kind a Work row names first: "Session · Claude").
+        'sessionWork.kinds.session',
+        // "Pages" is the French word too (settings search result group).
+        'settingsSearch.pagesTitle',
+        'updates.sections.machine',
         'agentInput.acp.modeSectionTitle',
         'agentInput.acp.optionsSectionTitle',
         'agentInput.mode.build',
@@ -132,7 +274,6 @@ const IGNORED_UNTRANSLATED_KEYS_BY_LOCALE: Readonly<Record<string, ReadonlySet<s
         'common.machine',
         'common.message',
         'common.version',
-        'connectedServices.account.poolsLabel',
         'connectedServices.authChip.label',
         'connectedServices.authChip.nativeLabel',
         'connectedServices.detail.actionsGroupTitle',
@@ -142,9 +283,6 @@ const IGNORED_UNTRANSLATED_KEYS_BY_LOCALE: Readonly<Record<string, ReadonlySet<s
         'connectedServices.detail.prompts.personalAccessTokenPlaceholder',
         'connectedServices.detail.prompts.setupTokenPlaceholder',
         'connectedServices.detail.prompts.setupTokenTitle',
-        'connectedServices.detail.segments.pools',
-        'connectedServices.pools.autoBadge',
-        'connectedServices.pools.title',
         'connectedServices.profile.poolsGroupTitle',
         'connectedServices.profile.quotaTitle',
         'connectedServices.serviceNames.gemini',
@@ -186,6 +324,7 @@ const IGNORED_UNTRANSLATED_KEYS_BY_LOCALE: Readonly<Record<string, ReadonlySet<s
         'files.sourceControlOperations.update.pullRequests.title',
         'files.sourceControlOperations.update.remotes.title',
         'inbox.permissions',
+        'inbox.work.groups.unknownLead',
         'localServices.band.suggestions',
         'localServices.launcher.title',
         'localServices.session.workspaceTitle',
@@ -199,7 +338,6 @@ const IGNORED_UNTRANSLATED_KEYS_BY_LOCALE: Readonly<Record<string, ReadonlySet<s
         'machine.tools.installablesTitle',
         'markdown.codeLabel',
         'markdown.diffLabel',
-        'memorySearchSettings.backfill.title',
         'memorySearchSettings.embeddings.groupTitle',
         'memorySearchSettings.embeddings.openAi.dimensionsTitle',
         'memorySearchSettings.embeddings.provider.title',
@@ -318,6 +456,7 @@ const IGNORED_UNTRANSLATED_KEYS_BY_LOCALE: Readonly<Record<string, ReadonlySet<s
         'settingsPets.title',
         'settingsPlugins.accountDataErase.promptPlaceholder',
         'settingsPlugins.developmentCreateSurfaceReactNative',
+        'settingsPlugins.developmentCreateSurfaceDeclarative',
         'settingsPlugins.diagnosticsSnapshotTitle',
         'settingsPlugins.invocationLogs.level.diagnostic',
         'settingsPlugins.invocationLogs.level.info',
@@ -359,8 +498,6 @@ const IGNORED_UNTRANSLATED_KEYS_BY_LOCALE: Readonly<Record<string, ReadonlySet<s
         'subAgentGuidance.ruleEditor.exampleToolCalls.placeholder',
         'subAgentGuidance.ruleEditor.intent.options.plan.title',
         'subAgentGuidance.settings.groupTitle',
-        'subAgentGuidance.settings.overview.happierStatusTitle',
-        'subAgentGuidance.settings.related.providersTitle',
         'systemStatus.sections.actions',
         'systemStatus.sections.application',
         'systemStatus.ui.socket',
@@ -406,6 +543,47 @@ const IGNORED_UNTRANSLATED_KEYS_BY_LOCALE: Readonly<Record<string, ReadonlySet<s
     // German noun is spelled. A key here is a decision, not a gap — translating one would make
     // the UI read worse, not better.
     de: new Set([
+        // Boards (INT §5.1): the ordinary words these locales use (Board, Canvas, Offline, Online, Workflow, Session(s), Machine(s), Name, Layout).
+        'boards.title',
+        'boards.header.canvas',
+        'workStatus.buckets.offline',
+        'boards.kinds.workflow',
+        'boards.card.machine.online',
+        'boards.card.machine.offline',
+        'boards.settings.name',
+        'boards.settings.layout',
+        'boards.add.groups.workflows',
+        // Folder-less sessions: the ordinary word in this locale.
+        'session.folderless.chats',
+        // Prompts & Skills (lane e): "Prompt"/"Skill" are the German product nouns (promptLibrary.prompts = "Prompts"); Name, Optional, Delegation and Status are German words.
+        'promptLibrary.surface.promptSection',
+        'promptLibrary.surface.skillSection',
+        'promptLibrary.surface.registryItemSection',
+        'promptLibrary.surface.nameTitle',
+        'promptLibrary.surface.optionalPlaceholder',
+        'subAgentGuidance.settings.instructionsTitle',
+        // Plugins: platform names (Android, iOS, Web) are product names; the rest are the words these
+        // locales use ("Plugins", "Community", "Updates", "Links", "Website", "Support", "app", "Source", "Categories").
+        'settingsPlugins.discover.platform.android',
+        'settingsPlugins.discover.platform.ios',
+        'settingsPlugins.discover.platform.web',
+        'settingsPlugins.catalog.homepage',
+        'settingsPlugins.catalog.links',
+        'settingsPlugins.catalog.support',
+        'settingsPlugins.surfaces.navigationTitle',
+        'settingsPlugins.surfaces.shelfCommunity',
+        'settingsPlugins.surfaces.updatesTitle',
+        // German nouns spelled like the English (theme name, Keyboard groups, the system sound,
+        // source-control vocabulary).
+        'settingsAppearance.themeProfiles.themeName',
+        'settingsKeyboard.groupApp', 'settingsKeyboard.groupBrowser',
+        'settingsNotifications.sounds.accountDefaultShort',
+        'settingsSourceControl.page.commits.title',
+        'settingsSourceControl.page.generator.agentTitle',
+        // "Server" is the German noun (MCP settings section title).
+        'mcpSettings.serverSection',
+        'updates.title',
+        'updates.offline',
         // "Workflow" is the German noun for this concept, exactly as already ratified for
         // `tools.workflowActivityView.untitled`. Only the bare plural collides; every other
         // string in the Workflows namespace is translated.
@@ -446,12 +624,9 @@ const IGNORED_UNTRANSLATED_KEYS_BY_LOCALE: Readonly<Record<string, ReadonlySet<s
         'bugReports.composer.environment.deploymentType.cloud',
         'bugReports.composer.environment.deploymentType.enterprise',
         'bugReports.composer.frequencySeverity.severity.blocker',
-        'commandPalette.commands.navigationCategory',
         'commandPalette.commands.runsCategory',
-        'commandPalette.commands.sessionsCategory',
         'commandPalette.commands.systemCategory',
         'commandPalette.commands.voiceCategory',
-        'commandPalette.commands.voiceSubtitle',
         'common.commit',
         'common.details',
         'common.dialog',
@@ -462,8 +637,6 @@ const IGNORED_UNTRANSLATED_KEYS_BY_LOCALE: Readonly<Record<string, ReadonlySet<s
         'common.start',
         'common.tabs',
         'common.version',
-        'connectedServices.account.poolsLabel',
-        'connectedServices.account.resetsCaption',
         'connectedServices.authChip.label',
         'connectedServices.detail.groupActions.groupIdPlaceholder',
         'connectedServices.detail.prompts.accessTokenPlaceholder',
@@ -472,9 +645,6 @@ const IGNORED_UNTRANSLATED_KEYS_BY_LOCALE: Readonly<Record<string, ReadonlySet<s
         'connectedServices.detail.prompts.personalAccessTokenPlaceholder',
         'connectedServices.detail.prompts.profileIdPlaceholder',
         'connectedServices.detail.prompts.setupTokenPlaceholder',
-        'connectedServices.detail.segments.pools',
-        'connectedServices.pools.autoBadge',
-        'connectedServices.pools.title',
         'connectedServices.profile.poolsGroupTitle',
         'connectedServices.profile.status',
         'connectedServices.serviceNames.gemini',
@@ -532,6 +702,7 @@ const IGNORED_UNTRANSLATED_KEYS_BY_LOCALE: Readonly<Record<string, ReadonlySet<s
         'memorySearchSettings.contentPolicy.reasoningTitle',
         'memorySearchSettings.embeddings.groupTitle',
         'memorySearchSettings.embeddings.provider.title',
+        'memorySearchSettings.status.title',
         'navigation.automation',
         'newSession.sessionType.worktree',
         'newSession.worktree.backToRoot',
@@ -561,7 +732,6 @@ const IGNORED_UNTRANSLATED_KEYS_BY_LOCALE: Readonly<Record<string, ReadonlySet<s
         'secrets.fields.name',
         'server.retention.sessions',
         'server.serverGroupServersLabel',
-        'session.participants.lead',
         'session.planOutput.title',
         'session.sharing.session',
         'session.subagents.intent.plan',
@@ -751,7 +921,6 @@ const IGNORED_UNTRANSLATED_KEYS_BY_LOCALE: Readonly<Record<string, ReadonlySet<s
         'subAgentGuidance.ruleEditor.intent.options.plan.title',
         'subAgentGuidance.ruleEditor.intent.options.review.title',
         'subAgentGuidance.settings.groupTitle',
-        'subAgentGuidance.settings.overview.happierStatusTitle',
         'systemStatus.machine.offline',
         'systemStatus.machine.online',
         'systemStatus.sections.updates',
@@ -788,6 +957,79 @@ const IGNORED_UNTRANSLATED_KEYS_BY_LOCALE: Readonly<Record<string, ReadonlySet<s
         'voiceSurface.start',
         'workspaceCockpit.tabs',
     ]),
+    // "Personal" is spelled the same in Spanish and Catalan ("Keep it: Personal | Shared").
+    es: new Set([
+        // Folder-less sessions: the ordinary word in this locale.
+        'session.folderless.chats',
+        // Roles: "Roles" is the ordinary Spanish plural of "rol".
+        'roles.rail.label',
+        'roles.session.sectionTitle',
+        // Plugins: platform names (Android, iOS, Web) are product names; the rest are the words these
+        // locales use ("Plugins", "Community", "Updates", "Links", "Website", "Support", "app", "Source", "Categories").
+        'settingsPlugins.discover.platform.android',
+        'settingsPlugins.discover.platform.ios',
+        'settingsPlugins.discover.platform.web',
+        'settingsPlugins.surfaces.navigationTitle',
+        // Spanish cognates (Features, Source control) and the developer term "Commits".
+        'settingsFeatures.generalTitle',
+        'settingsSourceControl.page.commits.title',
+        'settingsSourceControl.page.files.simple',
+        'settingsSourceControl.page.pushRejection.manual',
+        'secretsSettings.keepPersonal',
+        // "Endpoints" is the technical term these locales use (Providers section title; matches "Endpoint personalizado").
+        'settingsProvidersCollection.endpointsTitle',
+    ]),
+    ca: new Set([
+        // Boards (INT §5.1): the ordinary words these locales use (Board, Canvas, Offline, Online, Workflow, Session(s), Machine(s), Name, Layout).
+        'boards.sections.filter.title',
+        'boards.add.groups.sessions',
+        // Work › Notes: "Notes" is the Catalan word too.
+        'roles.session.notesTitle',
+        // Sub-agents (lane e): "Agents" is Catalan.
+        'subAgentGuidance.settings.related.agentsTitle',
+        // Plugins: platform names (Android, iOS, Web) are product names; the rest are the words these
+        // locales use ("Plugins", "Community", "Updates", "Links", "Website", "Support", "app", "Source", "Categories").
+        'settingsPlugins.discover.platform.android',
+        'settingsPlugins.discover.platform.ios',
+        'settingsPlugins.discover.platform.web',
+        'settingsPlugins.surfaces.categoriesLabel',
+        'settingsPlugins.surfaces.listingCategories',
+        // Catalan cognates (Features, Keyboard, Source control) and the developer term "Commits".
+        'settingsFeatures.generalTitle',
+        'settingsKeyboard.groupSessions',
+        'settingsSourceControl.page.commits.title',
+        'settingsSourceControl.page.files.simple',
+        'settingsSourceControl.page.generator.agentTitle',
+        'settingsSourceControl.page.pushRejection.manual',
+        'secretsSettings.keepPersonal',
+        // "Endpoints" is the technical term these locales use (Providers section title; matches "Endpoint personalizado").
+        'settingsProvidersCollection.endpointsTitle',
+    ]),
+    ru: new Set([
+        // Plugins: platform names (Android, iOS, Web) are product names; the rest are the words these
+        // locales use ("Plugins", "Community", "Updates", "Links", "Website", "Support", "app", "Source", "Categories").
+        'settingsPlugins.discover.platform.android',
+        'settingsPlugins.discover.platform.ios',
+    ]),
+    'zh-Hans': new Set([
+        // Plugins: platform names (Android, iOS, Web) are product names; the rest are the words these
+        // locales use ("Plugins", "Community", "Updates", "Links", "Website", "Support", "app", "Source", "Categories").
+        'settingsPlugins.discover.platform.android',
+        'settingsPlugins.discover.platform.ios',
+    ]),
+    'zh-Hant': new Set([
+        // Plugins: platform names (Android, iOS, Web) are product names; the rest are the words these
+        // locales use ("Plugins", "Community", "Updates", "Links", "Website", "Support", "app", "Source", "Categories").
+        'settingsPlugins.discover.platform.android',
+        'settingsPlugins.discover.platform.ios',
+    ]),
+    ja: new Set([
+        // Plugins: platform names (Android, iOS, Web) are product names; the rest are the words these
+        // locales use ("Plugins", "Community", "Updates", "Links", "Website", "Support", "app", "Source", "Categories").
+        'settingsPlugins.discover.platform.android',
+        'settingsPlugins.discover.platform.ios',
+        'settingsPlugins.discover.platform.web',
+    ]),
 };
 
 // Every remaining English-equal value must be an explicit product name, technical token,
@@ -808,6 +1050,19 @@ const SAMPLED_FUNCTION_TRANSLATIONS: Readonly<Record<string, readonly unknown[]>
     'settingsProviders.local.defaultConnectionName': [{ provider: 'Example Provider' }],
     'settingsProviders.local.startManaged': [{ provider: 'Example Provider' }],
     'settingsProviders.detail.copyName': [{ name: 'Work' }],
+    'connectedServicesSettings.accountCount': [{ count: 2 }],
+    'connectedServicesSettings.poolCount': [{ count: 2 }],
+    'connectedServicesSettings.defaultAccount': [{ name: 'Work' }],
+    'connectedServicesSettings.connectNames': [{ names: 'Gemini, Copilot' }],
+    'connectedServicesSettings.connectNamesMore': [{ names: 'Gemini, Copilot', count: 2 }],
+    'connectedServicesSettings.sharingSummary': [{ config: 'CONFIG', state: 'STATE' }],
+    'connectedServicesSettings.emptyNoServiceOnMachine': [{ machine: 'MACHINE' }],
+    'connectedServicesSettings.usedBy': [{ names: 'Claude Code' }],
+    'connectedServicesSettings.signedOutBy': [{ service: 'ChatGPT' }],
+    'connectedServicesSettings.inviteTitle': [{ names: 'Gemini' }],
+    'connectedServicesSettings.setupServicePurpose': [{ agents: 'Codex', service: 'ChatGPT' }],
+    'connectedServicesSettings.detailSignedOutTitle': [{ service: 'ChatGPT' }],
+    'connectedServicesSettings.nearLimitBodyWithReset': [{ time: '13:05' }],
     'settingsProviders.models.invalidModelIds': [{ ids: 'bad-id' }],
     'session.providerBinding.launchDefaultLabel': [{ provider: 'Example Provider' }],
     'session.providerBinding.launchNamedLabel': [{ provider: 'Example Provider', connection: 'Work' }],
@@ -826,6 +1081,13 @@ const SAMPLED_FUNCTION_SAME_VALUE_BY_LOCALE: Readonly<Record<string, ReadonlySet
     'session.providerBinding.launchNamedLabel': new Set(['it', 'de']),
     // “Local” has the same spelling in these locales.
     'settingsProviders.local.defaultConnectionName': new Set(['es', 'pt', 'ca', 'fr']),
+    // "pool" stays English in French (glossary in translations/README.md: agent, pool, … unchanged).
+    'connectedServicesSettings.poolCount': new Set(['fr']),
+    // Only punctuation around the service names: the Latin-script locales end the list with the
+    // same full stop as English; ja/zh use 。.
+    'connectedServicesSettings.connectNames': new Set(['ru', 'pl', 'es', 'fr', 'it', 'pt', 'ca', 'de']),
+    // Two already-translated values joined by a middle dot: no words of its own in any locale.
+    'connectedServicesSettings.sharingSummary': new Set(['ru', 'pl', 'es', 'fr', 'it', 'pt', 'ca', 'de', 'zh-Hans', 'zh-Hant', 'ja']),
 };
 
 const EXTERNAL_SESSION_FUNCTION_TRANSLATIONS: Readonly<Record<string, readonly unknown[]>> = {
@@ -923,13 +1185,15 @@ describe('i18n integrity', () => {
             { code: 'zh-Hant', root: zhHant },
             { code: 'ja', root: ja },
         ];
-        // Every top-level namespace reached by `t(...)` from `components/browser/**` and
-        // `components/sessions/localServices/**`.
+        // Every top-level namespace reached by `t(...)` from `components/browser/**`,
+        // `components/sessions/localServices/**` and computer use (`computerUse`).
         const corridorNamespaces = [
-            'browserAutomation',
             'browserContext',
             'browserDiagnostics',
             'browserLaunchpad',
+            'browserPresence',
+            'computerUse',
+            'browserTool',
             'browserRecording',
             'browserShell',
             'browserSurface',

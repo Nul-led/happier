@@ -62,6 +62,9 @@ export async function handleAuthCommand(args: string[], signal?: AbortSignal): P
     case 'security':
       await (await import('./auth/accountSecurity')).handleAuthSecurityGet(args.slice(1), signal);
       return;
+    case 'cli-approvals':
+      await (await import('./auth/accountSecurity')).handleAuthCliApprovals(args.slice(1), signal);
+      return;
     case 'password':
       await (await import('./auth/accountSecurity')).handleAuthPasswordCommand(args.slice(1), signal);
       return;

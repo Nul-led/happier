@@ -3,9 +3,16 @@
  * plugin artifact/custody fact that made it available to this daemon.
  *
  * `sourceIntegrity` deliberately preserves the acquisition owner's exact SRI
- * string. `materialization` is the opaque daemon generation identity used for
- * mutable local/path sources. Neither arm is a hash of extracted plugin files.
+ * string. `materialization` records the durable source custody used for the
+ * currently supported development path. Neither arm is a hash of extracted
+ * plugin files or a process-local runtime occurrence.
  */
+import {
+  DevelopmentPluginSourceCustodyV1Schema,
+  pluginSourceCustodyV1Equal,
+  type DevelopmentPluginSourceCustodyV1,
+} from '@happier-dev/protocol';
+
 export type VoiceModelPackArtifactBindingV1 =
   | Readonly<{
       kind: 'sourceIntegrity';
@@ -13,11 +20,10 @@ export type VoiceModelPackArtifactBindingV1 =
     }>
   | Readonly<{
       kind: 'materialization';
-      immutableGenerationId: string;
+      sourceCustody: DevelopmentPluginSourceCustodyV1;
     }>;
 
 const MAX_SOURCE_INTEGRITY_LENGTH = 1024;
-const MAX_MATERIALIZATION_ID_LENGTH = 512;
 
 function invalid(): never {
   throw new Error('voice_model_pack_artifact_binding_invalid');
@@ -69,13 +75,12 @@ export function parseVoiceModelPackArtifactBindingV1(value: unknown): VoiceModel
     });
   }
   if (record.kind === 'materialization') {
-    readExactKeys(record, ['kind', 'immutableGenerationId']);
+    readExactKeys(record, ['kind', 'sourceCustody']);
+    const sourceCustody = DevelopmentPluginSourceCustodyV1Schema.safeParse(record.sourceCustody);
+    if (!sourceCustody.success) return invalid();
     return Object.freeze({
       kind: 'materialization',
-      immutableGenerationId: readBoundedString(
-        record.immutableGenerationId,
-        MAX_MATERIALIZATION_ID_LENGTH,
-      ),
+      sourceCustody: Object.freeze(sourceCustody.data),
     });
   }
   return invalid();
@@ -89,5 +94,5 @@ export function voiceModelPackArtifactBindingsEqualV1(
   return left.kind === 'sourceIntegrity'
     ? right.kind === 'sourceIntegrity' && left.integrity === right.integrity
     : right.kind === 'materialization'
-      && left.immutableGenerationId === right.immutableGenerationId;
+      && pluginSourceCustodyV1Equal(left.sourceCustody, right.sourceCustody);
 }

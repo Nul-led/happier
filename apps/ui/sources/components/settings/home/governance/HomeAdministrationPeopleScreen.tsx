@@ -1,11 +1,11 @@
 import * as React from 'react';
-import { useRouter } from 'expo-router';
+import { useRouter } from '@/components/appShell/workspace/destinationRoute';
 import type { HomeAccountRowV1 } from '@happier-dev/protocol/home/governance';
 import { Platform } from 'react-native';
 import { useUnistyles } from 'react-native-unistyles';
 
-import { SearchHeader } from '@/components/ui/forms/SearchHeader';
-import { Icon } from '@/components/ui/icons/Icon';
+import { Avatar } from '@/components/ui/avatar/Avatar';
+import { CompactSearchField } from '@/components/ui/forms/CompactSearchField';
 import { Item } from '@/components/ui/lists/Item';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
 import { VirtualizedList } from '@/components/ui/lists/virtualized';
@@ -13,10 +13,11 @@ import { useHomeAccountRoster } from '@/hooks/home/useHomeAccountRoster';
 import {
     useHomeAccountSearch,
 } from '@/hooks/home/useHomeAccountSearch';
-import { formatAccountDisplayName } from '@/sync/domains/account/formatAccountDisplayName';
+import { resolveAccountDisplayName } from '@/sync/domains/account/formatAccountDisplayName';
 import { t } from '@/text';
 
 import { HomeAdministrationSection } from './HomeAdministrationSection';
+import { HomeInvitePeopleButton } from './HomeInvitePeopleDialog';
 import type { HomeAdministrationContext } from './homeAdministrationContext';
 import { homeAdministrationAccountPath } from './homeAdministrationRoutes';
 import { HomeAccountStatusPill } from './HomeAccountStatusPill';
@@ -37,6 +38,8 @@ type PeopleVirtualizedRow = Readonly<{
 }>;
 
 const PEOPLE_CHUNK_SIZE = 12;
+/** The person's identity mark on the People list. */
+const PEOPLE_AVATAR_SIZE = 32;
 
 const PeopleRoster = React.memo(function PeopleRoster(
     props: Readonly<{ context: HomeAdministrationContext; header?: React.ReactNode }>,
@@ -51,13 +54,12 @@ const PeopleRoster = React.memo(function PeopleRoster(
     const isSearching = query.trim().length > 0;
 
     const searchHeader = canList ? (
-        <SearchHeader
+        <CompactSearchField
             testID="home-people-search"
             value={query}
             onChangeText={setQuery}
             placeholder={t('homeGovernance.searchPlaceholder')}
-            autoCapitalize="none"
-            autoCorrect={false}
+            placement="page"
         />
     ) : null;
 
@@ -66,7 +68,7 @@ const PeopleRoster = React.memo(function PeopleRoster(
             return [{
                 key: 'forbidden',
                 render: () => (
-                    <ItemGroup footer={t('homeGovernance.forbiddenBody')}>
+                    <ItemGroup description={t('homeGovernance.forbiddenBody')}>
                         <Item
                             testID="home-admin-viewer-forbidden"
                             title={t('homeGovernance.forbiddenTitle')}
@@ -84,7 +86,7 @@ const PeopleRoster = React.memo(function PeopleRoster(
                 render: () => (
                     <ItemGroup
                         title={t('homeGovernance.rosterUnavailableTitle')}
-                        footer={t('homeGovernance.rosterUnavailableBody')}
+                        description={t('homeGovernance.rosterUnavailableBody')}
                     >
                         <Item
                             testID="home-people-unsupported"
@@ -112,16 +114,26 @@ const PeopleRoster = React.memo(function PeopleRoster(
                 }
                 if (search.failure) {
                     const unsupported = search.failure.kind === 'unsupported';
+                    // Read now: the row renders later, where the narrowing no longer holds.
+                    const retryable = search.failure.retryable;
                     return [{
                         key: 'search-failure',
                         render: () => (
-                            <ItemGroup footer={unsupported ? t('homeGovernance.searchUnsupportedBody') : t('homeGovernance.searchFailedBody')}>
+                            <ItemGroup description={unsupported ? t('homeGovernance.searchUnsupportedBody') : t('homeGovernance.searchFailedBody')}>
                                 <Item
                                     testID={unsupported ? 'home-people-search-unsupported' : 'home-people-search-failed'}
                                     title={unsupported ? t('homeGovernance.searchUnsupported') : t('homeGovernance.searchFailed')}
                                     mode="info"
                                     showChevron={false}
                                 />
+                                {retryable ? (
+                                    <Item
+                                        testID="home-people-search-retry"
+                                        title={t('homeGovernance.retry')}
+                                        onPress={search.retry}
+                                        showChevron={false}
+                                    />
+                                ) : null}
                             </ItemGroup>
                         ),
                     }];
@@ -145,17 +157,21 @@ const PeopleRoster = React.memo(function PeopleRoster(
                     render: () => (
                         <ItemGroup
                             title={first ? t('homeGovernance.searchResults') : undefined}
-                            footer={last ? t('homeGovernance.searchResultsFooter') : undefined}
+                            description={last ? t('homeGovernance.searchResultsFooter') : undefined}
                             virtualizedSegment={{ first, last }}
                         >
-                            {chunk.map((row) => (
-                                <Item
-                                    key={row.accountId}
-                                    testID={`home-people-search-row:${row.accountId}`}
-                                    title={formatAccountDisplayName(row.profile) ?? row.accountId}
-                                    onPress={() => router.push(homeAdministrationAccountPath(context.scope.serverId, row.accountId))}
-                                />
-                            ))}
+                            {chunk.map((row) => {
+                                const person = resolveAccountDisplayName({ profile: row.profile, accountId: row.accountId, viewerAccountId: context.scope.accountId });
+                                return (
+                                    <Item
+                                        key={row.accountId}
+                                        testID={`home-people-search-row:${row.accountId}`}
+                                        title={person.name}
+                                        subtitle={person.hint ?? undefined}
+                                        onPress={() => router.push(homeAdministrationAccountPath(context.scope.serverId, row.accountId))}
+                                    />
+                                );
+                            })}
                         </ItemGroup>
                     ),
                 });
@@ -196,16 +212,29 @@ const PeopleRoster = React.memo(function PeopleRoster(
                         title={first ? t('homeGovernance.people') : undefined}
                         virtualizedSegment={{ first, last }}
                     >
-                        {chunk.map((row) => (
-                            <Item
-                                key={row.accountId}
-                                testID={`home-people-row:${row.accountId}`}
-                                title={formatAccountDisplayName(row.profile) ?? row.accountId}
-                                subtitle={homeRoleLabel(row.homeRole)}
-                                rightElement={<HomeAccountStatusPill row={row} testID={`home-people-status:${row.accountId}`} />}
-                                onPress={() => router.push(homeAdministrationAccountPath(context.scope.serverId, row.accountId))}
-                            />
-                        ))}
+                        {chunk.map((row) => {
+                            const person = resolveAccountDisplayName({
+                                profile: row.profile,
+                                accountId: row.accountId,
+                                signInEmail: row.authentication.signInEmail,
+                                viewerAccountId: context.scope.accountId,
+                            });
+                            return (
+                                <Item
+                                    key={row.accountId}
+                                    testID={`home-people-row:${row.accountId}`}
+                                    title={person.name}
+                                    leftElement={<Avatar id={row.accountId} size={PEOPLE_AVATAR_SIZE} imageUrl={row.profile.avatarUrl ?? null} />}
+                                    subtitle={[
+                                        homeRoleLabel(row.homeRole),
+                                        person.viewer && person.named ? t('homeGovernance.person.you') : null,
+                                        person.hint,
+                                    ].filter((part): part is string => part !== null).join(' · ')}
+                                    rightElement={<HomeAccountStatusPill row={row} testID={`home-people-status:${row.accountId}`} />}
+                                    onPress={() => router.push(homeAdministrationAccountPath(context.scope.serverId, row.accountId))}
+                                />
+                            );
+                        })}
                     </ItemGroup>
                 ),
             });
@@ -215,11 +244,10 @@ const PeopleRoster = React.memo(function PeopleRoster(
             result.push({
                 key: 'retry',
                 render: () => (
-                    <ItemGroup footer={t('homeGovernance.unavailableBody')}>
+                    <ItemGroup description={t('homeGovernance.unavailableBody')}>
                         <Item
                             testID="home-people-retry"
                             title={t('homeGovernance.retry')}
-                            icon={<Icon name="arrow-clockwise" size={29} color={theme.colors.text.secondary} />}
                             onPress={roster.reload}
                             showChevron={false}
                         />
@@ -244,7 +272,7 @@ const PeopleRoster = React.memo(function PeopleRoster(
             });
         }
         return result;
-    }, [canList, context.scope.serverId, isSearching, roster, router, search, theme.colors.text.secondary]);
+    }, [canList, context.scope.accountId, context.scope.serverId, isSearching, roster, router, search, theme.colors.text.secondary]);
 
     const renderRow = React.useCallback(({ item }: Readonly<{ item: PeopleVirtualizedRow }>) => item.render(), []);
 
@@ -257,7 +285,7 @@ const PeopleRoster = React.memo(function PeopleRoster(
             ListHeaderComponent={<>{props.header}{searchHeader}</>}
             style={{
                 flex: 1,
-                backgroundColor: theme.colors.background.canvas,
+                backgroundColor: theme.colors.surface.base,
                 ...(Platform.OS === 'web' ? { minHeight: 0 } : {}),
             }}
             contentContainerStyle={{ paddingBottom: Platform.OS === 'ios' ? 34 : 16 }}
@@ -278,7 +306,11 @@ export const HomeAdministrationPeopleScreen = React.memo(function HomeAdministra
         <HomeAdministrationSection
             serverId={props.serverId}
             title={t('homeGovernance.people')}
+            description={t('homeGovernance.pages.people')}
             presentation="virtualized-list"
+            pageActions={(context) => ({
+                actions: <HomeInvitePeopleButton context={context} testID="home-people-invite" />,
+            })}
         >
             {/* A credential change here means a different roster and different
                 search answers; the shell discards this section for the previous

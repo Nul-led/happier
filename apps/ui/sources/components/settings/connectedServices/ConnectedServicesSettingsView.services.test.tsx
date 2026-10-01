@@ -2,6 +2,8 @@ import * as React from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { pressTestInstanceAsync, renderScreen } from '@/dev/testkit';
+import type { ConnectedAccountIndexFacts } from './index/ConnectedAccountIndexRow';
+import type { ConnectedServicesConnectMore } from './setup/ConnectedServicesConnectMore';
 
 import {
     connectedServicesModuleState,
@@ -43,6 +45,7 @@ vi.mock('@/sync/domains/features/featureDecisionRuntime', () => ({
 
 vi.mock('@/sync/store/hooks', () => ({
     useActiveServerAccountScope: () => null,
+    useAllMachines: () => [],
     useProfile: () => ({
         connectedServicesV2: profileState.connectedServicesV2,
         connectedAccountsV4: profileState.connectedAccountsV4,
@@ -55,8 +58,13 @@ vi.mock('@/sync/store/hooks', () => ({
         connectedServicesDefaultAuthByAgentIdV1: {},
     }),
     useSettingMutable: () => [{}, vi.fn()],
-    useLocalSetting: () => 1,
+    useSetting: () => undefined,
+    useLocalSetting: () => undefined,
+    useLocalSettingMutable: () => [undefined, vi.fn()],
 }));
+
+// Saving settings crosses the sync/persistence boundary; model and presentation stay real.
+vi.mock('@/sync/store/settingsWriters', () => ({ useApplySettings: () => vi.fn() }));
 
 vi.mock('@/hooks/teams/useHomeTeamCredentialModelCatalog', () => ({
     useHomeTeamCredentialModelCatalog: () => ({
@@ -75,20 +83,11 @@ vi.mock('@/components/appShell/plugins/AppShellPluginUiProjection', () => ({
     }),
 }));
 
-vi.mock('@/sync/domains/connectedServices/connectedServiceRegistry', () => ({
+vi.mock('@/sync/domains/connectedServices/connectedServiceRegistry', async (importOriginal) => ({
+    ...(await importOriginal<typeof import('@/sync/domains/connectedServices/connectedServiceRegistry')>()),
     getLegacyConnectedServiceRegistryEntry: (serviceId: string) => ({
         serviceId, connectCommand: `happier connect ${serviceId}`, supportsOauth: false, executable: false,
     }),
-    // The generated built-in fallback names a released service no machine publishes right now.
-    getGeneratedLegacyConnectedServiceRegistryFallback: (service: { pluginId: string; localId: string }) => (
-        service.pluginId === CLAUDE.pluginId && service.localId === CLAUDE.localId
-            ? {
-                serviceId: 'anthropic', legacyServiceId: 'anthropic', service: CLAUDE,
-                connectCommand: 'happier connect anthropic', supportsOauth: false,
-                displayNameKey: 'connectedServices.names.anthropic',
-            }
-            : null
-    ),
     getConnectedServiceRegistrySnapshot: () => ({
         scopeKey: 'server-1', status: 'ready', errorReason: null, entries: registryState.entries,
     }),
@@ -100,7 +99,17 @@ vi.mock('@/hooks/server/connectedServices/useConnectedServiceQuotaBadges', () =>
     useConnectedServiceQuotaBadges: () => ({}),
 }));
 vi.mock('@/hooks/server/connectedServices/useConnectedServiceQuotaSummaries', () => ({
-    useConnectedServiceQuotaSummaries: () => ({ summaries: [], isRefreshing: false, hasConnectedProfiles: false }),
+    useConnectedServiceQuotaSummaries: () => ({
+        summaries: [], accountsWithoutUsage: [], accountsNeedingSignIn: [], keysWithoutLimits: 0,
+        inUseAccountKeys: new Set(), isRefreshing: false, hasConnectedProfiles: false,
+    }),
+}));
+vi.mock('@/sync/domains/state/warmCachePersistence', () => ({
+    loadUsageSummaryWarmCache: () => null,
+    saveUsageSummaryWarmCache: () => {},
+}));
+vi.mock('@/agents/backendCatalog/useDaemonMergedProjectionInputs', () => ({
+    useDaemonMergedProjectionInputs: () => ({ phase: 'ready', inputs: null }),
 }));
 
 vi.mock('./ConnectedServicesDefaultAuthRow', () => ({
@@ -113,13 +122,19 @@ vi.mock('./ConnectedServicesProviderStateSharingSettings', () => ({
         React.createElement('ConnectedServicesProviderStateSharingDisclosure', props),
 }));
 
-// The account block owns its own quota subscription (a network read); the index only decides which
-// accounts it lists, so a host stand-in keeps the props assertable.
-vi.mock('./account/QualifiedAccountBlock', () => ({
-    QualifiedAccountBlock: (props: Record<string, unknown>) => React.createElement('QualifiedAccountBlock', props),
+// The account row owns its own quota subscription (a network read); the index only decides which
+// accounts it lists and what each says, so a host stand-in keeps the props assertable.
+vi.mock('./index/ConnectedAccountIndexRow', async (importOriginal) => ({
+    ...(await importOriginal<typeof import('./index/ConnectedAccountIndexRow')>()),
+    ConnectedAccountIndexLiveFacts: ({ render }: { render: (facts: ConnectedAccountIndexFacts) => React.ReactElement }) => render({
+        usage: { kind: 'none' }, planLabel: null, subscription: null, recoveryCredits: null,
+        fetchedAt: null, staleSince: null, refreshing: false, refresh: null,
+    }),
 }));
-vi.mock('./account/AccountBlock', () => ({
-    AccountBlock: (props: Record<string, unknown>) => React.createElement('AccountBlock', props),
+// The setup panel signs in on a machine (daemon RPCs); the page decides where it opens and on what.
+vi.mock('./setup/ConnectedServicesConnectMore', () => ({
+    ConnectedServicesConnectMore: (props: React.ComponentProps<typeof ConnectedServicesConnectMore>) =>
+        React.createElement('ConnectedServicesConnectMore', props),
 }));
 
 vi.mock('@/components/ui/lists/ItemList', () => ({
@@ -181,23 +196,27 @@ describe('ConnectedServicesSettingsView services', () => {
         connectedServicesModuleState.routerPushSpy.mockClear();
     });
 
-    it('lists a service with its accounts inside it, and offers services without accounts in one connect row', async () => {
+    it('lists a service with its accounts attention-first and keeps unconnected services in the setup catalog', async () => {
         const tree = await renderView();
 
         const header = byTestId(tree, 'connected-services-service:happier.agent.claude/anthropic')[0]!;
+        expect(header.props.mode).toBe('info');
+        expect(header.props.onPress).toBeUndefined();
+        expect(header.props.showChevron).toBe(false);
         let claudeSheet = header.parent;
         while (claudeSheet && claudeSheet.type !== ('ItemGroup' as never)) claudeSheet = claudeSheet.parent;
         expect(claudeSheet).toBeTruthy();
-        const blocks = claudeSheet!.findAllByType('QualifiedAccountBlock' as never);
+        const rows = claudeSheet!.findAll((node) => node.props.facts && node.props.accountId);
         // Attention first: the account that needs a new sign-in leads.
-        expect(blocks.map((block) => block.props.account.accountId)).toEqual(['personal', 'work']);
+        expect(rows.map((row) => row.props.accountId)).toEqual(['personal', 'work']);
 
         expect(byTestId(tree, 'connected-services-service:happier.agent.codex/openai-codex')).toHaveLength(0);
-        expect(byTestId(tree, 'connected-services-connect')).not.toHaveLength(0);
-        // Two candidates: the invitation's button opens a menu of them rather than guessing one.
-        const menu = byTestId(tree, 'connected-services-connect-menu')[0]!;
-        expect(menu.props.items.map((item: { title: string }) => item.title))
+        const panel = tree.root.findByType('ConnectedServicesConnectMore' as never);
+        expect(panel.props.layout).toBe('section');
+        // The catalog offers what can be added, by exact qualified identity.
+        expect(panel.props.model.connectable.map((candidate: { label: string }) => candidate.label))
             .toEqual(['Acme Vault', 'ChatGPT subscription']);
+        expect(connectedServicesModuleState.routerPushSpy).not.toHaveBeenCalled();
     });
 
     it('keeps accounts listed when no online machine publishes their service', async () => {
@@ -208,26 +227,32 @@ describe('ConnectedServicesSettingsView services', () => {
         const header = byTestId(tree, 'connected-services-service:happier.agent.claude/anthropic');
         expect(header).not.toHaveLength(0);
         expect(header[0]!.props.title).toBeTruthy();
-        expect(tree.root.findAllByType('QualifiedAccountBlock' as never)).toHaveLength(2);
+        expect(tree.root.findAll((node) => node.props.facts && node.props.accountId)).toHaveLength(2);
     });
 
-    it('leads a service that needs a sign-in to that account, and adds accounts from the service header', async () => {
+    it('puts the fix on the account that needs it, and grows the setup inside that service', async () => {
         const tree = await renderView();
 
-        await pressTestInstanceAsync(byTestId(tree, 'connected-services-service:happier.agent.claude/anthropic:sign-in-again')[0]!);
-        expect(connectedServicesModuleState.routerPushSpy).toHaveBeenLastCalledWith({
-            pathname: '/(app)/settings/connected-services/account',
-            params: { pluginId: CLAUDE.pluginId, localId: CLAUDE.localId, accountId: 'personal' },
-        });
+        const rows = tree.root.findAll((node) => node.props.facts && node.props.accountId);
+        const signedOut = rows.find((row) => row.props.accountId === 'personal')!;
+        const healthy = rows.find((row) => row.props.accountId === 'work')!;
+        expect(healthy.props.signedOut).toBeNull();
+        expect(signedOut.props.fixProminence).toBe('primary');
 
-        profileState.connectedAccountsV4 = [account(CLAUDE, 'work', 'connected')];
-        const healthy = await renderView();
-        expect(byTestId(healthy, 'connected-services-service:happier.agent.claude/anthropic:sign-in-again')).toHaveLength(0);
-        // "Add account" opens the service on its new-account draft.
-        await pressTestInstanceAsync(byTestId(healthy, 'connected-services-service:happier.agent.claude/anthropic:add-account')[0]!);
-        expect(connectedServicesModuleState.routerPushSpy).toHaveBeenLastCalledWith({
-            pathname: '/(app)/settings/connected-services/account',
-            params: { pluginId: CLAUDE.pluginId, localId: CLAUDE.localId, add: '1' },
+        await pressTestInstanceAsync(byTestId(tree, `${signedOut.props.testID}:sign-in-again`)[0]!);
+        const panel = tree.root.findByType('ConnectedServicesConnectMore' as never);
+        expect(panel.props.request).toEqual({
+            kind: 'reconnect', serviceKey: 'happier.agent.claude/anthropic', accountId: 'personal',
         });
+        // The machine leaf reports that setup is open: the row's fix steps down.
+        const { act } = await import('react-test-renderer');
+        await act(async () => panel.props.onOpenChange(true));
+        expect(tree.root.findAll((node) => node.props.facts && node.props.accountId)
+            .every((row) => row.props.fixProminence === 'secondary')).toBe(true);
+
+        await pressTestInstanceAsync(byTestId(tree, 'connected-services-service:happier.agent.claude/anthropic:add-account')[0]!);
+        expect(tree.root.findByType('ConnectedServicesConnectMore' as never).props.request)
+            .toEqual({ kind: 'service', serviceKey: 'happier.agent.claude/anthropic' });
+        expect(connectedServicesModuleState.routerPushSpy).not.toHaveBeenCalled();
     });
 });

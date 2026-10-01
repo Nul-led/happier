@@ -29,7 +29,7 @@ describe('identityProviderTestReturn', () => {
             accountId: 'account-1',
             providerId: 'provider-1',
             attemptId: 'attempt-1',
-            returnTo: '/settings/home/home-a/policies/identity/provider-1',
+            returnTo: '/settings/home/home-a/sign-in-providers/identity/provider-1',
         });
 
         // On web the authorize URL opens a new `noopener` document, so module state is gone by
@@ -42,7 +42,7 @@ describe('identityProviderTestReturn', () => {
                 accountId: 'account-1',
                 providerId: 'provider-1',
                 attemptId: 'attempt-1',
-                returnTo: '/settings/home/home-a/policies/identity/provider-1',
+                returnTo: '/settings/home/home-a/sign-in-providers/identity/provider-1',
             },
         });
         expect(consumePendingIdentityProviderTest('provider-1')).not.toBeNull();
@@ -57,7 +57,7 @@ describe('identityProviderTestReturn', () => {
             accountId: 'account-1',
             providerId: 'provider-1',
             attemptId: 'attempt-1',
-            returnTo: '/settings/home/home-a/policies/identity/provider-1',
+            returnTo: '/settings/home/home-a/sign-in-providers/identity/provider-1',
         });
 
         expect(consumePendingIdentityProviderTest('other')).toBeNull();
@@ -67,7 +67,7 @@ describe('identityProviderTestReturn', () => {
             accountId: 'account-1',
             providerId: 'provider-1',
             attemptId: 'attempt-1',
-            returnTo: '/settings/home/home-a/policies/identity/provider-1',
+            returnTo: '/settings/home/home-a/sign-in-providers/identity/provider-1',
         });
         expect(consumePendingIdentityProviderTest('provider-1')).toBeNull();
     });
@@ -80,7 +80,7 @@ describe('identityProviderTestReturn', () => {
             accountId: 'account-1',
             providerId: 'provider-1',
             attemptId: 'attempt-1',
-            returnTo: '/settings/home/home-a/policies/identity/provider-1',
+            returnTo: '/settings/home/home-a/sign-in-providers/identity/provider-1',
         };
         recordIdentityProviderTestReturn(pending, { kind: 'completed', diagnostics });
 
@@ -107,7 +107,7 @@ describe('identityProviderTestReturn', () => {
             accountId: 'account-1',
             providerId: 'provider-1',
             attemptId: 'attempt-1',
-            returnTo: '/settings/home/home-a/policies/identity/provider-1',
+            returnTo: '/settings/home/home-a/sign-in-providers/identity/provider-1',
         };
         recordIdentityProviderTestReturn(pending, { kind: 'completed', diagnostics });
 
@@ -127,7 +127,7 @@ describe('identityProviderTestReturn', () => {
             accountId: 'account-1',
             providerId: 'provider-1',
             attemptId: 'attempt-1',
-            returnTo: '/settings/home/home-a/policies/identity/provider-1',
+            returnTo: '/settings/home/home-a/sign-in-providers/identity/provider-1',
         };
         recordIdentityProviderTestReturn(pending, {
             kind: 'approval_pending',

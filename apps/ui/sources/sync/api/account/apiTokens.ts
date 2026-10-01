@@ -3,6 +3,7 @@ import {
     ACCOUNT_API_TOKENS_LIST_HTTP_PATH_V1,
     ACCOUNT_API_TOKENS_REVOKE_ALL_HTTP_PATH_V1,
     ACCOUNT_API_TOKENS_REVOKE_HTTP_PATH_V1,
+    ACCOUNT_API_TOKENS_UPDATE_HTTP_PATH_V1,
     AccountApiTokensCreateActionInputV1Schema,
     AccountApiTokensCreateActionOutputV1Schema,
     AccountApiTokensListActionInputV1Schema,
@@ -12,6 +13,8 @@ import {
     AccountApiTokensRevokeAllActionInputV1Schema,
     AccountApiTokensRevokeAllActionOutputV1Schema,
     AccountApiTokensServerErrorV1Schema,
+    AccountApiTokensUpdateActionInputV1Schema,
+    AccountApiTokensUpdateActionOutputV1Schema,
     type AccountApiTokensCreateActionInputV1,
     type AccountApiTokensCreateActionOutputV1,
     type AccountApiTokensListActionInputV1,
@@ -20,6 +23,8 @@ import {
     type AccountApiTokensRevokeActionOutputV1,
     type AccountApiTokensRevokeAllActionInputV1,
     type AccountApiTokensRevokeAllActionOutputV1,
+    type AccountApiTokensUpdateActionInputV1,
+    type AccountApiTokensUpdateActionOutputV1,
     type ActionExecuteFailure,
 } from '@happier-dev/protocol';
 import type { z } from 'zod';
@@ -220,6 +225,20 @@ export async function revokeAllCurrentAccountApiTokens(
         input,
         AccountApiTokensRevokeAllActionInputV1Schema,
         AccountApiTokensRevokeAllActionOutputV1Schema,
+        options,
+        'write',
+    );
+}
+
+export async function updateCurrentAccountApiToken(
+    input: AccountApiTokensUpdateActionInputV1,
+    options?: CurrentAccountApiTokensOptionsV1,
+): Promise<CurrentAccountApiTokensResult<AccountApiTokensUpdateActionOutputV1>> {
+    return await requestCurrentAccountApiTokens(
+        ACCOUNT_API_TOKENS_UPDATE_HTTP_PATH_V1,
+        input,
+        AccountApiTokensUpdateActionInputV1Schema,
+        AccountApiTokensUpdateActionOutputV1Schema,
         options,
         'write',
     );

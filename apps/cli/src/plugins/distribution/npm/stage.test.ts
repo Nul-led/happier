@@ -39,26 +39,18 @@ type FixtureOverrides = Readonly<{
   pluginManifestBody?: string;
   artifactContributionId?: string;
   artifactTier?: 'hostedWeb' | 'reactNative';
-  artifactPlatform?: 'web' | 'ios' | 'android';
   artifactDigest?: string;
   artifactEntryPath?: string;
+  artifactExportNames?: readonly string[];
   includeUiRenderer?: boolean;
   includeVoiceProvider?: boolean;
   voiceProviderPlatforms?: readonly ('web' | 'ios' | 'android')[];
-  additionalVoiceArtifactPlatforms?: readonly ('ios' | 'android')[];
-  additionalVoiceProviderModulePath?: string;
-  nativeVoiceArtifactModulePath?: string;
-  nativeVoiceArtifactExportName?: string;
   clientAction?: Readonly<{
     id?: string;
     artifactId?: string;
-    modulePath?: string;
     exportName?: string;
     platforms?: readonly ('web' | 'ios' | 'android')[];
   }>;
-  additionalClientActionArtifactPlatforms?: readonly ('ios' | 'android')[];
-  nativeClientActionArtifactModulePath?: string;
-  nativeClientActionArtifactExportName?: string;
   duplicateArtifactSlot?: boolean;
   extraPackageJson?: Readonly<Record<string, unknown>>;
   packageAssets?: readonly Readonly<{
@@ -82,8 +74,14 @@ async function createCandidateFixture(overrides: FixtureOverrides = {}): Promise
   const stagingParentPath = join(root, 'staging');
   const artifactPath = join(root, 'candidate.tgz');
   const sideEffectPath = join(root, 'lifecycle-script-ran');
-  const uiEntryPath = 'hosted-web/panel/entry.mjs';
-  const uiBytes = Buffer.from('export default function Panel() {}\n');
+  const artifactId = overrides.artifactContributionId ?? 'panel-web';
+  const artifactTier = overrides.artifactTier ?? 'hostedWeb';
+  const uiEntryPath = overrides.artifactEntryPath ?? (artifactTier === 'reactNative'
+    ? `react-native/${artifactId}/entry.cjs.bundle`
+    : `hosted-web/${artifactId}/index.html`);
+  const uiBytes = artifactTier === 'reactNative'
+    ? Buffer.from('module.exports = { activate() {} };\n')
+    : Buffer.from('<!doctype html><div id="root"></div>\n');
   const uiDigest = computePluginUiArtifactFileSetSha256DigestV1([
     { relativePath: uiEntryPath, bytes: uiBytes },
   ]);
@@ -95,7 +93,6 @@ async function createCandidateFixture(overrides: FixtureOverrides = {}): Promise
   const clientAction = overrides.clientAction;
   const clientActionId = clientAction?.id ?? 'open-client-preview';
   const clientActionArtifactId = clientAction?.artifactId ?? 'client-actions';
-  const clientActionModulePath = clientAction?.modulePath ?? './clientActions';
   const clientActionExportName = clientAction?.exportName ?? 'activate';
   const packageJson = {
     name: overrides.packageName ?? '@acme/happier-plugin',
@@ -141,25 +138,9 @@ async function createCandidateFixture(overrides: FixtureOverrides = {}): Promise
           },
           client: {
             artifactId: 'voice-runtime-web',
-            modulePath: './voiceRuntime',
             exportName: 'activate',
           },
         },
-        ...(overrides.additionalVoiceProviderModulePath ? [{
-          id: 'conversation-secondary',
-          title: 'Secondary conversation',
-          kind: 'conversation',
-          roles: ['realtime_conversation'],
-          platforms: overrides.voiceProviderPlatforms ?? ['web'],
-          capabilities: {
-            turn: { cancelResponse: true, bargeIn: false },
-          },
-          client: {
-            artifactId: 'voice-runtime-web',
-            modulePath: overrides.additionalVoiceProviderModulePath,
-            exportName: 'activate',
-          },
-        }] : []),
       ] : [],
       actions: clientAction ? [{
         id: clientActionId,
@@ -170,7 +151,6 @@ async function createCandidateFixture(overrides: FixtureOverrides = {}): Promise
           target: 'client',
           client: {
             artifactId: clientActionArtifactId,
-            modulePath: clientActionModulePath,
             exportName: clientActionExportName,
           },
           platforms: clientAction.platforms ?? ['web'],
@@ -187,85 +167,33 @@ async function createCandidateFixture(overrides: FixtureOverrides = {}): Promise
     },
   };
   const artifactManifest = {
-    version: 1,
+    version: 2,
     entries: [
       {
-        contributionId: overrides.artifactContributionId ?? 'panel-web',
-        tier: overrides.artifactTier ?? 'hostedWeb',
-        ...(overrides.artifactPlatform !== undefined
-          ? { platform: overrides.artifactPlatform }
-          : overrides.artifactTier === 'reactNative'
-            ? { platform: 'web' }
-            : {}),
-        entry: overrides.artifactEntryPath ?? uiEntryPath,
-        files: [uiArtifactFile(overrides.artifactEntryPath ?? uiEntryPath, uiBytes)],
+        artifactId,
+        tier: artifactTier,
+        entry: uiEntryPath,
+        files: [uiArtifactFile(uiEntryPath, uiBytes)],
         digest: overrides.artifactDigest ?? uiDigest,
-        builtWith: { bundler: 'vite', version: '7.0.0' },
-        hostUiApiVersion: '1.0.0',
-        // Mirrors what the public SDK builders emit: `hostedWebBuild.ts` writes
-        // `compat: {}` and only the React Native builders declare compatibility.
-        compat: overrides.artifactTier === 'reactNative'
-          ? { react: '19.2.0', reactNative: '0.83.4' }
-          : {},
+        builtWith: artifactTier === 'reactNative'
+          ? { bundler: 'esbuild', version: '0.25.0' }
+          : { staging: 'staticDirectory' },
+        ...(artifactTier === 'reactNative'
+          ? { executable: { exports: overrides.artifactExportNames ?? ['activate'] } }
+          : {}),
+        hostUiApiRange: '^1.0.0',
       },
-      ...((overrides.additionalVoiceArtifactPlatforms ?? []).map((platform) => {
-        const relativePath = `react-native/voice-runtime-web/${platform}.bundle`;
-        const bytes = Buffer.from(`export function activate() { /* ${platform} */ }\n`);
-        return {
-          contributionId: 'voice-runtime-web',
-          tier: 'reactNative' as const,
-          platform,
-          entry: relativePath,
-          files: [uiArtifactFile(relativePath, bytes)],
-          digest: computePluginUiArtifactFileSetSha256DigestV1([{ relativePath, bytes }]),
-          builtWith: { bundler: 'repack' as const, version: '5.2.5' },
-          repack: {
-            containerName: 'happier_voice_runtime_web_native',
-            modulePath: overrides.nativeVoiceArtifactModulePath ?? './voiceRuntime',
-            exportName: overrides.nativeVoiceArtifactExportName ?? 'activate',
-          },
-          hostUiApiVersion: '1.0.0',
-          compat: { react: '19.2.0', reactNative: '0.83.4' },
-        };
-      })),
-      ...((overrides.additionalClientActionArtifactPlatforms ?? []).map((platform) => {
-        const relativePath = `react-native/${clientActionArtifactId}/${platform}.bundle`;
-        const bytes = Buffer.from(`export function activate() { /* ${platform} */ }\n`);
-        return {
-          contributionId: clientActionArtifactId,
-          tier: 'reactNative' as const,
-          platform,
-          entry: relativePath,
-          files: [uiArtifactFile(relativePath, bytes)],
-          digest: computePluginUiArtifactFileSetSha256DigestV1([{ relativePath, bytes }]),
-          builtWith: { bundler: 'repack' as const, version: '5.2.5' },
-          repack: {
-            containerName: 'happier_client_actions_native',
-            modulePath: overrides.nativeClientActionArtifactModulePath ?? clientActionModulePath,
-            exportName: overrides.nativeClientActionArtifactExportName ?? clientActionExportName,
-          },
-          hostUiApiVersion: '1.0.0',
-          compat: { react: '19.2.0', reactNative: '0.83.4' },
-        };
-      })),
       ...(overrides.duplicateArtifactSlot ? [{
-        contributionId: overrides.artifactContributionId ?? 'panel-web',
-        tier: overrides.artifactTier ?? 'hostedWeb',
-        ...(overrides.artifactPlatform !== undefined
-          ? { platform: overrides.artifactPlatform }
-          : overrides.artifactTier === 'reactNative'
-            ? { platform: 'web' }
-            : {}),
-        entry: duplicateUiEntryPath,
+        artifactId,
+        tier: artifactTier,
+        entry: artifactTier === 'reactNative' ? uiEntryPath : duplicateUiEntryPath,
         files: [uiArtifactFile(duplicateUiEntryPath, duplicateUiBytes)],
         digest: duplicateUiDigest,
-        builtWith: { bundler: 'vite', version: '7.0.0' },
-        hostUiApiVersion: '1.0.0',
-        // Mirrors what the public SDK builders emit: `hostedWebBuild.ts` writes
-        // `compat: {}` and only the React Native builders declare compatibility.
-        compat: overrides.artifactTier === 'reactNative'
-          ? { react: '19.2.0', reactNative: '0.83.4' }
-          : {},
+        builtWith: artifactTier === 'reactNative'
+          ? { bundler: 'esbuild', version: '0.25.0' }
+          : { staging: 'staticDirectory' },
+        ...(artifactTier === 'reactNative' ? { executable: { exports: ['activate'] } } : {}),
+        hostUiApiRange: '^1.0.0',
       }] : []),
     ],
   };
@@ -275,14 +203,6 @@ async function createCandidateFixture(overrides: FixtureOverrides = {}): Promise
     { name: 'package/dist/daemon.mjs', body: 'export function activate() {}\n' },
     { name: 'package/dist/happier-plugin-ui/ui-artifacts.json', body: JSON.stringify(artifactManifest) },
     { name: `package/dist/happier-plugin-ui/${uiEntryPath}`, body: uiBytes },
-    ...((overrides.additionalVoiceArtifactPlatforms ?? []).map((platform) => ({
-      name: `package/dist/happier-plugin-ui/react-native/voice-runtime-web/${platform}.bundle`,
-      body: `export function activate() { /* ${platform} */ }\n`,
-    }))),
-    ...((overrides.additionalClientActionArtifactPlatforms ?? []).map((platform) => ({
-      name: `package/dist/happier-plugin-ui/react-native/${clientActionArtifactId}/${platform}.bundle`,
-      body: `export function activate() { /* ${platform} */ }\n`,
-    }))),
     ...(overrides.duplicateArtifactSlot
       ? [{ name: `package/dist/happier-plugin-ui/${duplicateUiEntryPath}`, body: duplicateUiBytes }]
       : []),
@@ -318,10 +238,8 @@ async function createCandidateFixture(overrides: FixtureOverrides = {}): Promise
 }
 
 describe('stageDownloadedNpmArtifactCandidate', () => {
-  it('accepts the hostedWeb platform identity emitted by the public SDK builder', async () => {
-    const fixture = await createCandidateFixture({
-      artifactPlatform: 'web',
-    });
+  it('accepts the canonical hosted-static artifact emitted by the public SDK builder', async () => {
+    const fixture = await createCandidateFixture();
 
     await expect(stageDownloadedNpmArtifactCandidate({
       candidate: fixture.candidate,
@@ -394,7 +312,7 @@ describe('stageDownloadedNpmArtifactCandidate', () => {
               runtime: { apiVersion: 1 },
               contributes: {},
             },
-            uiArtifacts: { version: 1, entries: [] },
+            uiArtifacts: { version: 2, entries: [] },
             builtWith: { pluginSdk: '9999.0.0' },
           },
         },
@@ -410,15 +328,15 @@ describe('stageDownloadedNpmArtifactCandidate', () => {
         compatibilityProjection: {
           version: 1,
           manifest: { id: 'acme.npm-stage', version: '1.2.3' },
-          uiArtifacts: { version: 1, entries: [expect.objectContaining({ contributionId: 'panel-web' })] },
+          uiArtifacts: { version: 2, entries: [expect.objectContaining({ artifactId: 'panel-web' })] },
         },
       },
     });
   });
 
-  it('rejects native platform identities for a hostedWeb artifact', async () => {
+  it('rejects a hosted-static artifact whose entry is not its canonical index', async () => {
     const fixture = await createCandidateFixture({
-      artifactPlatform: 'ios',
+      artifactEntryPath: 'hosted-web/panel-web/other.html',
     });
 
     await expect(stageDownloadedNpmArtifactCandidate({
@@ -426,7 +344,7 @@ describe('stageDownloadedNpmArtifactCandidate', () => {
       stagingParentPath: fixture.stagingParentPath,
     })).resolves.toMatchObject({
       ok: false,
-      rejection: { code: 'ui_artifact_identity_mismatch' },
+      rejection: { code: 'ui_artifact_manifest_invalid' },
     });
   });
 
@@ -443,18 +361,17 @@ describe('stageDownloadedNpmArtifactCandidate', () => {
       stagingParentPath: fixture.stagingParentPath,
     })).resolves.toMatchObject({
       ok: true,
-      candidate: { generatedUiArtifacts: { contributionIds: ['voice-runtime-web'] } },
+      candidate: { generatedUiArtifacts: { artifactIds: ['voice-runtime-web'] } },
     });
   });
 
-  it('accepts exactly the generated Vite/Re.Pack siblings declared by a Voice provider', async () => {
+  it('accepts one universal executable artifact for every platform declared by a Voice provider', async () => {
     const fixture = await createCandidateFixture({
       includeUiRenderer: false,
       includeVoiceProvider: true,
       voiceProviderPlatforms: ['web', 'ios', 'android'],
       artifactContributionId: 'voice-runtime-web',
       artifactTier: 'reactNative',
-      additionalVoiceArtifactPlatforms: ['ios', 'android'],
     });
 
     await expect(stageDownloadedNpmArtifactCandidate({
@@ -463,13 +380,12 @@ describe('stageDownloadedNpmArtifactCandidate', () => {
     })).resolves.toMatchObject({ ok: true });
   });
 
-  it('accepts exactly the generated Vite/Re.Pack siblings declared by a client Action', async () => {
+  it('accepts one universal executable artifact for every platform declared by a client Action', async () => {
     const fixture = await createCandidateFixture({
       includeUiRenderer: false,
       clientAction: { platforms: ['web', 'ios', 'android'] },
       artifactContributionId: 'client-actions',
       artifactTier: 'reactNative',
-      additionalClientActionArtifactPlatforms: ['ios', 'android'],
     });
 
     await expect(stageDownloadedNpmArtifactCandidate({
@@ -477,18 +393,17 @@ describe('stageDownloadedNpmArtifactCandidate', () => {
       stagingParentPath: fixture.stagingParentPath,
     })).resolves.toMatchObject({
       ok: true,
-      candidate: { generatedUiArtifacts: { contributionIds: ['client-actions'] } },
+      candidate: { generatedUiArtifacts: { artifactIds: ['client-actions'] } },
     });
   });
 
-  it('rejects a client Action artifact whose native Re.Pack module differs from its declaration', async () => {
+  it('rejects a client Action artifact that does not expose its declared export', async () => {
     const fixture = await createCandidateFixture({
       includeUiRenderer: false,
       clientAction: { platforms: ['web', 'ios'] },
       artifactContributionId: 'client-actions',
       artifactTier: 'reactNative',
-      additionalClientActionArtifactPlatforms: ['ios'],
-      nativeClientActionArtifactModulePath: './otherClientActions',
+      artifactExportNames: ['otherActivate'],
     });
 
     await expect(stageDownloadedNpmArtifactCandidate({
@@ -498,107 +413,16 @@ describe('stageDownloadedNpmArtifactCandidate', () => {
       ok: false,
       rejection: {
         code: 'ui_artifact_identity_mismatch',
-        message: 'Generated React Native UI artifact Re.Pack identity does not match the declaration: client-actions',
+        message: 'Generated React Native UI artifact export does not match the declaration: client-actions',
       },
     });
-  });
-
-  it('rejects a client Action artifact that adds an undeclared native platform sibling', async () => {
-    const fixture = await createCandidateFixture({
-      includeUiRenderer: false,
-      clientAction: { platforms: ['web', 'ios'] },
-      artifactContributionId: 'client-actions',
-      artifactTier: 'reactNative',
-      additionalClientActionArtifactPlatforms: ['ios', 'android'],
-    });
-
-    await expect(stageDownloadedNpmArtifactCandidate({
-      candidate: fixture.candidate,
-      stagingParentPath: fixture.stagingParentPath,
-    })).resolves.toMatchObject({
-      ok: false,
-      rejection: {
-        code: 'ui_artifact_identity_mismatch',
-        message: 'Generated React Native UI artifact platforms do not exactly match the declaration: client-actions',
-      },
-    });
-  });
-
-  it.each([
-    ['module', { nativeVoiceArtifactModulePath: './otherRuntime' }],
-    ['export', { nativeVoiceArtifactExportName: 'otherActivate' }],
-  ] satisfies readonly [string, FixtureOverrides][])('rejects a native Voice artifact whose Re.Pack %s identity differs from its declaration', async (_case, overrides) => {
-    const fixture = await createCandidateFixture({
-      includeUiRenderer: false,
-      includeVoiceProvider: true,
-      voiceProviderPlatforms: ['web', 'ios'],
-      artifactContributionId: 'voice-runtime-web',
-      artifactTier: 'reactNative',
-      additionalVoiceArtifactPlatforms: ['ios'],
-      ...overrides,
-    });
-
-    await expect(stageDownloadedNpmArtifactCandidate({
-      candidate: fixture.candidate,
-      stagingParentPath: fixture.stagingParentPath,
-    })).resolves.toMatchObject({
-      ok: false,
-      rejection: { code: 'ui_artifact_identity_mismatch' },
-    });
-  });
-
-  it('rejects shared native Voice artifacts whose declarations disagree about the Re.Pack module', async () => {
-    const fixture = await createCandidateFixture({
-      includeUiRenderer: false,
-      includeVoiceProvider: true,
-      voiceProviderPlatforms: ['web', 'ios'],
-      additionalVoiceProviderModulePath: './otherRuntime',
-      artifactContributionId: 'voice-runtime-web',
-      artifactTier: 'reactNative',
-      additionalVoiceArtifactPlatforms: ['ios'],
-    });
-
-    await expect(stageDownloadedNpmArtifactCandidate({
-      candidate: fixture.candidate,
-      stagingParentPath: fixture.stagingParentPath,
-    })).resolves.toMatchObject({
-      ok: false,
-      rejection: { code: 'manifest_invalid' },
-    });
-  });
-
-  it('rejects Voice artifacts that omit or add an undeclared platform sibling', async () => {
-    const missing = await createCandidateFixture({
-      includeUiRenderer: false,
-      includeVoiceProvider: true,
-      voiceProviderPlatforms: ['web', 'ios'],
-      artifactContributionId: 'voice-runtime-web',
-      artifactTier: 'reactNative',
-    });
-    await expect(stageDownloadedNpmArtifactCandidate({
-      candidate: missing.candidate,
-      stagingParentPath: missing.stagingParentPath,
-    })).resolves.toMatchObject({ ok: false, rejection: { code: 'ui_artifact_identity_mismatch' } });
-
-    const undeclared = await createCandidateFixture({
-      includeUiRenderer: false,
-      includeVoiceProvider: true,
-      voiceProviderPlatforms: ['web'],
-      artifactContributionId: 'voice-runtime-web',
-      artifactTier: 'reactNative',
-      additionalVoiceArtifactPlatforms: ['ios'],
-    });
-    await expect(stageDownloadedNpmArtifactCandidate({
-      candidate: undeclared.candidate,
-      stagingParentPath: undeclared.stagingParentPath,
-    })).resolves.toMatchObject({ ok: false, rejection: { code: 'ui_artifact_identity_mismatch' } });
   });
 
   it.each([
     ['missing graph', {
       omitPaths: [
         'package/dist/happier-plugin-ui/ui-artifacts.json',
-        'package/dist/happier-plugin-ui/hosted-web/panel/entry.mjs',
+        'package/dist/happier-plugin-ui/hosted-web/panel-web/index.html',
       ],
     }, 'ui_artifact_manifest_missing'],
     ['wrong tier', { artifactTier: 'hostedWeb' as const }, 'ui_artifact_identity_mismatch'],
@@ -631,7 +455,7 @@ describe('stageDownloadedNpmArtifactCandidate', () => {
         source: fixture.candidate.source,
         package: { name: '@acme/happier-plugin', version: '1.2.3' },
         manifest: { id: 'acme.npm-stage', version: '1.2.3' },
-        generatedUiArtifacts: { contributionIds: ['panel-web'] },
+        generatedUiArtifacts: { artifactIds: ['panel-web'] },
         registrySignature: fixture.candidate.registrySignature,
         provenance: fixture.candidate.provenance,
       },
@@ -776,7 +600,7 @@ describe('stageDownloadedNpmArtifactCandidate', () => {
       pluginManifestBody,
       omitPaths: [
         'package/dist/happier-plugin-ui/ui-artifacts.json',
-        'package/dist/happier-plugin-ui/hosted-web/panel/entry.mjs',
+        'package/dist/happier-plugin-ui/hosted-web/panel-web/index.html',
       ],
     });
 
@@ -830,7 +654,7 @@ describe('stageDownloadedNpmArtifactCandidate', () => {
       includeUiRenderer: false,
       omitPaths: [
         'package/dist/happier-plugin-ui/ui-artifacts.json',
-        'package/dist/happier-plugin-ui/hosted-web/panel/entry.mjs',
+        'package/dist/happier-plugin-ui/hosted-web/panel-web/index.html',
       ],
       extraEntries: [{ name: 'package/dist/happier-plugin-ui/unclaimed.js', body: 'unexpected' }],
     });
@@ -847,11 +671,11 @@ describe('stageDownloadedNpmArtifactCandidate', () => {
     await expect(stageDownloadedNpmArtifactCandidate({
       candidate: fixture.candidate,
       stagingParentPath: fixture.stagingParentPath,
-    })).resolves.toMatchObject({ ok: false, rejection: { code: 'ui_artifact_identity_mismatch' } });
+    })).resolves.toMatchObject({ ok: false, rejection: { code: 'ui_artifact_manifest_invalid' } });
   });
 
   it('bounds attacker-controlled generated artifact paths in typed rejections', async () => {
-    const attackerPath = `${'attacker-controlled/'.repeat(700)}missing.mjs`;
+    const attackerPath = 'attacker-controlled/missing.mjs';
     const fixture = await createCandidateFixture({ artifactEntryPath: attackerPath });
 
     const result = await stageDownloadedNpmArtifactCandidate({
@@ -859,7 +683,7 @@ describe('stageDownloadedNpmArtifactCandidate', () => {
       stagingParentPath: fixture.stagingParentPath,
     });
 
-    expect(result).toMatchObject({ ok: false, rejection: { code: 'ui_artifact_file_missing' } });
+    expect(result).toMatchObject({ ok: false, rejection: { code: 'ui_artifact_manifest_invalid' } });
     if (result.ok) throw new Error('Expected candidate rejection');
     expect(result.rejection.message.length).toBeLessThan(512);
     expect(result.rejection.message).not.toContain(attackerPath);
@@ -868,7 +692,7 @@ describe('stageDownloadedNpmArtifactCandidate', () => {
   it('rejects missing declared daemon and generated artifact files', async () => {
     for (const [omittedPath, expectedCode] of [
       ['package/dist/daemon.mjs', 'declared_file_missing'],
-      ['package/dist/happier-plugin-ui/hosted-web/panel/entry.mjs', 'ui_artifact_file_missing'],
+      ['package/dist/happier-plugin-ui/hosted-web/panel-web/index.html', 'ui_artifact_file_missing'],
     ] as const) {
       const fixture = await createCandidateFixture({ omitPaths: [omittedPath] });
       await expect(stageDownloadedNpmArtifactCandidate({

@@ -1,155 +1,111 @@
 import * as React from 'react';
-import { View } from 'react-native';
-import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
-import { SETTINGS_TEXT_INPUT_METRICS } from '@/components/ui/forms/settingsTextInputMetrics';
+import type {
+    ImportedMcpInputDefinitionV1,
+} from '@/sync/domains/settings/mcpServers/parseImportedMcpServerJson';
+import type { ImportedMcpInputResolutionV1 } from '@/sync/domains/settings/mcpServers/materializeImportedMcpServerDrafts';
+import { FieldTextInput } from '@/components/ui/forms/FieldTextInput';
 import { Item } from '@/components/ui/lists/Item';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
-import { Text, TextInput } from '@/components/ui/text/Text';
+import { SegmentedChoiceItem } from '@/components/ui/lists/SegmentedChoiceItem';
 import { t } from '@/text';
 
-import type { ImportedMcpInputDefinitionV1 } from '@/sync/domains/settings/mcpServers/parseImportedMcpServerJson';
-import type { ImportedMcpInputResolutionV1 } from '@/sync/domains/settings/mcpServers/materializeImportedMcpServerDrafts';
-import { Icon } from '@/components/ui/icons/Icon';
+type InputMode = ImportedMcpInputResolutionV1['mode'];
 
+/**
+ * One section per input an imported server asks for: where its value comes from (a new Saved Secret
+ * or a variable already set on the machine), then the fields that choice needs. A secret value is
+ * entered here once and saved as a Saved Secret; it is never shown again.
+ */
 export const McpInputMappingEditor = React.memo(function McpInputMappingEditor(props: Readonly<{
     inputs: readonly ImportedMcpInputDefinitionV1[];
     mappings: Record<string, ImportedMcpInputResolutionV1>;
     onChangeMapping: (inputId: string, next: ImportedMcpInputResolutionV1) => void;
 }>) {
-    const { theme } = useUnistyles();
-
     if (props.inputs.length === 0) return null;
 
     return (
         <>
             {props.inputs.map((input) => {
                 const mapping = props.mappings[input.inputId];
-                const mode = mapping?.mode ?? (input.secret ? 'savedSecret' : 'machineEnv');
+                const mode: InputMode = mapping?.mode ?? (input.secret ? 'savedSecret' : 'machineEnv');
+                const secretKind = mapping?.mode === 'savedSecret' ? mapping.secretKind : (input.secret ? 'token' : 'other');
+                const secretName = mapping?.mode === 'savedSecret' ? mapping.secretName : input.title;
+                const secretValue = mapping?.mode === 'savedSecret' ? mapping.secretValue : '';
                 return (
-                    <ItemGroup key={input.inputId} title={input.title} footer={input.description || undefined}>
-                        {(['savedSecret', 'machineEnv'] as const).map((candidateMode) => {
-                            const selected = mode === candidateMode;
-                            return (
+                    <ItemGroup key={input.inputId} title={input.title} description={input.description || undefined}>
+                        <SegmentedChoiceItem<InputMode>
+                            testID={`mcp.server.importInput.${input.inputId}.mode`}
+                            testIDPrefix={`mcp.server.importInput.${input.inputId}.mode`}
+                            title={t('settings.mcpServersValueSourceTitle')}
+                            value={mode}
+                            options={[
+                                { id: 'savedSecret', label: t('settings.mcpServersImportMappingSavedSecret'), description: t('settings.mcpServersValueSourceSavedSecretSubtitle') },
+                                { id: 'machineEnv', label: t('settings.mcpServersImportMappingMachineEnv') },
+                            ]}
+                            onChange={(candidateMode) => props.onChangeMapping(
+                                input.inputId,
+                                candidateMode === 'savedSecret'
+                                    ? { mode: 'savedSecret', secretName: input.title, secretValue: '', secretKind: input.secret ? 'token' : 'other' }
+                                    : { mode: 'machineEnv', envVarName: input.suggestedEnvVarName },
+                            )}
+                        />
+                        {mode === 'savedSecret' ? (
+                            <>
                                 <Item
-                                    key={candidateMode}
-                                    title={candidateMode === 'savedSecret'
-                                        ? t('settings.mcpServersImportMappingSavedSecret')
-                                        : t('settings.mcpServersImportMappingMachineEnv')}
-                                    subtitle={candidateMode === 'savedSecret'
-                                        ? t('settings.mcpServersValueSourceSavedSecretSubtitle')
-                                        : t('settings.mcpServersImportMachineEnvPlaceholder')}
-                                    icon={<Icon name={candidateMode === 'savedSecret' ? 'key' : 'terminal'} size={29} color={theme.colors.accent.indigo} />}
-                                    onPress={() => {
-                                        props.onChangeMapping(
-                                            input.inputId,
-                                            candidateMode === 'savedSecret'
-                                                ? {
-                                                    mode: 'savedSecret',
-                                                    secretName: input.title,
-                                                    secretValue: '',
-                                                    secretKind: input.secret ? 'token' : 'other',
-                                                }
-                                                : {
-                                                    mode: 'machineEnv',
-                                                    envVarName: input.suggestedEnvVarName,
-                                                },
-                                        );
-                                    }}
-                                    selected={selected}
+                                    title={t('secrets.fields.name')}
+                                    accessoryLayout="adaptive"
                                     showChevron={false}
                                     rightElement={(
-                                        <Icon
-                                            name="check-circle"
-                                            size={20}
-                                            color={theme.colors.text.primary}
-                                            style={{ opacity: selected ? 1 : 0 }}
+                                        <FieldTextInput
+                                            value={secretName}
+                                            onChangeText={(value) => props.onChangeMapping(input.inputId, {
+                                                mode: 'savedSecret', secretName: value, secretValue, secretKind,
+                                            })}
+                                            accessibilityLabel={t('settings.mcpServersImportSecretNamePlaceholder')}
+                                            placeholder={t('settings.mcpServersImportSecretNamePlaceholder')}
+                                            autoCapitalize="words"
                                         />
                                     )}
                                 />
-                            );
-                        })}
-
-                        <View style={styles.formContent}>
-                            {mode === 'savedSecret' ? (
-                                <>
-                                    <Text style={styles.fieldLabel}>{t('settings.mcpServersImportSecretNamePlaceholder')}</Text>
-                                    <TextInput
-                                        value={mapping?.mode === 'savedSecret' ? mapping.secretName : input.title}
-                                        onChangeText={(value) =>
-                                            props.onChangeMapping(input.inputId, {
-                                                mode: 'savedSecret',
-                                                secretName: value,
-                                                secretValue: mapping?.mode === 'savedSecret' ? mapping.secretValue : '',
-                                                secretKind: mapping?.mode === 'savedSecret' ? mapping.secretKind : (input.secret ? 'token' : 'other'),
+                                <Item
+                                    title={t('secrets.fields.value')}
+                                    accessoryLayout="adaptive"
+                                    showChevron={false}
+                                    rightElement={(
+                                        <FieldTextInput
+                                            value={secretValue}
+                                            onChangeText={(value) => props.onChangeMapping(input.inputId, {
+                                                mode: 'savedSecret', secretName, secretValue: value, secretKind,
                                             })}
-                                        placeholder={t('settings.mcpServersImportSecretNamePlaceholder')}
-                                        placeholderTextColor={theme.colors.input.placeholder}
-                                        style={styles.textInput}
-                                    />
-                                    <Text style={styles.fieldLabel}>{t('settings.mcpServersImportSecretValuePlaceholder')}</Text>
-                                    <TextInput
-                                        value={mapping?.mode === 'savedSecret' ? mapping.secretValue : ''}
-                                        onChangeText={(value) =>
-                                            props.onChangeMapping(input.inputId, {
-                                                mode: 'savedSecret',
-                                                secretName: mapping?.mode === 'savedSecret' ? mapping.secretName : input.title,
-                                                secretValue: value,
-                                                secretKind: mapping?.mode === 'savedSecret' ? mapping.secretKind : (input.secret ? 'token' : 'other'),
-                                            })}
-                                        placeholder={t('settings.mcpServersImportSecretValuePlaceholder')}
-                                        placeholderTextColor={theme.colors.input.placeholder}
-                                        style={styles.textInput}
-                                        secureTextEntry
-                                    />
-                                </>
-                            ) : (
-                                <>
-                                    <Text style={styles.fieldLabel}>{t('settings.mcpServersImportMachineEnvPlaceholder')}</Text>
-                                    <TextInput
+                                            accessibilityLabel={t('settings.mcpServersImportSecretValuePlaceholder')}
+                                            placeholder={t('settings.mcpServersImportSecretValuePlaceholder')}
+                                            secureTextEntry
+                                            monospace
+                                        />
+                                    )}
+                                />
+                            </>
+                        ) : (
+                            <Item
+                                title={t('settings.mcpServersImportMachineEnvPlaceholder')}
+                                accessoryLayout="adaptive"
+                                showChevron={false}
+                                rightElement={(
+                                    <FieldTextInput
                                         value={mapping?.mode === 'machineEnv' ? mapping.envVarName : input.suggestedEnvVarName}
-                                        onChangeText={(value) =>
-                                            props.onChangeMapping(input.inputId, {
-                                                mode: 'machineEnv',
-                                                envVarName: value,
-                                            })}
+                                        onChangeText={(value) => props.onChangeMapping(input.inputId, { mode: 'machineEnv', envVarName: value })}
+                                        accessibilityLabel={t('settings.mcpServersImportMachineEnvPlaceholder')}
                                         placeholder={t('settings.mcpServersImportMachineEnvPlaceholder')}
-                                        placeholderTextColor={theme.colors.input.placeholder}
-                                        style={styles.textInput}
                                         autoCapitalize="characters"
-                                        autoCorrect={false}
+                                        monospace
                                     />
-                                </>
-                            )}
-                        </View>
+                                )}
+                            />
+                        )}
                     </ItemGroup>
                 );
             })}
         </>
     );
 });
-
-const styles = StyleSheet.create((theme) => ({
-    formContent: {
-        paddingHorizontal: 16,
-        paddingTop: 4,
-        paddingBottom: 16,
-        gap: 10,
-    },
-    fieldLabel: {
-        fontSize: 13,
-        lineHeight: 16,
-        fontWeight: '600',
-        color: theme.colors.text.secondary,
-    },
-    textInput: {
-        borderRadius: 12,
-        backgroundColor: theme.colors.input.background,
-        borderWidth: 1,
-        borderColor: theme.colors.border.default,
-        color: theme.colors.input.text,
-        paddingHorizontal: 12,
-        paddingVertical: 10,
-        ...SETTINGS_TEXT_INPUT_METRICS,
-    },
-}));

@@ -1,6 +1,7 @@
-import { usePathname } from 'expo-router';
+import { usePathname } from '@/components/appShell/workspace/destinationRoute';
 
 import { SETTINGS_ROUTES } from '@/components/settings/catalog/routes';
+import type { IconName } from '@/components/ui/icons/Icon';
 
 /**
  * The Plugins screens (home with Installed | Browse, and a marketplace listing) have two hosts: the
@@ -13,13 +14,29 @@ import { SETTINGS_ROUTES } from '@/components/settings/catalog/routes';
  */
 export type PluginsSurfaceHost = 'settings' | 'app';
 
+/** The Plugins surface's one glyph, in both hosts: the rail destination and the Settings row. */
+export const PLUGINS_SURFACE_ICON = 'cube' as const satisfies IconName;
+
 /** The app-page host: the main sidebar's Plugins destination. */
 export const PLUGINS_APP_ROUTE = '/plugins' as const;
 /**
- * The app host's own pages as route patterns (`[param]` = one segment): the listing and a plugin's
- * page. Plugin-contributed app pages (`/plugins/<pluginId>/<localId>…`) are not among them.
+ * Everything under the app host's `/plugins` belongs to the Plugins destination — the listing, a
+ * plugin's page, and a plugin page this viewer no longer has (its tombstone offers "Manage plugin") —
+ * except a plugin-contributed app page (`/plugins/<pluginId>/<localId>…`), whose own destination
+ * claims its route more specifically.
  */
-export const PLUGINS_APP_PAGE_PATTERNS = ['/plugins/listing', '/plugins/[pluginId]'] as const;
+export const PLUGINS_APP_PAGE_PATTERNS = ['/plugins/[...rest]'] as const;
+
+/**
+ * An App panel (`rightSidebarTab × app`) as its own page, under the Plugins destination: where it opens
+ * on a phone, or from a page with no right sidebar.
+ */
+export const PLUGIN_PANELS_ROUTE = '/plugins/panels' as const;
+
+export function buildPluginPanelsRoute(destination: Readonly<{ pluginId: string; localId: string }>): string {
+    const query = new URLSearchParams({ pluginId: destination.pluginId, destinationId: destination.localId });
+    return `${PLUGIN_PANELS_ROUTE}?${query.toString()}`;
+}
 
 const LISTING_PATHNAMES = {
     settings: '/(app)/settings/plugins/listing',
@@ -31,7 +48,7 @@ const DETAIL_PATHNAMES = {
     app: '/(app)/plugins/[pluginId]',
 } as const;
 
-export type PluginsHomeView = 'browse';
+export type PluginsHomeView = 'installed' | 'browse';
 
 /** The host a pathname belongs to. Anything outside `/settings` is the app page. */
 export function resolvePluginsSurfaceHost(pathname: string | null | undefined): PluginsSurfaceHost {
@@ -39,10 +56,53 @@ export function resolvePluginsSurfaceHost(pathname: string | null | undefined): 
     return pathname === '/settings' || pathname.startsWith('/settings/') ? 'settings' : 'app';
 }
 
-/** The Plugins home in `host`; `view: 'browse'` opens it on Browse (the home screen honours `?view=browse`). */
-export function buildPluginsHomeRoute(host: PluginsSurfaceHost, options?: Readonly<{ view?: PluginsHomeView }>) {
+/**
+ * The plugin open beside the Plugins page: an installed plugin, or a marketplace listing before
+ * install (addressed by its source). The Plugins column, the grid and the list all open and mark the
+ * same item, so it lives in the route (`?plugin=` and, for a listing, `?source=`), not in any one of
+ * them: reload and back keep it, and a deep link opens it.
+ */
+export type PluginsOpenItem =
+    | Readonly<{ kind: 'installed'; pluginId: string }>
+    | Readonly<{ kind: 'listing'; sourceId: string; pluginId: string }>;
+
+/** The route params naming `item`; `null` clears both, so an installed plugin never inherits a listing's source. */
+export function pluginsOpenItemParams(item: PluginsOpenItem | null): { plugin: string | undefined; source: string | undefined } {
+    return {
+        plugin: item?.pluginId,
+        source: item?.kind === 'listing' ? item.sourceId : undefined,
+    };
+}
+
+export function readPluginsOpenItem(params: Readonly<Record<string, unknown>>): PluginsOpenItem | null {
+    const pluginId = readParam(params.plugin);
+    if (!pluginId) return null;
+    const sourceId = readParam(params.source);
+    return sourceId ? { kind: 'listing', sourceId, pluginId } : { kind: 'installed', pluginId };
+}
+
+/**
+ * The Plugins home in `host`; `view` opens it on Installed or Browse (the home screen honours
+ * `?view=`), and `open` with a plugin open beside it.
+ */
+export function buildPluginsHomeRoute(host: PluginsSurfaceHost, options?: Readonly<{
+    view?: PluginsHomeView;
+    open?: PluginsOpenItem | null;
+}>) {
     const base = host === 'settings' ? SETTINGS_ROUTES.plugins : PLUGINS_APP_ROUTE;
-    return options?.view ? `${base}?view=${options.view}` : base;
+    const open = pluginsOpenItemParams(options?.open ?? null);
+    const query = [
+        options?.view ? `view=${options.view}` : null,
+        open.plugin ? `plugin=${encodeURIComponent(open.plugin)}` : null,
+        open.source ? `source=${encodeURIComponent(open.source)}` : null,
+    ].filter((part): part is string => part !== null);
+    return query.length > 0 ? `${base}?${query.join('&')}` : base;
+}
+
+/** Whether `pathname` is the Plugins home itself (where a plugin opens in place beside the page). */
+export function isPluginsHomePathname(pathname: string | null | undefined): boolean {
+    const trimmed = (pathname ?? '').replace(/\/+$/, '');
+    return trimmed === PLUGINS_APP_ROUTE || trimmed === SETTINGS_ROUTES.plugins;
 }
 
 /** The home's name in `host`: Settings calls it "Plugin marketplace", the sidebar "Plugins". */

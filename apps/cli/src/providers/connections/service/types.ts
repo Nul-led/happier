@@ -167,7 +167,7 @@ export type ProviderConnectionServiceDeps = Readonly<{
     request: Extract<ManagedProviderStartRequest, { reason: 'explicitStartLocal' }>;
     purposeBindings: QualifiedConnectedAccountPurposeBindingsV1;
     isAuthorizationCurrent(): boolean;
-    revalidateAuthorization(): Promise<boolean>;
+    revalidateAuthorization(signal?: AbortSignal): Promise<boolean>;
     /** Borrowed from the enclosing start operation; the caller releases it. */
     runtimeRegistryLease?: PluginRuntimeRegistryLease;
   }>): Promise<Readonly<{ status: 'detecting' | 'running' }>>;

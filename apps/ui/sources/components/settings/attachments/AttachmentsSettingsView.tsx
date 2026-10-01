@@ -1,62 +1,68 @@
 import React from 'react';
-import { useUnistyles } from 'react-native-unistyles';
-
-import { Item } from '@/components/ui/lists/Item';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
 import { ItemList } from '@/components/ui/lists/ItemList';
 import { Modal } from '@/modal';
-import { t, type TranslationKey } from '@/text';
+import { t, type TranslationKeyNoParams } from '@/text';
 import { useSettingMutable } from '@/sync/domains/state/storage';
 import { useFeatureEnabled } from '@/hooks/server/useFeatureEnabled';
-import { Icon, type IconName } from '@/components/ui/icons/Icon';
-
-type IoniconName = IconName;
+import { Switch } from '@/components/ui/forms/Switch';
+import { AttentionBanner } from '@/components/ui/lists/AttentionBanner';
+import { SegmentedChoiceItem } from '@/components/ui/lists/SegmentedChoiceItem';
+import { SettingAnchor, SettingRow } from '@/components/settings/shell/SettingRow';
+import { ATTACHMENTS_SETTINGS } from '@/components/settings/attachments/attachmentsSettings';
+import { SettingsPageHeader } from '@/components/settings/shell/SettingsPageHeader';
 
 const UPLOAD_LOCATION_OPTIONS: ReadonlyArray<{
     id: 'workspace' | 'os_temp';
-    titleKey: TranslationKey;
-    subtitleKey: TranslationKey;
-    iconName: IoniconName;
+    labelKey: TranslationKeyNoParams;
+    subtitleKey: TranslationKeyNoParams;
 }> = [
     {
         id: 'workspace',
-        titleKey: 'settingsAttachments.uploadLocation.options.workspace.title',
+        labelKey: 'settingsAttachments.uploadLocation.options.workspace.short',
         subtitleKey: 'settingsAttachments.uploadLocation.options.workspace.subtitle',
-        iconName: 'folder',
     },
     {
         id: 'os_temp',
-        titleKey: 'settingsAttachments.uploadLocation.options.osTemp.title',
+        labelKey: 'settingsAttachments.uploadLocation.options.osTemp.short',
         subtitleKey: 'settingsAttachments.uploadLocation.options.osTemp.subtitle',
-        iconName: 'cloud-arrow-up',
     },
 ];
 
 const VCS_IGNORE_OPTIONS: ReadonlyArray<{
     id: 'git_info_exclude' | 'gitignore' | 'none';
-    titleKey: TranslationKey;
-    subtitleKey: TranslationKey;
-    iconName: IoniconName;
+    labelKey: TranslationKeyNoParams;
+    subtitleKey: TranslationKeyNoParams;
 }> = [
     {
         id: 'git_info_exclude',
-        titleKey: 'settingsAttachments.sourceControlIgnore.options.gitInfoExclude.title',
+        labelKey: 'settingsAttachments.sourceControlIgnore.options.gitInfoExclude.short',
         subtitleKey: 'settingsAttachments.sourceControlIgnore.options.gitInfoExclude.subtitle',
-        iconName: 'shield-check',
     },
     {
         id: 'gitignore',
-        titleKey: 'settingsAttachments.sourceControlIgnore.options.gitignore.title',
+        labelKey: 'settingsAttachments.sourceControlIgnore.options.gitignore.short',
         subtitleKey: 'settingsAttachments.sourceControlIgnore.options.gitignore.subtitle',
-        iconName: 'git-branch',
     },
     {
         id: 'none',
-        titleKey: 'settingsAttachments.sourceControlIgnore.options.none.title',
+        labelKey: 'settingsAttachments.sourceControlIgnore.options.none.short',
         subtitleKey: 'settingsAttachments.sourceControlIgnore.options.none.subtitle',
-        iconName: 'warning-circle',
     },
 ];
+
+/** "25 MB" for a byte count on a whole binary unit, otherwise the exact byte count. */
+function formatByteSize(bytes: number): string {
+    const units = ['KB', 'MB', 'GB'] as const;
+    let value = bytes;
+    let unit: string = 'B';
+    for (const next of units) {
+        if (value < 1024 || value % 1024 !== 0) break;
+        value /= 1024;
+        unit = next;
+    }
+    return `${value.toLocaleString()} ${unit}`;
+}
 
 function normalizeWorkspaceRelativeDir(input: string): string | null {
     const trimmed = input.trim();
@@ -76,7 +82,6 @@ function parsePositiveInt(input: string, opts: Readonly<{ min: number; max: numb
 }
 
 export const AttachmentsSettingsView = React.memo(function AttachmentsSettingsView() {
-    const { theme } = useUnistyles();
     const attachmentsEnabled = useFeatureEnabled('attachments.uploads');
 
     const [uploadLocation, setUploadLocation] = useSettingMutable('attachmentsUploadsUploadLocation');
@@ -94,96 +99,104 @@ export const AttachmentsSettingsView = React.memo(function AttachmentsSettingsVi
 
     if (!attachmentsEnabled) {
         return (
-            <ItemList style={{ paddingTop: 0 }}>
-                <ItemGroup
-                    title={t('settingsAttachments.disabled.title')}
-                    footer={t('settingsAttachments.disabled.footer')}
-                >
-                    <Item
-                        title={t('settingsAttachments.fileUploads.title')}
-                        subtitle={t('common.disabled')}
-                        icon={<Icon name="paperclip" size={29} color={theme.colors.state.danger.foreground} />}
-                        showChevron={false}
-                    />
-                </ItemGroup>
+            <ItemList style={{ paddingTop: 0 }} presentation="page">
+                <SettingsPageHeader description={t('settingsAttachments.pageDescription')} />
+                <AttentionBanner
+                    testID="settings-attachments-disabled"
+                    tone="neutral"
+                    title={t('settingsAttachments.disabled.bannerTitle')}
+                    description={t('settingsAttachments.disabled.footer')}
+                />
             </ItemList>
         );
     }
 
-    const renderIcon = (iconName: IoniconName) => (
-        <Icon name={iconName} size={29} color={theme.colors.text.secondary} />
-    );
+    const promptUploadsDirectory = async () => {
+        const raw = await Modal.prompt(
+            t('settingsAttachments.workspaceDirectory.uploadsDirectory.promptTitle'),
+            t('settingsAttachments.workspaceDirectory.uploadsDirectory.promptMessage'),
+            { placeholder: effectiveWorkspaceRelativeDir },
+        );
+        if (raw === null) return;
+        const normalized = normalizeWorkspaceRelativeDir(raw);
+        if (!normalized) {
+            Modal.alert(t('settingsAttachments.workspaceDirectory.uploadsDirectory.invalidDirectoryTitle'), t('settingsAttachments.workspaceDirectory.uploadsDirectory.invalidDirectoryMessage'));
+            return;
+        }
+        setWorkspaceRelativeDir(normalized);
+    };
 
     return (
-        <ItemList style={{ paddingTop: 0 }}>
+        <ItemList style={{ paddingTop: 0 }} presentation="page">
+            <SettingsPageHeader description={t('settingsAttachments.pageDescription')} />
             <ItemGroup
                 title={t('settingsAttachments.uploadLocation.title')}
-                footer={t('settingsAttachments.uploadLocation.footer')}
+                description={t('settingsAttachments.uploadLocation.footer')}
             >
-                {UPLOAD_LOCATION_OPTIONS.map((option) => (
-                    <Item
-                        key={option.id}
-                        title={t(option.titleKey)}
-                        subtitle={t(option.subtitleKey)}
-                        icon={renderIcon(option.iconName)}
-                        rightElement={effectiveUploadLocation === option.id ? <Icon name="check" size={20} color={theme.colors.accent.blue} /> : null}
-                        onPress={() => setUploadLocation(option.id)}
-                        showChevron={false}
+                <SettingAnchor setting={ATTACHMENTS_SETTINGS.settings.uploadLocation}>
+                    <SegmentedChoiceItem<'workspace' | 'os_temp'>
+                        testID="settings-attachments-upload-location"
+                        testIDPrefix="settings-attachments-upload-location"
+                        title={t(ATTACHMENTS_SETTINGS.settings.uploadLocation.titleKey)}
+                        subtitleLines={0}
+                        value={effectiveUploadLocation}
+                        onChange={setUploadLocation}
+                        options={UPLOAD_LOCATION_OPTIONS.map((option) => ({
+                            id: option.id,
+                            label: t(option.labelKey),
+                            description: t(option.subtitleKey),
+                        }))}
                     />
-                ))}
-            </ItemGroup>
-
-            <ItemGroup title={t('settingsAttachments.workspaceDirectory.title')} footer={t('settingsAttachments.workspaceDirectory.footer')}>
-                <Item
-                    title={t('settingsAttachments.workspaceDirectory.uploadsDirectory.title')}
-                    subtitle={effectiveWorkspaceRelativeDir}
-                    icon={renderIcon('folder')}
-                    onPress={async () => {
-                        const raw = await Modal.prompt(
-                            t('settingsAttachments.workspaceDirectory.uploadsDirectory.promptTitle'),
-                            t('settingsAttachments.workspaceDirectory.uploadsDirectory.promptMessage'),
-                            { placeholder: effectiveWorkspaceRelativeDir },
-                        );
-                        if (raw === null) return;
-                        const normalized = normalizeWorkspaceRelativeDir(raw);
-                        if (!normalized) {
-                            Modal.alert(t('settingsAttachments.workspaceDirectory.uploadsDirectory.invalidDirectoryTitle'), t('settingsAttachments.workspaceDirectory.uploadsDirectory.invalidDirectoryMessage'));
-                            return;
-                        }
-                        setWorkspaceRelativeDir(normalized);
-                    }}
+                </SettingAnchor>
+                <SettingRow
+                    testID="settings-attachments-uploads-directory"
+                    setting={ATTACHMENTS_SETTINGS.settings.uploadsDirectory}
+                    // The directory applies only to workspace uploads; it stays editable so it is ready.
+                    subtitle={effectiveUploadLocation === 'workspace'
+                        ? effectiveWorkspaceRelativeDir
+                        : `${effectiveWorkspaceRelativeDir} · ${t('settingsAttachments.workspaceDirectory.usedForWorkspace')}`}
+                    subtitleLines={0}
+                    onPress={() => { void promptUploadsDirectory(); }}
                 />
             </ItemGroup>
 
             <ItemGroup
                 title={t('settingsAttachments.sourceControlIgnore.title')}
-                footer={t('settingsAttachments.sourceControlIgnore.footer')}
+                description={t('settingsAttachments.sourceControlIgnore.footer')}
             >
-                {VCS_IGNORE_OPTIONS.map((option) => (
-                    <Item
-                        key={option.id}
-                        title={t(option.titleKey)}
-                        subtitle={t(option.subtitleKey)}
-                        icon={renderIcon(option.iconName)}
-                        rightElement={effectiveIgnoreStrategy === option.id ? <Icon name="check" size={20} color={theme.colors.accent.blue} /> : null}
-                        onPress={() => setVcsIgnoreStrategy(option.id)}
-                        showChevron={false}
+                <SettingAnchor setting={ATTACHMENTS_SETTINGS.settings.ignoreStrategy}>
+                    <SegmentedChoiceItem<'git_info_exclude' | 'gitignore' | 'none'>
+                        testID="settings-attachments-ignore-strategy"
+                        testIDPrefix="settings-attachments-ignore-strategy"
+                        title={t(ATTACHMENTS_SETTINGS.settings.ignoreStrategy.titleKey)}
+                        subtitleLines={0}
+                        value={effectiveIgnoreStrategy}
+                        onChange={setVcsIgnoreStrategy}
+                        options={VCS_IGNORE_OPTIONS.map((option) => ({
+                            id: option.id,
+                            label: t(option.labelKey),
+                            description: t(option.subtitleKey),
+                        }))}
                     />
-                ))}
-                <Item
-                    title={t('settingsAttachments.sourceControlIgnore.writeIgnoreRules.title')}
-                    subtitle={vcsIgnoreWritesEnabled === false ? t('common.disabled') : t('common.enabled')}
-                    icon={renderIcon('pencil-simple')}
+                </SettingAnchor>
+                <SettingRow
+                    testID="settings-attachments-write-ignore-rules"
+                    setting={ATTACHMENTS_SETTINGS.settings.writeIgnoreRules}
                     showChevron={false}
-                    onPress={() => setVcsIgnoreWritesEnabled(!(vcsIgnoreWritesEnabled === false))}
+                    rightElement={(
+                        <Switch
+                            value={vcsIgnoreWritesEnabled !== false}
+                            onValueChange={(value) => setVcsIgnoreWritesEnabled(Boolean(value))}
+                        />
+                    )}
                 />
             </ItemGroup>
 
-            <ItemGroup title={t('settingsAttachments.limits.title')} footer={t('settingsAttachments.limits.footer')}>
-                <Item
-                    title={t('settingsAttachments.limits.maxAttachmentSize.title')}
-                    subtitle={typeof maxFileBytes === 'number' ? String(maxFileBytes) : t('common.default')}
-                    icon={renderIcon('resize')}
+            <ItemGroup title={t('settingsAttachments.limits.title')} description={t('settingsAttachments.limits.footer')}>
+                <SettingRow
+                    testID="settings-attachments-max-size"
+                    setting={ATTACHMENTS_SETTINGS.settings.maxAttachmentSize}
+                    subtitle={typeof maxFileBytes === 'number' ? formatByteSize(maxFileBytes) : t('common.default')}
                     onPress={async () => {
                         const raw = await Modal.prompt(
                             t('settingsAttachments.limits.maxAttachmentSize.promptTitle'),

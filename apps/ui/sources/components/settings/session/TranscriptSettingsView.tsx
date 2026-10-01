@@ -1,21 +1,23 @@
 import * as React from 'react';
-import { useRouter } from 'expo-router';
+import { useRouter } from '@/components/appShell/workspace/destinationRoute';
 import { View } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 import type { AccountSettings } from '@happier-dev/protocol';
+import { Icon } from '@/components/ui/icons/Icon';
 
-import { Text, TextInput } from '@/components/ui/text/Text';
+import { Text } from '@/components/ui/text/Text';
 import { Item } from '@/components/ui/lists/Item';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
 import { ItemList } from '@/components/ui/lists/ItemList';
 import { Switch } from '@/components/ui/forms/Switch';
 import { DropdownMenu } from '@/components/ui/forms/dropdown/DropdownMenu';
+import { FieldTextInput } from '@/components/ui/forms/FieldTextInput';
+import { SelectionTiles } from '@/components/ui/forms/SelectionTiles';
+import { SegmentedChoiceItem } from '@/components/ui/lists/SegmentedChoiceItem';
 import { Typography } from '@/constants/Typography';
 import { t } from '@/text';
 import { useSettingMutable } from '@/sync/domains/state/storage';
 import {
-    resolveToolViewDetailLevelDefaultForChromeMode,
-    resolveToolViewExpandedDetailLevelDefaultForChromeMode,
     type ToolTimelineChromeMode,
     type ToolViewDetailLevelSetting,
     type ToolViewExpandedDetailLevelSetting,
@@ -25,10 +27,17 @@ import {
     TOOL_EXPANDED_DETAIL_LEVEL_WITH_STYLE_DEFAULT_OPTIONS,
 } from '@/components/settings/session/toolRendering/toolRenderingSettingOptions';
 import { resolveTranscriptToolCallsCollapsedPreviewCount } from '@/sync/domains/settings/transcriptToolCallsCollapsedPreviewCount';
-import { Icon } from '@/components/ui/icons/Icon';
+import {
+    normalizeTranscriptMotionPreset,
+    type TranscriptMotionPreset,
+} from '@/components/sessions/transcript/motion/TranscriptMotionContext';
+import { SettingsPageHeader } from '@/components/settings/shell/SettingsPageHeader';
+import { SettingRow, SettingAnchor, SettingSection } from '@/components/settings/shell/SettingRow';
+import { TRANSCRIPT_SETTINGS } from '@/components/settings/session/transcriptSettings';
+import { ThinkingDisplayPreview, ToolStylePreview, TranscriptLayoutPreview } from '@/components/settings/session/SessionSettingPreviews';
 
 type TranscriptGroupingMode = 'linear' | 'turns';
-type TranscriptMotionPreset = 'off' | 'subtle' | 'full';
+type ThinkingOptionId = 'inline_summary' | 'inline_full' | 'tool' | 'hidden';
 type ToolCallsGroupStrategy = 'consecutive_tools' | 'all_tools_in_turn';
 type ToolTapAction = 'expand' | 'open';
 type TranscriptBulkCopyFormat = 'markdown_labeled' | 'plain';
@@ -72,17 +81,11 @@ export const TranscriptSettingsView = React.memo(function TranscriptSettingsView
     const [transcriptScrollPinEnabled, setTranscriptScrollPinEnabled] = useSettingMutable('transcriptScrollPinEnabled');
     const [transcriptScrollJumpToBottomEnabled, setTranscriptScrollJumpToBottomEnabled] = useSettingMutable('transcriptScrollJumpToBottomEnabled');
 
-    const [openGroupingMenu, setOpenGroupingMenu] = React.useState(false);
     const [openTimestampMenu, setOpenTimestampMenu] = React.useState(false);
-    const [openBulkCopyFormatMenu, setOpenBulkCopyFormatMenu] = React.useState(false);
-    const [openThinkingDisplayMenu, setOpenThinkingDisplayMenu] = React.useState(false);
-    const [openToolChromeMenu, setOpenToolChromeMenu] = React.useState(false);
     const [openToolDetailMenu, setOpenToolDetailMenu] = React.useState<null | string>(null);
-    const [openMotionMenu, setOpenMotionMenu] = React.useState(false);
 
     const normalizedGroupingMode: TranscriptGroupingMode = transcriptGroupingMode === 'turns' ? 'turns' : 'linear';
-    const normalizedMotionPreset: TranscriptMotionPreset =
-        transcriptMotionPreset === 'off' || transcriptMotionPreset === 'full' ? transcriptMotionPreset : 'subtle';
+    const normalizedMotionPreset = normalizeTranscriptMotionPreset(transcriptMotionPreset);
 
     const normalizedToolChromeMode: ToolTimelineChromeMode =
         toolViewTimelineChromeMode === 'activity_feed' ? 'activity_feed' : 'cards';
@@ -103,30 +106,8 @@ export const TranscriptSettingsView = React.memo(function TranscriptSettingsView
             ? toolViewExpandedDetailLevelDefault
             : 'default';
 
-    const resolvedDetailLevelDefaultLabel = resolveToolViewDetailLevelDefaultForChromeMode({
-        chromeMode: normalizedToolChromeMode,
-        setting: normalizedToolViewDetailLevelDefaultSetting,
-    });
-    const resolvedExpandedDetailLevelDefaultLabel = resolveToolViewExpandedDetailLevelDefaultForChromeMode({
-        chromeMode: normalizedToolChromeMode,
-        setting: normalizedToolViewExpandedDetailLevelDefaultSetting,
-    });
-
     const normalizedStrategy: ToolCallsGroupStrategy =
         transcriptTurnToolCallsGroupStrategy === 'all_tools_in_turn' ? 'all_tools_in_turn' : 'consecutive_tools';
-
-    const groupingOptions: Array<{ key: TranscriptGroupingMode; title: string; subtitle: string }> = [
-        {
-            key: 'linear',
-            title: t('settingsSession.transcript.layout.linearTitle'),
-            subtitle: t('settingsSession.transcript.layout.linearSubtitle'),
-        },
-        {
-            key: 'turns',
-            title: t('settingsSession.transcript.layout.turnsTitle'),
-            subtitle: t('settingsSession.transcript.layout.turnsSubtitle'),
-        },
-    ];
 
     const normalizedTimestampDisplayMode: TranscriptMessageTimestampDisplayMode =
         transcriptMessageTimestampDisplayMode === 'hover_web_always_mobile' ||
@@ -159,32 +140,6 @@ export const TranscriptSettingsView = React.memo(function TranscriptSettingsView
     ];
 
     const normalizedBulkCopyFormat: TranscriptBulkCopyFormat = transcriptBulkCopyFormat === 'plain' ? 'plain' : 'markdown_labeled';
-    const bulkCopyFormatOptions: Array<{ key: TranscriptBulkCopyFormat; title: string; subtitle: string }> = [
-        {
-            key: 'markdown_labeled',
-            title: t('settingsSession.transcript.messageActions.bulkCopyFormat.markdownLabeled'),
-            subtitle: t('settingsSession.transcript.messageActions.bulkCopyFormat.subtitle'),
-        },
-        {
-            key: 'plain',
-            title: t('settingsSession.transcript.messageActions.bulkCopyFormat.plain'),
-            subtitle: t('settingsSession.transcript.messageActions.bulkCopyFormat.subtitle'),
-        },
-    ];
-
-    const strategyOptions: Array<{ key: ToolCallsGroupStrategy; title: string; subtitle: string }> = [
-        {
-            key: 'consecutive_tools',
-            title: t('settingsSession.transcript.advanced.toolCallsStrategy.consecutiveTitle'),
-            subtitle: t('settingsSession.transcript.advanced.toolCallsStrategy.consecutiveSubtitle'),
-        },
-        {
-            key: 'all_tools_in_turn',
-            title: t('settingsSession.transcript.advanced.toolCallsStrategy.allToolsTitle'),
-            subtitle: t('settingsSession.transcript.advanced.toolCallsStrategy.allToolsSubtitle'),
-        },
-    ];
-
     const normalizedCollapsedPreviewCount = resolveTranscriptToolCallsCollapsedPreviewCount(transcriptToolCallsCollapsedPreviewCount);
 
     const collapsedPreviewOptions: Array<{ key: number; title: string; subtitle: string }> = [
@@ -223,56 +178,11 @@ export const TranscriptSettingsView = React.memo(function TranscriptSettingsView
         }),
     ];
 
-    const motionOptions: Array<{ key: TranscriptMotionPreset; title: string; subtitle: string }> = [
-        {
-            key: 'off',
-            title: t('settingsSession.transcript.motion.offTitle'),
-            subtitle: t('settingsSession.transcript.motion.offSubtitle'),
-        },
-        {
-            key: 'subtle',
-            title: t('settingsSession.transcript.motion.subtleTitle'),
-            subtitle: t('settingsSession.transcript.motion.subtleSubtitle'),
-        },
-        {
-            key: 'full',
-            title: t('settingsSession.transcript.motion.fullTitle'),
-            subtitle: t('settingsSession.transcript.motion.fullSubtitle'),
-        },
-    ];
-
-    const chromeModeOptions: Array<{ key: ToolTimelineChromeMode; title: string; subtitle: string }> = [
-        {
-            key: 'cards',
-            title: t('settingsSession.toolRendering.timelineChrome.cardsTitle'),
-            subtitle: t('settingsSession.toolRendering.timelineChrome.cardsSubtitle'),
-        },
-        {
-            key: 'activity_feed',
-            title: t('settingsSession.toolRendering.timelineChrome.activityFeedTitle'),
-            subtitle: t('settingsSession.toolRendering.timelineChrome.activityFeedSubtitle'),
-        },
-    ];
-
-    const tapActionOptions: Array<{ key: ToolTapAction; title: string; subtitle: string }> = [
-        {
-            key: 'expand',
-            title: t('settingsSession.toolRendering.activityFeed.tapAction.expandTitle'),
-            subtitle: t('settingsSession.toolRendering.activityFeed.tapAction.expandSubtitle'),
-        },
-        {
-            key: 'open',
-            title: t('settingsSession.toolRendering.activityFeed.tapAction.openTitle'),
-            subtitle: t('settingsSession.toolRendering.activityFeed.tapAction.openSubtitle'),
-        },
-    ];
-
     const normalizedToolTapAction: ToolTapAction = toolViewTapAction === 'open' ? 'open' : 'expand';
 
     const advancedRoute = '/(app)/settings/session/transcript/advanced';
     const toolOverridesRoute = '/(app)/settings/session/tool-rendering';
 
-    type ThinkingOptionId = 'inline_summary' | 'inline_full' | 'tool' | 'hidden';
     const normalizedThinkingSelectedId: ThinkingOptionId =
         sessionThinkingDisplayMode === 'tool'
             ? 'tool'
@@ -282,289 +192,164 @@ export const TranscriptSettingsView = React.memo(function TranscriptSettingsView
                     ? 'inline_full'
                     : 'inline_summary';
 
+    const selectThinkingDisplay = (option: ThinkingOptionId) => {
+        switch (option) {
+            case 'inline_summary':
+                setSessionThinkingDisplayMode('inline' as any);
+                setSessionThinkingInlinePresentation('summary' as any);
+                break;
+            case 'inline_full':
+                setSessionThinkingDisplayMode('inline' as any);
+                setSessionThinkingInlinePresentation('full' as any);
+                break;
+            case 'tool':
+                setSessionThinkingDisplayMode('tool' as any);
+                break;
+            case 'hidden':
+                setSessionThinkingDisplayMode('hidden' as any);
+                break;
+        }
+    };
     const thinkingDisplayOptions: Array<{ id: ThinkingOptionId; title: string; subtitle: string }> = [
-        {
-            id: 'inline_summary',
-            title: t('settingsSession.thinking.displayMode.inlineSummaryTitle'),
-            subtitle: t('settingsSession.thinking.displayMode.inlineSummarySubtitle'),
-        },
-        {
-            id: 'inline_full',
-            title: t('settingsSession.thinking.displayMode.inlineTitle'),
-            subtitle: t('settingsSession.thinking.displayMode.inlineSubtitle'),
-        },
-        {
-            id: 'tool',
-            title: t('settingsSession.thinking.displayMode.toolTitle'),
-            subtitle: t('settingsSession.thinking.displayMode.toolSubtitle'),
-        },
-        {
-            id: 'hidden',
-            title: t('settingsSession.thinking.displayMode.hiddenTitle'),
-            subtitle: t('settingsSession.thinking.displayMode.hiddenSubtitle'),
-        },
+        { id: 'inline_summary', title: t('settingsSessionPages.transcript.thinkingSummary'), subtitle: t('settingsSession.thinking.displayMode.inlineSummarySubtitle') },
+        { id: 'inline_full', title: t('settingsSessionPages.transcript.thinkingFull'), subtitle: t('settingsSession.thinking.displayMode.inlineSubtitle') },
+        { id: 'tool', title: t('settingsSession.thinking.displayMode.toolTitle'), subtitle: t('settingsSession.thinking.displayMode.toolSubtitle') },
+        { id: 'hidden', title: t('settingsSession.thinking.displayMode.hiddenTitle'), subtitle: t('settingsSession.thinking.displayMode.hiddenSubtitle') },
     ];
+    const selectedThinkingDescription = thinkingDisplayOptions.find((option) => option.id === normalizedThinkingSelectedId)?.subtitle;
 
     const tToolDetail = t as (key: any) => string;
+    const templateValue = typeof transcriptMessageSendToSessionTemplate === 'string' ? transcriptMessageSendToSessionTemplate : '{{MESSAGES}}';
+    const templateMissingPlaceholder = typeof transcriptMessageSendToSessionTemplate === 'string'
+        && !transcriptMessageSendToSessionTemplate.includes('{{MESSAGES}}');
 
     return (
-        <ItemList ref={popoverBoundaryRef} style={{ paddingTop: 0 }}>
-            <ItemGroup title={t('settingsSession.transcript.layoutTitle')} footer={t('settingsSession.transcript.layoutFooter')}>
-                <DropdownMenu
-                    open={openGroupingMenu}
-                    onOpenChange={setOpenGroupingMenu}
-                    variant="selectable"
-                    search={false}
-                    selectedId={normalizedGroupingMode as any}
-                    showCategoryTitles={false}
-                    matchTriggerWidth={true}
-                    connectToTrigger={true}
-                    rowKind="item"
-                    popoverBoundaryRef={popoverBoundaryRef}
-                    itemTrigger={{
-                        title: t('settingsSession.transcript.layoutPickerTitle'),
-                        icon: <Icon name="chat-circle-dots" size={29} color={theme.colors.accent.blue} />,
-                        itemProps: { testID: 'settings-session-transcript-layout-picker' },
-                    }}
-                    items={groupingOptions.map((opt) => ({
-                        id: opt.key,
-                        title: opt.title,
-                        subtitle: opt.subtitle,
-                        icon: (
-                            <View style={{ width: 32, height: 32, alignItems: 'center', justifyContent: 'center' }}>
-                                <Icon name="chat-circle-dots" size={20} color={theme.colors.text.secondary} />
-                            </View>
-                        ),
-                    }))}
-                    onSelect={(id) => {
-                        setTranscriptGroupingMode(id as any);
-                        setOpenGroupingMenu(false);
-                    }}
-                />
-
-                <DropdownMenu
-                    open={openTimestampMenu}
-                    onOpenChange={setOpenTimestampMenu}
-                    variant="selectable"
-                    search={false}
-                    selectedId={normalizedTimestampDisplayMode}
-                    showCategoryTitles={false}
-                    matchTriggerWidth={true}
-                    connectToTrigger={true}
-                    rowKind="item"
-                    popoverBoundaryRef={popoverBoundaryRef}
-                    itemTrigger={{
-                        title: t('settingsSession.transcript.messageTimestampsTitle'),
-                        subtitle: t('settingsSession.transcript.messageTimestampsSubtitle'),
-                        icon: <Icon name="clock" size={29} color={theme.colors.text.secondary} />,
-                        itemProps: { testID: 'settings-session-transcript-message-timestamps' },
-                    }}
-                    items={timestampDisplayOptions.map((opt) => ({
-                        id: opt.key,
-                        title: opt.title,
-                        subtitle: opt.subtitle,
-                        icon: (
-                            <View style={{ width: 32, height: 32, alignItems: 'center', justifyContent: 'center' }}>
-                                <Icon name="clock" size={20} color={theme.colors.text.secondary} />
-                            </View>
-                        ),
-                    }))}
-                    onSelect={(id) => {
-                        setTranscriptMessageTimestampDisplayMode(id as TranscriptMessageTimestampDisplayMode);
-                        setOpenTimestampMenu(false);
-                    }}
-                />
-            </ItemGroup>
-
-            <ItemGroup title={t('settingsSession.transcript.messageActions.groupTitle')} footer={t('settingsSession.transcript.messageActions.groupFooter')}>
-                <Item
-                    testID="settings-session-transcript-message-selection-enabled"
-                    title={t('settingsSession.transcript.messageActions.selectionEnabled.title')}
-                    subtitle={t('settingsSession.transcript.messageActions.selectionEnabled.subtitle')}
-                    rightElement={<Switch value={transcriptMessageSelectionEnabled === true} onValueChange={setTranscriptMessageSelectionEnabled} />}
-                    showChevron={false}
-                    onPress={() => setTranscriptMessageSelectionEnabled(!(transcriptMessageSelectionEnabled === true))}
-                />
-                <Item
-                    testID="settings-session-transcript-message-send-to-session-enabled"
-                    title={t('settingsSession.transcript.messageActions.sendToSessionEnabled.title')}
-                    subtitle={t('settingsSession.transcript.messageActions.sendToSessionEnabled.subtitle')}
-                    rightElement={<Switch value={transcriptMessageSendToSessionEnabled === true} onValueChange={setTranscriptMessageSendToSessionEnabled} />}
-                    showChevron={false}
-                    onPress={() => setTranscriptMessageSendToSessionEnabled(!(transcriptMessageSendToSessionEnabled === true))}
-                />
-                <View testID="settings-session-transcript-message-send-template-field" style={styles.templateFieldContainer}>
-                    <Text style={[styles.templateFieldLabel, { color: theme.colors.text.secondary }]}>
-                        {t('settingsSession.transcript.messageActions.template.title')}
-                    </Text>
-                    <Text style={[styles.templateFieldHint, { color: theme.colors.text.secondary }]}>
-                        {t('settingsSession.transcript.messageActions.template.subtitle')}
-                    </Text>
-                    <TextInput
-                        testID="settings-session-transcript-message-send-template-input"
-                        accessibilityLabel={t('settingsSession.transcript.messageActions.template.title')}
-                        value={typeof transcriptMessageSendToSessionTemplate === 'string' ? transcriptMessageSendToSessionTemplate : '{{MESSAGES}}'}
-                        onChangeText={setTranscriptMessageSendToSessionTemplate}
-                        placeholder={t('settingsSession.transcript.messageActions.template.placeholder')}
-                        placeholderTextColor={theme.colors.input.placeholder}
-                        multiline
-                        autoCorrect={false}
-                        autoCapitalize="none"
-                        style={[
-                            styles.templateTextInput,
-                            {
-                                color: theme.colors.input.text,
-                                backgroundColor: theme.colors.input.background,
-                                borderColor: theme.colors.border.default,
-                            },
-                        ]}
-                    />
-                </View>
-                {typeof transcriptMessageSendToSessionTemplate === 'string' && !transcriptMessageSendToSessionTemplate.includes('{{MESSAGES}}') ? (
+        <ItemList ref={popoverBoundaryRef} style={{ paddingTop: 0 }} presentation="page">
+            <SettingsPageHeader description={t('settingsSessionPages.transcript.pageDescription')} />
+            <ItemGroup title={t('settingsSession.transcript.layoutTitle')} description={t('settingsSession.transcript.layoutFooter')}>
+                <SettingAnchor setting={TRANSCRIPT_SETTINGS.settings.layoutPicker}>
                     <Item
-                        mode="info"
-                        title={<Text style={{ color: theme.colors.state.warning.foreground }}>{t('settingsSession.transcript.messageActions.template.warningMissingPlaceholder')}</Text>}
+                        testID="settings-session-transcript-layout-picker"
+                        title={t(TRANSCRIPT_SETTINGS.settings.layoutPicker.titleKey)}
+                        subtitle={normalizedGroupingMode === 'turns'
+                            ? t('settingsSession.transcript.layout.turnsSubtitle')
+                            : t('settingsSession.transcript.layout.linearSubtitle')}
+                        accessoryLayout="stacked"
                         showChevron={false}
-                    />
-                ) : null}
-                <DropdownMenu
-                    open={openBulkCopyFormatMenu}
-                    onOpenChange={setOpenBulkCopyFormatMenu}
-                    variant="selectable"
-                    search={false}
-                    selectedId={normalizedBulkCopyFormat}
-                    showCategoryTitles={false}
-                    matchTriggerWidth={true}
-                    connectToTrigger={true}
-                    rowKind="item"
-                    popoverBoundaryRef={popoverBoundaryRef}
-                    itemTrigger={{
-                        title: t('settingsSession.transcript.messageActions.bulkCopyFormat.title'),
-                        subtitle: t('settingsSession.transcript.messageActions.bulkCopyFormat.subtitle'),
-                        icon: <Icon name="copy" size={29} color={theme.colors.text.secondary} />,
-                        itemProps: { testID: 'settings-session-transcript-bulk-copy-format' },
-                    }}
-                    items={bulkCopyFormatOptions.map((opt) => ({
-                        id: opt.key,
-                        title: opt.title,
-                        subtitle: opt.subtitle,
-                        icon: (
-                            <View style={{ width: 32, height: 32, alignItems: 'center', justifyContent: 'center' }}>
-                                <Icon name="copy" size={20} color={theme.colors.text.secondary} />
-                            </View>
-                        ),
-                    }))}
-                    onSelect={(id) => {
-                        setTranscriptBulkCopyFormat(id as TranscriptBulkCopyFormat);
-                        setOpenBulkCopyFormatMenu(false);
-                    }}
-                />
-            </ItemGroup>
-
-            <ItemGroup title={t('settingsSession.thinking.title')} footer={t('settingsSession.thinking.footer')}>
-                <DropdownMenu
-                    open={openThinkingDisplayMenu}
-                    onOpenChange={setOpenThinkingDisplayMenu}
-                    variant="selectable"
-                    search={false}
-                    selectedId={normalizedThinkingSelectedId as any}
-                    showCategoryTitles={false}
-                    matchTriggerWidth={true}
-                    connectToTrigger={true}
-                    rowKind="item"
-                    popoverBoundaryRef={popoverBoundaryRef}
-                    itemTrigger={{
-                        title: t('settingsSession.thinking.displayModeTitle'),
-                        icon: <Icon name="lightbulb" size={29} color={theme.colors.accent.blue} />,
-                    }}
-                    items={thinkingDisplayOptions.map((opt) => ({
-                        id: opt.id,
-                        title: opt.title,
-                        subtitle: opt.subtitle,
-                        icon: (
-                            <View style={{ width: 32, height: 32, alignItems: 'center', justifyContent: 'center' }}>
-                                <Icon name="lightbulb" size={20} color={theme.colors.text.secondary} />
-                            </View>
-                        ),
-                    }))}
-                    onSelect={(id) => {
-                        const opt = String(id) as ThinkingOptionId;
-                        switch (opt) {
-                            case 'inline_summary':
-                                setSessionThinkingDisplayMode('inline' as any);
-                                setSessionThinkingInlinePresentation('summary' as any);
-                                break;
-                            case 'inline_full':
-                                setSessionThinkingDisplayMode('inline' as any);
-                                setSessionThinkingInlinePresentation('full' as any);
-                                break;
-                            case 'tool':
-                                setSessionThinkingDisplayMode('tool' as any);
-                                break;
-                            case 'hidden':
-                                setSessionThinkingDisplayMode('hidden' as any);
-                                break;
-                        }
-                        setOpenThinkingDisplayMenu(false);
-                    }}
-                />
-
-                {sessionThinkingDisplayMode === 'inline' ? (
-                    <Item
-                        title={t('settingsSession.thinking.inlineChromeTitle')}
-                        subtitle={t('settingsSession.thinking.inlineChromeSubtitle')}
-                        icon={<Icon name="stack" size={29} color={theme.colors.text.secondary} />}
-                        testID="settings-session-thinking-inline-chrome"
-                        rightElement={
-                            <Switch
-                                value={sessionThinkingInlineChrome !== 'plain'}
-                                onValueChange={(v) => setSessionThinkingInlineChrome((v ? 'card' : 'plain') as any)}
+                        rightElement={(
+                            <SelectionTiles<TranscriptGroupingMode>
+                                variant="visual"
+                                accessibilityLabel={t(TRANSCRIPT_SETTINGS.settings.layoutPicker.titleKey)}
+                                testIdPrefix="settings-session-transcript-layout"
+                                value={normalizedGroupingMode}
+                                onChange={(next) => { if (next) setTranscriptGroupingMode(next as any); }}
+                                options={[
+                                    { id: 'linear', title: t('settingsSession.transcript.layout.linearTitle'), preview: <TranscriptLayoutPreview layout="linear" /> },
+                                    { id: 'turns', title: t('settingsSession.transcript.layout.turnsTitle'), preview: <TranscriptLayoutPreview layout="turns" /> },
+                                ]}
                             />
-                        }
-                        showChevron={false}
-                        onPress={() => setSessionThinkingInlineChrome(((sessionThinkingInlineChrome !== 'plain') ? 'plain' : 'card') as any)}
+                        )}
                     />
-                ) : null}
+                </SettingAnchor>
+
+                <SettingAnchor setting={TRANSCRIPT_SETTINGS.settings.messageTimestamps}>
+                    <DropdownMenu
+                        open={openTimestampMenu}
+                        onOpenChange={setOpenTimestampMenu}
+                        variant="selectable"
+                        search={false}
+                        selectedId={normalizedTimestampDisplayMode}
+                        showCategoryTitles={false}
+                        matchTriggerWidth={true}
+                        connectToTrigger={true}
+                        rowKind="item"
+                        popoverBoundaryRef={popoverBoundaryRef}
+                        itemTrigger={{
+                            title: t(TRANSCRIPT_SETTINGS.settings.messageTimestamps.titleKey),
+                            itemProps: { testID: 'settings-session-transcript-message-timestamps' },
+                        }}
+                        items={timestampDisplayOptions.map((opt) => ({ id: opt.key, title: opt.title, subtitle: opt.subtitle }))}
+                        onSelect={(id) => {
+                            setTranscriptMessageTimestampDisplayMode(id as TranscriptMessageTimestampDisplayMode);
+                            setOpenTimestampMenu(false);
+                        }}
+                    />
+                </SettingAnchor>
             </ItemGroup>
 
-            <ItemGroup title={t('settingsSession.toolRendering.title')} footer={t('settingsSession.toolRendering.footer')}>
-                <DropdownMenu
-                    open={openToolChromeMenu}
-                    onOpenChange={setOpenToolChromeMenu}
-                    variant="selectable"
-                    search={false}
-                    selectedId={normalizedToolChromeMode as any}
-                    showCategoryTitles={false}
-                    matchTriggerWidth={true}
-                    connectToTrigger={true}
-                    rowKind="item"
-                    popoverBoundaryRef={popoverBoundaryRef}
-                    itemTrigger={{
-                        title: t('settingsSession.toolRendering.timelineChrome.title'),
-                        icon: <Icon name="wrench" size={29} color={theme.colors.accent.blue} />,
-                    }}
-                    items={chromeModeOptions.map((opt) => ({
-                        id: opt.key,
-                        title: opt.title,
-                        subtitle: opt.subtitle,
-                        icon: (
-                            <View style={{ width: 32, height: 32, alignItems: 'center', justifyContent: 'center' }}>
-                                <Icon name="wrench" size={20} color={theme.colors.text.secondary} />
-                            </View>
-                        ),
-                    }))}
-                    onSelect={(id) => {
-                        setToolViewTimelineChromeMode(id as any);
-                        setOpenToolChromeMenu(false);
-                    }}
-                />
-
-                {normalizedToolChromeMode === 'activity_feed' ? (
-                    <>
+            <SettingSection section={TRANSCRIPT_SETTINGS.sectionRefs.thinking}>
+                <ItemGroup title={t('settingsSession.thinking.title')} description={t('settingsSession.thinking.footer')}>
+                    <SettingAnchor setting={TRANSCRIPT_SETTINGS.settings.displayMode}>
                         <Item
-                            title={t('settingsSession.transcript.toolCallsGroupTitle')}
-                            subtitle={t('settingsSession.transcript.toolCallsGroupSubtitle')}
-                            icon={<Icon name="stack-simple" size={29} color={theme.colors.accent.indigo} />}
+                            testID="settings-session-thinking-display"
+                            title={t(TRANSCRIPT_SETTINGS.settings.displayMode.titleKey)}
+                            subtitle={selectedThinkingDescription}
+                            accessoryLayout="stacked"
+                            showChevron={false}
+                            rightElement={(
+                                <SelectionTiles<ThinkingOptionId>
+                                    variant="visual"
+                                    accessibilityLabel={t(TRANSCRIPT_SETTINGS.settings.displayMode.titleKey)}
+                                    testIdPrefix="settings-session-thinking-display"
+                                    value={normalizedThinkingSelectedId}
+                                    onChange={(next) => { if (next) selectThinkingDisplay(next); }}
+                                    options={thinkingDisplayOptions.map((option) => ({
+                                        id: option.id,
+                                        title: option.title,
+                                        preview: <ThinkingDisplayPreview mode={option.id} inlineChrome={sessionThinkingInlineChrome === 'plain' ? 'plain' : 'card'} />,
+                                    }))}
+                                />
+                            )}
+                        />
+                    </SettingAnchor>
+
+                    {sessionThinkingDisplayMode === 'inline' ? (
+                        <SettingRow
+                            setting={TRANSCRIPT_SETTINGS.settings.inlineChrome}
+                            testID="settings-session-thinking-inline-chrome"
+                            rightElement={
+                                <Switch
+                                    value={sessionThinkingInlineChrome !== 'plain'}
+                                    onValueChange={(v) => setSessionThinkingInlineChrome((v ? 'card' : 'plain') as any)}
+                                />
+                            }
+                            showChevron={false}
+                            onPress={() => setSessionThinkingInlineChrome(((sessionThinkingInlineChrome !== 'plain') ? 'plain' : 'card') as any)}
+                        />
+                    ) : null}
+                </ItemGroup>
+            </SettingSection>
+
+            <SettingSection section={TRANSCRIPT_SETTINGS.sectionRefs.toolRendering}>
+                <ItemGroup title={t('settingsSessionPages.transcript.toolsSection')} description={t('settingsSession.toolRendering.footer')}>
+                    <SettingAnchor setting={TRANSCRIPT_SETTINGS.settings.timelineChrome}>
+                        <Item
+                            testID="settings-session-tool-style"
+                            title={t(TRANSCRIPT_SETTINGS.settings.timelineChrome.titleKey)}
+                            subtitle={normalizedToolChromeMode === 'activity_feed'
+                                ? t('settingsSession.toolRendering.timelineChrome.activityFeedSubtitle')
+                                : t('settingsSession.toolRendering.timelineChrome.cardsSubtitle')}
+                            accessoryLayout="stacked"
+                            showChevron={false}
+                            rightElement={(
+                                <SelectionTiles<ToolTimelineChromeMode>
+                                    variant="visual"
+                                    accessibilityLabel={t(TRANSCRIPT_SETTINGS.settings.timelineChrome.titleKey)}
+                                    testIdPrefix="settings-session-tool-style"
+                                    value={normalizedToolChromeMode}
+                                    onChange={(next) => { if (next) setToolViewTimelineChromeMode(next as any); }}
+                                    options={[
+                                        { id: 'cards', title: t('settingsSession.toolRendering.timelineChrome.cardsTitle'), preview: <ToolStylePreview style="cards" /> },
+                                        { id: 'activity_feed', title: t('settingsSession.toolRendering.timelineChrome.activityFeedTitle'), preview: <ToolStylePreview style="activity_feed" /> },
+                                    ]}
+                                />
+                            )}
+                        />
+                    </SettingAnchor>
+
+                    {normalizedToolChromeMode === 'activity_feed' ? (
+                        <SettingRow
+                            setting={TRANSCRIPT_SETTINGS.settings.toolCallsGroup}
                             testID="settings-session-transcript-tool-calls-group"
                             rightElement={
                                 <Switch
@@ -575,201 +360,129 @@ export const TranscriptSettingsView = React.memo(function TranscriptSettingsView
                             showChevron={false}
                             onPress={() => setTranscriptGroupToolCalls((transcriptGroupToolCalls !== true) as any)}
                         />
+                    ) : null}
 
-                        {transcriptGroupToolCalls === true ? (
-                            <>
-                                {normalizedGroupingMode === 'turns' ? (
-                                    <DropdownMenu
-                                        open={openToolDetailMenu === 'transcriptTurnToolCallsGroupStrategy'}
-                                        onOpenChange={(next) => setOpenToolDetailMenu(next ? 'transcriptTurnToolCallsGroupStrategy' : null)}
-                                        variant="selectable"
-                                        search={false}
-                                        selectedId={normalizedStrategy as any}
-                                        showCategoryTitles={false}
-                                        matchTriggerWidth={true}
-                                        connectToTrigger={true}
-                                        rowKind="item"
-                                        popoverBoundaryRef={popoverBoundaryRef}
-                                        itemTrigger={{
-                                            title: t('settingsSession.transcript.advanced.toolCallsStrategyTitle'),
-                                            icon: <Icon name="git-branch" size={29} color={theme.colors.text.secondary} />,
-                                        }}
-                                        items={strategyOptions.map((opt) => ({
-                                            id: opt.key,
-                                            title: opt.title,
-                                            subtitle: opt.subtitle,
-                                            icon: (
-                                                <View style={{ width: 32, height: 32, alignItems: 'center', justifyContent: 'center' }}>
-                                                    <Icon name="git-branch" size={20} color={theme.colors.text.secondary} />
-                                                </View>
-                                            ),
-                                        }))}
-                                        onSelect={(id) => {
-                                            setTranscriptTurnToolCallsGroupStrategy(id as any);
-                                            setOpenToolDetailMenu(null);
-                                        }}
-                                    />
-                                ) : null}
+                    {normalizedToolChromeMode === 'activity_feed' && transcriptGroupToolCalls === true && normalizedGroupingMode === 'turns' ? (
+                        <SettingAnchor setting={TRANSCRIPT_SETTINGS.settings.toolCallsStrategy}>
+                            <SegmentedChoiceItem<ToolCallsGroupStrategy>
+                                subtitleLines={0}
+                                testID="settings-session-transcript-tool-calls-strategy"
+                                testIDPrefix="settings-session-transcript-tool-calls-strategy"
+                                title={t(TRANSCRIPT_SETTINGS.settings.toolCallsStrategy.titleKey)}
+                                options={[
+                                    { id: 'consecutive_tools', label: t('settingsSessionPages.transcript.strategyConsecutive'), description: t('settingsSession.transcript.advanced.toolCallsStrategy.consecutiveSubtitle') },
+                                    { id: 'all_tools_in_turn', label: t('settingsSessionPages.transcript.strategyWholeTurn'), description: t('settingsSession.transcript.advanced.toolCallsStrategy.allToolsSubtitle') },
+                                ]}
+                                value={normalizedStrategy}
+                                onChange={(next) => setTranscriptTurnToolCallsGroupStrategy(next as any)}
+                            />
+                        </SettingAnchor>
+                    ) : null}
 
-                                <DropdownMenu
-                                    open={openToolDetailMenu === 'transcriptToolCallsCollapsedPreviewCount'}
-                                    onOpenChange={(next) => setOpenToolDetailMenu(next ? 'transcriptToolCallsCollapsedPreviewCount' : null)}
-                                    variant="selectable"
-                                    search={false}
-                                    selectedId={String(normalizedCollapsedPreviewCount)}
-                                    showCategoryTitles={false}
-                                    matchTriggerWidth={true}
-                                    connectToTrigger={true}
-                                    rowKind="item"
-                                    popoverBoundaryRef={popoverBoundaryRef}
-                                    itemTrigger={{
-                                        title: t('settingsSession.transcript.advanced.toolCallsCollapsedPreviewCountTitle'),
-                                        icon: <Icon name="eye" size={29} color={theme.colors.text.secondary} />,
-                                    }}
-                                    items={collapsedPreviewOptions.map((opt) => ({
-                                        id: String(opt.key),
-                                        title: opt.title,
-                                        subtitle: opt.subtitle,
-                                        icon: (
-                                            <View style={{ width: 32, height: 32, alignItems: 'center', justifyContent: 'center' }}>
-                                                <Icon name="eye" size={20} color={theme.colors.text.secondary} />
-                                            </View>
-                                        ),
-                                    }))}
-                                    onSelect={(id) => {
-                                        const parsed = Number(id);
-                                        if (!Number.isFinite(parsed)) return;
-                                        setTranscriptToolCallsCollapsedPreviewCount(clampInt(parsed, { min: 0, max: 15 }) as any);
-                                        setOpenToolDetailMenu(null);
-                                    }}
+                    {normalizedToolChromeMode === 'activity_feed' && transcriptGroupToolCalls === true ? (
+                        <SettingAnchor setting={TRANSCRIPT_SETTINGS.settings.toolCallsCollapsedPreviewCount}>
+                            <DropdownMenu
+                                open={openToolDetailMenu === 'transcriptToolCallsCollapsedPreviewCount'}
+                                onOpenChange={(next) => setOpenToolDetailMenu(next ? 'transcriptToolCallsCollapsedPreviewCount' : null)}
+                                variant="selectable"
+                                search={false}
+                                selectedId={String(normalizedCollapsedPreviewCount)}
+                                showCategoryTitles={false}
+                                matchTriggerWidth={true}
+                                connectToTrigger={true}
+                                rowKind="item"
+                                popoverBoundaryRef={popoverBoundaryRef}
+                                itemTrigger={{
+                                    title: t(TRANSCRIPT_SETTINGS.settings.toolCallsCollapsedPreviewCount.titleKey),
+                                }}
+                                items={collapsedPreviewOptions.map((opt) => ({ id: String(opt.key), title: opt.title, subtitle: opt.subtitle }))}
+                                onSelect={(id) => {
+                                    const parsed = Number(id);
+                                    if (!Number.isFinite(parsed)) return;
+                                    setTranscriptToolCallsCollapsedPreviewCount(clampInt(parsed, { min: 0, max: 15 }) as any);
+                                    setOpenToolDetailMenu(null);
+                                }}
+                            />
+                        </SettingAnchor>
+                    ) : null}
+
+                    {normalizedToolChromeMode === 'activity_feed' && transcriptGroupToolCalls === true ? (
+                        <SettingRow
+                            setting={TRANSCRIPT_SETTINGS.settings.toolCallsGroupBackground}
+                            testID="settings-session-transcript-tool-calls-group-background"
+                            rightElement={
+                                <Switch
+                                    value={transcriptToolCallsGroupShowBackground === true}
+                                    onValueChange={(v) => setTranscriptToolCallsGroupShowBackground(Boolean(v) as any)}
                                 />
+                            }
+                            showChevron={false}
+                            onPress={() => setTranscriptToolCallsGroupShowBackground((transcriptToolCallsGroupShowBackground !== true) as any)}
+                        />
+                    ) : null}
 
-                                <Item
-                                    title={t('settingsSession.transcript.toolCallsGroupBackgroundTitle')}
-                                    subtitle={t('settingsSession.transcript.toolCallsGroupBackgroundSubtitle')}
-                                    icon={<Icon name="stack" size={29} color={theme.colors.text.secondary} />}
-                                    testID="settings-session-transcript-tool-calls-group-background"
-                                    rightElement={
-                                        <Switch
-                                            value={transcriptToolCallsGroupShowBackground === true}
-                                            onValueChange={(v) => setTranscriptToolCallsGroupShowBackground(Boolean(v) as any)}
-                                        />
-                                    }
-                                    showChevron={false}
-                                    onPress={() => setTranscriptToolCallsGroupShowBackground((transcriptToolCallsGroupShowBackground !== true) as any)}
-                                />
-                            </>
-                        ) : null}
-                    </>
-                ) : null}
+                    <SettingAnchor setting={TRANSCRIPT_SETTINGS.settings.defaultToolDetailLevel}>
+                        <DropdownMenu
+                            open={openToolDetailMenu === 'toolViewDetailLevelDefault'}
+                            onOpenChange={(next) => setOpenToolDetailMenu(next ? 'toolViewDetailLevelDefault' : null)}
+                            variant="selectable"
+                            search={false}
+                            selectedId={normalizedToolViewDetailLevelDefaultSetting as any}
+                            showCategoryTitles={false}
+                            matchTriggerWidth={true}
+                            connectToTrigger={true}
+                            rowKind="item"
+                            popoverBoundaryRef={popoverBoundaryRef}
+                            itemTrigger={{
+                                title: t(TRANSCRIPT_SETTINGS.settings.defaultToolDetailLevel.titleKey),
+                                itemProps: { testID: 'settings-session-tool-detail-default' },
+                            }}
+                            items={TOOL_DETAIL_LEVEL_WITH_STYLE_DEFAULT_OPTIONS.map((opt) => ({
+                                id: opt.key,
+                                title: opt.key === 'default' ? tToolDetail('settingsSession.toolDetailLevel.defaultTitle') : tToolDetail(opt.titleKey),
+                                subtitle: tToolDetail(opt.subtitleKey),
+                            }))}
+                            onSelect={(id) => {
+                                setToolViewDetailLevelDefault(id as any);
+                                setOpenToolDetailMenu(null);
+                            }}
+                        />
+                    </SettingAnchor>
 
-                <DropdownMenu
-                    open={openToolDetailMenu === 'toolViewDetailLevelDefault'}
-                    onOpenChange={(next) => setOpenToolDetailMenu(next ? 'toolViewDetailLevelDefault' : null)}
-                    variant="selectable"
-                    search={false}
-                    selectedId={normalizedToolViewDetailLevelDefaultSetting as any}
-                    showCategoryTitles={false}
-                    matchTriggerWidth={true}
-                    connectToTrigger={true}
-                    rowKind="item"
-                    popoverBoundaryRef={popoverBoundaryRef}
-                    itemTrigger={{
-                        title: t('settingsSession.toolRendering.defaultToolDetailLevelTitle'),
-                        icon: <Icon name="list" size={29} color={theme.colors.text.secondary} />,
-                        subtitle: (() => {
-                            const key = TOOL_DETAIL_LEVEL_WITH_STYLE_DEFAULT_OPTIONS.find((opt) => opt.key === normalizedToolViewDetailLevelDefaultSetting)?.titleKey;
-                            return key ? tToolDetail(key) : String(resolvedDetailLevelDefaultLabel);
-                        })(),
-                    }}
-                    items={TOOL_DETAIL_LEVEL_WITH_STYLE_DEFAULT_OPTIONS.map((opt) => ({
-                        id: opt.key,
-                        title: tToolDetail(opt.titleKey),
-                        subtitle: tToolDetail(opt.subtitleKey),
-                        icon: (
-                            <View style={{ width: 32, height: 32, alignItems: 'center', justifyContent: 'center' }}>
-                                <Icon name="list" size={20} color={theme.colors.text.secondary} />
-                            </View>
-                        ),
-                    }))}
-                    onSelect={(id) => {
-                        setToolViewDetailLevelDefault(id as any);
-                        setOpenToolDetailMenu(null);
-                    }}
-                />
+                    <SettingAnchor setting={TRANSCRIPT_SETTINGS.settings.expandedToolDetailLevel}>
+                        <SegmentedChoiceItem<ToolViewExpandedDetailLevelSetting>
+                            subtitleLines={0}
+                            testID="settings-session-tool-detail-expanded"
+                            testIDPrefix="settings-session-tool-detail-expanded"
+                            title={t(TRANSCRIPT_SETTINGS.settings.expandedToolDetailLevel.titleKey)}
+                            options={TOOL_EXPANDED_DETAIL_LEVEL_WITH_STYLE_DEFAULT_OPTIONS.map((opt) => ({
+                                id: opt.key,
+                                label: opt.key === 'default' ? tToolDetail('settingsSession.toolDetailLevel.defaultTitle') : tToolDetail(opt.titleKey),
+                                description: tToolDetail(opt.subtitleKey),
+                            }))}
+                            value={normalizedToolViewExpandedDetailLevelDefaultSetting}
+                            onChange={(next) => setToolViewExpandedDetailLevelDefault(next as any)}
+                        />
+                    </SettingAnchor>
 
-                <DropdownMenu
-                    open={openToolDetailMenu === 'toolViewExpandedDetailLevelDefault'}
-                    onOpenChange={(next) => setOpenToolDetailMenu(next ? 'toolViewExpandedDetailLevelDefault' : null)}
-                    variant="selectable"
-                    search={false}
-                    selectedId={normalizedToolViewExpandedDetailLevelDefaultSetting as any}
-                    showCategoryTitles={false}
-                    matchTriggerWidth={true}
-                    connectToTrigger={true}
-                    rowKind="item"
-                    popoverBoundaryRef={popoverBoundaryRef}
-                    itemTrigger={{
-                        title: t('settingsSession.toolRendering.expandedToolDetailLevelTitle'),
-                        icon: <Icon name="arrows-out" size={29} color={theme.colors.text.secondary} />,
-                        subtitle: (() => {
-                            const key = TOOL_EXPANDED_DETAIL_LEVEL_WITH_STYLE_DEFAULT_OPTIONS.find((opt) => opt.key === normalizedToolViewExpandedDetailLevelDefaultSetting)?.titleKey;
-                            return key ? tToolDetail(key as any) : String(resolvedExpandedDetailLevelDefaultLabel);
-                        })(),
-                    }}
-                    items={TOOL_EXPANDED_DETAIL_LEVEL_WITH_STYLE_DEFAULT_OPTIONS.map((opt) => ({
-                        id: opt.key,
-                        title: tToolDetail(opt.titleKey),
-                        subtitle: tToolDetail(opt.subtitleKey),
-                        icon: (
-                            <View style={{ width: 32, height: 32, alignItems: 'center', justifyContent: 'center' }}>
-                                <Icon name="arrows-out" size={20} color={theme.colors.text.secondary} />
-                            </View>
-                        ),
-                    }))}
-                    onSelect={(id) => {
-                        setToolViewExpandedDetailLevelDefault(id as any);
-                        setOpenToolDetailMenu(null);
-                    }}
-                />
+                    <SettingAnchor setting={TRANSCRIPT_SETTINGS.settings.cardTapAction}>
+                        <SegmentedChoiceItem<ToolTapAction>
+                            subtitleLines={0}
+                            testID="settings-session-tool-tap-action"
+                            testIDPrefix="settings-session-tool-tap-action"
+                            title={t(TRANSCRIPT_SETTINGS.settings.cardTapAction.titleKey)}
+                            options={[
+                                { id: 'expand', label: t('settingsSession.toolRendering.activityFeed.tapAction.expandTitle'), description: t('settingsSession.toolRendering.activityFeed.tapAction.expandSubtitle') },
+                                { id: 'open', label: t('settingsSession.toolRendering.activityFeed.tapAction.openTitle'), description: t('settingsSession.toolRendering.activityFeed.tapAction.openSubtitle') },
+                            ]}
+                            value={normalizedToolTapAction}
+                            onChange={(next) => setToolViewTapAction(next as any)}
+                        />
+                    </SettingAnchor>
 
-                <DropdownMenu
-                    open={openToolDetailMenu === 'toolViewTapAction'}
-                    onOpenChange={(next) => setOpenToolDetailMenu(next ? 'toolViewTapAction' : null)}
-                    variant="selectable"
-                    search={false}
-                    selectedId={normalizedToolTapAction as any}
-                    showCategoryTitles={false}
-                    matchTriggerWidth={true}
-                    connectToTrigger={true}
-                    rowKind="item"
-                    popoverBoundaryRef={popoverBoundaryRef}
-                    itemTrigger={{
-                        title: t('settingsSession.toolRendering.cardTapActionTitle'),
-                        icon: <Icon name="hand" size={29} color={theme.colors.text.secondary} />,
-                    }}
-                    items={tapActionOptions.map((opt) => ({
-                        id: opt.key,
-                        title: opt.title,
-                        subtitle: opt.subtitle,
-                        icon: (
-                            <View style={{ width: 32, height: 32, alignItems: 'center', justifyContent: 'center' }}>
-                                <Icon name="hand" size={20} color={theme.colors.text.secondary} />
-                            </View>
-                        ),
-                    }))}
-                    onSelect={(id) => {
-                        setToolViewTapAction(id as any);
-                        setOpenToolDetailMenu(null);
-                    }}
-                />
-
-                {normalizedToolChromeMode === 'activity_feed' ? (
-                    <>
-                        <Item
-                            title={t('settingsSession.toolRendering.activityFeed.defaultExpandedTitle')}
-                            subtitle={t('settingsSession.toolRendering.activityFeed.defaultExpandedSubtitle')}
-                            icon={<Icon name="caret-down" size={29} color={theme.colors.text.secondary} />}
+                    {normalizedToolChromeMode === 'activity_feed' ? (
+                        <SettingRow
+                            setting={TRANSCRIPT_SETTINGS.settings.defaultExpanded}
                             rightElement={
                                 <Switch
                                     value={toolViewTimelineFeedDefaultExpanded === true}
@@ -779,71 +492,101 @@ export const TranscriptSettingsView = React.memo(function TranscriptSettingsView
                             showChevron={false}
                             onPress={() => setToolViewTimelineFeedDefaultExpanded((toolViewTimelineFeedDefaultExpanded !== true) as any)}
                         />
-                    </>
-                ) : null}
+                    ) : null}
 
-                <Item
-                    title={t('settingsSession.toolRendering.showDebugByDefaultTitle')}
-                    subtitle={t('settingsSession.toolRendering.showDebugByDefaultSubtitle')}
-                    icon={<Icon name="code" size={29} color={theme.colors.accent.indigo} />}
-                    rightElement={<Switch value={toolViewShowDebugByDefault} onValueChange={setToolViewShowDebugByDefault} />}
+                    <SettingRow
+                        setting={TRANSCRIPT_SETTINGS.settings.showDebugByDefault}
+                        rightElement={<Switch value={toolViewShowDebugByDefault} onValueChange={setToolViewShowDebugByDefault} />}
+                        showChevron={false}
+                        onPress={() => setToolViewShowDebugByDefault(!toolViewShowDebugByDefault)}
+                    />
+
+                    <SettingRow
+                        icon={<Icon name="sliders-horizontal" />}
+                        setting={TRANSCRIPT_SETTINGS.settings.toolDetailOverrides}
+                        onPress={() => router.push(toolOverridesRoute)}
+                    />
+                </ItemGroup>
+            </SettingSection>
+
+            <ItemGroup title={t('settingsSession.transcript.messageActions.groupTitle')} description={t('settingsSession.transcript.messageActions.groupFooter')}>
+                <SettingRow
+                    testID="settings-session-transcript-message-selection-enabled"
+                    setting={TRANSCRIPT_SETTINGS.settings.selectionEnabled}
+                    rightElement={<Switch value={transcriptMessageSelectionEnabled === true} onValueChange={setTranscriptMessageSelectionEnabled} />}
                     showChevron={false}
-                    onPress={() => setToolViewShowDebugByDefault(!toolViewShowDebugByDefault)}
+                    onPress={() => setTranscriptMessageSelectionEnabled(!(transcriptMessageSelectionEnabled === true))}
                 />
-
-                <Item
-                    title={t('settingsSession.toolDetailOverrides.title')}
-                    subtitle={t('settingsSession.toolDetailOverrides.entrySubtitle')}
-                    icon={<Icon name="sliders-horizontal" size={29} color={theme.colors.text.secondary} />}
-                    onPress={() => router.push(toolOverridesRoute)}
+                <SettingRow
+                    testID="settings-session-transcript-message-send-to-session-enabled"
+                    setting={TRANSCRIPT_SETTINGS.settings.sendToSessionEnabled}
+                    rightElement={<Switch value={transcriptMessageSendToSessionEnabled === true} onValueChange={setTranscriptMessageSendToSessionEnabled} />}
+                    showChevron={false}
+                    onPress={() => setTranscriptMessageSendToSessionEnabled(!(transcriptMessageSendToSessionEnabled === true))}
                 />
+                <SettingRow
+                    testID="settings-session-transcript-message-send-template-field"
+                    setting={TRANSCRIPT_SETTINGS.settings.sendToSessionTemplate}
+                    subtitle={t('settingsSession.transcript.messageActions.template.subtitle')}
+                    subtitleLines={0}
+                    accessoryLayout="stacked"
+                    showChevron={false}
+                    rightElement={(
+                        <View style={{ gap: 6 }}>
+                            <FieldTextInput
+                                testID="settings-session-transcript-message-send-template-input"
+                                accessibilityLabel={t('settingsSession.transcript.messageActions.template.title')}
+                                value={templateValue}
+                                onChangeText={setTranscriptMessageSendToSessionTemplate}
+                                placeholder={t('settingsSession.transcript.messageActions.template.placeholder')}
+                                multiline
+                                monospace
+                            />
+                            {templateMissingPlaceholder ? (
+                                <Text style={[styles.templateTip, { color: theme.colors.state.warning.foreground }]}>
+                                    {t('settingsSession.transcript.messageActions.template.warningMissingPlaceholder')}
+                                </Text>
+                            ) : null}
+                        </View>
+                    )}
+                />
+                <SettingAnchor setting={TRANSCRIPT_SETTINGS.settings.bulkCopyFormat}>
+                    <SegmentedChoiceItem<TranscriptBulkCopyFormat>
+                        subtitleLines={0}
+                        testID="settings-session-transcript-bulk-copy-format"
+                        testIDPrefix="settings-session-transcript-bulk-copy-format"
+                        title={t(TRANSCRIPT_SETTINGS.settings.bulkCopyFormat.titleKey)}
+                        options={[
+                            { id: 'markdown_labeled', label: t('settingsSessionPages.transcript.copyMarkdown'), description: t('settingsSessionPages.transcript.copyMarkdownDescription') },
+                            { id: 'plain', label: t('settingsSession.transcript.messageActions.bulkCopyFormat.plain'), description: t('settingsSessionPages.transcript.copyPlainDescription') },
+                        ]}
+                        value={normalizedBulkCopyFormat}
+                        onChange={setTranscriptBulkCopyFormat}
+                    />
+                </SettingAnchor>
             </ItemGroup>
 
-            <ItemGroup title={t('settingsSession.transcript.motionTitle')} footer={t('settingsSession.transcript.motionFooter')}>
-                <DropdownMenu
-                    open={openMotionMenu}
-                    onOpenChange={setOpenMotionMenu}
-                    variant="selectable"
-                    search={false}
-                    selectedId={normalizedMotionPreset as any}
-                    showCategoryTitles={false}
-                    matchTriggerWidth={true}
-                    connectToTrigger={true}
-                    rowKind="item"
-                    popoverBoundaryRef={popoverBoundaryRef}
-                    itemTrigger={{
-                        title: t('settingsSession.transcript.motionPickerTitle'),
-                        icon: <Icon name="sparkle" size={29} color={theme.colors.accent.orange} />,
-                    }}
-                    items={motionOptions.map((opt) => ({
-                        id: opt.key,
-                        title: opt.title,
-                        subtitle: opt.subtitle,
-                        icon: (
-                            <View style={{ width: 32, height: 32, alignItems: 'center', justifyContent: 'center' }}>
-                                <Icon name="sparkle" size={20} color={theme.colors.text.secondary} />
-                            </View>
-                        ),
-                    }))}
-                    onSelect={(id) => {
-                        setTranscriptMotionPreset(id as any);
-                        setOpenMotionMenu(false);
-                    }}
-                />
-
-                <Item
-                    title={t('settingsSession.transcript.advancedMotionTitle')}
-                    subtitle={t('settingsSession.transcript.advancedMotionSubtitle')}
-                    icon={<Icon name="sliders-horizontal" size={29} color={theme.colors.text.secondary} />}
-                    onPress={() => router.push(advancedRoute)}
-                />
+            <ItemGroup title={t('settingsSession.transcript.motionTitle')} description={t('settingsSession.transcript.motionFooter')}>
+                <SettingAnchor setting={TRANSCRIPT_SETTINGS.settings.motionPicker}>
+                    <SegmentedChoiceItem<TranscriptMotionPreset>
+                        subtitleLines={0}
+                        testID="settings-session-transcript-motion"
+                        testIDPrefix="settings-session-transcript-motion"
+                        title={t(TRANSCRIPT_SETTINGS.settings.motionPicker.titleKey)}
+                        options={[
+                            { id: 'off', label: t('settingsSession.transcript.motion.offTitle'), description: t('settingsSession.transcript.motion.offSubtitle') },
+                            { id: 'subtle', label: t('settingsSessionPages.transcript.motionSubtle'), description: t('settingsSession.transcript.motion.subtleSubtitle') },
+                            { id: 'full', label: t('settingsSession.transcript.motion.fullTitle'), description: t('settingsSession.transcript.motion.fullSubtitle') },
+                        ]}
+                        value={normalizedMotionPreset}
+                        onChange={setTranscriptMotionPreset}
+                    />
+                </SettingAnchor>
             </ItemGroup>
 
-            <ItemGroup title={t('settingsSession.transcript.scrollTitle')} footer={t('settingsSession.transcript.scrollFooter')}>
-                <Item
-                    title={t('settingsSession.transcript.scrollPinTitle')}
-                    subtitle={t('settingsSession.transcript.scrollPinSubtitle')}
-                    icon={<Icon name="arrow-down" size={29} color={theme.colors.accent.blue} />}
+            <ItemGroup title={t('settingsSession.transcript.scrollTitle')} description={t('settingsSession.transcript.scrollFooter')}>
+                <SettingRow
+                    setting={TRANSCRIPT_SETTINGS.settings.scrollPin}
                     rightElement={
                         <Switch
                             value={transcriptScrollPinEnabled === true}
@@ -854,10 +597,9 @@ export const TranscriptSettingsView = React.memo(function TranscriptSettingsView
                     onPress={() => setTranscriptScrollPinEnabled((transcriptScrollPinEnabled !== true) as any)}
                 />
 
-                <Item
-                    title={t('settingsSession.transcript.jumpToBottomTitle')}
-                    subtitle={t('settingsSession.transcript.jumpToBottomSubtitle')}
-                    icon={<Icon name="caret-down" size={29} color={theme.colors.text.secondary} />}
+                <SettingRow
+                    setting={TRANSCRIPT_SETTINGS.settings.jumpToBottom}
+                    disabled={transcriptScrollPinEnabled !== true}
                     rightElement={
                         <Switch
                             value={transcriptScrollJumpToBottomEnabled === true}
@@ -871,19 +613,13 @@ export const TranscriptSettingsView = React.memo(function TranscriptSettingsView
                         setTranscriptScrollJumpToBottomEnabled((transcriptScrollJumpToBottomEnabled !== true) as any);
                     }}
                 />
-
-                <Item
-                    title={t('settingsSession.transcript.advancedScrollTitle')}
-                    subtitle={t('settingsSession.transcript.advancedScrollSubtitle')}
-                    icon={<Icon name="sliders-horizontal" size={29} color={theme.colors.text.secondary} />}
-                    onPress={() => router.push(advancedRoute)}
-                />
             </ItemGroup>
-            <ItemGroup>
-                <Item
-                    title={t('settingsSession.transcript.advancedTitle')}
-                    subtitle={t('settingsSession.transcript.advancedSubtitle')}
-                    icon={<Icon name="speedometer" size={29} color={theme.colors.text.secondary} />}
+
+            <ItemGroup title={t('settingsSession.advanced.title')}>
+                <SettingRow
+                    icon={<Icon name="speedometer" />}
+                    setting={TRANSCRIPT_SETTINGS.settings.advanced}
+                    testID="settings-session-transcript-advanced"
                     onPress={() => router.push(advancedRoute)}
                 />
             </ItemGroup>
@@ -892,29 +628,10 @@ export const TranscriptSettingsView = React.memo(function TranscriptSettingsView
 });
 
 const styles = StyleSheet.create({
-    templateFieldContainer: {
-        paddingHorizontal: 16,
-        paddingTop: 4,
-        paddingBottom: 12,
-    },
-    templateFieldLabel: {
-        ...Typography.default('semiBold'),
-        fontSize: 13,
-        marginBottom: 4,
-    },
-    templateFieldHint: {
+    templateTip: {
         ...Typography.default('regular'),
         fontSize: 12,
-        marginBottom: 8,
-    },
-    templateTextInput: {
-        ...Typography.default('regular'),
-        minHeight: 96,
-        borderWidth: 1,
-        borderRadius: 10,
-        paddingHorizontal: 12,
-        paddingVertical: 10,
-        textAlignVertical: 'top',
+        lineHeight: 16,
     },
 });
 

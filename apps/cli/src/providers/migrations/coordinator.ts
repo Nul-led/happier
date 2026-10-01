@@ -86,7 +86,8 @@ export function createLegacyProfileMigrationCoordinator(deps: Readonly<{
   const now = deps.now ?? Date.now;
 
   const ensureMigrated = (
-    input: Readonly<{ accountKey: string; credentials: Credentials; providersEnabled: boolean; machineId: string }>,
+    input: Readonly<{ accountKey: string; credentials: Credentials; providersEnabled: boolean; machineId: string;
+      readAuthoringMemory?: () => Promise<Readonly<{ lastUsedProfile: string | null }>> }>,
   ): Promise<LegacyProfileMigrationCoordinatorResult> => {
     if (input.providersEnabled !== true) return Promise.resolve({ status: 'feature_disabled' } as const);
     const existing = inFlightByAccount.get(input.accountKey);
@@ -96,6 +97,8 @@ export function createLegacyProfileMigrationCoordinator(deps: Readonly<{
         const lifetime = createProviderOperationLifetime({
           wallTimeMs: PROVIDER_ENDPOINT_SAFETY_LIMITS.maxWallTimeMs,
         });
+        const authoringMemory = input.readAuthoringMemory
+          ? await awaitWithinProviderOperation(input.readAuthoringMemory(), lifetime) : undefined;
         const pendingLease = deps.acquireRegistryLease();
         let lease: RegistryLease;
         try {
@@ -121,6 +124,7 @@ export function createLegacyProfileMigrationCoordinator(deps: Readonly<{
               const providersByContributionKey = resolvedContributionMap(acceptedRegistry);
               const context = buildContext({
                 rawSettings: latestRawSettings,
+                authoringMemory: authoringMemory ?? { lastUsedProfile: null },
                 providersByContributionKey,
                 allocatedConnectionIdsBySourceProfileId,
                 migratedAt,

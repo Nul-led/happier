@@ -3,24 +3,17 @@ import * as React from 'react';
 
 import { Item } from '@/components/ui/lists/Item';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
+import { useListPresentation } from '@/components/ui/lists/listPresentation';
 import { useMachineCapabilityInvokeWithAlerts } from '@/hooks/machine/useMachineCapabilityInvokeWithAlerts';
 import { Modal } from '@/modal';
 import { t } from '@/text';
 import type { CapabilityId } from '@/sync/api/capabilities/capabilitiesProtocol';
 import { isInstallableDepUpdateAvailable } from '@/capabilities/installablesUpdateAvailable';
+import type { InstallableDepDataLike } from '@/capabilities/installablesRegistry';
 import { useUnistyles } from 'react-native-unistyles';
 import { ActivitySpinner } from '@/components/ui/feedback/ActivitySpinner';
 import { Icon, type IconName } from '@/components/ui/icons/Icon';
 import { openExternalUrl } from '@/utils/url/openExternalUrl';
-
-type InstallableDepData = {
-    installed: boolean;
-    installedVersion: string | null;
-    sourceKind: string;
-    lastInstallLogPath: string | null;
-    lastBackgroundUpdateCheckAtMs: number | null;
-    latestVersionCheck?: { ok: true; latestVersion: string | null; label: string | null } | { ok: false; errorMessage: string };
-};
 
 function formatTimestamp(ms: number): string {
     try {
@@ -40,7 +33,7 @@ export type InstallableDepInstallerProps = {
     depSubtitle?: string | null;
     depIconName: IconName;
     setupUrl?: string | null;
-    depStatus: InstallableDepData | null;
+    depStatus: InstallableDepDataLike | null;
     capabilitiesStatus: 'idle' | 'loading' | 'loaded' | 'error' | 'not-supported';
     extraItems?: React.ReactNode;
     installLabels: { install: string; update: string; reinstall: string };
@@ -52,6 +45,8 @@ export type InstallableDepInstallerProps = {
 export function InstallableDepInstaller(props: InstallableDepInstallerProps) {
     const { theme } = useUnistyles();
     const { isInvoking: isInstalling, invokeWithAlerts } = useMachineCapabilityInvokeWithAlerts();
+    // Page sections carry no decorative row icons; the grouped look (new-session wizard) keeps them.
+    const page = useListPresentation() === 'page';
 
     if (!props.enabled) return null;
 
@@ -62,6 +57,7 @@ export function InstallableDepInstaller(props: InstallableDepInstallerProps) {
         if (props.capabilitiesStatus === 'not-supported') return t('deps.ui.notAvailableUpdateCli');
         if (props.capabilitiesStatus === 'error') return t('deps.ui.errorRefresh');
         if (props.capabilitiesStatus !== 'loaded') return t('deps.ui.notAvailable');
+        if (props.depStatus?.runtimeState === 'downloading') return t('deps.installable.downloading');
 
         if (props.depStatus?.installed) {
             if (updateAvailable) {
@@ -123,14 +119,14 @@ export function InstallableDepInstaller(props: InstallableDepInstallerProps) {
                 subtitle={presentedSubtitle}
                 icon={<Icon name={props.depIconName} size={20} color={theme.colors.text.secondary} />}
                 showChevron={false}
-                onPress={() => props.refreshLatestVersion?.()}
+                onPress={() => (props.refreshLatestVersion ?? props.refreshStatus)()}
             />
 
             {props.setupUrl ? (
                 <Item
                     title={t('common.open')}
                     subtitle={props.setupUrl}
-                    icon={<Icon name="arrow-square-out" size={20} color={theme.colors.text.secondary} />}
+                    icon={page ? undefined : <Icon name="arrow-square-out" size={20} color={theme.colors.text.secondary} />}
                     onPress={() => void openExternalUrl(props.setupUrl!)}
                 />
             ) : null}
@@ -144,7 +140,7 @@ export function InstallableDepInstaller(props: InstallableDepInstallerProps) {
                         version: props.depStatus.latestVersionCheck.latestVersion,
                         tag: props.depStatus.latestVersionCheck.label ?? props.depStatus.sourceKind,
                     })}
-                    icon={<Icon name="cloud-arrow-down" size={20} color={theme.colors.text.secondary} />}
+                    icon={page ? undefined : <Icon name="cloud-arrow-down" size={20} color={theme.colors.text.secondary} />}
                     showChevron={false}
                 />
             )}
@@ -153,7 +149,7 @@ export function InstallableDepInstaller(props: InstallableDepInstallerProps) {
                 <Item
                     title={t('deps.ui.registryCheck')}
                     subtitle={t('deps.ui.registryCheckFailed', { error: props.depStatus.latestVersionCheck.errorMessage })}
-                    icon={<Icon name="cloud-slash" size={20} color={theme.colors.text.secondary} />}
+                    icon={page ? undefined : <Icon name="cloud-slash" size={20} color={theme.colors.text.secondary} />}
                     showChevron={false}
                 />
             )}
@@ -161,7 +157,7 @@ export function InstallableDepInstaller(props: InstallableDepInstallerProps) {
             <Item
                 title={installButtonLabel}
                 subtitle={props.installModal.description}
-                icon={<Icon name="download" size={20} color={theme.colors.text.secondary} />}
+                icon={page ? undefined : <Icon name="download" size={20} color={theme.colors.text.secondary} />}
                 disabled={installActionDisabled}
                 onPress={async () => {
                     if (installActionDisabled) return;
@@ -184,7 +180,7 @@ export function InstallableDepInstaller(props: InstallableDepInstallerProps) {
                 <Item
                     title={t('deps.ui.lastInstallLog')}
                     subtitle={props.depStatus.lastInstallLogPath}
-                    icon={<Icon name="file-text" size={20} color={theme.colors.text.secondary} />}
+                    icon={page ? undefined : <Icon name="file-text" size={20} color={theme.colors.text.secondary} />}
                     showChevron={false}
                     onPress={() => Modal.alert(t('deps.ui.installLogTitle'), props.depStatus?.lastInstallLogPath ?? '')}
                 />
@@ -194,7 +190,7 @@ export function InstallableDepInstaller(props: InstallableDepInstallerProps) {
                 <Item
                     title={t('settingsAgents.authentication.lastCheckedTitle')}
                     subtitle={formatTimestamp(props.depStatus.lastBackgroundUpdateCheckAtMs)}
-                    icon={<Icon name="clock" size={20} color={theme.colors.text.secondary} />}
+                    icon={page ? undefined : <Icon name="clock" size={20} color={theme.colors.text.secondary} />}
                     showChevron={false}
                 />
             )}

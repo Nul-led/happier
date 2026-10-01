@@ -99,11 +99,11 @@ describe('Automation lifecycle public observer fixture', () => {
       registrations: [{
         pluginId: parsed.manifest.id,
         pluginVersion: parsed.manifest.version,
-        generation: 'observer-generation',
+        occurrenceId: 'observer-generation',
         localId: 'observe-run-state-changed',
         handler,
       }],
-      isGenerationCurrent: () => generationCurrent,
+      isOccurrenceCurrent: () => generationCurrent,
       createContext: ({ signal }) => ({
         context: Object.freeze({
           signal,

@@ -2,6 +2,7 @@ import * as React from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { renderScreen } from '@/dev/testkit';
+import { SettingsShell } from './SettingsShell';
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -72,7 +73,6 @@ describe('SettingsShell ResizableDockedPane missing export', () => {
     });
 
     it('does not crash the settings shell when the resizable pane component is missing', async () => {
-        const { SettingsShell } = await import('./SettingsShell');
 
         const screen = await renderScreen(
             React.createElement(SettingsShell, null, React.createElement('Child', { testID: 'child' })),
@@ -84,7 +84,6 @@ describe('SettingsShell ResizableDockedPane missing export', () => {
     });
 
     it('does not change hook order when the sidebar becomes disabled after an initial desktop render', async () => {
-        const { SettingsShell } = await import('./SettingsShell');
 
         const screen = await renderScreen(
             React.createElement(SettingsShell, null, React.createElement('Child', { testID: 'child' })),

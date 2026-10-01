@@ -11,8 +11,16 @@ import type { MemoryStatusV1 } from '@happier-dev/protocol';
 
 const machineRpcSpy = vi.fn();
 const modalPrompt = vi.fn();
+const featureState = vi.hoisted(() => ({ memorySearchEnabled: true }));
+const routerState = vi.hoisted(() => ({ push: null as null | ((...args: unknown[]) => unknown) & { mock: { calls: unknown[][] } } }));
 const administrationTargetState = vi.hoisted(() => {
-    const state = {
+    const state: {
+        current: {
+            target: { serverIdentityId: string; machineId: string };
+            serverId: string;
+            machine: { id: string };
+        } | null;
+    } = {
         current: {
             target: { serverIdentityId: 'identity-1', machineId: 'm1' },
             serverId: 'srv_1',
@@ -101,6 +109,34 @@ async function renderSettledMemorySettingsView(): Promise<MemorySettingsScreen> 
     return screen;
 }
 
+/** A row choosing between always-visible options, found by one of its option ids. */
+function findSegmentedChoice(screen: MemorySettingsScreen, optionId: string) {
+    return screen.findAllByType('Item' as any).find((item) => {
+        const tabs = (item.props as { rightElement?: { props?: { tabs?: unknown } } }).rightElement?.props?.tabs;
+        return Array.isArray(tabs) && tabs.some((tab: { id?: string }) => tab.id === optionId);
+    });
+}
+
+async function chooseSegment(screen: MemorySettingsScreen, optionId: string) {
+    const choice = findSegmentedChoice(screen, optionId);
+    expect(choice).toBeTruthy();
+    await act(async () => {
+        (choice!.props as any).rightElement.props.onSelectTab(optionId);
+    });
+}
+
+/** Types into an inline field row and leaves the field, which commits the value. */
+async function typeIntoFieldRow(screen: MemorySettingsScreen, rowTestID: string, text: string) {
+    const row = screen.findByTestId(rowTestID);
+    expect(row?.props.rightElement?.props.onChangeText).toBeTypeOf('function');
+    await act(async () => {
+        screen.findByTestId(rowTestID)!.props.rightElement.props.onChangeText(text);
+    });
+    await act(async () => {
+        await screen.findByTestId(rowTestID)!.props.rightElement.props.onBlur();
+    });
+}
+
 function findDropdownMenu(
     screen: MemorySettingsScreen,
     predicate: (props: Record<string, unknown>) => boolean,
@@ -139,6 +175,12 @@ installSettingsViewCommonModuleMocks({
             useAllMachines: () => machinesState,
         });
     },
+    router: async () => {
+        const { createExpoRouterMock } = await import('@/dev/testkit/mocks/router');
+        const mock = createExpoRouterMock();
+        routerState.push = mock.spies.push as any;
+        return mock.module;
+    },
 });
 
 vi.mock('@/components/ui/lists/ItemList', () => ({
@@ -175,8 +217,8 @@ vi.mock('@/sync/runtime/orchestration/serverScopedRpc/serverScopedMachineRpc', (
 
 vi.mock('@/sync/domains/machines/administration/useTargetSelection', () => ({
     useMachineAdministrationTargetSelection: () => ({
-        selectedTarget: administrationTargetState.current.target,
-        canExecute: true,
+        selectedTarget: administrationTargetState.current?.target ?? null,
+        canExecute: administrationTargetState.current !== null,
         resolveExecutionTarget: administrationTargetState.resolveExecutionTarget,
     }),
 }));
@@ -188,12 +230,13 @@ vi.mock('@/components/settings/machines/MachineAdministrationTargetSelector', ()
 }));
 
 vi.mock('@/hooks/server/useFeatureEnabled', () => ({
-    useFeatureEnabled: () => true,
+    useFeatureEnabled: () => featureState.memorySearchEnabled,
 }));
 
 afterEach(() => {
     machineRpcSpy.mockReset();
     modalPrompt.mockReset();
+    featureState.memorySearchEnabled = true;
     administrationTargetState.current = {
         target: { serverIdentityId: 'identity-1', machineId: 'm1' },
         serverId: 'srv_1',
@@ -270,14 +313,7 @@ describe('MemorySettingsView', () => {
             method: 'daemon.memory.settings.get',
         }));
 
-        const backfillMenu = findDropdownMenu(
-            screen,
-            (props) => Array.isArray(props.items) && props.items.some((item: any) => item.id === 'all_history'),
-        );
-        expect(backfillMenu).toBeTruthy();
-        await act(async () => {
-            backfillMenu!.props.onSelect?.('all_history');
-        });
+        await chooseSegment(screen, 'all_history');
 
         expect(machineRpcSpy).toHaveBeenCalledWith(expect.objectContaining({
             machineId: 'm2',
@@ -298,15 +334,7 @@ describe('MemorySettingsView', () => {
         });
 
         const screen = await renderSettledMemorySettingsView();
-        const backfillMenu = findDropdownMenu(
-            screen,
-            (props) => Array.isArray(props.items) && props.items.some((item: any) => item.id === 'all_history'),
-        );
-        expect(backfillMenu).toBeTruthy();
-
-        await act(async () => {
-            backfillMenu!.props.onSelect?.('all_history');
-        });
+        await chooseSegment(screen, 'all_history');
 
         const enabledItem = screen.findByProps({ title: 'memorySearchSettings.enabled.title' });
         expect(enabledItem.props?.rightElement ?? null).toBeNull();
@@ -319,15 +347,7 @@ describe('MemorySettingsView', () => {
         });
 
         const screen = await renderSettledMemorySettingsView();
-        const backfillMenu = findDropdownMenu(
-            screen,
-            (props) => Array.isArray(props.items) && props.items.some((item: any) => item.id === 'all_history'),
-        );
-        expect(backfillMenu).toBeTruthy();
-
-        await act(async () => {
-            backfillMenu!.props.onSelect?.('all_history');
-        });
+        await chooseSegment(screen, 'all_history');
 
         expect(machineRpcSpy).toHaveBeenCalledWith(expect.objectContaining({
             method: 'daemon.memory.settings.set',
@@ -341,18 +361,9 @@ describe('MemorySettingsView', () => {
             settingsGet: () => ({ v: 1, enabled: true, indexMode: 'hints' }),
             settingsSet: (params: any) => params.payload,
         });
-        modalPrompt.mockResolvedValue('codex');
 
         const screen = await renderSettledMemorySettingsView();
-        const backendItem = screen.findByTestId('memory-settings-summarizer-backend');
-        expect(backendItem).toBeTruthy();
-        if (!backendItem) {
-            return;
-        }
-
-        await act(async () => {
-            await backendItem.props.onPress?.();
-        });
+        await typeIntoFieldRow(screen, 'memory-settings-summarizer-backend', 'codex');
 
         const call = machineRpcSpy.mock.calls.find((c) => c?.[0]?.method === 'daemon.memory.settings.set');
         expect(call?.[0]?.payload?.hints?.summarizerBackendId).toBe('codex');
@@ -365,15 +376,7 @@ describe('MemorySettingsView', () => {
         });
 
         const screen = await renderSettledMemorySettingsView();
-        const permissionMenu = findDropdownMenu(
-            screen,
-            (props) => Array.isArray(props.items) && props.items.some((item: any) => item.id === 'read_only'),
-        );
-        expect(permissionMenu).toBeTruthy();
-
-        await act(async () => {
-            permissionMenu!.props.onSelect?.('read_only');
-        });
+        await chooseSegment(screen, 'read_only');
 
         const call = machineRpcSpy.mock.calls.find((c) => c?.[0]?.method === 'daemon.memory.settings.set');
         expect(call?.[0]?.payload?.hints?.summarizerPermissionMode).toBe('read_only');
@@ -457,21 +460,30 @@ describe('MemorySettingsView', () => {
             }),
             settingsSet: (params: any) => params.payload,
         });
-        modalPrompt.mockResolvedValue('sk-remote-test');
 
         const screen = await renderSettledMemorySettingsView();
-        const apiKeyItem = screen.findByTestId('memory-settings-embeddings-openai-api-key');
-        expect(apiKeyItem).toBeTruthy();
-        if (!apiKeyItem) {
-            return;
-        }
-
-        await act(async () => {
-            await apiKeyItem.props.onPress?.();
-        });
+        await typeIntoFieldRow(screen, 'memory-settings-embeddings-openai-api-key', 'sk-remote-test');
 
         const call = machineRpcSpy.mock.calls.find((c) => c?.[0]?.method === 'daemon.memory.settings.set');
         expect(call?.[0]?.payload?.embeddings?.custom?.apiKey).toEqual({ _isSecretValue: true, value: 'sk-remote-test' });
+    });
+
+    it('switches the custom embeddings provider from its two always-visible choices', async () => {
+        installMemoryRpc({
+            settingsGet: () => ({
+                v: 1,
+                enabled: true,
+                indexMode: 'deep',
+                embeddings: { mode: 'custom', presetId: 'balanced', custom: { kind: 'local_transformers', modelId: 'm' } },
+            }),
+            settingsSet: (params: any) => params.payload,
+        });
+
+        const screen = await renderSettledMemorySettingsView();
+        await chooseSegment(screen, 'openai_compatible');
+
+        const call = machineRpcSpy.mock.calls.find((c) => c?.[0]?.method === 'daemon.memory.settings.set');
+        expect(call?.[0]?.payload?.embeddings?.custom?.kind).toBe('openai_compatible');
     });
 
     it('writes custom local embeddings model changes via daemon.memory.settings.set', async () => {
@@ -494,18 +506,9 @@ describe('MemorySettingsView', () => {
             }),
             settingsSet: (params: any) => params.payload,
         });
-        modalPrompt.mockResolvedValue('Xenova/jina-embeddings-v2-small-en');
 
         const screen = await renderSettledMemorySettingsView();
-        const modelItem = screen.findByTestId('memory-settings-embeddings-local-model');
-        expect(modelItem).toBeTruthy();
-        if (!modelItem) {
-            return;
-        }
-
-        await act(async () => {
-            await modelItem.props.onPress?.();
-        });
+        await typeIntoFieldRow(screen, 'memory-settings-embeddings-local-model', 'Xenova/jina-embeddings-v2-small-en');
 
         const call = machineRpcSpy.mock.calls.find((c) => c?.[0]?.method === 'daemon.memory.settings.set');
         expect(call?.[0]?.payload?.embeddings?.custom?.modelId).toBe('Xenova/jina-embeddings-v2-small-en');
@@ -648,15 +651,8 @@ describe('MemorySettingsView', () => {
         });
 
         const screen = await renderSettledMemorySettingsView();
-        const coverageMenu = findDropdownMenu(
-            screen,
-            (props) => Array.isArray(props.items) && props.items.some((item: any) => item.id === 'since_enabled'),
-        );
-        expect(coverageMenu).toBeTruthy();
-
-        await act(async () => {
-            coverageMenu!.props.onSelect?.('full');
-        });
+        expect(findSegmentedChoice(screen, 'since_enabled')).toBeTruthy();
+        await chooseSegment(screen, 'full');
 
         const call = machineRpcSpy.mock.calls.find((c) => c?.[0]?.method === 'daemon.memory.settings.set');
         expect(call?.[0]?.payload?.coveragePolicy).toEqual({ type: 'full' });
@@ -699,20 +695,100 @@ describe('MemorySettingsView', () => {
             settingsGet: () => ({ v: 1, enabled: true, indexMode: 'hints', budgets: { maxDiskMbLight: 250 } }),
             settingsSet: (params: any) => params.payload,
         });
-        modalPrompt.mockResolvedValue('123');
 
         const screen = await renderSettledMemorySettingsView();
-        const budgetItem = screen.findByTestId('memory-settings-budget-light');
-        expect(budgetItem).toBeTruthy();
-        if (!budgetItem) {
-            return;
-        }
-
-        await act(async () => {
-            await budgetItem.props.onPress?.();
-        });
+        await typeIntoFieldRow(screen, 'memory-settings-budget-light', '123');
 
         const call = machineRpcSpy.mock.calls.find((c) => c?.[0]?.method === 'daemon.memory.settings.set');
         expect(call?.[0]?.payload?.budgets?.maxDiskMbLight).toBe(123);
+    });
+    it('writes indexMode changes from the always-visible mode choice', async () => {
+        installMemoryRpc({
+            settingsGet: () => ({ v: 1, enabled: true, indexMode: 'hints' }),
+            settingsSet: (params: any) => params.payload,
+        });
+
+        const screen = await renderSettledMemorySettingsView();
+        await chooseSegment(screen, 'deep');
+
+        const call = machineRpcSpy.mock.calls.find((c) => c?.[0]?.method === 'daemon.memory.settings.set');
+        expect(call?.[0]?.payload?.indexMode).toBe('deep');
+    });
+
+    it('asks for a machine instead of showing machine settings when none is selected', async () => {
+        administrationTargetState.current = null;
+        installMemoryRpc({});
+
+        const screen = await renderSettledMemorySettingsView();
+        const enabledItem = screen.findByProps({ title: 'memorySearchSettings.enabled.title' });
+        expect(enabledItem.props?.subtitle).toBe('memorySearchSettings.enabled.chooseMachine');
+        expect(enabledItem.props?.rightElement ?? null).toBeNull();
+        expect(machineRpcSpy).not.toHaveBeenCalled();
+    });
+
+    it('says the machine cannot be reached, with a retry, instead of showing defaults as its settings', async () => {
+        let reachable = false;
+        installMemoryRpc({
+            settingsGet: () => {
+                if (!reachable) throw new Error('machine offline');
+                return { v: 1, enabled: true, indexMode: 'hints' };
+            },
+            status: () => createReadyMemoryStatus(),
+        });
+
+        const screen = await renderSettledMemorySettingsView();
+        const enabledItem = screen.findByProps({ title: 'memorySearchSettings.enabled.title' });
+        expect(enabledItem.props?.subtitle).toBe('memorySearchSettings.enabled.unreachable');
+        expect(findSegmentedChoice(screen, 'deep')).toBeUndefined();
+
+        reachable = true;
+        await act(async () => {
+            await enabledItem.props.rightElement.props.onPress();
+        });
+        await flushHookEffects({ cycles: 1 });
+
+        expect(findSegmentedChoice(screen, 'deep')).toBeTruthy();
+        expect(screen.findByProps({ title: 'memorySearchSettings.enabled.title' }).props?.rightElement?.props?.value).toBe(true);
+    });
+
+    it('keeps the machine settings read-only until the read for the current machine settles', async () => {
+        let resolveRead: (value: unknown) => void = () => {};
+        installMemoryRpc({
+            settingsGet: () => new Promise((resolve) => { resolveRead = resolve; }),
+            settingsSet: (params: any) => params.payload,
+            status: () => createReadyMemoryStatus(),
+        });
+
+        const screen = await renderSettledMemorySettingsView();
+        // While the read is in flight the page shows no control that could write defaults over the machine.
+        const pending = screen.findByProps({ title: 'memorySearchSettings.enabled.title' });
+        expect(pending.props?.rightElement ?? null).toBeNull();
+        expect(pending.props?.subtitle).toBe('common.loading');
+        expect(findSegmentedChoice(screen, 'deep')).toBeUndefined();
+        expect(screen.findAllByTestId('memory-settings-budget-light')).toHaveLength(0);
+
+        await act(async () => {
+            resolveRead({ v: 1, enabled: true, indexMode: 'hints' });
+        });
+        await flushHookEffects({ cycles: 1 });
+
+        const settled = screen.findByProps({ title: 'memorySearchSettings.enabled.title' });
+        expect(settled.props?.rightElement?.props?.value).toBe(true);
+        expect(findSegmentedChoice(screen, 'deep')).toBeTruthy();
+        expect(machineRpcSpy.mock.calls.some((c) => c?.[0]?.method === 'daemon.memory.settings.set')).toBe(false);
+    });
+
+    it('leads to Features when memory search is turned off', async () => {
+        featureState.memorySearchEnabled = false;
+
+        const screen = await renderSettledMemorySettingsView();
+        const openFeatures = screen.findByTestId('memory-settings-open-features');
+        expect(openFeatures).toBeTruthy();
+        await act(async () => {
+            await openFeatures!.props.onPress?.();
+        });
+
+        expect(routerState.push?.mock.calls).toContainEqual(['/settings/features']);
+        expect(machineRpcSpy).not.toHaveBeenCalled();
     });
 });

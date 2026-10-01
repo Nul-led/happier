@@ -126,12 +126,12 @@ describe('buildAccountSettingsSnapshot', () => {
                             providerChat: {
                                 status: 'configured',
                                 chat: {
-                                    agentTargetKey: 'backend:opencode',
+                                    agentTargetKey: 'agent:happier.agent.opencode/opencode',
                                     providerConnectionId: 'voice-openai-compatible-chat',
                                     modelId: 'custom-chat',
                                 },
                                 commit: {
-                                    agentTargetKey: 'backend:opencode',
+                                    agentTargetKey: 'agent:happier.agent.opencode/opencode',
                                     providerConnectionId: 'voice-openai-compatible-chat',
                                     modelId: 'custom-commit',
                                 },

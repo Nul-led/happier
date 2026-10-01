@@ -1,5 +1,7 @@
+export { BrowserRecordingCapsule } from './BrowserRecordingCapsule';
 export {
-    BrowserRecordingControls,
-    type BrowserRecordingControlsProps,
+    resolveBrowserRecordingControl,
+    type BrowserRecordingControl,
+    type BrowserRecordingControlInput,
     type BrowserRecordingStartControlRequest,
-} from './BrowserRecordingControls';
+} from './browserRecordingControl';

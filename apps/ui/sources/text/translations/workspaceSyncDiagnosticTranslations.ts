@@ -25,78 +25,253 @@ export const workspaceSyncDiagnosticTranslations = {
     de: {
         diagnostics: { title: 'Diagnose', relationshipId: 'Beziehungs-ID', controllerMachineId: 'ID des steuernden Computers', alphaMachineId: 'ID des Quellcomputers', betaMachineId: 'ID des Zielcomputers', alphaRoot: 'Aktueller Quellordner', betaRoot: 'Aktueller Zielordner', engineMode: 'Engine-Modus', engineState: 'Engine-Status', errorCode: 'Fehlercode' },
         error: { updateRequired: 'Aktualisiere Happier auf dem Quellcomputer, bevor du diese Workspace-Übergabe erneut versuchst. Andere Sitzungs- und Computeraktionen sind weiterhin verfügbar.' },
-        resolve: { title: 'Workspace-Konflikt lösen?', body: ({ path, side }) => `Version „${side}“ von ${path} behalten? Die andere Version wird entfernt, nachdem ihr aktueller Dateistand geprüft wurde.`, unverifiedFile: 'Eine Version ohne aktuellen Datei-Fingerabdruck kann nicht sicher entfernt werden. Aktualisiere den Konflikt und versuch es erneut.' },
+        resolve: { title: 'Workspace-Konflikt lösen?', body: ({ path, side }) => `Version „${side}“ des Ordners ${path} behalten? Der andere Ordner und alle Inhalte, die nur dort vorhanden sind, werden nach der Prüfung seines aktuellen Zustands entfernt.`, unverifiedFile: 'Eine Version ohne aktuellen Datei-Fingerabdruck kann nicht sicher entfernt werden. Aktualisiere den Konflikt und versuch es erneut.' },
     },
     ru: {
         diagnostics: { title: 'Диагностика', relationshipId: 'Идентификатор связи', controllerMachineId: 'Идентификатор управляющего компьютера', alphaMachineId: 'Идентификатор исходного компьютера', betaMachineId: 'Идентификатор целевого компьютера', alphaRoot: 'Текущая исходная папка', betaRoot: 'Текущая целевая папка', engineMode: 'Режим движка', engineState: 'Состояние движка', errorCode: 'Код ошибки' },
         error: { updateRequired: 'Обновите Happier на исходном компьютере, прежде чем снова запускать эту передачу рабочего пространства. Другие действия с сеансами и компьютерами по-прежнему доступны.' },
-        resolve: { title: 'Разрешить конфликт рабочего пространства?', body: ({ path, side }) => `Сохранить версию «${side}» файла ${path}? Другая версия будет удалена после проверки её текущего состояния.`, unverifiedFile: 'Версию без актуального отпечатка файла нельзя безопасно удалить. Обновите конфликт и повторите попытку.' },
+        resolve: { title: 'Разрешить конфликт рабочего пространства?', body: ({ path, side }) => `Сохранить версию папки ${path} со стороны «${side}»? Другая папка и всё, что есть только в ней, будут удалены после проверки её текущего состояния.`, unverifiedFile: 'Версию без актуального отпечатка файла нельзя безопасно удалить. Обновите конфликт и повторите попытку.' },
     },
     pl: {
         diagnostics: { title: 'Diagnostyka', relationshipId: 'Identyfikator relacji', controllerMachineId: 'Identyfikator komputera sterującego', alphaMachineId: 'Identyfikator komputera źródłowego', betaMachineId: 'Identyfikator komputera docelowego', alphaRoot: 'Bieżący katalog źródłowy', betaRoot: 'Bieżący katalog docelowy', engineMode: 'Tryb silnika', engineState: 'Stan silnika', errorCode: 'Kod błędu' },
         error: { updateRequired: 'Zaktualizuj Happier na komputerze źródłowym przed ponowną próbą przekazania obszaru roboczego. Inne działania dotyczące sesji i komputerów są nadal dostępne.' },
-        resolve: { title: 'Rozwiązać konflikt obszaru roboczego?', body: ({ path, side }) => `Zachować wersję „${side}” pliku ${path}? Druga wersja zostanie usunięta po sprawdzeniu jej aktualnego stanu.`, unverifiedFile: 'Nie można bezpiecznie usunąć wersji bez aktualnego odcisku pliku. Odśwież konflikt i spróbuj ponownie.' },
+        resolve: { title: 'Rozwiązać konflikt obszaru roboczego?', body: ({ path, side }) => `Zachować wersję folderu ${path} ze strony „${side}”? Drugi folder i wszystko, co znajduje się tylko w nim, zostaną usunięte po sprawdzeniu jego aktualnego stanu.`, unverifiedFile: 'Nie można bezpiecznie usunąć wersji bez aktualnego odcisku pliku. Odśwież konflikt i spróbuj ponownie.' },
     },
     es: {
         diagnostics: { title: 'Diagnóstico', relationshipId: 'ID de relación', controllerMachineId: 'ID del equipo controlador', alphaMachineId: 'ID del equipo de origen', betaMachineId: 'ID del equipo de destino', alphaRoot: 'Carpeta de origen actual', betaRoot: 'Carpeta de destino actual', engineMode: 'Modo del motor', engineState: 'Estado del motor', errorCode: 'Código de error' },
         error: { updateRequired: 'Actualiza Happier en el equipo de origen antes de volver a intentar esta transferencia del espacio de trabajo. Las demás acciones de sesiones y equipos siguen disponibles.' },
-        resolve: { title: '¿Resolver el conflicto del espacio de trabajo?', body: ({ path, side }) => `¿Conservar la versión «${side}» de ${path}? La otra versión se eliminará después de verificar su estado actual.`, unverifiedFile: 'No se puede eliminar de forma segura una versión sin una huella actual del archivo. Actualiza el conflicto e inténtalo de nuevo.' },
+        resolve: { title: '¿Resolver el conflicto del espacio de trabajo?', body: ({ path, side }) => `¿Conservar la versión «${side}» de la carpeta ${path}? La otra carpeta y todo lo que exista solo en ella se eliminarán después de verificar su estado actual.`, unverifiedFile: 'No se puede eliminar de forma segura una versión sin una huella actual del archivo. Actualiza el conflicto e inténtalo de nuevo.' },
     },
     fr: {
         diagnostics: { title: 'Diagnostic', relationshipId: 'ID de la relation', controllerMachineId: 'ID de la machine de contrôle', alphaMachineId: 'ID de la machine source', betaMachineId: 'ID de la machine de destination', alphaRoot: 'Dossier source actuel', betaRoot: 'Dossier de destination actuel', engineMode: 'Mode du moteur', engineState: 'État du moteur', errorCode: 'Code d’erreur' },
         error: { updateRequired: 'Mettez Happier à jour sur la machine source avant de réessayer ce transfert d’espace de travail. Les autres actions de session et de machine restent disponibles.' },
-        resolve: { title: 'Résoudre le conflit d’espace de travail ?', body: ({ path, side }) => `Conserver la version « ${side} » de ${path} ? L’autre version sera supprimée après vérification de son état actuel.`, unverifiedFile: 'Une version sans empreinte de fichier actuelle ne peut pas être supprimée en toute sécurité. Actualise le conflit et réessaie.' },
+        resolve: { title: 'Résoudre le conflit d’espace de travail ?', body: ({ path, side }) => `Conserver la version « ${side} » du dossier ${path} ? L’autre dossier et tout ce qui n’existe que dans celui-ci seront supprimés après vérification de son état actuel.`, unverifiedFile: 'Une version sans empreinte de fichier actuelle ne peut pas être supprimée en toute sécurité. Actualise le conflit et réessaie.' },
     },
     it: {
         diagnostics: { title: 'Diagnostica', relationshipId: 'ID relazione', controllerMachineId: 'ID computer di controllo', alphaMachineId: 'ID computer di origine', betaMachineId: 'ID computer di destinazione', alphaRoot: 'Cartella sorgente attuale', betaRoot: 'Cartella di destinazione attuale', engineMode: 'Modalità motore', engineState: 'Stato motore', errorCode: 'Codice errore' },
         error: { updateRequired: 'Aggiorna Happier sul computer di origine prima di riprovare questo passaggio dell’area di lavoro. Le altre azioni per sessioni e computer restano disponibili.' },
-        resolve: { title: 'Risolvere il conflitto dell’area di lavoro?', body: ({ path, side }) => `Mantenere la versione “${side}” di ${path}? L’altra versione verrà rimossa dopo averne verificato lo stato attuale.`, unverifiedFile: 'Una versione senza un’impronta attuale del file non può essere rimossa in sicurezza. Aggiorna il conflitto e riprova.' },
+        resolve: { title: 'Risolvere il conflitto dell’area di lavoro?', body: ({ path, side }) => `Mantenere la versione “${side}” della cartella ${path}? L’altra cartella e tutto ciò che esiste solo al suo interno verranno rimossi dopo averne verificato lo stato attuale.`, unverifiedFile: 'Una versione senza un’impronta attuale del file non può essere rimossa in sicurezza. Aggiorna il conflitto e riprova.' },
     },
     pt: {
         diagnostics: { title: 'Diagnóstico', relationshipId: 'ID da relação', controllerMachineId: 'ID do computador controlador', alphaMachineId: 'ID do computador de origem', betaMachineId: 'ID do computador de destino', alphaRoot: 'Pasta de origem atual', betaRoot: 'Pasta de destino atual', engineMode: 'Modo do motor', engineState: 'Estado do motor', errorCode: 'Código de erro' },
         error: { updateRequired: 'Atualize o Happier no computador de origem antes de tentar novamente esta transferência do espaço de trabalho. As outras ações de sessões e computadores continuam disponíveis.' },
-        resolve: { title: 'Resolver o conflito do espaço de trabalho?', body: ({ path, side }) => `Manter a versão “${side}” de ${path}? A outra versão será removida depois de o estado atual ser verificado.`, unverifiedFile: 'Uma versão sem uma impressão digital atual do ficheiro não pode ser removida em segurança. Atualize o conflito e tente novamente.' },
+        resolve: { title: 'Resolver o conflito do espaço de trabalho?', body: ({ path, side }) => `Manter a versão “${side}” da pasta ${path}? A outra pasta e tudo o que existir apenas nela serão removidos depois de o estado atual ser verificado.`, unverifiedFile: 'Uma versão sem uma impressão digital atual do ficheiro não pode ser removida em segurança. Atualize o conflito e tente novamente.' },
     },
     ca: {
         diagnostics: { title: 'Diagnòstic', relationshipId: 'ID de la relació', controllerMachineId: 'ID de l’ordinador controlador', alphaMachineId: 'ID de l’ordinador d’origen', betaMachineId: 'ID de l’ordinador de destinació', alphaRoot: 'Carpeta d’origen actual', betaRoot: 'Carpeta de destinació actual', engineMode: 'Mode del motor', engineState: 'Estat del motor', errorCode: 'Codi d’error' },
         error: { updateRequired: 'Actualitza Happier a l’ordinador d’origen abans de tornar a provar aquest traspàs de l’espai de treball. Les altres accions de sessions i ordinadors continuen disponibles.' },
-        resolve: { title: 'Vols resoldre el conflicte de l’espai de treball?', body: ({ path, side }) => `Vols conservar la versió «${side}» de ${path}? L’altra versió s’eliminarà després de verificar-ne l’estat actual.`, unverifiedFile: 'No es pot eliminar de manera segura una versió sense una empremta actual del fitxer. Actualitza el conflicte i torna-ho a provar.' },
+        resolve: { title: 'Vols resoldre el conflicte de l’espai de treball?', body: ({ path, side }) => `Vols conservar la versió «${side}» de la carpeta ${path}? L’altra carpeta i tot el que només existeixi dins seu s’eliminaran després de verificar-ne l’estat actual.`, unverifiedFile: 'No es pot eliminar de manera segura una versió sense una empremta actual del fitxer. Actualitza el conflicte i torna-ho a provar.' },
     },
     'zh-Hans': {
         diagnostics: { title: '诊断', relationshipId: '关系 ID', controllerMachineId: '控制计算机 ID', alphaMachineId: '源计算机 ID', betaMachineId: '目标计算机 ID', alphaRoot: '当前源文件夹', betaRoot: '当前目标文件夹', engineMode: '引擎模式', engineState: '引擎状态', errorCode: '错误代码' },
         error: { updateRequired: '请先更新源计算机上的 Happier，再重试此工作区移交。其他会话和计算机操作仍可使用。' },
-        resolve: { title: '解决工作区冲突？', body: ({ path, side }) => `保留 ${path} 的“${side}”版本？验证另一个版本的当前文件状态后，它将被删除。`, unverifiedFile: '无法安全移除没有当前文件指纹的版本。请刷新冲突后重试。' },
+        resolve: { title: '解决工作区冲突？', body: ({ path, side }) => `保留文件夹 ${path} 的“${side}”版本？验证当前状态后，另一个文件夹及其中独有的所有内容都将被删除。`, unverifiedFile: '无法安全移除没有当前文件指纹的版本。请刷新冲突后重试。' },
     },
     'zh-Hant': {
         diagnostics: { title: '診斷', relationshipId: '關係 ID', controllerMachineId: '控制電腦 ID', alphaMachineId: '來源電腦 ID', betaMachineId: '目標電腦 ID', alphaRoot: '目前來源資料夾', betaRoot: '目前目標資料夾', engineMode: '引擎模式', engineState: '引擎狀態', errorCode: '錯誤代碼' },
         error: { updateRequired: '請先更新來源電腦上的 Happier，再重試此工作區移交。其他工作階段和電腦操作仍可使用。' },
-        resolve: { title: '解決工作區衝突？', body: ({ path, side }) => `保留 ${path} 的「${side}」版本？驗證另一個版本目前的檔案狀態後，它將被移除。`, unverifiedFile: '無法安全移除沒有目前檔案指紋的版本。請重新整理衝突後再試一次。' },
+        resolve: { title: '解決工作區衝突？', body: ({ path, side }) => `保留資料夾 ${path} 的「${side}」版本？驗證目前狀態後，另一個資料夾及其中獨有的所有內容都將被移除。`, unverifiedFile: '無法安全移除沒有目前檔案指紋的版本。請重新整理衝突後再試一次。' },
     },
     ja: {
         diagnostics: { title: '診断', relationshipId: '関係 ID', controllerMachineId: '制御マシン ID', alphaMachineId: 'ソースマシン ID', betaMachineId: '宛先マシン ID', alphaRoot: '現在のソースフォルダー', betaRoot: '現在の宛先フォルダー', engineMode: 'エンジンモード', engineState: 'エンジン状態', errorCode: 'エラーコード' },
         error: { updateRequired: 'このワークスペースの引き継ぎを再試行する前に、ソースコンピューターの Happier を更新してください。他のセッションやコンピューターの操作は引き続き利用できます。' },
-        resolve: { title: 'ワークスペースの競合を解決しますか？', body: ({ path, side }) => `${path} の「${side}」バージョンを保持しますか？もう一方は現在のファイル状態を確認してから削除されます。`, unverifiedFile: '現在のファイル指紋がないバージョンは安全に削除できません。競合を更新してから、もう一度お試しください。' },
+        resolve: { title: 'ワークスペースの競合を解決しますか？', body: ({ path, side }) => `フォルダー ${path} の「${side}」バージョンを保持しますか？現在の状態を確認した後、もう一方のフォルダーとそこにしかない内容が削除されます。`, unverifiedFile: '現在のファイル指紋がないバージョンは安全に削除できません。競合を更新してから、もう一度お試しください。' },
     },
 } as const satisfies Record<string, WorkspaceSyncDiagnosticTranslation>;
 
 type WorkspaceSyncTranslation = TranslationStructure['workspaceSync'];
-type WorkspaceSyncTranslationCore = Omit<WorkspaceSyncTranslation, 'diagnostics' | 'error' | 'resolve'> & Readonly<{
+type WorkspaceSyncLocale = keyof typeof workspaceSyncDiagnosticTranslations;
+type WorkspaceSyncTranslationCore = Omit<WorkspaceSyncTranslation, 'availableOn' | 'addMachine' | 'attention' | 'diagnostics' | 'error' | 'resolve' | 'review'> & Readonly<{
     error: Omit<WorkspaceSyncTranslation['error'], 'updateRequired'>;
     resolve: Omit<WorkspaceSyncTranslation['resolve'], 'title' | 'body' | 'unverifiedFile'>;
 }>;
+type WorkspaceSyncReviewBase = Omit<WorkspaceSyncTranslation['review'],
+    keyof typeof workspaceSyncReviewSelectionTranslations.de
+    | keyof typeof workspaceSyncReviewOutcomeTranslations.de
+    | keyof typeof workspaceSyncReviewLifecycleTranslations.de
+    | keyof typeof workspaceSyncReviewDecisionTranslations.de
+    | 'localOnly' | 'keepAlternatives'>;
 
 function completeWorkspaceSyncTranslation(
-    locale: keyof typeof workspaceSyncDiagnosticTranslations,
+    locale: WorkspaceSyncLocale,
     core: WorkspaceSyncTranslationCore,
 ): WorkspaceSyncTranslation {
     const overlay = workspaceSyncDiagnosticTranslations[locale];
+    const review: WorkspaceSyncTranslation['review'] = {
+        ...workspaceSyncReviewTranslations[locale],
+        ...workspaceSyncReviewSelectionTranslations[locale],
+        ...workspaceSyncReviewOutcomeTranslations[locale],
+        ...workspaceSyncReviewLifecycleTranslations[locale],
+        ...workspaceSyncReviewDecisionTranslations[locale],
+        coverageIncomplete: workspaceSyncCoverageIncompleteTranslations[locale],
+        localOnly: workspaceSyncLocalOnlyTranslations[locale],
+        keepAlternatives: workspaceSyncKeepAlternativesTranslations[locale],
+    };
     return {
         ...core,
+        ...workspaceSyncAddMachineTranslations[locale],
+        ...workspaceSyncSetAttentionTranslations[locale],
         diagnostics: overlay.diagnostics,
         error: { ...core.error, ...overlay.error },
         resolve: { ...core.resolve, ...overlay.resolve },
+        review,
     };
 }
+
+const workspaceSyncSetAttentionTranslations = {
+    de: { attention: { conflictedLinks: ({ count }) => `${count} ${count === 1 ? 'Verbindung hat' : 'Verbindungen haben'} Konflikte`, unavailableLinks: ({ count }) => `${count} ${count === 1 ? 'Verbindung benötigt' : 'Verbindungen benötigen'} eine Statusprüfung` } },
+    ru: { attention: { conflictedLinks: ({ count }) => `Конфликты в ${count} связях`, unavailableLinks: ({ count }) => `Проверьте состояние ${count} связей` } },
+    pl: { attention: { conflictedLinks: ({ count }) => `Konflikty w ${count} połączeniach`, unavailableLinks: ({ count }) => `Sprawdź stan ${count} połączeń` } },
+    es: { attention: { conflictedLinks: ({ count }) => `${count} ${count === 1 ? 'enlace tiene' : 'enlaces tienen'} conflictos`, unavailableLinks: ({ count }) => `Revisa el estado de ${count} ${count === 1 ? 'enlace' : 'enlaces'}` } },
+    fr: { attention: { conflictedLinks: ({ count }) => `${count} ${count === 1 ? 'lien présente' : 'liens présentent'} des conflits`, unavailableLinks: ({ count }) => `Vérifiez l’état de ${count} ${count === 1 ? 'lien' : 'liens'}` } },
+    it: { attention: { conflictedLinks: ({ count }) => `${count} ${count === 1 ? 'collegamento presenta' : 'collegamenti presentano'} conflitti`, unavailableLinks: ({ count }) => `Controlla lo stato di ${count} ${count === 1 ? 'collegamento' : 'collegamenti'}` } },
+    pt: { attention: { conflictedLinks: ({ count }) => `${count} ${count === 1 ? 'ligação tem' : 'ligações têm'} conflitos`, unavailableLinks: ({ count }) => `Verifique o estado de ${count} ${count === 1 ? 'ligação' : 'ligações'}` } },
+    ca: { attention: { conflictedLinks: ({ count }) => `${count} ${count === 1 ? 'enllaç té' : 'enllaços tenen'} conflictes`, unavailableLinks: ({ count }) => `Revisa l’estat de ${count} ${count === 1 ? 'enllaç' : 'enllaços'}` } },
+    'zh-Hans': { attention: { conflictedLinks: ({ count }) => `${count} 条连接存在冲突`, unavailableLinks: ({ count }) => `${count} 条连接需要检查状态` } },
+    'zh-Hant': { attention: { conflictedLinks: ({ count }) => `${count} 條連結有衝突`, unavailableLinks: ({ count }) => `${count} 條連結需要檢查狀態` } },
+    ja: { attention: { conflictedLinks: ({ count }) => `${count} 件のリンクで競合があります`, unavailableLinks: ({ count }) => `${count} 件のリンクの状態を確認してください` } },
+} satisfies Record<keyof typeof workspaceSyncDiagnosticTranslations, Pick<WorkspaceSyncTranslation, 'attention'>>;
+
+const workspaceSyncAddMachineTranslations = {
+    de: { availableOn: 'Verfügbar auf', addMachine: { replica: 'Replikat', exactReplica: 'Exaktes Replikat', editableCopy: 'Bearbeitbare Kopie', editableCopyHint: 'Änderungen auf verknüpften Computern können für Agents auf den anderen sichtbar werden. Unterschiedliche Versionen müssen geprüft werden. Verwende separate Worktrees, wenn du isoliert arbeiten möchtest.' } },
+    ru: { availableOn: 'Доступно на', addMachine: { replica: 'Реплика', exactReplica: 'Точная реплика', editableCopy: 'Редактируемая копия', editableCopyHint: 'Изменения на связанных компьютерах могут стать видны агентам на других компьютерах. Конфликтующие версии требуют проверки. Для изолированной работы используйте отдельные рабочие деревья.' } },
+    pl: { availableOn: 'Dostępne na', addMachine: { replica: 'Replika', exactReplica: 'Dokładna replika', editableCopy: 'Kopia do edycji', editableCopyHint: 'Zmiany na połączonych komputerach mogą być widoczne dla agentów na pozostałych. Sprzeczne wersje wymagają sprawdzenia. Jeśli potrzebujesz izolacji, użyj osobnych drzew roboczych.' } },
+    es: { availableOn: 'Disponible en', addMachine: { replica: 'Réplica', exactReplica: 'Réplica exacta', editableCopy: 'Copia editable', editableCopyHint: 'Los cambios en equipos vinculados pueden ser visibles para los agentes de los demás. Las versiones en conflicto requieren revisión. Usa árboles de trabajo separados cuando necesites aislamiento.' } },
+    fr: { availableOn: 'Disponible sur', addMachine: { replica: 'Réplique', exactReplica: 'Réplique exacte', editableCopy: 'Copie modifiable', editableCopyHint: 'Les modifications sur les machines liées peuvent devenir visibles aux agents des autres machines. Les versions en conflit doivent être examinées. Utilisez des worktrees distincts pour travailler de façon isolée.' } },
+    it: { availableOn: 'Disponibile su', addMachine: { replica: 'Replica', exactReplica: 'Replica esatta', editableCopy: 'Copia modificabile', editableCopyHint: 'Le modifiche sui computer collegati possono essere visibili agli agenti sugli altri computer. Le versioni in conflitto richiedono una verifica. Usa worktree separati quando vuoi lavorare in isolamento.' } },
+    pt: { availableOn: 'Disponível em', addMachine: { replica: 'Réplica', exactReplica: 'Réplica exata', editableCopy: 'Cópia editável', editableCopyHint: 'As alterações em computadores ligados podem ficar visíveis aos agentes nos outros computadores. As versões em conflito precisam de revisão. Use árvores de trabalho separadas quando quiser isolamento.' } },
+    ca: { availableOn: 'Disponible a', addMachine: { replica: 'Rèplica', exactReplica: 'Rèplica exacta', editableCopy: 'Còpia editable', editableCopyHint: 'Els canvis als ordinadors enllaçats poden ser visibles per als agents dels altres. Cal revisar les versions en conflicte. Fes servir arbres de treball separats quan vulguis aïllament.' } },
+    'zh-Hans': { availableOn: '可用于', addMachine: { replica: '副本', exactReplica: '精确副本', editableCopy: '可编辑副本', editableCopyHint: '关联计算机上的更改可能会被其他计算机上的智能体看到。冲突版本需要审查。如果需要隔离，请使用单独的工作树。' } },
+    'zh-Hant': { availableOn: '可用於', addMachine: { replica: '副本', exactReplica: '精確副本', editableCopy: '可編輯副本', editableCopyHint: '已連結電腦上的變更可能會被其他電腦上的代理程式看見。衝突版本需要審查。如果需要隔離，請使用個別工作樹。' } },
+    ja: { availableOn: '利用できるマシン', addMachine: { replica: 'レプリカ', exactReplica: '完全なレプリカ', editableCopy: '編集可能なコピー', editableCopyHint: 'リンクしたマシン上の変更は、他のマシンのエージェントにも見える場合があります。競合するバージョンは確認が必要です。作業を分離したい場合は、別のワークツリーを使用してください。' } },
+} satisfies Record<keyof typeof workspaceSyncDiagnosticTranslations, Pick<WorkspaceSyncTranslation, 'availableOn' | 'addMachine'>>;
+
+const workspaceSyncReviewOutcomeTranslations = {
+    de: { keepBoth: 'Beide Versionen behalten', preserveAt: ({ path }) => `Weitere Version unter ${path} behalten`, notReviewed: 'Nicht geprüft; hier wird nichts geändert', confirmScope: 'Nur die aufgeführten geprüften Arbeitsbereiche werden geändert. Nicht verfügbare Arbeitsbereiche bleiben unverändert.', preserved: 'Erhalten', alreadyPresent: 'Bereits vorhanden', notStarted: 'Nicht begonnen', askAgent: 'Agent fragen', askAgentPrompt: ({ path, versions }) => `Hilf mir, die Konfliktversionen von ${path} in diesen verknüpften Arbeitsbereichen zu prüfen:\n${versions}\nPrüfe die aktuellen Dateien und schlage eine sichere Lösung vor. Ändere oder löse den Konflikt nicht ohne meine Zustimmung.` },
+    ru: { keepBoth: 'Сохранить обе версии', preserveAt: ({ path }) => `Сохранить другую версию по пути ${path}`, notReviewed: 'Не проверено; здесь ничего не изменится', confirmScope: 'Изменятся только указанные проверенные рабочие области. Недоступные останутся без изменений.', preserved: 'Сохранено', alreadyPresent: 'Уже существует', notStarted: 'Не начато', askAgent: 'Спросить агента', askAgentPrompt: ({ path, versions }) => `Помоги проверить конфликтующие версии ${path} в связанных рабочих областях:\n${versions}\nПроверь текущие файлы и предложи безопасное решение. Не меняй и не разрешай конфликт без моего подтверждения.` },
+    pl: { keepBoth: 'Zachowaj obie wersje', preserveAt: ({ path }) => `Zachowaj drugą wersję pod ${path}`, notReviewed: 'Nie sprawdzono; tutaj nic się nie zmieni', confirmScope: 'Zmiany obejmą tylko wymienione sprawdzone obszary robocze. Niedostępne pozostaną bez zmian.', preserved: 'Zachowano', alreadyPresent: 'Już istnieje', notStarted: 'Nie rozpoczęto', askAgent: 'Zapytaj agenta', askAgentPrompt: ({ path, versions }) => `Pomóż mi sprawdzić sprzeczne wersje ${path} w połączonych obszarach roboczych:\n${versions}\nSprawdź bieżące pliki i zaproponuj bezpieczne rozwiązanie. Nie zmieniaj ani nie rozwiązuj konfliktu bez mojej zgody.` },
+    es: { keepBoth: 'Conservar ambas versiones', preserveAt: ({ path }) => `Conservar otra versión en ${path}`, notReviewed: 'Sin revisar; no se cambiará aquí', confirmScope: 'Solo se cambiarán los espacios de trabajo revisados que aparecen en la lista. Los no disponibles permanecerán intactos.', preserved: 'Conservado', alreadyPresent: 'Ya existe', notStarted: 'No iniciado', askAgent: 'Preguntar a un agente', askAgentPrompt: ({ path, versions }) => `Ayúdame a revisar las versiones en conflicto de ${path} en estos espacios de trabajo vinculados:\n${versions}\nInspecciona los archivos actuales y sugiere una solución segura. No cambies ni resuelvas el conflicto sin mi aprobación.` },
+    fr: { keepBoth: 'Conserver les deux versions', preserveAt: ({ path }) => `Conserver une autre version à ${path}`, notReviewed: 'Non vérifié ; aucune modification ici', confirmScope: 'Seuls les espaces de travail vérifiés dans la liste seront modifiés. Les autres restent inchangés.', preserved: 'Conservé', alreadyPresent: 'Déjà présent', notStarted: 'Non commencé', askAgent: 'Demander à un agent', askAgentPrompt: ({ path, versions }) => `Aide-moi à examiner les versions conflictuelles de ${path} dans ces espaces de travail liés :\n${versions}\nExamine les fichiers actuels et propose une solution sûre. Ne modifie ni ne résous le conflit sans mon accord.` },
+    it: { keepBoth: 'Conserva entrambe le versioni', preserveAt: ({ path }) => `Conserva un’altra versione in ${path}`, notReviewed: 'Non verificato; qui non verrà modificato nulla', confirmScope: 'Saranno modificati solo gli spazi di lavoro verificati elencati. Quelli non disponibili resteranno invariati.', preserved: 'Conservato', alreadyPresent: 'Già presente', notStarted: 'Non avviato', askAgent: 'Chiedi a un agente', askAgentPrompt: ({ path, versions }) => `Aiutami a esaminare le versioni in conflitto di ${path} in questi spazi di lavoro collegati:\n${versions}\nControlla i file attuali e suggerisci una soluzione sicura. Non modificare o risolvere il conflitto senza la mia approvazione.` },
+    pt: { keepBoth: 'Manter ambas as versões', preserveAt: ({ path }) => `Manter outra versão em ${path}`, notReviewed: 'Não verificado; nada será alterado aqui', confirmScope: 'Só os espaços de trabalho verificados na lista serão alterados. Os indisponíveis ficam intactos.', preserved: 'Preservado', alreadyPresent: 'Já existe', notStarted: 'Não iniciado', askAgent: 'Perguntar a um agente', askAgentPrompt: ({ path, versions }) => `Ajude-me a rever as versões em conflito de ${path} nestes espaços de trabalho ligados:\n${versions}\nInspecione os ficheiros atuais e sugira uma solução segura. Não altere nem resolva o conflito sem a minha aprovação.` },
+    ca: { keepBoth: 'Conserva les dues versions', preserveAt: ({ path }) => `Conserva una altra versió a ${path}`, notReviewed: 'Sense revisar; aquí no es farà cap canvi', confirmScope: 'Només es canviaran els espais de treball revisats de la llista. Els no disponibles quedaran intactes.', preserved: 'Conservat', alreadyPresent: 'Ja existeix', notStarted: 'No iniciat', askAgent: 'Pregunta a un agent', askAgentPrompt: ({ path, versions }) => `Ajuda’m a revisar les versions en conflicte de ${path} en aquests espais de treball enllaçats:\n${versions}\nExamina els fitxers actuals i suggereix una solució segura. No canviïs ni resolguis el conflicte sense la meva aprovació.` },
+    'zh-Hans': { keepBoth: '保留两个版本', preserveAt: ({ path }) => `在 ${path} 保留另一版本`, notReviewed: '未检查；此处不会更改', confirmScope: '只会更改列出的已检查工作区。不可用的工作区保持不变。', preserved: '已保留', alreadyPresent: '已存在', notStarted: '未开始', askAgent: '询问智能体', askAgentPrompt: ({ path, versions }) => `请帮我检查这些关联工作区中 ${path} 的冲突版本：\n${versions}\n请检查当前文件并提出安全的解决建议。未经我批准，不要更改或解决冲突。` },
+    'zh-Hant': { keepBoth: '保留兩個版本', preserveAt: ({ path }) => `在 ${path} 保留另一版本`, notReviewed: '未檢查；此處不會變更', confirmScope: '只會變更列出的已檢查工作區。無法使用的工作區保持不變。', preserved: '已保留', alreadyPresent: '已存在', notStarted: '未開始', askAgent: '詢問代理程式', askAgentPrompt: ({ path, versions }) => `請幫我檢查這些已連結工作區中 ${path} 的衝突版本：\n${versions}\n請檢查目前檔案並提出安全的解決建議。未經我核准，不要變更或解決衝突。` },
+    ja: { keepBoth: '両方のバージョンを保持', preserveAt: ({ path }) => `別のバージョンを ${path} に保持`, notReviewed: '未確認。この場所は変更しません', confirmScope: '一覧の確認済みワークスペースのみ変更します。利用できないワークスペースは変更しません。', preserved: '保持済み', alreadyPresent: '既に存在', notStarted: '未開始', askAgent: 'エージェントに相談', askAgentPrompt: ({ path, versions }) => `リンクされたワークスペースにある ${path} の競合バージョンを確認してください：\n${versions}\n現在のファイルを調べ、安全な解決策を提案してください。私の承認なしに変更や競合解決をしないでください。` },
+} satisfies Record<keyof typeof workspaceSyncDiagnosticTranslations, Pick<WorkspaceSyncTranslation['review'], 'keepBoth' | 'preserveAt' | 'notReviewed' | 'confirmScope' | 'preserved' | 'alreadyPresent' | 'notStarted' | 'askAgent' | 'askAgentPrompt'>>;
+
+const workspaceSyncCoverageIncompleteTranslations = {
+    de: 'Einige Verbindungen oder Endpunkte wurden nicht geprüft. Geladene Konflikte bleiben sichtbar; nur ausdrücklich geprüfte, verfügbare Versionen können gelöst werden.',
+    ru: 'Некоторые связи или точки не проверены. Загруженные конфликты видны; разрешить можно только явно проверенные доступные версии.',
+    pl: 'Nie sprawdzono części połączeń lub punktów. Wczytane konflikty są widoczne; można rozstrzygać tylko wyraźnie sprawdzone, dostępne wersje.',
+    es: 'Algunos enlaces o extremos no se han revisado. Los conflictos cargados siguen visibles; solo se pueden resolver las versiones disponibles que se hayan revisado expresamente.',
+    fr: 'Certains liens ou points ne sont pas vérifiés. Les conflits chargés restent visibles ; seules les versions disponibles et explicitement vérifiées peuvent être résolues.',
+    it: 'Alcuni collegamenti o punti non sono stati verificati. I conflitti caricati restano visibili; solo le versioni disponibili e verificate esplicitamente possono essere risolte.',
+    pt: 'Algumas ligações ou pontos não foram verificados. Os conflitos carregados continuam visíveis; só é possível resolver as versões disponíveis verificadas explicitamente.',
+    ca: 'Hi ha enllaços o extrems sense revisar. Els conflictes carregats continuen visibles; només es poden resoldre les versions disponibles revisades explícitament.',
+    'zh-Hans': '部分连接或端点尚未检查。已加载的冲突仍可查看；只能解决明确检查过且可用的版本。',
+    'zh-Hant': '部分連結或端點尚未檢查。已載入的衝突仍可檢視；只能解決明確檢查過且可用的版本。',
+    ja: '一部のリンクまたは端点は未確認です。読み込み済みの競合は表示します。解決できるのは明示的に確認した利用可能なバージョンだけです。',
+} satisfies Record<keyof typeof workspaceSyncDiagnosticTranslations, WorkspaceSyncTranslation['review']['coverageIncomplete']>;
+
+const workspaceSyncReviewLifecycleTranslations = {
+    de: { requestingApproval: 'Genehmigung wird angefordert…', applying: 'Geprüfte Änderungen werden angewendet…', propagationExpected: ({ names }) => `Voraussichtlich weitergegeben an ${names}`, propagationUnverified: ({ names }) => `Weitergabe an ${names} kann noch nicht bestätigt werden` },
+    ru: { requestingApproval: 'Запрос подтверждения…', applying: 'Применение проверенных изменений…', propagationExpected: ({ names }) => `Ожидается передача в ${names}`, propagationUnverified: ({ names }) => `Передачу в ${names} пока нельзя проверить` },
+    pl: { requestingApproval: 'Żądanie zatwierdzenia…', applying: 'Stosowanie sprawdzonych zmian…', propagationExpected: ({ names }) => `Oczekiwana propagacja do ${names}`, propagationUnverified: ({ names }) => `Nie można jeszcze potwierdzić propagacji do ${names}` },
+    es: { requestingApproval: 'Solicitando aprobación…', applying: 'Aplicando los cambios revisados…', propagationExpected: ({ names }) => `Se espera la propagación a ${names}`, propagationUnverified: ({ names }) => `Aún no se puede verificar la propagación a ${names}` },
+    fr: { requestingApproval: 'Demande d’approbation…', applying: 'Application des modifications vérifiées…', propagationExpected: ({ names }) => `Propagation attendue vers ${names}`, propagationUnverified: ({ names }) => `La propagation vers ${names} ne peut pas encore être vérifiée` },
+    it: { requestingApproval: 'Richiesta di approvazione…', applying: 'Applicazione delle modifiche verificate…', propagationExpected: ({ names }) => `Propagazione prevista a ${names}`, propagationUnverified: ({ names }) => `La propagazione a ${names} non può ancora essere verificata` },
+    pt: { requestingApproval: 'A pedir aprovação…', applying: 'A aplicar as alterações verificadas…', propagationExpected: ({ names }) => `Propagação esperada para ${names}`, propagationUnverified: ({ names }) => `Ainda não é possível verificar a propagação para ${names}` },
+    ca: { requestingApproval: 'Sol·licitant l’aprovació…', applying: 'Aplicant els canvis revisats…', propagationExpected: ({ names }) => `S’espera la propagació a ${names}`, propagationUnverified: ({ names }) => `Encara no es pot verificar la propagació a ${names}` },
+    'zh-Hans': { requestingApproval: '正在请求批准…', applying: '正在应用已检查的更改…', propagationExpected: ({ names }) => `预计传播至 ${names}`, propagationUnverified: ({ names }) => `尚无法验证是否传播至 ${names}` },
+    'zh-Hant': { requestingApproval: '正在請求核准…', applying: '正在套用已檢查的變更…', propagationExpected: ({ names }) => `預計傳播至 ${names}`, propagationUnverified: ({ names }) => `尚無法驗證是否傳播至 ${names}` },
+    ja: { requestingApproval: '承認を要求しています…', applying: '確認済みの変更を適用しています…', propagationExpected: ({ names }) => `${names} への反映を予定`, propagationUnverified: ({ names }) => `${names} への反映はまだ確認できません` },
+} satisfies Record<keyof typeof workspaceSyncDiagnosticTranslations, Pick<WorkspaceSyncTranslation['review'], 'requestingApproval' | 'applying' | 'propagationExpected' | 'propagationUnverified'>>;
+
+const workspaceSyncLocalOnlyTranslations = {
+    de: 'Dieser alternative Ort bleibt auf seinen Arbeitsbereich beschränkt',
+    ru: 'Это альтернативное расположение остается локальным для своей рабочей области',
+    pl: 'Ta alternatywna lokalizacja pozostaje lokalna dla tego obszaru roboczego',
+    es: 'Esta ubicación alternativa queda solo en su espacio de trabajo',
+    fr: 'Cet emplacement alternatif reste local à son espace de travail',
+    it: 'Questa posizione alternativa resta locale al suo spazio di lavoro',
+    pt: 'Esta localização alternativa permanece local ao seu espaço de trabalho',
+    ca: 'Aquesta ubicació alternativa es manté local al seu espai de treball',
+    'zh-Hans': '此备用位置仅保留在其工作区中',
+    'zh-Hant': '此替代位置僅保留在其工作區中',
+    ja: 'この代替場所はそのワークスペース内だけに残ります',
+} satisfies Record<keyof typeof workspaceSyncDiagnosticTranslations, WorkspaceSyncTranslation['review']['localOnly']>;
+
+const workspaceSyncKeepAlternativesTranslations = {
+    de: 'Alternativen behalten', ru: 'Сохранить альтернативы', pl: 'Zachowaj alternatywy',
+    es: 'Conservar alternativas', fr: 'Conserver les autres versions', it: 'Conserva le alternative',
+    pt: 'Manter as alternativas', ca: 'Conserva les alternatives', 'zh-Hans': '保留其他版本',
+    'zh-Hant': '保留其他版本', ja: '別のバージョンも保持',
+} satisfies Record<keyof typeof workspaceSyncDiagnosticTranslations, WorkspaceSyncTranslation['review']['keepAlternatives']>;
+
+const workspaceSyncReviewDecisionTranslations = {
+    de: { chooseTargets: 'Zu ersetzende Arbeitsbereiche auswählen', notSelected: 'Für diese Lösung nicht ausgewählt', inspectCurrentVersions: 'Aktuelle Versionen prüfen' },
+    ru: { chooseTargets: 'Выберите рабочие области для замены', notSelected: 'Не выбрано для этого разрешения', inspectCurrentVersions: 'Проверить текущие версии' },
+    pl: { chooseTargets: 'Wybierz obszary robocze do zastąpienia', notSelected: 'Nie wybrano do tego rozstrzygnięcia', inspectCurrentVersions: 'Sprawdź bieżące wersje' },
+    es: { chooseTargets: 'Elige los espacios de trabajo que se reemplazarán', notSelected: 'No seleccionado para esta resolución', inspectCurrentVersions: 'Inspeccionar versiones actuales' },
+    fr: { chooseTargets: 'Choisir les espaces de travail à remplacer', notSelected: 'Non sélectionné pour cette résolution', inspectCurrentVersions: 'Examiner les versions actuelles' },
+    it: { chooseTargets: 'Scegli gli spazi di lavoro da sostituire', notSelected: 'Non selezionato per questa risoluzione', inspectCurrentVersions: 'Esamina le versioni attuali' },
+    pt: { chooseTargets: 'Escolha os espaços de trabalho a substituir', notSelected: 'Não selecionado para esta resolução', inspectCurrentVersions: 'Inspecionar versões atuais' },
+    ca: { chooseTargets: 'Tria els espais de treball que vols substituir', notSelected: 'No seleccionat per a aquesta resolució', inspectCurrentVersions: 'Inspecciona les versions actuals' },
+    'zh-Hans': { chooseTargets: '选择要替换的工作区', notSelected: '未选入本次冲突解决', inspectCurrentVersions: '检查当前版本' },
+    'zh-Hant': { chooseTargets: '選擇要替換的工作區', notSelected: '未選入本次衝突解決', inspectCurrentVersions: '檢查目前版本' },
+    ja: { chooseTargets: '置き換えるワークスペースを選択', notSelected: '今回の解決対象には未選択', inspectCurrentVersions: '現在のバージョンを確認' },
+} satisfies Record<keyof typeof workspaceSyncDiagnosticTranslations, Pick<WorkspaceSyncTranslation['review'], 'chooseTargets' | 'notSelected' | 'inspectCurrentVersions'>>;
+
+const workspaceSyncReviewTranslations: Record<WorkspaceSyncLocale, WorkspaceSyncReviewBase> = {
+    de: {
+        executable: 'Ausführbar', regular: 'Nicht ausführbar', applied: 'Angewendet', appliedPaused: 'Angewendet; Synchronisierung pausiert', changed: 'Vor dem Anwenden geändert', offline: 'Offline; nicht angewendet', cancelled: 'Abgebrochen', unknown: 'Ergebnis unbekannt; diesen Endpunkt prüfen', failed: 'Fehlgeschlagen; nicht angewendet', recoveryNeeded: 'Wiederherstellung an diesem Ort nötig', inspectionUnavailable: 'Aktuelle Versionen konnten nicht geprüft werden. Aktualisiere, sobald der steuernde Computer erreichbar ist.', coverageIncomplete: 'Einige Verbindungen oder Endpunkte wurden nicht geprüft. Geladene Konflikte bleiben sichtbar; eine Lösung ist noch nicht möglich.', versions: 'Versionen', comparison: 'Ausgewählte Versionen vergleichen', linkDecisions: 'Auswahl je Verbindung', result: 'Ergebnis', confirmTitle: 'Diese Version verwenden?', confirmBody: ({ path, source, count }) => `Version von ${source} für ${path} in ${count} weiteren Arbeitsbereichen verwenden? Happier prüft alle Versionen vor der Änderung.`, useVersion: 'Version verwenden', useNamedVersion: ({ name }) => `${name} verwenden`, compareNamedVersion: ({ name }) => `${name} vergleichen`, linkCount: ({ count }) => `${count} Verbindungen melden diesen Pfad`, moreOnLink: ({ name }) => `Weitere Einträge von ${name} laden`,
+    },
+    ru: {
+        executable: 'Исполняемый', regular: 'Неисполняемый', applied: 'Применено', appliedPaused: 'Применено; синхронизация приостановлена', changed: 'Изменено до применения', offline: 'Нет связи; не применено', cancelled: 'Отменено', unknown: 'Результат неизвестен; проверьте эту точку', failed: 'Ошибка; не применено', recoveryNeeded: 'Требуется восстановление по этому пути', inspectionUnavailable: 'Не удалось проверить текущие версии. Обновите данные, когда управляющий компьютер станет доступен.', coverageIncomplete: 'Не все связи или точки проверены. Загруженные конфликты видны, но разрешение пока недоступно.', versions: 'Версии', comparison: 'Сравнить выбранные версии', linkDecisions: 'Выбор по связям', result: 'Результат', confirmTitle: 'Использовать эту версию?', confirmBody: ({ path, source, count }) => `Использовать версию ${source} для ${path} в ${count} других рабочих областях? Happier проверит все версии до изменений.`, useVersion: 'Использовать версию', useNamedVersion: ({ name }) => `Использовать ${name}`, compareNamedVersion: ({ name }) => `Сравнить ${name}`, linkCount: ({ count }) => `${count} связей сообщили об этом пути`, moreOnLink: ({ name }) => `Загрузить ещё от ${name}`,
+    },
+    pl: {
+        executable: 'Wykonywalny', regular: 'Niewykonywalny', applied: 'Zastosowano', appliedPaused: 'Zastosowano; synchronizacja wstrzymana', changed: 'Zmieniono przed zastosowaniem', offline: 'Offline; nie zastosowano', cancelled: 'Anulowano', unknown: 'Wynik nieznany; sprawdź ten punkt', failed: 'Błąd; nie zastosowano', recoveryNeeded: 'Wymagane odzyskanie w tej lokalizacji', inspectionUnavailable: 'Nie można sprawdzić bieżących wersji. Odśwież, gdy komputer sterujący będzie dostępny.', coverageIncomplete: 'Nie sprawdzono części połączeń lub punktów. Wczytane konflikty są widoczne, ale rozstrzygnięcie nie jest jeszcze możliwe.', versions: 'Wersje', comparison: 'Porównaj wybrane wersje', linkDecisions: 'Wybór dla połączeń', result: 'Wynik', confirmTitle: 'Użyć tej wersji?', confirmBody: ({ path, source, count }) => `Użyć wersji ${source} pliku ${path} w ${count} innych obszarach roboczych? Happier sprawdzi wszystkie wersje przed zmianami.`, useVersion: 'Użyj wersji', useNamedVersion: ({ name }) => `Użyj ${name}`, compareNamedVersion: ({ name }) => `Porównaj ${name}`, linkCount: ({ count }) => `${count} połączeń zgłosiło tę ścieżkę`, moreOnLink: ({ name }) => `Wczytaj więcej z ${name}`,
+    },
+    es: {
+        executable: 'Ejecutable', regular: 'No ejecutable', applied: 'Aplicado', appliedPaused: 'Aplicado; sincronización pausada', changed: 'Cambió antes de aplicarse', offline: 'Sin conexión; no aplicado', cancelled: 'Cancelado', unknown: 'Resultado desconocido; revisa este extremo', failed: 'Falló; no aplicado', recoveryNeeded: 'Se requiere recuperación en esta ubicación', inspectionUnavailable: 'No se pudieron revisar las versiones actuales. Actualiza cuando el equipo controlador esté disponible.', coverageIncomplete: 'Quedan enlaces o extremos sin revisar. Los conflictos cargados siguen visibles, pero aún no se pueden resolver.', versions: 'Versiones', comparison: 'Comparar versiones seleccionadas', linkDecisions: 'Selección por enlace', result: 'Resultado', confirmTitle: '¿Usar esta versión?', confirmBody: ({ path, source, count }) => `¿Usar la versión de ${source} de ${path} en otros ${count} espacios de trabajo? Happier verificará todas las versiones antes de cambiar nada.`, useVersion: 'Usar versión', useNamedVersion: ({ name }) => `Usar ${name}`, compareNamedVersion: ({ name }) => `Comparar ${name}`, linkCount: ({ count }) => `${count} enlaces notificaron esta ruta`, moreOnLink: ({ name }) => `Cargar más de ${name}`,
+    },
+    fr: {
+        executable: 'Exécutable', regular: 'Non exécutable', applied: 'Appliqué', appliedPaused: 'Appliqué ; synchronisation en pause', changed: 'Modifié avant application', offline: 'Hors ligne ; non appliqué', cancelled: 'Annulé', unknown: 'Résultat inconnu ; inspectez ce point', failed: 'Échec ; non appliqué', recoveryNeeded: 'Récupération nécessaire à cet emplacement', inspectionUnavailable: 'Impossible d’inspecter les versions actuelles. Actualisez quand la machine de contrôle est accessible.', coverageIncomplete: 'Certains liens ou points ne sont pas vérifiés. Les conflits chargés restent visibles, mais la résolution est indisponible.', versions: 'Versions', comparison: 'Comparer les versions choisies', linkDecisions: 'Sélection par lien', result: 'Résultat', confirmTitle: 'Utiliser cette version ?', confirmBody: ({ path, source, count }) => `Utiliser la version de ${source} pour ${path} sur ${count} autres espaces de travail ? Happier vérifiera chaque version avant modification.`, useVersion: 'Utiliser la version', useNamedVersion: ({ name }) => `Utiliser ${name}`, compareNamedVersion: ({ name }) => `Comparer ${name}`, linkCount: ({ count }) => `${count} liens signalent ce chemin`, moreOnLink: ({ name }) => `Charger la suite de ${name}`,
+    },
+    it: {
+        executable: 'Eseguibile', regular: 'Non eseguibile', applied: 'Applicato', appliedPaused: 'Applicato; sincronizzazione in pausa', changed: 'Modificato prima dell’applicazione', offline: 'Offline; non applicato', cancelled: 'Annullato', unknown: 'Esito sconosciuto; controlla questo punto', failed: 'Non riuscito; non applicato', recoveryNeeded: 'Recupero necessario in questa posizione', inspectionUnavailable: 'Impossibile controllare le versioni attuali. Aggiorna quando il computer di controllo è disponibile.', coverageIncomplete: 'Alcuni collegamenti o punti non sono stati controllati. I conflitti caricati restano visibili, ma non possono ancora essere risolti.', versions: 'Versioni', comparison: 'Confronta le versioni selezionate', linkDecisions: 'Selezione per collegamento', result: 'Risultato', confirmTitle: 'Usare questa versione?', confirmBody: ({ path, source, count }) => `Usare la versione di ${source} di ${path} su altri ${count} spazi di lavoro? Happier verificherà tutte le versioni prima di modificarle.`, useVersion: 'Usa versione', useNamedVersion: ({ name }) => `Usa ${name}`, compareNamedVersion: ({ name }) => `Confronta ${name}`, linkCount: ({ count }) => `${count} collegamenti segnalano questo percorso`, moreOnLink: ({ name }) => `Carica altri da ${name}`,
+    },
+    pt: {
+        executable: 'Executável', regular: 'Não executável', applied: 'Aplicado', appliedPaused: 'Aplicado; sincronização pausada', changed: 'Alterado antes de aplicar', offline: 'Offline; não aplicado', cancelled: 'Cancelado', unknown: 'Resultado desconhecido; verifique este ponto', failed: 'Falhou; não aplicado', recoveryNeeded: 'Recuperação necessária neste local', inspectionUnavailable: 'Não foi possível inspecionar as versões atuais. Atualize quando o computador controlador estiver disponível.', coverageIncomplete: 'Algumas ligações ou pontos não foram verificados. Os conflitos carregados continuam visíveis, mas ainda não podem ser resolvidos.', versions: 'Versões', comparison: 'Comparar versões selecionadas', linkDecisions: 'Seleção por ligação', result: 'Resultado', confirmTitle: 'Usar esta versão?', confirmBody: ({ path, source, count }) => `Usar a versão de ${source} de ${path} noutros ${count} espaços de trabalho? O Happier verificará todas as versões antes de alterar.`, useVersion: 'Usar versão', useNamedVersion: ({ name }) => `Usar ${name}`, compareNamedVersion: ({ name }) => `Comparar ${name}`, linkCount: ({ count }) => `${count} ligações comunicaram este caminho`, moreOnLink: ({ name }) => `Carregar mais de ${name}`,
+    },
+    ca: {
+        executable: 'Executable', regular: 'No executable', applied: 'Aplicat', appliedPaused: 'Aplicat; sincronització en pausa', changed: 'Modificat abans d’aplicar', offline: 'Sense connexió; no aplicat', cancelled: 'Cancel·lat', unknown: 'Resultat desconegut; revisa aquest extrem', failed: 'Ha fallat; no aplicat', recoveryNeeded: 'Cal recuperar en aquesta ubicació', inspectionUnavailable: 'No s’han pogut revisar les versions actuals. Actualitza quan l’ordinador controlador estigui disponible.', coverageIncomplete: 'Hi ha enllaços o extrems sense revisar. Els conflictes carregats continuen visibles, però encara no es poden resoldre.', versions: 'Versions', comparison: 'Compara les versions seleccionades', linkDecisions: 'Selecció per enllaç', result: 'Resultat', confirmTitle: 'Vols fer servir aquesta versió?', confirmBody: ({ path, source, count }) => `Vols fer servir la versió de ${source} de ${path} en ${count} espais de treball més? Happier comprovarà totes les versions abans de canviar-les.`, useVersion: 'Fes servir la versió', useNamedVersion: ({ name }) => `Fes servir ${name}`, compareNamedVersion: ({ name }) => `Compara ${name}`, linkCount: ({ count }) => `${count} enllaços han indicat aquest camí`, moreOnLink: ({ name }) => `Carrega més de ${name}`,
+    },
+    'zh-Hans': {
+        executable: '可执行', regular: '不可执行', applied: '已应用', appliedPaused: '已应用；同步已暂停', changed: '应用前已更改', offline: '离线；未应用', cancelled: '已取消', unknown: '结果未知；请检查此端点', failed: '失败；未应用', recoveryNeeded: '此位置需要恢复', inspectionUnavailable: '无法检查当前版本。控制计算机可用后请刷新。', coverageIncomplete: '部分连接或端点尚未检查。已加载的冲突仍可查看，但暂不能解决。', versions: '版本', comparison: '比较所选版本', linkDecisions: '连接选择结果', result: '处理结果', confirmTitle: '使用此版本？', confirmBody: ({ path, source, count }) => `在其他 ${count} 个工作区使用 ${source} 的 ${path} 版本？Happier 会在更改前验证所有版本。`, useVersion: '使用此版本', useNamedVersion: ({ name }) => `使用 ${name}`, compareNamedVersion: ({ name }) => `比较 ${name}`, linkCount: ({ count }) => `${count} 条连接报告了此路径`, moreOnLink: ({ name }) => `加载 ${name} 的更多项目`,
+    },
+    'zh-Hant': {
+        executable: '可執行', regular: '不可執行', applied: '已套用', appliedPaused: '已套用；同步已暫停', changed: '套用前已變更', offline: '離線；未套用', cancelled: '已取消', unknown: '結果未知；請檢查此端點', failed: '失敗；未套用', recoveryNeeded: '此位置需要復原', inspectionUnavailable: '無法檢查目前版本。控制電腦可用後請重新整理。', coverageIncomplete: '部分連結或端點尚未檢查。已載入的衝突仍可檢視，但暫時無法解決。', versions: '版本', comparison: '比較所選版本', linkDecisions: '連結選取結果', result: '處理結果', confirmTitle: '使用此版本？', confirmBody: ({ path, source, count }) => `要在其他 ${count} 個工作區使用 ${source} 的 ${path} 版本嗎？Happier 會在變更前驗證所有版本。`, useVersion: '使用版本', useNamedVersion: ({ name }) => `使用 ${name}`, compareNamedVersion: ({ name }) => `比較 ${name}`, linkCount: ({ count }) => `${count} 條連結回報了此路徑`, moreOnLink: ({ name }) => `載入 ${name} 的更多項目`,
+    },
+    ja: {
+        executable: '実行可能', regular: '実行不可', applied: '適用済み', appliedPaused: '適用済み・同期は一時停止中', changed: '適用前に変更', offline: 'オフライン・未適用', cancelled: 'キャンセル済み', unknown: '結果不明・この端点を確認', failed: '失敗・未適用', recoveryNeeded: 'この場所で復旧が必要', inspectionUnavailable: '現在のバージョンを確認できません。管理コンピューターに接続できたら更新してください。', coverageIncomplete: '一部のリンクまたは端点を確認できません。読み込み済みの競合は表示しますが、解決はまだできません。', versions: 'バージョン', comparison: '選択したバージョンを比較', linkDecisions: 'リンクごとの選択', result: '解決結果', confirmTitle: 'このバージョンを使用しますか？', confirmBody: ({ path, source, count }) => `${source} の ${path} のバージョンをほかの ${count} 個のワークスペースで使用しますか？変更前にすべてのバージョンを検証します。`, useVersion: 'バージョンを使用', useNamedVersion: ({ name }) => `${name} を使用`, compareNamedVersion: ({ name }) => `${name} と比較`, linkCount: ({ count }) => `${count} 個のリンクがこのパスを報告`, moreOnLink: ({ name }) => `${name} の続きを読み込む`,
+    },
+};
+
+const workspaceSyncReviewSelectionTranslations = {
+    de: { selectionIncluded: 'Von dieser Verbindung eingeschlossen', selectionExcluded: 'Von dieser Verbindung ausgeschlossen', selectionUnknown: 'Auswahl unbekannt', reasonRepositoryMetadata: 'Repository-Metadaten', reasonSubmodule: 'Git-Submodul', reasonConfiguredRule: 'Konfigurierte Regel', reasonGitIgnore: 'Git-Ignore-Regel', reasonEndpointUnavailable: 'Endpunkt nicht erreichbar', reasonSelectionUnavailable: 'Auswahlprüfung nicht verfügbar', configuredInclude: ({ pattern }) => `Einschlussmuster: ${pattern}`, configuredExclude: ({ pattern }) => `Ausschlussmuster: ${pattern}`, completedLinks: ({ count }) => `${count} Verbindungen vor der Blockierung abgeschlossen` },
+    ru: { selectionIncluded: 'Включено этой связью', selectionExcluded: 'Исключено этой связью', selectionUnknown: 'Выбор неизвестен', reasonRepositoryMetadata: 'Метаданные репозитория', reasonSubmodule: 'Подмодуль Git', reasonConfiguredRule: 'Настроенное правило', reasonGitIgnore: 'Правило Git ignore', reasonEndpointUnavailable: 'Точка недоступна', reasonSelectionUnavailable: 'Проверка выбора недоступна', configuredInclude: ({ pattern }) => `Шаблон включения: ${pattern}`, configuredExclude: ({ pattern }) => `Шаблон исключения: ${pattern}`, completedLinks: ({ count }) => `До блокировки завершено связей: ${count}` },
+    pl: { selectionIncluded: 'Uwzględnione przez to połączenie', selectionExcluded: 'Wykluczone przez to połączenie', selectionUnknown: 'Nieznany wybór', reasonRepositoryMetadata: 'Metadane repozytorium', reasonSubmodule: 'Podmoduł Git', reasonConfiguredRule: 'Skonfigurowana reguła', reasonGitIgnore: 'Reguła Git ignore', reasonEndpointUnavailable: 'Punkt niedostępny', reasonSelectionUnavailable: 'Ocena wyboru niedostępna', configuredInclude: ({ pattern }) => `Wzorzec uwzględniania: ${pattern}`, configuredExclude: ({ pattern }) => `Wzorzec wykluczania: ${pattern}`, completedLinks: ({ count }) => `Przed blokadą ukończono połączenia: ${count}` },
+    es: { selectionIncluded: 'Incluido por este enlace', selectionExcluded: 'Excluido por este enlace', selectionUnknown: 'Selección desconocida', reasonRepositoryMetadata: 'Metadatos del repositorio', reasonSubmodule: 'Submódulo Git', reasonConfiguredRule: 'Regla configurada', reasonGitIgnore: 'Regla Git ignore', reasonEndpointUnavailable: 'Extremo no disponible', reasonSelectionUnavailable: 'Evaluador de selección no disponible', configuredInclude: ({ pattern }) => `Patrón de inclusión: ${pattern}`, configuredExclude: ({ pattern }) => `Patrón de exclusión: ${pattern}`, completedLinks: ({ count }) => `${count} enlaces completados antes del bloqueo` },
+    fr: { selectionIncluded: 'Inclus par ce lien', selectionExcluded: 'Exclu par ce lien', selectionUnknown: 'Sélection inconnue', reasonRepositoryMetadata: 'Métadonnées du dépôt', reasonSubmodule: 'Sous-module Git', reasonConfiguredRule: 'Règle configurée', reasonGitIgnore: 'Règle Git ignore', reasonEndpointUnavailable: 'Point indisponible', reasonSelectionUnavailable: 'Évaluation de la sélection indisponible', configuredInclude: ({ pattern }) => `Motif d’inclusion : ${pattern}`, configuredExclude: ({ pattern }) => `Motif d’exclusion : ${pattern}`, completedLinks: ({ count }) => `${count} liens terminés avant le blocage` },
+    it: { selectionIncluded: 'Incluso da questo collegamento', selectionExcluded: 'Escluso da questo collegamento', selectionUnknown: 'Selezione sconosciuta', reasonRepositoryMetadata: 'Metadati del repository', reasonSubmodule: 'Sottomodulo Git', reasonConfiguredRule: 'Regola configurata', reasonGitIgnore: 'Regola Git ignore', reasonEndpointUnavailable: 'Punto non disponibile', reasonSelectionUnavailable: 'Valutazione selezione non disponibile', configuredInclude: ({ pattern }) => `Schema di inclusione: ${pattern}`, configuredExclude: ({ pattern }) => `Schema di esclusione: ${pattern}`, completedLinks: ({ count }) => `${count} collegamenti completati prima del blocco` },
+    pt: { selectionIncluded: 'Incluído por esta ligação', selectionExcluded: 'Excluído por esta ligação', selectionUnknown: 'Seleção desconhecida', reasonRepositoryMetadata: 'Metadados do repositório', reasonSubmodule: 'Submódulo Git', reasonConfiguredRule: 'Regra configurada', reasonGitIgnore: 'Regra Git ignore', reasonEndpointUnavailable: 'Ponto indisponível', reasonSelectionUnavailable: 'Avaliador de seleção indisponível', configuredInclude: ({ pattern }) => `Padrão de inclusão: ${pattern}`, configuredExclude: ({ pattern }) => `Padrão de exclusão: ${pattern}`, completedLinks: ({ count }) => `${count} ligações concluídas antes do bloqueio` },
+    ca: { selectionIncluded: 'Inclòs per aquest enllaç', selectionExcluded: 'Exclòs per aquest enllaç', selectionUnknown: 'Selecció desconeguda', reasonRepositoryMetadata: 'Metadades del repositori', reasonSubmodule: 'Submòdul Git', reasonConfiguredRule: 'Regla configurada', reasonGitIgnore: 'Regla Git ignore', reasonEndpointUnavailable: 'Extrem no disponible', reasonSelectionUnavailable: 'Avaluador de selecció no disponible', configuredInclude: ({ pattern }) => `Patró d’inclusió: ${pattern}`, configuredExclude: ({ pattern }) => `Patró d’exclusió: ${pattern}`, completedLinks: ({ count }) => `${count} enllaços completats abans del bloqueig` },
+    'zh-Hans': { selectionIncluded: '此连接包含', selectionExcluded: '此连接排除', selectionUnknown: '选择结果未知', reasonRepositoryMetadata: '仓库元数据', reasonSubmodule: 'Git 子模块', reasonConfiguredRule: '已配置规则', reasonGitIgnore: 'Git 忽略规则', reasonEndpointUnavailable: '端点不可用', reasonSelectionUnavailable: '选择评估器不可用', configuredInclude: ({ pattern }) => `包含模式：${pattern}`, configuredExclude: ({ pattern }) => `排除模式：${pattern}`, completedLinks: ({ count }) => `阻塞前已完成 ${count} 条连接` },
+    'zh-Hant': { selectionIncluded: '此連結包含', selectionExcluded: '此連結排除', selectionUnknown: '選取結果未知', reasonRepositoryMetadata: '儲存庫中繼資料', reasonSubmodule: 'Git 子模組', reasonConfiguredRule: '已設定規則', reasonGitIgnore: 'Git 忽略規則', reasonEndpointUnavailable: '端點無法使用', reasonSelectionUnavailable: '選取評估器無法使用', configuredInclude: ({ pattern }) => `包含樣式：${pattern}`, configuredExclude: ({ pattern }) => `排除樣式：${pattern}`, completedLinks: ({ count }) => `阻塞前已完成 ${count} 條連結` },
+    ja: { selectionIncluded: 'このリンクで対象', selectionExcluded: 'このリンクで除外', selectionUnknown: '選択結果不明', reasonRepositoryMetadata: 'リポジトリのメタデータ', reasonSubmodule: 'Git サブモジュール', reasonConfiguredRule: '設定済みルール', reasonGitIgnore: 'Git の無視ルール', reasonEndpointUnavailable: '端点を利用できません', reasonSelectionUnavailable: '選択判定を利用できません', configuredInclude: ({ pattern }) => `含めるパターン: ${pattern}`, configuredExclude: ({ pattern }) => `除外パターン: ${pattern}`, completedLinks: ({ count }) => `ブロック前に ${count} 件のリンクを完了` },
+} satisfies Record<keyof typeof workspaceSyncDiagnosticTranslations, Pick<WorkspaceSyncTranslation['review'], 'selectionIncluded' | 'selectionExcluded' | 'selectionUnknown' | 'reasonRepositoryMetadata' | 'reasonSubmodule' | 'reasonConfiguredRule' | 'reasonGitIgnore' | 'reasonEndpointUnavailable' | 'reasonSelectionUnavailable' | 'configuredInclude' | 'configuredExclude' | 'completedLinks'>>;
 
 const de = completeWorkspaceSyncTranslation('de', {
     title: 'Arbeitsbereich synchronisieren',
@@ -118,7 +293,7 @@ const de = completeWorkspaceSyncTranslation('de', {
     },
     none: 'Keine Synchronisierungsverbindung',
     conflictsTitle: 'Arbeitsbereichskonflikte',
-    openConflicts: ({ count }) => `${count} ${count === 1 ? 'Arbeitsbereichskonflikt' : 'Arbeitsbereichskonflikte'} öffnen`,
+    openConflicts: ({ count }) => `Arbeitsbereichssynchronisierung auf ${count} Verbindungen prüfen`,
     noConflicts: 'Keine Konflikte',
     previewUnavailable: 'Der steuernde Computer konnte keine sichere Vorschau bereitstellen. Aktualisiere den Konflikt, bevor du es erneut versuchst.',
     truncated: ({ count }) => `${count} weitere ${count === 1 ? 'Konflikt wird' : 'Konflikte werden'} nicht angezeigt`,
@@ -126,9 +301,8 @@ const de = completeWorkspaceSyncTranslation('de', {
     conflictCount: ({ count }) => `${count} ${count === 1 ? 'Konflikt' : 'Konflikte'}`,
     conflictKind: { file: 'Datei', directory: 'Ordner', symlink: 'Symbolischer Link', missing: 'Fehlt', unsupported: 'Nicht unterstützter Eintrag' },
     mode: { copyOnce: 'Einmal kopieren', keepSynced: 'Aktuell halten – empfohlen', mirrorExactly: 'Exakt spiegeln', keepBothInSync: 'Beide synchron halten' },
-    state: { loading: 'Status wird geprüft…', starting: 'Wird vorbereitet', watching: 'Aktuell', flushing: 'Wird synchronisiert', paused: 'Pausiert', peerOffline: 'Offline', conflicted: 'Konflikte', controllerUnavailable: 'Aufmerksamkeit erforderlich', engineUnavailable: 'Komponente nicht verfügbar', error: 'Aufmerksamkeit erforderlich', stopped: 'Beendet', working: 'In Arbeit…' },
-    lastSynced: ({ at }) => `Zuletzt synchronisiert: ${at}`,
-    neverSynced: 'Noch nicht synchronisiert',
+    state: { loading: 'Status wird geprüft…', starting: 'Wird vorbereitet', watching: 'Überwacht', flushing: 'Wird synchronisiert', paused: 'Pausiert', peerOffline: 'Offline', conflicted: 'Konflikte', controllerUnavailable: 'Aufmerksamkeit erforderlich', engineUnavailable: 'Komponente nicht verfügbar', error: 'Aufmerksamkeit erforderlich', stopped: 'Beendet', working: 'In Arbeit…' },
+    lastChecked: ({ at }) => `Zuletzt geprüft: ${at}`,
     endpoint: { source: ({ label }) => `Quelle · ${label}`, destination: ({ label }) => `Ziel · ${label}`, synced: ({ label }) => `Synchronisierter Endpunkt · ${label}` },
     error: {
         componentUnavailable: 'Die Arbeitsbereichssynchronisierung ist in diesem Build nicht verfügbar. Installiere die erforderliche Komponente und versuche es erneut.',
@@ -181,7 +355,7 @@ const es = completeWorkspaceSyncTranslation('es', {
     },
     none: 'No hay ninguna relación de sincronización',
     conflictsTitle: 'Conflictos del espacio de trabajo',
-    openConflicts: ({ count }) => `Abrir ${count} ${count === 1 ? 'conflicto' : 'conflictos'} del espacio de trabajo`,
+    openConflicts: ({ count }) => `Revisar la sincronización en ${count} enlaces`,
     noConflicts: 'No hay conflictos',
     previewUnavailable: 'El equipo controlador no pudo proporcionar una vista previa segura. Actualiza el conflicto antes de volver a intentarlo.',
     truncated: ({ count }) => `${count} ${count === 1 ? 'conflicto adicional no se muestra' : 'conflictos adicionales no se muestran'}`,
@@ -189,9 +363,8 @@ const es = completeWorkspaceSyncTranslation('es', {
     conflictCount: ({ count }) => `${count} ${count === 1 ? 'conflicto' : 'conflictos'}`,
     conflictKind: { file: 'Archivo', directory: 'Carpeta', symlink: 'Enlace simbólico', missing: 'Ausente', unsupported: 'Entrada no compatible' },
     mode: { copyOnce: 'Copiar una vez', keepSynced: 'Mantener actualizado — recomendado', mirrorExactly: 'Reflejar exactamente', keepBothInSync: 'Mantener ambos sincronizados' },
-    state: { loading: 'Comprobando estado…', starting: 'Preparando', watching: 'Actualizado', flushing: 'Sincronizando', paused: 'En pausa', peerOffline: 'Sin conexión', conflicted: 'Conflictos', controllerUnavailable: 'Necesita atención', engineUnavailable: 'Componente no disponible', error: 'Necesita atención', stopped: 'Detenido', working: 'Procesando…' },
-    lastSynced: ({ at }) => `Última sincronización: ${at}`,
-    neverSynced: 'Aún no se ha sincronizado',
+    state: { loading: 'Comprobando estado…', starting: 'Preparando', watching: 'Vigilando', flushing: 'Sincronizando', paused: 'En pausa', peerOffline: 'Sin conexión', conflicted: 'Conflictos', controllerUnavailable: 'Necesita atención', engineUnavailable: 'Componente no disponible', error: 'Necesita atención', stopped: 'Detenido', working: 'Procesando…' },
+    lastChecked: ({ at }) => `Última comprobación: ${at}`,
     endpoint: { source: ({ label }) => `Origen · ${label}`, destination: ({ label }) => `Destino · ${label}`, synced: ({ label }) => `Extremo sincronizado · ${label}` },
     error: {
         componentUnavailable: 'La sincronización del espacio de trabajo no está disponible en esta compilación. Instala el componente necesario y vuelve a intentarlo.',
@@ -244,7 +417,7 @@ const fr = completeWorkspaceSyncTranslation('fr', {
     },
     none: 'Aucune relation de synchronisation',
     conflictsTitle: 'Conflits de l’espace de travail',
-    openConflicts: ({ count }) => `Ouvrir ${count} ${count === 1 ? 'conflit' : 'conflits'} d’espace de travail`,
+    openConflicts: ({ count }) => `Examiner la synchronisation sur ${count} liens`,
     noConflicts: 'Aucun conflit',
     previewUnavailable: 'La machine de contrôle n’a pas pu fournir un aperçu sûr. Actualise le conflit avant de réessayer.',
     truncated: ({ count }) => `${count} ${count === 1 ? 'conflit supplémentaire n’est pas affiché' : 'conflits supplémentaires ne sont pas affichés'}`,
@@ -252,9 +425,8 @@ const fr = completeWorkspaceSyncTranslation('fr', {
     conflictCount: ({ count }) => `${count} ${count === 1 ? 'conflit' : 'conflits'}`,
     conflictKind: { file: 'Fichier', directory: 'Dossier', symlink: 'Lien symbolique', missing: 'Absent', unsupported: 'Élément non pris en charge' },
     mode: { copyOnce: 'Copier une fois', keepSynced: 'Maintenir à jour — recommandé', mirrorExactly: 'Reproduire à l’identique', keepBothInSync: 'Garder les deux synchronisés' },
-    state: { loading: 'Vérification de l’état…', starting: 'Préparation', watching: 'À jour', flushing: 'Synchronisation', paused: 'En pause', peerOffline: 'Hors ligne', conflicted: 'Conflits', controllerUnavailable: 'Attention requise', engineUnavailable: 'Composant indisponible', error: 'Attention requise', stopped: 'Arrêté', working: 'Traitement en cours…' },
-    lastSynced: ({ at }) => `Dernière synchronisation : ${at}`,
-    neverSynced: 'Pas encore synchronisé',
+    state: { loading: 'Vérification de l’état…', starting: 'Préparation', watching: 'Surveillance', flushing: 'Synchronisation', paused: 'En pause', peerOffline: 'Hors ligne', conflicted: 'Conflits', controllerUnavailable: 'Attention requise', engineUnavailable: 'Composant indisponible', error: 'Attention requise', stopped: 'Arrêté', working: 'Traitement en cours…' },
+    lastChecked: ({ at }) => `Dernière vérification : ${at}`,
     endpoint: { source: ({ label }) => `Source · ${label}`, destination: ({ label }) => `Destination · ${label}`, synced: ({ label }) => `Point synchronisé · ${label}` },
     error: {
         componentUnavailable: 'La synchronisation de l’espace de travail n’est pas disponible dans cette version. Installe le composant requis, puis réessaie.',
@@ -307,7 +479,7 @@ const it = completeWorkspaceSyncTranslation('it', {
     },
     none: 'Nessuna relazione di sincronizzazione',
     conflictsTitle: 'Conflitti dell’area di lavoro',
-    openConflicts: ({ count }) => `Apri ${count} ${count === 1 ? 'conflitto' : 'conflitti'} dell’area di lavoro`,
+    openConflicts: ({ count }) => `Controlla la sincronizzazione su ${count} collegamenti`,
     noConflicts: 'Nessun conflitto',
     previewUnavailable: 'Il computer di controllo non ha fornito un’anteprima sicura. Aggiorna il conflitto prima di riprovare.',
     truncated: ({ count }) => `${count} ${count === 1 ? 'conflitto aggiuntivo non mostrato' : 'conflitti aggiuntivi non mostrati'}`,
@@ -315,9 +487,8 @@ const it = completeWorkspaceSyncTranslation('it', {
     conflictCount: ({ count }) => `${count} ${count === 1 ? 'conflitto' : 'conflitti'}`,
     conflictKind: { file: 'File', directory: 'Cartella', symlink: 'Collegamento simbolico', missing: 'Mancante', unsupported: 'Elemento non supportato' },
     mode: { copyOnce: 'Copia una volta', keepSynced: 'Mantieni aggiornato — consigliato', mirrorExactly: 'Rispecchia esattamente', keepBothInSync: 'Mantieni entrambi sincronizzati' },
-    state: { loading: 'Controllo dello stato…', starting: 'Preparazione', watching: 'Aggiornato', flushing: 'Sincronizzazione', paused: 'In pausa', peerOffline: 'Offline', conflicted: 'Conflitti', controllerUnavailable: 'Richiede attenzione', engineUnavailable: 'Componente non disponibile', error: 'Richiede attenzione', stopped: 'Arrestato', working: 'Operazione in corso…' },
-    lastSynced: ({ at }) => `Ultima sincronizzazione: ${at}`,
-    neverSynced: 'Non ancora sincronizzato',
+    state: { loading: 'Controllo dello stato…', starting: 'Preparazione', watching: 'Monitoraggio', flushing: 'Sincronizzazione', paused: 'In pausa', peerOffline: 'Offline', conflicted: 'Conflitti', controllerUnavailable: 'Richiede attenzione', engineUnavailable: 'Componente non disponibile', error: 'Richiede attenzione', stopped: 'Arrestato', working: 'Operazione in corso…' },
+    lastChecked: ({ at }) => `Ultimo controllo: ${at}`,
     endpoint: { source: ({ label }) => `Origine · ${label}`, destination: ({ label }) => `Destinazione · ${label}`, synced: ({ label }) => `Estremità sincronizzata · ${label}` },
     error: {
         componentUnavailable: 'La sincronizzazione dell’area di lavoro non è disponibile in questa build. Installa il componente richiesto e riprova.',
@@ -370,7 +541,7 @@ const pt = completeWorkspaceSyncTranslation('pt', {
     },
     none: 'Nenhuma relação de sincronização',
     conflictsTitle: 'Conflitos do espaço de trabalho',
-    openConflicts: ({ count }) => `Abrir ${count} ${count === 1 ? 'conflito' : 'conflitos'} do espaço de trabalho`,
+    openConflicts: ({ count }) => `Rever sincronização em ${count} ligações`,
     noConflicts: 'Nenhum conflito',
     previewUnavailable: 'O computador controlador não conseguiu fornecer uma pré-visualização segura. Atualiza o conflito antes de tentar novamente.',
     truncated: ({ count }) => `${count} ${count === 1 ? 'conflito adicional não é apresentado' : 'conflitos adicionais não são apresentados'}`,
@@ -378,9 +549,8 @@ const pt = completeWorkspaceSyncTranslation('pt', {
     conflictCount: ({ count }) => `${count} ${count === 1 ? 'conflito' : 'conflitos'}`,
     conflictKind: { file: 'Ficheiro', directory: 'Pasta', symlink: 'Ligação simbólica', missing: 'Em falta', unsupported: 'Entrada não suportada' },
     mode: { copyOnce: 'Copiar uma vez', keepSynced: 'Manter atualizado — recomendado', mirrorExactly: 'Espelhar exatamente', keepBothInSync: 'Manter ambos sincronizados' },
-    state: { loading: 'A verificar o estado…', starting: 'A preparar', watching: 'Atualizado', flushing: 'A sincronizar', paused: 'Em pausa', peerOffline: 'Offline', conflicted: 'Conflitos', controllerUnavailable: 'Requer atenção', engineUnavailable: 'Componente indisponível', error: 'Requer atenção', stopped: 'Parado', working: 'A processar…' },
-    lastSynced: ({ at }) => `Última sincronização: ${at}`,
-    neverSynced: 'Ainda não sincronizado',
+    state: { loading: 'A verificar o estado…', starting: 'A preparar', watching: 'A monitorizar', flushing: 'A sincronizar', paused: 'Em pausa', peerOffline: 'Offline', conflicted: 'Conflitos', controllerUnavailable: 'Requer atenção', engineUnavailable: 'Componente indisponível', error: 'Requer atenção', stopped: 'Parado', working: 'A processar…' },
+    lastChecked: ({ at }) => `Última verificação: ${at}`,
     endpoint: { source: ({ label }) => `Origem · ${label}`, destination: ({ label }) => `Destino · ${label}`, synced: ({ label }) => `Extremidade sincronizada · ${label}` },
     error: {
         componentUnavailable: 'A sincronização do espaço de trabalho não está disponível nesta compilação. Instala o componente necessário e tenta novamente.',
@@ -433,7 +603,7 @@ const ca = completeWorkspaceSyncTranslation('ca', {
     },
     none: 'No hi ha cap relació de sincronització',
     conflictsTitle: 'Conflictes de l’espai de treball',
-    openConflicts: ({ count }) => `Obre ${count} ${count === 1 ? 'conflicte' : 'conflictes'} de l’espai de treball`,
+    openConflicts: ({ count }) => `Revisa la sincronització en ${count} enllaços`,
     noConflicts: 'Cap conflicte',
     previewUnavailable: 'L’ordinador controlador no ha pogut proporcionar una previsualització segura. Actualitza el conflicte abans de tornar-ho a provar.',
     truncated: ({ count }) => `${count} ${count === 1 ? 'conflicte addicional no es mostra' : 'conflictes addicionals no es mostren'}`,
@@ -441,9 +611,8 @@ const ca = completeWorkspaceSyncTranslation('ca', {
     conflictCount: ({ count }) => `${count} ${count === 1 ? 'conflicte' : 'conflictes'}`,
     conflictKind: { file: 'Fitxer', directory: 'Carpeta', symlink: 'Enllaç simbòlic', missing: 'Absent', unsupported: 'Entrada no compatible' },
     mode: { copyOnce: 'Copia una vegada', keepSynced: 'Mantén actualitzat — recomanat', mirrorExactly: 'Reflecteix exactament', keepBothInSync: 'Mantén tots dos sincronitzats' },
-    state: { loading: 'S’està comprovant l’estat…', starting: 'S’està preparant', watching: 'Actualitzat', flushing: 'S’està sincronitzant', paused: 'En pausa', peerOffline: 'Fora de línia', conflicted: 'Conflictes', controllerUnavailable: 'Necessita atenció', engineUnavailable: 'Component no disponible', error: 'Necessita atenció', stopped: 'Aturat', working: 'S’està processant…' },
-    lastSynced: ({ at }) => `Darrera sincronització: ${at}`,
-    neverSynced: 'Encara no s’ha sincronitzat',
+    state: { loading: 'S’està comprovant l’estat…', starting: 'S’està preparant', watching: 'En vigilància', flushing: 'S’està sincronitzant', paused: 'En pausa', peerOffline: 'Fora de línia', conflicted: 'Conflictes', controllerUnavailable: 'Necessita atenció', engineUnavailable: 'Component no disponible', error: 'Necessita atenció', stopped: 'Aturat', working: 'S’està processant…' },
+    lastChecked: ({ at }) => `Darrera comprovació: ${at}`,
     endpoint: { source: ({ label }) => `Origen · ${label}`, destination: ({ label }) => `Destinació · ${label}`, synced: ({ label }) => `Extrem sincronitzat · ${label}` },
     error: {
         componentUnavailable: 'La sincronització de l’espai de treball no està disponible en aquesta compilació. Instal·la el component necessari i torna-ho a provar.',
@@ -496,7 +665,7 @@ const pl = completeWorkspaceSyncTranslation('pl', {
     },
     none: 'Brak relacji synchronizacji',
     conflictsTitle: 'Konflikty obszaru roboczego',
-    openConflicts: ({ count }) => `Otwórz ${count} ${count === 1 ? 'konflikt' : 'konflikty'} obszaru roboczego`,
+    openConflicts: ({ count }) => `Sprawdź synchronizację na ${count} połączeniach`,
     noConflicts: 'Brak konfliktów',
     previewUnavailable: 'Komputer sterujący nie mógł udostępnić bezpiecznego podglądu. Odśwież konflikt przed ponowną próbą.',
     truncated: ({ count }) => `${count} ${count === 1 ? 'dodatkowy konflikt nie jest pokazany' : 'dodatkowe konflikty nie są pokazane'}`,
@@ -504,9 +673,8 @@ const pl = completeWorkspaceSyncTranslation('pl', {
     conflictCount: ({ count }) => `${count} ${count === 1 ? 'konflikt' : 'konflikty'}`,
     conflictKind: { file: 'Plik', directory: 'Folder', symlink: 'Dowiązanie symboliczne', missing: 'Brak', unsupported: 'Nieobsługiwany element' },
     mode: { copyOnce: 'Skopiuj raz', keepSynced: 'Utrzymuj aktualność — zalecane', mirrorExactly: 'Odzwierciedlaj dokładnie', keepBothInSync: 'Synchronizuj obie strony' },
-    state: { loading: 'Sprawdzanie stanu…', starting: 'Przygotowywanie', watching: 'Aktualne', flushing: 'Synchronizowanie', paused: 'Wstrzymano', peerOffline: 'Offline', conflicted: 'Konflikty', controllerUnavailable: 'Wymaga uwagi', engineUnavailable: 'Składnik niedostępny', error: 'Wymaga uwagi', stopped: 'Zatrzymano', working: 'Przetwarzanie…' },
-    lastSynced: ({ at }) => `Ostatnia synchronizacja: ${at}`,
-    neverSynced: 'Jeszcze nie zsynchronizowano',
+    state: { loading: 'Sprawdzanie stanu…', starting: 'Przygotowywanie', watching: 'Obserwowanie', flushing: 'Synchronizowanie', paused: 'Wstrzymano', peerOffline: 'Offline', conflicted: 'Konflikty', controllerUnavailable: 'Wymaga uwagi', engineUnavailable: 'Składnik niedostępny', error: 'Wymaga uwagi', stopped: 'Zatrzymano', working: 'Przetwarzanie…' },
+    lastChecked: ({ at }) => `Ostatnie sprawdzenie: ${at}`,
     endpoint: { source: ({ label }) => `Źródło · ${label}`, destination: ({ label }) => `Cel · ${label}`, synced: ({ label }) => `Synchronizowany punkt · ${label}` },
     error: {
         componentUnavailable: 'Synchronizacja obszaru roboczego nie jest dostępna w tej kompilacji. Zainstaluj wymagany składnik i spróbuj ponownie.',
@@ -559,7 +727,7 @@ const ru = completeWorkspaceSyncTranslation('ru', {
     },
     none: 'Нет связи синхронизации',
     conflictsTitle: 'Конфликты рабочего пространства',
-    openConflicts: ({ count }) => `Открыть ${count} ${count === 1 ? 'конфликт' : 'конфликта'} рабочего пространства`,
+    openConflicts: ({ count }) => `Проверить синхронизацию в ${count} связях`,
     noConflicts: 'Нет конфликтов',
     previewUnavailable: 'Управляющий компьютер не смог предоставить безопасный просмотр. Обновите конфликт перед повторной попыткой.',
     truncated: ({ count }) => `${count} ${count === 1 ? 'дополнительный конфликт не показан' : 'дополнительных конфликтов не показано'}`,
@@ -567,9 +735,8 @@ const ru = completeWorkspaceSyncTranslation('ru', {
     conflictCount: ({ count }) => `${count} ${count === 1 ? 'конфликт' : 'конфликта'}`,
     conflictKind: { file: 'Файл', directory: 'Папка', symlink: 'Символическая ссылка', missing: 'Отсутствует', unsupported: 'Неподдерживаемый элемент' },
     mode: { copyOnce: 'Скопировать один раз', keepSynced: 'Поддерживать актуальность — рекомендуется', mirrorExactly: 'Зеркалировать точно', keepBothInSync: 'Синхронизировать обе стороны' },
-    state: { loading: 'Проверка состояния…', starting: 'Подготовка', watching: 'Актуально', flushing: 'Синхронизация', paused: 'Приостановлено', peerOffline: 'Не в сети', conflicted: 'Конфликты', controllerUnavailable: 'Требует внимания', engineUnavailable: 'Компонент недоступен', error: 'Требует внимания', stopped: 'Остановлено', working: 'Выполняется…' },
-    lastSynced: ({ at }) => `Последняя синхронизация: ${at}`,
-    neverSynced: 'Ещё не синхронизировано',
+    state: { loading: 'Проверка состояния…', starting: 'Подготовка', watching: 'Наблюдение', flushing: 'Синхронизация', paused: 'Приостановлено', peerOffline: 'Не в сети', conflicted: 'Конфликты', controllerUnavailable: 'Требует внимания', engineUnavailable: 'Компонент недоступен', error: 'Требует внимания', stopped: 'Остановлено', working: 'Выполняется…' },
+    lastChecked: ({ at }) => `Последняя проверка: ${at}`,
     endpoint: { source: ({ label }) => `Источник · ${label}`, destination: ({ label }) => `Назначение · ${label}`, synced: ({ label }) => `Синхронизированная точка · ${label}` },
     error: {
         componentUnavailable: 'Синхронизация рабочего пространства недоступна в этой сборке. Установите нужный компонент и повторите попытку.',
@@ -621,14 +788,14 @@ const ja = completeWorkspaceSyncTranslation('ja', {
         reinspect: 'もう一度確認',
     },
     none: '同期関係はありません', conflictsTitle: 'ワークスペースの競合',
-    openConflicts: ({ count }) => `${count} 件のワークスペース競合を開く`, noConflicts: '競合はありません',
+    openConflicts: ({ count }) => `${count} 個のリンクの同期を確認`, noConflicts: '競合はありません',
     previewUnavailable: '制御コンピューターから安全なプレビューを取得できませんでした。再試行する前に競合を更新してください。',
     truncated: ({ count }) => `さらに ${count} 件の競合が表示されていません`, unknownMode: '未対応の同期モード',
     conflictCount: ({ count }) => `${count} 件の競合`,
     conflictKind: { file: 'ファイル', directory: 'フォルダー', symlink: 'シンボリックリンク', missing: '見つかりません', unsupported: '未対応の項目' },
     mode: { copyOnce: '一度だけコピー', keepSynced: '最新に保つ — 推奨', mirrorExactly: '完全にミラーリング', keepBothInSync: '両方を同期' },
-    state: { loading: '状態を確認しています…', starting: '準備中', watching: '最新', flushing: '同期中', paused: '一時停止中', peerOffline: 'オフライン', conflicted: '競合あり', controllerUnavailable: '対応が必要', engineUnavailable: 'コンポーネントを利用できません', error: '対応が必要', stopped: '停止済み', working: '処理中…' },
-    lastSynced: ({ at }) => `最終同期：${at}`, neverSynced: 'まだ同期されていません',
+    state: { loading: '状態を確認しています…', starting: '準備中', watching: '監視中', flushing: '同期中', paused: '一時停止中', peerOffline: 'オフライン', conflicted: '競合あり', controllerUnavailable: '対応が必要', engineUnavailable: 'コンポーネントを利用できません', error: '対応が必要', stopped: '停止済み', working: '処理中…' },
+    lastChecked: ({ at }) => `最終確認：${at}`,
     endpoint: { source: ({ label }) => `ソース · ${label}`, destination: ({ label }) => `宛先 · ${label}`, synced: ({ label }) => `同期先 · ${label}` },
     error: {
         componentUnavailable: 'このビルドではワークスペース同期を利用できません。必要なコンポーネントをインストールして、もう一度お試しください。',
@@ -659,12 +826,12 @@ const zhHans = completeWorkspaceSyncTranslation('zh-Hans', {
         offlineSteps: ({ path }) => `1. 停止所有可能使用这些数据的 Happier 后台服务。\n2. 使用操作系统仅移除这个文件夹：${path}\n3. 重启服务，然后在此重新检查。`,
         unknown: ({ path, reason }) => `Happier 无法安全识别 ${path} 中的旧状态（${reason}）。工作区同步仍处于禁用状态。请手动检查此路径，不要在应用中删除它。`, reinspect: '重新检查',
     },
-    none: '没有工作区同步关系', conflictsTitle: '工作区冲突', openConflicts: ({ count }) => `打开 ${count} 个工作区冲突`, noConflicts: '没有冲突',
+    none: '没有工作区同步关系', conflictsTitle: '工作区冲突', openConflicts: ({ count }) => `检查 ${count} 条连接的工作区同步`, noConflicts: '没有冲突',
     previewUnavailable: '控制计算机无法提供安全预览。请先刷新冲突，然后重试。', truncated: ({ count }) => `还有 ${count} 个冲突未显示`, unknownMode: '不支持的同步模式', conflictCount: ({ count }) => `${count} 个冲突`,
     conflictKind: { file: '文件', directory: '文件夹', symlink: '符号链接', missing: '缺失', unsupported: '不支持的条目' },
     mode: { copyOnce: '复制一次', keepSynced: '保持最新 — 推荐', mirrorExactly: '精确镜像', keepBothInSync: '保持两端同步' },
-    state: { loading: '正在检查状态…', starting: '正在准备', watching: '已是最新', flushing: '正在同步', paused: '已暂停', peerOffline: '离线', conflicted: '存在冲突', controllerUnavailable: '需要处理', engineUnavailable: '组件不可用', error: '需要处理', stopped: '已停止', working: '正在处理…' },
-    lastSynced: ({ at }) => `上次同步：${at}`, neverSynced: '尚未同步', endpoint: { source: ({ label }) => `来源 · ${label}`, destination: ({ label }) => `目标 · ${label}`, synced: ({ label }) => `同步端点 · ${label}` },
+    state: { loading: '正在检查状态…', starting: '正在准备', watching: '正在监视', flushing: '正在同步', paused: '已暂停', peerOffline: '离线', conflicted: '存在冲突', controllerUnavailable: '需要处理', engineUnavailable: '组件不可用', error: '需要处理', stopped: '已停止', working: '正在处理…' },
+    lastChecked: ({ at }) => `上次检查：${at}`, endpoint: { source: ({ label }) => `来源 · ${label}`, destination: ({ label }) => `目标 · ${label}`, synced: ({ label }) => `同步端点 · ${label}` },
     error: { componentUnavailable: '此版本无法使用工作区同步。请安装所需组件后重试。', machineOffline: '目标计算机不可用。请重新连接后重试。', destinationNeedsPreparation: '开始同步前需要准备目标文件夹。', gitPreparationFailed: 'Happier 无法准备此 Git 工作区。请检查目标位置后重试。', authorizationExpired: '工作区授权已过期。请重新开始操作。', rootNoLongerAuthorized: '工作区文件夹已更改，不再获得授权。请先检查同步关系，然后重试。', conflictNeedsAttention: '此冲突已更改。请先刷新，再选择版本。', needsAttention: '工作区同步需要处理。请刷新状态后重试。' },
     start: { blocked: { targetMachine: '请选择目标计算机以继续。', targetMachineOffline: '该计算机目前不可用。请重新连接后重试。', relationshipUnavailable: '此同步关系已不再涵盖这两个文件夹。请选择其他工作区选项。', sourceFolder: '无法安全同步此会话的文件夹。请选择“不移动文件”以仅移交会话。', destinationFolder: '请选择可以安全同步的目标文件夹。', workspaceOptions: '开始前请检查工作区选项。' } },
     engine: { checking: '正在检查此计算机上的工作区同步…' },
@@ -685,12 +852,12 @@ const zhHant = completeWorkspaceSyncTranslation('zh-Hant', {
         offlineSteps: ({ path }) => `1. 停止所有可能使用這些資料的 Happier 背景服務。\n2. 使用作業系統僅移除這個資料夾：${path}\n3. 重新啟動服務，然後在此重新檢查。`,
         unknown: ({ path, reason }) => `Happier 無法安全辨識 ${path} 中的舊狀態（${reason}）。工作區同步仍處於停用狀態。請手動檢查此路徑，不要在應用程式中刪除它。`, reinspect: '重新檢查',
     },
-    none: '沒有工作區同步關係', conflictsTitle: '工作區衝突', openConflicts: ({ count }) => `開啟 ${count} 個工作區衝突`, noConflicts: '沒有衝突',
+    none: '沒有工作區同步關係', conflictsTitle: '工作區衝突', openConflicts: ({ count }) => `檢查 ${count} 條連結的工作區同步`, noConflicts: '沒有衝突',
     previewUnavailable: '控制電腦無法提供安全預覽。請先重新整理衝突，再重試。', truncated: ({ count }) => `還有 ${count} 個衝突未顯示`, unknownMode: '不支援的同步模式', conflictCount: ({ count }) => `${count} 個衝突`,
     conflictKind: { file: '檔案', directory: '資料夾', symlink: '符號連結', missing: '缺少', unsupported: '不支援的項目' },
     mode: { copyOnce: '複製一次', keepSynced: '保持最新 — 建議', mirrorExactly: '精確鏡像', keepBothInSync: '保持兩端同步' },
-    state: { loading: '正在檢查狀態…', starting: '正在準備', watching: '已是最新', flushing: '正在同步', paused: '已暫停', peerOffline: '離線', conflicted: '存在衝突', controllerUnavailable: '需要處理', engineUnavailable: '元件無法使用', error: '需要處理', stopped: '已停止', working: '正在處理…' },
-    lastSynced: ({ at }) => `上次同步：${at}`, neverSynced: '尚未同步', endpoint: { source: ({ label }) => `來源 · ${label}`, destination: ({ label }) => `目標 · ${label}`, synced: ({ label }) => `同步端點 · ${label}` },
+    state: { loading: '正在檢查狀態…', starting: '正在準備', watching: '正在監視', flushing: '正在同步', paused: '已暫停', peerOffline: '離線', conflicted: '存在衝突', controllerUnavailable: '需要處理', engineUnavailable: '元件無法使用', error: '需要處理', stopped: '已停止', working: '正在處理…' },
+    lastChecked: ({ at }) => `上次檢查：${at}`, endpoint: { source: ({ label }) => `來源 · ${label}`, destination: ({ label }) => `目標 · ${label}`, synced: ({ label }) => `同步端點 · ${label}` },
     error: { componentUnavailable: '此版本無法使用工作區同步。請安裝所需元件後重試。', machineOffline: '目標電腦無法使用。請重新連線後重試。', destinationNeedsPreparation: '開始同步前需要準備目標資料夾。', gitPreparationFailed: 'Happier 無法準備此 Git 工作區。請檢查目標位置後重試。', authorizationExpired: '工作區授權已過期。請重新開始操作。', rootNoLongerAuthorized: '工作區資料夾已變更，不再獲得授權。請先檢查同步關係，再重試。', conflictNeedsAttention: '此衝突已變更。請先重新整理，再選擇版本。', needsAttention: '工作區同步需要處理。請重新整理狀態後重試。' },
     start: { blocked: { targetMachine: '請選擇目標電腦以繼續。', targetMachineOffline: '該電腦目前無法使用。請重新連線後重試。', relationshipUnavailable: '此同步關係已不再涵蓋這兩個資料夾。請選擇其他工作區選項。', sourceFolder: '無法安全同步此工作階段的資料夾。請選擇「不要移動檔案」以僅移交工作階段。', destinationFolder: '請選擇可以安全同步的目標資料夾。', workspaceOptions: '開始前請檢查工作區選項。' } },
     engine: { checking: '正在檢查此電腦上的工作區同步…' },

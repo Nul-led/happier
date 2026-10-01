@@ -1,17 +1,26 @@
+import { folderlessSessionTranslations } from './folderlessSessionTranslations';
 import { sessionCollaborationTranslations } from './sessionCollaborationTranslations';
 import { sessionMessageAccountActorTranslations } from './sessionMessageAccountActorTranslations';
 import { sessionAccessTranslations } from './sessionAccessTranslations';
 import { nativePasswordTranslations } from './nativePasswordTranslations';
 import { sessionFollowTranslations } from './sessionFollowTranslations';
 import { sessionHomeFreshnessTranslations } from './sessionHomeFreshnessTranslations';
+import { sessionEmbeddedTranslations } from './sessionEmbeddedTranslations';
 import { sessionReminderTranslations } from './sessionReminderTranslations';
 import { settingsProvidersTranslations } from './settingsProvidersTranslations';
 import { providerSessionTranslations } from './providerSessionTranslations';
 import { externalSessionOperationTranslations } from './externalSessionOperationTranslations';
 import { externalSessionSettingsTranslations } from './externalSessionSettingsTranslations';
 import { machinePoolTranslations } from './machinePoolTranslations';
+import { settingsConnectionsTranslations } from './settingsConnectionsTranslations';
+import { settingsMachinesTranslations } from './settingsMachinesTranslations';
+import { connectedServicesSettingsTranslations } from './connectedServicesSettingsTranslations';
+import { connectedServicesPoolTranslations } from './connectedServicesPoolTranslations';
+import { connectedServicesCollectionTranslations } from './connectedServicesCollectionTranslations';
 import { cliPathExposureTranslations } from './cliPathExposureTranslations';
+import { agentInstallJobTranslations } from './agentInstallJobTranslations';
 import { thisComputerConnectionTranslations } from './thisComputerConnectionTranslations';
+import { menuBarModeTranslations } from './menuBarModeTranslations';
 import { personalHomeDecisionTranslations } from './personalHomeDecisionTranslations';
 import { cliTrustPromptTranslations } from './cliTrustPromptTranslations';
 import { pluginUpdateReviewTranslations } from './pluginUpdateReviewTranslations';
@@ -23,6 +32,15 @@ import { pluginMarketplaceDiscoverTranslations } from './pluginMarketplaceDiscov
 import { pluginSettingsPresentationTranslations } from './pluginSettingsPresentationTranslations';
 import { sessionRemotePermissionGrantTranslations } from './sessionRemotePermissionGrantTranslations';
 import { sessionAgentActivityTranslations } from './sessionAgentActivityTranslations';
+import { sessionWorkTranslations } from './sessionWorkTranslations';
+import { agentStartTranslations } from './agentStartTranslations';
+import { goalControlTranslations } from './goalControlTranslations';
+import { inboxWorkTranslations } from './inboxWorkTranslations';
+import { sessionGitPaneTranslations } from './sessionGitPaneTranslations';
+import { sessionGitDisplayTranslations } from './sessionGitDisplayTranslations';
+import { sessionGitBranchesTranslations } from './sessionGitBranchesTranslations';
+import { sessionGitPullRequestTranslations } from './sessionGitPullRequestTranslations';
+import { sessionConversationSurfaceTranslations } from './sessionConversationSurfaceTranslations';
 import { changedFileEvidenceTranslations } from './changedFileEvidenceTranslations';
 import { voiceReadinessTranslations } from './voiceReadinessTranslations';
 import { voiceDiagnosticsTranslations } from './voiceDiagnosticsTranslations';
@@ -33,6 +51,19 @@ import { voiceLocalCredentialTranslations } from './voiceLocalCredentialTranslat
 import { pluginWebhookAdministrationTranslations } from './pluginWebhookAdministrationTranslations';
 import { pluginAccountDataEraseTranslations } from './pluginAccountDataEraseTranslations';
 import { apiTokenSettingsTranslations } from './apiTokenSettingsTranslations';
+import { embedSettingsTranslations } from './embedSettingsTranslations';
+import { embedTranslations } from './embedTranslations';
+import { actionFamilyTranslations } from './actionFamilyTranslations';
+import { providerCollectionTranslations } from './providerCollectionTranslations';
+import { settingsSearchKeywordsTranslations } from './settingsSearchKeywordsTranslations';
+import { automationPageTranslations } from './automationPageTranslations';
+import { settingsSessionPagesTranslations } from './settingsSessionPagesTranslations';
+import { workspaceTabTranslations } from './workspaceTabTranslations';
+import { workspaceBarTranslations } from './workspaceBarTranslations';
+import { settingsProfilesRemoteHostsPageTranslations } from './settingsProfilesRemoteHostsPageTranslations';
+import { profilesPageTranslations } from './profilesPageTranslations';
+import { machineDetailPageTranslations } from './machineDetailPageTranslations';
+import { sessionPageTranslations } from './sessionPageTranslations';
 import { pluginAccountReleaseSelectionTranslations } from './pluginAccountReleaseSelectionTranslations';
 import { pluginMachineMatrixTranslations } from './pluginMachineMatrixTranslations';
 import { pluginInvocationLogTranslations } from './pluginInvocationLogTranslations';
@@ -40,10 +71,47 @@ import { eventAutomationComposerTranslations } from './eventAutomationComposerTr
 import { automationTriggerSetTranslations } from './automationTriggerSetTranslations';
 import { actionOperationInboxTranslations } from './actionOperationInboxTranslations';
 import { actionConfirmationTranslations } from './actionConfirmationTranslations';
+import { detailPageTranslations } from './detailPageTranslations';
+import { rolesTranslations } from './rolesTranslations';
+import { boardsTranslations } from './boardsTranslations';
+import { workStatusTranslations } from './workStatusTranslations';
+import { shareSheetTranslations } from './shareSheetTranslations';
+import { surfaceStateTranslations } from './surfaceStateTranslations';
+import { sessionCompanionTranslations } from './sessionCompanionTranslations';
+import { runPageTranslations } from './runPageTranslations';
+import { detailsChromeTranslations } from './detailsChromeTranslations';
+import { browserPresenceTranslations } from './browserPresenceTranslations';
+import { computerUseTranslations } from './computerUseTranslations';
+import { browserToolTranslations } from './browserToolTranslations';
+import { detailsFileTranslations } from './detailsFileTranslations';
+import { filesPaneTranslations } from './filesPaneTranslations';
+import { detailsHistoryTranslations } from './detailsHistoryTranslations';
+import { detailsReviewTranslations } from './detailsReviewTranslations';
 import { sessionDraftTranslations } from './sessionDraftTranslations';
+import { sessionDirectoryRecoveryTranslations } from './sessionDirectoryRecoveryTranslations';
 import { accountServiceOAuthTranslations } from './accountServiceOAuthTranslations';
 import { personalHomeSettingsTranslations } from './personalHomeSettingsTranslations';
 import { homeDeviceApprovalTranslations } from './homeDeviceApprovalTranslations';
+import { settingsOverviewTranslations } from './settingsOverviewTranslations';
+import { homeSetupTranslations } from './homeSetupTranslations';
+import { connectedServicesSetupTranslations } from './connectedServicesSetupTranslations';
+import { homeWidgetTranslations } from './homeWidgetTranslations';
+import { widgetAddTranslations } from './widgetAddTranslations';
+import { widgetFrameTranslations } from './widgetFrameTranslations';
+import { widgetGlanceTranslations } from './widgetGlanceTranslations';
+import { homeIndexTranslations } from './homeIndexTranslations';
+import { addFlowsTranslations } from './addFlowsTranslations';
+import { machineAddTranslations } from './machineAddTranslations';
+import { machineAgentsTranslations } from './machineAgentsTranslations';
+import { homeComposerTranslations } from './homeComposerTranslations';
+import { sidebarFooterTranslations } from './sidebarFooterTranslations';
+import { accountPopoverTranslations } from './accountPopoverTranslations';
+import { homesHubTranslations } from './homesHubTranslations';
+import { homesJourneysTranslations } from './homesJourneysTranslations';
+import { homeAddTranslations } from './homeAddTranslations';
+import { accountDisplayTranslations } from './accountDisplayTranslations';
+import { homeFeatureTranslations } from './homeFeatureTranslations';
+import { homeSettingsTranslations } from './homeSettingsTranslations';
 import { homeGovernanceTranslations } from './homeGovernanceTranslations';
 import { workflowTranslations } from './workflowTranslations';
 import { teamsTranslations } from './teamsTranslations';
@@ -51,6 +119,8 @@ import { identityAdministrationTranslations } from './identityAdministrationTran
 import { en } from './en';
 import { workspaceSyncTranslations } from './workspaceSyncDiagnosticTranslations';
 import { personalHomeBootstrapBlockedTranslations } from './personalHomeBootstrapBlockedTranslations';
+import { secretsSettingsTranslations } from './secretsSettingsTranslations';
+import { mcpSettingsTranslations } from './mcpSettingsTranslations';
 
 /**
  * Japanese translations for the Happier app
@@ -196,7 +266,51 @@ const newSessionMcpTranslationExtension = {
 } as const;
 
 const settingsAppearanceTranslationExtension = {
+  switchToDarkTheme: 'ダークテーマに切り替え',
+  switchToLightTheme: 'ライトテーマに切り替え',
+  themeToggle: {
+    title: 'ライト／ダーク切り替え',
+    description: 'ウィンドウ上部に半分塗りの円を表示します。クリックで切り替え、長押しまたは右クリックでその他の操作。',
+    hideFromToolbar: 'ツールバーから隠す',
+    menuLabel: 'テーマのオプション',
+    matchSystem: 'システムに合わせる',
+  },
   themeProfiles: {
+    pageDescription: 'ライトモードとダークモードの配色です。それぞれ選ぶか、自分で作成できます。',
+    lightModeSection: 'ライトモード',
+    lightModeSectionDescription: 'アプリがライトのときに使うテーマです。',
+    darkModeSection: 'ダークモード',
+    darkModeSectionDescription: 'アプリがダークのときに使うテーマです。',
+    yourThemes: 'マイテーマ',
+    yourThemesDescription: '作成またはインポートしたテーマです。開いて配色を変更できます。',
+    addTheme: 'テーマを追加',
+    newTheme: '新しいテーマ',
+    newThemeDescription: '任意のテーマから始めて配色を変更します。',
+    importThemeDescription: 'JSON を貼り付けるか、ファイルを選択します。',
+    themeLimitDescription: ({ count }: { count: number }) => `テーマは ${count} 個まで保存できます。追加するには 1 つ削除してください。`,
+    noProfilesDescription: '上のテーマから作成するか、インポートしてください。',
+    inUse: '使用中',
+    builtInTheme: '組み込み',
+    customTheme: 'マイテーマ',
+    builtInThemeDescription: '組み込みテーマです。複製すると配色を変更できます。',
+    editorDescription: '編集中の変更はアプリ全体に表示され、保存すると保持されます。',
+    missingProfileDescription: 'このテーマは削除されたか、保存されていません。',
+    saveAndUse: '保存して使用',
+    detailsDescription: '名前、配色の元になるテーマ、ライトかダークか。',
+    themeName: '名前',
+    startFrom: '元のテーマ',
+    startFromDescription: '別のテーマを選ぶと、下の配色が置き換わります。',
+    themeAppearance: 'ライトまたはダーク',
+    themeAppearanceDescription: 'このテーマを使うモードと、アイコンや画像を明るい背景・暗い背景のどちらに合わせるか。',
+    previewSection: 'プレビュー',
+    colorsDescription: 'アプリで使うすべての色です。変更した色は個別にリセットできます。',
+    colorsReadOnlyDescription: 'このテーマで使うすべての色です。',
+    importPageDescription: 'JSON からテーマを追加します（Happier テーマまたは VS Code テーマ）。',
+    importAction: 'インポート',
+    importedWithWarnings: '警告付きでインポートしました',
+    exportPageDescription: 'このテーマを JSON としてコピーまたはダウンロードし、共有やバックアップに使えます。',
+    exportMissingDescription: 'テーマを開いて「エクスポート」を選ぶと JSON を取得できます。',
+    deleteTheme: 'テーマを削除',
     title: 'テーマ',
     editorTitle: 'テーマプロフィール',
     activeGroup: 'アクティブなテーマ',
@@ -280,6 +394,7 @@ const settingsAppearanceTranslationExtension = {
     deactivateProfileSubtitle: 'カスタム プロファイルを非アクティブ化して保存したままにします',
     deleteProfile: 'プロフィールの削除',
     deleteProfileSubtitle: 'このローカル カスタム テーマ プロファイルを削除します',
+    deleteAssignedThemeBody: ({ slots }: { slots: string }) => `${slots} のテーマです。削除すると、そのモードは既定のテーマに戻ります。`,
     saveAndActivate: '保存して有効化',
     missingProfile: 'テーマプロファイルが見つかりません',
     importFooter: ({ formats }: { formats: string }) => `対応形式: ${formats}。不明なトークンは警告として表示されます。`,
@@ -437,6 +552,7 @@ const memoryEmbeddingsTranslationExtension = {
       modelPromptBody: 'リモートエンドポイントへ要求する埋め込みモデル ID を入力してください。',
       apiKeyTitle: 'API キー',
       apiKeyPromptBody: 'リモート埋め込みエンドポイントで使う API キーを入力してください。',
+      removeApiKey: 'API キーを削除',
       dimensionsTitle: '次元',
       dimensionsPromptBody: '対応エンドポイント向けの出力次元の任意上書きです。',
     },
@@ -651,9 +767,42 @@ const settingsSessionHandoffTranslationExtensions = {
 
 export const ja = {
     homeDeviceApproval: homeDeviceApprovalTranslations.ja,
+    settingsOverview: settingsOverviewTranslations.ja,
+    homeSetup: homeSetupTranslations.ja,
+    connectedServicesSetup: connectedServicesSetupTranslations.ja,
+    homeWidgets: homeWidgetTranslations.ja,
+    widgetFrame: widgetFrameTranslations.ja,
+    widgetAdd: widgetAddTranslations.ja,
+    widgetGlances: widgetGlanceTranslations.ja,
+    homeIndex: homeIndexTranslations.ja,
+    addFlows: addFlowsTranslations.ja,
+    machineAdd: machineAddTranslations.ja,
+    machineAgents: machineAgentsTranslations.ja,
+    homeComposer: homeComposerTranslations.ja,
+    sidebarFooter: sidebarFooterTranslations.ja,
+    accountPopover: accountPopoverTranslations.ja,
+    homesHub: homesHubTranslations.ja,
+    homesJourneys: homesJourneysTranslations.ja,
+    homeAdd: homeAddTranslations.ja,
+    accountDisplay: accountDisplayTranslations.ja,
     actionConfirmations: actionConfirmationTranslations.ja,
+    detailPages: detailPageTranslations.ja,
+    roles: rolesTranslations.ja,
+    boards: boardsTranslations.ja,
+    workStatus: workStatusTranslations.ja,
+    shareSheet: shareSheetTranslations.ja,
+    surfaceState: surfaceStateTranslations.ja,
+    sessionCompanion: sessionCompanionTranslations.ja,
+    runPage: runPageTranslations.ja,
+    detailsSurface: {
+        chrome: detailsChromeTranslations.ja,
+        file: detailsFileTranslations.ja,
+        history: detailsHistoryTranslations.ja,
+        review: detailsReviewTranslations.ja,
+    },
     workspaceSync: workspaceSyncTranslations.ja,
     sessionDrafts: sessionDraftTranslations.ja,
+    sessionDirectoryRecovery: sessionDirectoryRecoveryTranslations.ja,
     transferRecovery: {
         title: '一時アップロードを完了',
         message: 'アップロードはマシンに届きましたが、最後の保存を完了できませんでした。最終処理だけを再試行するか、一時アップロードを破棄してください。',
@@ -666,6 +815,14 @@ export const ja = {
     pluginPermissions: pluginPermissionTranslations.ja,
     sessionBoard: sessionBoardTranslations.ja,
     sessionAgentActivity: sessionAgentActivityTranslations.ja,
+    sessionWork: sessionWorkTranslations.ja,
+    agentStart: agentStartTranslations.ja,
+    goalControl: goalControlTranslations.ja,
+    sessionGitPane: sessionGitPaneTranslations.ja,
+    sessionGitDisplay: sessionGitDisplayTranslations.ja,
+    sessionGitBranches: sessionGitBranchesTranslations.ja,
+    sessionGitPullRequest: sessionGitPullRequestTranslations.ja,
+    sessionConversation: sessionConversationSurfaceTranslations.ja,
     ...changedFileEvidenceTranslations.ja,
     sessionRemotePermissionGrants: sessionRemotePermissionGrantTranslations.ja,
     pluginSurfaces: {
@@ -697,20 +854,34 @@ export const ja = {
     },
     settingsKeyboard: {
         title: 'キーボードショートカット',
-        entrySubtitle: 'アプリのショートカットを検出して制御する',
-        generalGroupTitle: 'キーボードコントロール',
-        generalGroupFooter: 'ショートカット設定はアカウントと同期されます。',
-        enableShortcutsTitle: '統合ショートカットを有効にする',
-        enableShortcutsSubtitle: 'アプリのショートカットには新しいキーボード コマンド レジストリを使用します。',
+        entrySubtitle: 'アプリのコマンドを実行するキーを変更したり、オフにしたりします。',
+        generalGroupTitle: 'ショートカット',
+        generalGroupFooter: 'ショートカットはアカウントのすべてのデバイスで使えます。',
+        enableShortcutsTitle: '統合ショートカット',
+        enableShortcutsSubtitle: '入力欄の送信キーは下のコマンドに従います。',
         singleKeyTitle: '単一キーのショートカット',
-        singleKeySubtitle: '? などのショートカットを許可します。テキスト入力がフォーカスされていない場合。',
+        singleKeySubtitle: '入力中でないときに ? などのキーが使えます。',
         conflictsTitle: ({ count }: { count: number }) => `${count} shortcut conflict${count === 1 ? '' : 's'} detected`,
         conflictsSubtitle: ({ count }: { count: number }) => `${count} command${count === 1 ? '' : 's'} need review before all shortcuts can be active.`,
-        conflictsGroupTitle: '診断',
+        conflictsGroupTitle: '競合',
+        conflictBrowserReserved: 'このキーはブラウザーが使用しています。別のキーを選んでください。',
+        conflictDuplicate: 'これらのコマンドは同じキーを使っています。どれかを変更してください。',
         commandsGroupTitle: 'コマンド',
         commandsGroupFooter: 'デフォルトはショートカット レジストリから表示されます。カスタム ショートカットを設定するか、コマンドを無効にするか、リセットしてデフォルトのバインドを回復します。',
         noDefaultShortcut: 'デフォルトのショートカットはありません',
-        setCommandButton: 'セット',
+        commandOff: 'オフ',
+        noShortcut: 'ショートカットなし',
+        customShortcut: 'カスタムキー',
+        commandEnabledTitle: '有効',
+        keysTitle: 'キー',
+        resetToDefaultTitle: 'デフォルトに戻す',
+        groupApp: 'アプリ',
+        groupSessions: 'セッション',
+        groupComposer: '入力欄',
+        groupTranscript: 'トランスクリプト',
+        groupSplitView: '分割ビュー',
+        groupBrowser: 'ブラウザー',
+        setCommandButton: '変更',
         setCommandAccessibility: ({ command }: { command: string }) => `Set ${command} shortcut`,
         setShortcutPromptTitle: ({ command }: { command: string }) => `Set shortcut for ${command}`,
         setShortcutPromptMessage: 'Alt+K、Alt+ArrowDown、Mod+Enter、? などのショートカットを入力します。',
@@ -869,8 +1040,10 @@ export const ja = {
 
 
   inbox: {
+        work: inboxWorkTranslations.ja,
         ...actionOperationInboxTranslations,
     openSession: ({ session }: { session: string }) => `セッションを開く: ${session}`,
+    stoppedResumeToAnswer: '停止中 — 再開して回答',
     readySessionAccessibilityLabel: ({ session }: { session: string }) => `確認の準備完了: ${session}`,
     // Inbox screen
     emptyTitle: "すべて完了です",
@@ -878,7 +1051,10 @@ export const ja = {
     approvals: "承認",
     permissions: "権限",
     readySessions: "確認の準備完了",
-    errors: "エラー",
+    pageDescription: "セッション、承認、ユーザーからの対応が必要な項目です。",
+    needsYou: "対応が必要",
+    failed: "失敗",
+    friendRequests: "フレンドリクエスト",
     markAllRead: "すべて既読にする",
     openInbox: "受信トレイを開く",
     updates: "アクティビティ",
@@ -917,6 +1093,96 @@ export const ja = {
   },
 
   promptLibrary: {
+      surface: {
+          installAction: 'インストール',
+          projectDirectoryPlaceholder: 'マシン上のプロジェクトのパス',
+          pageDescription: '一度書いてセッションで再利用するプロンプト、スキル、スラッシュテンプレート。',
+          librarySectionDescription: 'これまでに書いたもの。すぐに再利用できます。',
+          promptsLinkDescription: 'セッションに挿入したり、エージェントの指示に追加したりするテキスト。',
+          skillsLinkDescription: '補助ファイル付きの SKILL.md の指示。',
+          skillsKeywords: 'スキル, SKILL.md, バンドル, skill',
+          templatesLinkDescription: 'プロンプトを挿入するスラッシュコマンド。',
+          useSection: 'ライブラリの使われ方',
+          useSectionDescription: 'ライブラリの項目が効く場所。',
+          stacksLinkDescription: 'すべてのコーディングや音声のセッションに追加されるプロンプトとスキル。',
+          foldersLinkDescription: 'プロンプトとスキルをまとめる名前付きグループ。',
+          importSection: 'ほかの場所から取り込む',
+          importSectionDescription: 'マシンやレジストリにすでにあるプロンプトとスキル。',
+          externalAssetsLinkDescription: 'ツールがマシン上に保存しているプロンプトとスキル。',
+          registriesLinkDescription: 'スキルレジストリを閲覧してスキルを取り込みます。',
+          itemCount: ({ count }: { count: number }) => `${count}`,
+          docsDescription: 'セッションに挿入したり、エージェントの指示に追加したりするテキスト。',
+          skillsDescription: 'エージェントが従う SKILL.md の指示と、その補助ファイル。',
+          templatesDescription: 'あなたのプロンプトを挿入するスラッシュコマンド。',
+          addPrompt: '新しいプロンプト',
+          addSkill: '新しいスキル',
+          addTemplate: '新しいテンプレート',
+          searchPrompts: 'プロンプトを検索',
+          searchSkills: 'スキルを検索',
+          searchTemplates: 'テンプレートを検索',
+          noFolder: 'フォルダなし',
+          nameTitle: '名前',
+          optionalPlaceholder: '任意',
+          folderDescription: '新しい名前を入れるとフォルダが作成されます。',
+          tagsDescription: 'タグはカンマで区切ります。',
+          promptSection: 'プロンプト',
+          promptSectionDescription: 'ライブラリでの表示と整理のされ方。',
+          contentSection: '内容',
+          docContentDescription: 'プロンプトを使う場所に挿入される Markdown。',
+          docEditorDescription: 'セッションに挿入したり、エージェントの指示に追加したりできるテキスト。',
+          skillSection: 'スキル',
+          skillSectionDescription: 'ライブラリでの表示と整理のされ方。',
+          skillContentDescription: 'エージェントが読む指示。フロントマターでスキル名と使う場面を示します。',
+          skillEditorDescription: 'エージェントが従う指示。ファイルと一緒に SKILL.md として書き出されます。',
+          supportingFilesDescription: 'SKILL.md と一緒に書き出されるファイル（テンプレートやチェックリストなど）。',
+          addFile: 'ファイルを追加',
+          externalLinksDescription: 'この項目がマシンのどこに書き出されているか。書き出し先はライブラリとリンクしたままです。',
+          manageExternalAssetsDescription: 'マシン上のツールに書き出すか、書き出しを更新します。',
+          templateSection: 'テンプレート',
+          templateSectionDescription: '使うときにコンポーザーに入力するもの。',
+          templateEditorDescription: 'あなたのプロンプトを挿入するスラッシュコマンド。',
+          tokenDescription: 'コンポーザーで / から入力します。',
+          templateTargetDescription: 'コマンドが挿入するプロンプト。',
+          behaviorSectionDescription: 'コマンドを選んだときの動作。',
+          behaviorTitle: '選択したとき',
+          behaviorInsertDescription: 'プロンプトをコンポーザーに追加し、編集できるようにします。',
+          behaviorInsertOnSendDescription: 'メッセージの送信時にプロンプトに展開します。',
+          behaviorInsertAndSendDescription: 'プロンプトをすぐに送信します。',
+          fileSection: 'ファイル',
+          filePathDescription: 'スキルからの相対パス（例: templates/review.md）。',
+          supportingFileDescription: ({ skill }: { skill: string }) => `${skill} のファイル。SKILL.md と一緒に書き出されます。`,
+          foldersPageDescription: 'プロンプトとスキルをまとめて見つけやすくします。',
+          foldersSectionDescription: 'フォルダを削除しても項目は残り、フォルダから外れるだけです。',
+          stacksPageDescription: 'エージェントの指示に自動で追加されるプロンプトとスキル。',
+          stacksSection: '適用される場所',
+          stacksSectionDescription: '各リストはセッション開始時に順番に追加されます。',
+          profileStacksDescription: 'プロファイルで開始したセッションに追加するプロンプト。',
+          profileStacksPageDescription: '各プロファイルで開始したセッションに追加されるプロンプトとスキル。',
+          profileStackEditorDescription: 'このプロファイルで開始したセッションに追加されます。',
+          profilesSection: 'プロファイル',
+          stackEntriesDescription: 'この順番で追加されます。オフにすると使わずに残せます。',
+          stackPickerDescription: '追加するプロンプトまたはスキルを選びます。',
+          registriesPageDescription: 'レジストリでスキルを探してライブラリに取り込みます。',
+          projectSection: 'プロジェクト',
+          registriesProjectDescription: 'マシン上でプロジェクト単位のインストール先。',
+          registriesSourcesDescription: '組み込みのレジストリと追加した Git ソース。選ぶとスキルが表示されます。',
+          registriesItemsDescription: '選択したソースのスキル。',
+          registryItemDescription: 'レジストリのスキル。ライブラリに取り込むか、マシンにインストールします。',
+          registryItemSection: 'スキル',
+          importToLibrary: 'ライブラリに取り込む',
+          registryInstallDescription: 'マシン上のツールがスキルを読む場所にも書き込みます。',
+          installProjectScopeDescription: 'マシン上のプロジェクトディレクトリ内。',
+          installUserScopeDescription: 'マシン上のユーザーフォルダ。すべてのプロジェクトで使われます。',
+          installMethodLink: 'リンク',
+          installMethodCopy: 'コピー',
+          installMethodLinkDescription: '推奨: Happier が最新に保つコピーにリンクします。',
+          installTargetDescription: 'ツールが使うファイル名またはフォルダ名。',
+          externalAssetsPageDescription: 'ツールがマシン上に保存しているプロンプトとスキル。取り込むと再利用・同期できます。',
+          whereToLookSection: '探す場所',
+          whereToLookDescription: 'マシン上のプロジェクト、またはユーザーフォルダ。',
+          exportDescription: ({ title }: { title: string }) => `${title} をマシン上のツールが読む場所に書き出します。`,
+          exportOptionsDescription: 'ツールと、ファイルを置く場所を選びます。',
+      },
     sections: "セクション",
     library: "ライブラリ",
     librarySubtitle: "プロンプトとスキルを管理",
@@ -1151,7 +1417,7 @@ export const ja = {
         target: '実行ターゲット',
         targetNewSession: '新しいセッション',
         targetExistingSession: '既存のセッション',
-        targetExecutionRun: '単発実行',
+        targetExecutionRun: 'バックグラウンド実行',
         chooseExistingSession: 'セッションを選択',
         searchEvents: 'イベントを検索',
         executionNoTools: 'ツールなし',
@@ -1397,7 +1663,7 @@ export const ja = {
         outputCeiling: "出力上限",
         existingSession: ({ sessionId }: { sessionId: string }) => `既存のセッション: ${sessionId}`,
         newSession: ({ machineId, directory }: { machineId: string; directory: string }) => `${machineId} 上の新しいセッション: ${directory}`,
-        executionRun: ({ permissionMode }: { permissionMode: string }) => `実行ラン · ${permissionMode}`,
+        executionRun: ({ permissionMode }: { permissionMode: string }) => `バックグラウンド実行 · ${permissionMode}`,
         prompt: "固定されたプロンプト",
         result: "最終結果",
         resultAbsent: "最終結果は記録されていません。",
@@ -1536,7 +1802,9 @@ export const ja = {
     delete: "削除",
     deleted: "削除済み",
     optional: "任意",
+    draft: "下書き",
     noMatches: "一致するものがありません",
+    choose: "選択…",
     all: "すべて",
     machine: "マシン",
     clearSearch: "検索をクリア",
@@ -2047,6 +2315,11 @@ export const ja = {
   },
 
   connect: {
+    addPhonePage: {
+      description: 'すでにある Home をスマートフォンの Happier で使えます。',
+      qrTitle: 'QR コード',
+      signInFirst: '先にサインインしてください',
+    },
     restoreAccount: "アカウントを復元",
     enterSecretKey: "復旧キーを入力してください",
     invalidSecretKey:
@@ -2136,6 +2409,7 @@ export const ja = {
 
   bugReports: {
     composer: {
+      pageDescription: '何が起きたか教えてください。診断情報を含めると、より早く原因を特定できます。',
       alerts: {
         previewUnavailableTitle: "プレビューできません",
         previewUnavailableBody: "診断プレビューを作成できませんでした。",
@@ -2247,6 +2521,7 @@ export const ja = {
         },
       },
       environment: {
+        description: 'このデバイスから入力されています。違っている箇所は修正してください。',
         title: "環境（編集可）",
         appVersionLabel: "アプリ版本",
         platformLabel: "プラットフォーム",
@@ -2278,15 +2553,21 @@ export const ja = {
   },
 
   memorySearchSettings: {
+    indexing: {
+      description: 'どのセッションを、それぞれどこまでインデックスするか。',
+      title: 'インデックスの対象',
+    },
+    pagePurpose: '過去の会話を、話した内容から探せます。インデックスは選んだマシンに保存されます。',
     disabled: {
       footer: "機能でメモリ検索を有効にして、ローカルのインデックスを設定できます。",
       title: "メモリ検索は無効です",
-      subtitle: "設定 → 機能 から memory.search を有効にしてください",
       openFeatureSettings: "機能設定を開く",
-      alertTitle: "メモリ検索が無効です",
-      alertBody: "設定 → 機能 で memory.search を有効にしてください。",
     },
     enabled: {
+      updateRequired: 'メモリ設定を変更するには、このマシンの Happier を更新する必要があります。',
+      unreachable: 'このマシンに接続できません。オンラインに戻るとメモリ設定が表示されます。',
+      chooseMachine: '上でマシンを選ぶと、そのインデックスを確認・変更できます。',
+      sectionTitle: 'ローカルインデックス',
       title: "有効",
       subtitle: "このマシン上でローカルインデックスを構築・維持します",
       footer:
@@ -2296,13 +2577,10 @@ export const ja = {
       groupTitle: "ディスク予算",
       groupFooter:
         "ローカルのメモリ索引が使用できるディスク容量を制限します（可能な範囲で削除します）。",
-      mbLabel: ({ mb }: { mb: number }) => `${mb} MB`,
       lightTitle: "ライト索引の予算",
-      lightPromptTitle: "ライト索引の予算",
       lightPromptBody:
         "この端末のライト（要約シャード）索引の最大MB。",
       deepTitle: "ディープ索引の予算",
-      deepPromptTitle: "ディープ索引の予算",
       deepPromptBody: "この端末のディープ（チャンク）索引の最大MB。",
     },
     privacy: {
@@ -2320,7 +2598,7 @@ export const ja = {
       emptyResults: "まだメモリ結果はありません",
     },
         status: {
-            title: "ローカルインデックスの状態",
+            title: "状態",
             diskUsageTitle: "ディスク使用量",
             disabled: "このマシンではローカルメモリ検索は無効です",
             empty: "ローカルメモリ検索は有効ですが、検索可能な内容はまだインデックス化されていません",
@@ -2342,25 +2620,19 @@ export const ja = {
       noMachine: "マシンなし",
     },
     indexMode: {
-      title: "インデックスモード",
-      footer:
-        "ライトモードは小さな要約シャードのみを保存します。ディープモードはより多く見つけられますが、ディスクを多く使用します。",
       triggerTitle: "モード",
       options: {
-        lightTitle: "ライト（おすすめ）",
-        lightSubtitle: "要約シャードのみ",
+        lightTitle: "ライト",
+        lightSubtitle: "要約シャードのみ。おすすめ。",
         deepTitle: "ディープ",
-        deepSubtitle: "メッセージのチャンクをローカルでインデックス化",
+        deepSubtitle: "メッセージのチャンクもインデックスします。より多く見つかりますが、ディスクを多く使います。",
       },
     },
     backfill: {
-      title: "バックフィル",
-      footer:
-        "ローカルメモリを有効化したときに、どこまで履歴をインデックス化するかを設定します。",
-      triggerTitle: "ポリシー",
+      triggerTitle: "履歴",
       options: {
-        newOnlyTitle: "新規のみ（おすすめ）",
-        newOnlySubtitle: "有効化以降に作成された内容のみをインデックス化",
+        newOnlyTitle: "新規のみ",
+        newOnlySubtitle: "有効化以降に作成された内容のみをインデックス化。おすすめ。",
         last30DaysTitle: "過去30日",
         last30DaysSubtitle: "最近のセッションをバックフィル",
         allHistoryTitle: "全履歴",
@@ -2368,35 +2640,28 @@ export const ja = {
       },
     },
     archived: {
-        groupTitle: 'アーカイブ済みセッション',
-        groupFooter: 'オンにすると、アーカイブ済みセッションがローカル検索用にインデックスされます。オフにすると除外され、インデックス済みの内容は検索から削除されます。',
         includeTitle: 'アーカイブ済みセッションを検索',
-        includeSubtitle: 'このマシンでアーカイブ済みセッションをインデックスする',
+        includeSubtitle: 'アーカイブ済みセッションもインデックスします。オフにすると検索から削除されます。',
         unsupportedSubtitle: 'このマシンの Happier を更新してください',
-        unsupportedFooter: 'このマシンはアーカイブのインデックス対応を報告していないため、この設定を適用できません。その他の検索は引き続き利用できます。',
     },
     indexContents: {
-      groupTitle: "インデックス内容",
+      groupTitle: "インデックスの状況",
       title: "検索可能な内容",
       subtitle: ({ sessions, lightShards, deepChunks }: { sessions: number; lightShards: number; deepChunks: number }) =>
         `${sessions} セッション · ${lightShards} ライトシャード · ${deepChunks} ディープチャンク`,
     },
     queue: {
-      groupTitle: "バックフィルとキュー",
       title: "インデックスキュー",
       subtitle: ({ selected, queued, indexing, indexed, empty, failed, waiting }: { selected: number; queued: number; indexing: number; indexed: number; empty: number; failed: number; waiting: number }) =>
         `${selected} 選択 · ${queued} キュー中 · ${indexing} インデックス中 · ${indexed} 完了 · ${empty} 空 · ${failed} 失敗 · ${waiting} 待機`,
       workerPhase: ({ phase }: { phase: string }) => `現在のフェーズ: ${phase}`,
     },
     lastRun: {
-      groupTitle: "最後のインデックス実行",
       title: "最後の実行",
       subtitle: ({ considered, processed, semanticRows, failures }: { considered: number; processed: number; semanticRows: number; failures: number }) =>
         `${considered} 件対象 · ${processed} 件処理 · ${semanticRows} セマンティック行 · ${failures} 件失敗`,
     },
     coverage: {
-      title: "内容の範囲",
-      footer: "選択したセッション内でどのセマンティックなトランスクリプト内容をインデックス化するかを制御します。",
       triggerTitle: "範囲",
       options: {
         fullTitle: "選択した全履歴",
@@ -2424,25 +2689,23 @@ export const ja = {
       toolOutputsSubtitle: "ローカルインデックスに生のツール出力テキストを含める意図がない限り無効のままにしてください",
     },
     hints: {
-      title: "メモリヒント生成",
+      title: "要約",
       footer:
-        "ライトメモリ検索用の要約シャードをどのように生成するかを設定します。",
+        "ライトインデックスが各セッションを要約する方法。",
       backend: {
-        title: "要約バックエンド",
-        promptTitle: "要約バックエンド",
+        title: "要約エージェント",
         promptBody:
-          "実行ランのバックエンドIDを入力してください（例: claude, codex）。",
+          "要約を書くエージェントの ID（例: claude、codex）。",
       },
       model: {
         title: "要約モデル",
-        promptTitle: "要約モデル",
         promptBody: "バックエンドへ渡すモデルIDを入力してください。",
       },
       permissions: {
         triggerTitle: "要約権限",
         options: {
-          noToolsTitle: "ツールなし（おすすめ）",
-          noToolsSubtitle: "テキストのみ要約",
+          noToolsTitle: "ツールなし",
+          noToolsSubtitle: "テキストのみ要約。おすすめ。",
           readOnlyTitle: "読み取り専用",
           readOnlySubtitle: "対応している場合は、変更しないツールを許可",
         },
@@ -2460,13 +2723,11 @@ export const ja = {
     ruleEditor: {
       header: {
         newRule: "新しいルール",
-        editRule: "ルールを編集",
       },
       enabled: {
         title: "有効",
       },
       enabledState: {
-        enabled: "有効",
         disabled: "無効",
       },
       common: {
@@ -2520,52 +2781,36 @@ export const ja = {
       },
     },
         settings: {
+      instructionsTitle: '委任',
+      pagePurpose: 'エージェントが別のエージェントに作業を任せる方法と、そのときに従うルール。',
       groupTitle: "サブエージェント",
       disabled: {
+        title: 'サブエージェントはオフです',
         footer:
           "Execution Runs が無効です。設定 → 機能 で Execution Runs を有効にして、委任ガイダンスを利用してください。",
         enableExecutionRuns: {
-          title: "Execution Runs を有効化",
-          subtitle: "機能設定を開く",
+          title: "機能でオンにする",
         },
       },
       footer:
         "ルールはシステムプロンプトに追加され、メインエージェントがサブエージェント実行の好み（いつ・どのように）を把握できるようにします。",
-      overview: {
-        groupTitle: "概要",
-        footer:
-          "このページではサブエージェント向けガイダンスを設定し、関連するプロバイダー、バックエンド、セッション設定へ移動できます。",
-        explainerTitle: "このページで制御する内容",
-        explainerSubtitle:
-          "サブエージェント向けの委任ガイダンスと、プロバイダー固有のサブエージェント設定へのリンクです。",
-        happierStatusTitle: "サブエージェント",
-        happierStatusEnabledSubtitle:
-          "有効です。対応セッションからサブエージェントを起動できます。",
-        happierStatusDisabledSubtitle:
-          "無効です。機能設定を開いてサブエージェントを有効にしてください。",
-      },
       related: {
+        agentsSubtitle: 'サインイン、セットアップ、カスタム ACP エージェント。',
+        agentsTitle: 'エージェント',
         groupTitle: "関連設定",
         footer:
-          "サブエージェントの起動と制御は、セッション動作、プロバイダー、設定済みバックエンドにも依存します。",
+          "サブエージェントは、セッションの動作と各エージェントの設定にも従います。",
         sessionTitle: "セッション動作",
         sessionSubtitle:
           "メッセージ送信、忙しいときの誘導、リプレイ/再開の動作。",
-        providersTitle: "プロバイダー",
-        providersSubtitle:
-          "プロバイダー固有の認証、ランタイム、エージェント設定。",
-        backendsTitle: "ACP カタログ",
-        backendsSubtitle: "設定済みバックエンドとカスタム起動先。",
       },
       enableInjection: {
         title: "Happier 実行の指示",
         subtitle: "オフにすると、ネイティブ優先ルーティングと Happier 実行の仕組みがコーディングエージェントのシステムプロンプトから削除されます。",
       },
-      notifyParentOnCompletion: { title: '実行完了時に親へ通知', subtitle: '親エージェントに構造化された完了イベントを送信します。' },
+      notifyParentOnCompletion: { title: 'サイド会話の結果を報告', subtitle: '長時間のバックグラウンド実行が終わったら、開始したセッションに知らせます。レビュー、計画、委任タスクは常に報告します。' },
       characterBudget: {
         title: "カスタムルールの文字数上限",
-        subtitle: ({ value }: { value: string }) => `${value} 文字`,
-        promptTitle: "カスタムルールの文字数上限",
         promptBody: "システムプロンプト内のカスタム実行ルールに使用する最大文字数。",
       },
       rules: {
@@ -2576,7 +2821,6 @@ export const ja = {
         emptyTitle: "ルールはまだありません",
         emptySubtitle: "委任のためのルールを追加します。",
         addRuleTitle: "ルールを追加",
-        addRuleSubtitle: "新しいガイダンスルールを作成",
         untitled: "無題のルール",
         descriptionFallback: "委任する条件を記入してください。",
         tapToEdit: "タップして編集",
@@ -2733,7 +2977,7 @@ localTailscale: {
     appearance: "外観",
     appearanceSubtitle: "アプリの見た目をカスタマイズ",
     voiceAssistant: "音声アシスタント",
-    voiceAssistantSubtitle: "音声操作の設定",
+    voiceAssistantSubtitle: "エージェントと話し、コンポーザーに音声入力します。",
     memorySearch: "ローカルメモリ検索",
     memorySearchSubtitle: "過去の会話を検索（端末内）",
     notifications: "通知",
@@ -2746,18 +2990,16 @@ localTailscale: {
     automationsSubtitle: "スケジュール済みセッションと定期実行を管理",
     executionRunsSubtitle: "複数マシンでの実行",
     connectedServices: "接続済みサービス",
-    connectedServicesSubtitle: "Claude/Codex のサブスクリプションと OAuth プロファイル",
+    connectedServicesSubtitle: 'エージェントがサインインに使うアカウントと、それぞれの残り。',
     featuresTitle: "機能",
-    featuresSubtitle: "アプリ機能の有効/無効を切り替え",
+    featuresSubtitle: 'Happier の機能をオン・オフし、開発中の機能を試せます。',
     pets: "ペット",
-    petsSubtitle: "Blink とこのデバイスのペットコンパニオンを選択",
+    petsSubtitle: 'セッションの様子を知らせる小さな相棒です。',
     developer: "開発者",
     developerTools: "開発者ツール",
     about: "このアプリについて",
     actionsSettingsAboutSubtitle:
       "アクションをグローバルに、サーフェス（UI/音声/MCP）別、配置（UI 内の表示場所）別に有効/無効にできます。無効化されたアクションは実行時に安全側（フェイルクローズ）でブロックされます。",
-    aboutFooter:
-      "Happier CoderはCodexとClaude Codeのモバイルクライアントです。デフォルトでエンドツーエンド暗号化され、他のデバイスでもアカウントを復元できます。Anthropicとは提携していません。",
     whatsNew: "新機能",
     whatsNewSubtitle: "最新のアップデートと改善を確認",
     reportIssue: "問題を報告",
@@ -2775,7 +3017,7 @@ localTailscale: {
     claudeAuthSuccess: "Claudeへの接続に成功しました",
     exchangingTokens: "トークンを交換中...",
     usage: "使用状況",
-    usageSubtitle: "API使用量とコストを確認",
+    usageSubtitle: 'セッション、エージェント、モデルごとのトークンとコストです。',
     profiles: "プロファイル",
     profilesSubtitle: "セッション用の環境変数プロファイルを管理",
     secrets: "シークレット",
@@ -3059,6 +3301,7 @@ localTailscale: {
     machineSetupStepAuthWait: "承認を待機中",
     machineSetupStepInstallService: "バックグラウンドサービスをインストール中",
     machineSetupStepStartService: "バックグラウンドサービスを起動中",
+    machineSetupStepRestartService: "バックグラウンドサービスを再起動中",
     machineSetupStepVerifyService: "バックグラウンドサービスを検証中",
     machineSetupRemoteSshTargetPlaceholder: "user@host",
     machineSetupRemoteSshUsernameLabel: "SSH ユーザー名",
@@ -3206,6 +3449,7 @@ localTailscale: {
     systemTaskOpenLogsFailed: "ログフォルダを開けませんでした。",},
 
 	  systemStatus: {
+	    pageDescription: 'このアプリ、Home、マシンの現在の接続状況です。',
 	    sections: {
 	      application: "アプリケーション",
 	      updates: "アップデート",
@@ -3294,14 +3538,15 @@ localTailscale: {
     actions: {
       runDiagnosis: "診断を実行",
       runDiagnosisSubtitle: "Home/アカウント/デーモンの不一致を検出",
-      refreshMachineAttribution: "マシンのデーモン情報を更新",
+      refreshMachineAttribution: 'デーモンを確認',
       refreshMachineAttributionSubtitle: "オンラインのマシンからデーモンのHome/アカウントを取得",
-      copyJson: "System Status JSON をコピー",
+      copyJson: 'JSON としてコピー',
       copyJsonSubtitle: "サポート向けに安全なスナップショットを共有",
     },
   },
 
   diagnosis: {
+    pageDescription: 'このアプリ、Home、マシンに設定の問題がないか確認し、解決手順を示します。',
     title: "診断",
     sections: {
       overview: "概要",
@@ -3431,7 +3676,7 @@ localTailscale: {
     fallbackName: "連携サービス",
     serviceNames: {
       claudeSubscription: "Claude サブスクリプション",
-      openaiCodex: "OpenAI Codex（OpenAI）",
+      openaiCodex: 'ChatGPT',
       openai: "OpenAI API キー",
       anthropic: "Anthropic API キー",
       gemini: "Google Gemini（Google）",
@@ -3633,7 +3878,6 @@ localTailscale: {
       lastUpdated: ({ time }: { time: string }) => `最終更新: ${time}`,
       lastUpdatedStale: ({ time }: { time: string }) => `最終更新: ${time} • 古い`,
       noData: "クォータデータはまだありません",
-      planLabel: ({ plan }: { plan: string }) => `プラン: ${plan}`,
       remaining: ({ percent }: { percent: string }) => `残り ${percent}`,
       remainingWithReset: ({ percent, reset }: { percent: string; reset: string }) => `残り ${percent} · ${reset}後にリセット`,
       usageCount: ({ used, limit }: { used: number; limit: number }) => `${used}/${limit} 使用済み`,
@@ -3643,7 +3887,6 @@ localTailscale: {
       recoveryCreditApplying: '適用中…',
       recoveryCreditMachineUnavailable: 'この利用量リセットを今適用できるマシンがありません。',
       recoveryCreditNothingToReset: '現在、リセットが必要な使い果たされた使用期間はありません。',
-      recoveryCreditBadge: ({ count }: { count: number }) => count === 1 ? '1件のリセット' : `${count}件のリセット`,
       duration: {
         now: '今',
         outdated: '更新が必要',
@@ -3659,49 +3902,15 @@ localTailscale: {
       configurationInvalid: 'アカウント設定が無効です。各フィールドを確認し、必要な箇所には認証情報を含まない正確な HTTPS オリジンを指定してください。',
       configurationRefreshApplied: '新しい設定を保存し、接続済みアカウントを更新しました。',
       configurationReconnectApplied: '新しい設定を保存し、接続済みアカウントを再接続しました。',
-      refreshA11y: '使用状況と制限を更新',
       usedDetail: ({ used, limit }: { used: string; limit: string }) => `${used}/${limit} 使用済み`,
-      usageCaption: '使用量',
-      resetsCaption: 'リセット',
-      poolsLabel: 'プール',
-      poolsCount: ({ count }: { count: number }) => count === 1 ? '1件のプール' : `${count}件のプール`,
-      planEmailSubtitle: ({ plan, email }: { plan: string; email: string }) => `${plan} · ${email}`,
       activeMemberA11y: 'アクティブなアカウント',
       setActiveA11y: 'アクティブなアカウントに設定',
-      memberEnabledLabel: 'アカウント有効',
       resets: {
         now: '今',
         inDays: ({ days }: { days: number }) => days === 1 ? '1日後' : `${days}日後`,
-        available: '利用量リセットがあります',
-        rowLabel: ({ date, countdown }: { date: string; countdown: string }) =>
-          countdown ? `${date}に期限切れ · ${countdown}` : `${date}に期限切れ`,
-        confirmTitle: '利用量リセットを適用しますか?',
-        confirmMessage: 'この接続アカウントで利用可能なリセットを1件消費します。',
-        confirmCta: 'リセットを適用',
-        use: '使用',
       },
     },
     pools: {
-      title: 'プール',
-      autoBadge: '自動',
-      manualBadge: '手動',
-      memberWarningsA11y: ({ count }: { count: number }) =>
-        count === 1 ? '1件のメンバーに確認が必要です' : `${count}件のメンバーに確認が必要です`,
-      create: {
-        title: 'プールを作成',
-        subtitle: '接続アカウントをグループ化して自動フォールバックに使います。',
-      },
-      empty: {
-        title: 'プールはまだありません',
-        subtitle: '複数の接続アカウントへセッションを振り分けるプールを作成します。',
-      },
-      loadError: {
-        title: "プールを読み込めませんでした",
-        subtitle: "アカウントのプールを読み込めませんでした。接続を確認して、もう一度お試しください。",
-        staleTitle: "最後に取得したプールを表示しています",
-        staleSubtitle: "最新のプール一覧を更新できませんでした。もう一度お試しください。",
-        retry: "再試行",
-      },
       detail: {
         summaryTitle: '概要',
         summary: ({ count, strategy }: { count: number; strategy: string }) =>
@@ -3711,8 +3920,6 @@ localTailscale: {
         moveDown: '下へ移動',
         noMembersTitle: 'メンバーはまだありません',
         noMembersSubtitle: 'このプールに接続アカウントを追加します。',
-        serverActiveStatusTitle: "サーバーに保存済み",
-        serverActiveStatusSubtitle: "これはサーバー上の永続的なアクティブアカウントです。オフラインのマシンは再接続時に適用します。この画面は、すべてのマシンへの反映完了を示すものではありません。",
         manualApplyDivergenceTitle: "サーバーでは切り替わりましたが、実行中のセッションには未適用です",
         manualApplyDivergenceSubtitle: ({ detail }: { detail: string }) => `アクティブなアカウントはサーバーで変更されましたが、実行中のセッションへの適用に失敗しました（${detail}）。再試行するか、元に戻してすべてを前のアカウントに保ってください。`,
         manualApplyRetry: "実行中のセッションへの適用を再試行",
@@ -3727,9 +3934,6 @@ localTailscale: {
         advancedSubtitle: 'フォールバックのトリガーと復旧動作を細かく調整します。',
       },
       behavior: {
-        autoRestorePrimaryTitle: 'リセット後にプライマリへ戻す',
-        autoRestorePrimarySubtitle: 'プライマリアカウントの利用上限がリセットされたら戻します。',
-        switchOnGroupSubtitle: 'この条件で自動プール切り替えを実行できるようにします。',
         switchOn: {
           usageLimit: '利用上限',
           authExpired: '認証期限切れ',
@@ -3816,7 +4020,6 @@ localTailscale: {
       },
     },
     detail: {
-      segments: { accounts: "アカウント", pools: "プール" },
       unknownService: "不明な接続済みサービスです。",
       actionsGroupTitle: "操作",
       actions: {
@@ -3824,7 +4027,6 @@ localTailscale: {
         unsetDefault: "既定を解除",
         editLabel: "ラベルを編集",
         reconnect: "再接続",
-        openAccount: "アカウントを開く",
       },
       setDefaultProfileTitle: "既定のプロファイルを設定",
       setDefaultProfileSubtitleDefault: ({ profileId }: { profileId: string }) =>
@@ -3909,18 +4111,13 @@ localTailscale: {
         statusUnknown: "不明",
         statusNeedsMembers: "有効なメンバーが必要",
         activeMember: ({ profileId }: { profileId: string }) => `アクティブ: ${profileId}`,
-        enabledMembers: ({ enabled, total }: { enabled: number; total: number }) => `${enabled}/${total} 有効`,
         autoFallbackEnabled: "自動フォールバックオン",
         autoFallbackDisabled: "自動フォールバックオフ",
-        strategyPriority: "優先順",
-        strategyLeastLimited: "制限が少ないものを優先",
-        strategyManual: "手動切り替え",
         priority: ({ priority }: { priority: string }) => `優先度 ${priority}`,
         cooldown: ({ time }: { time: string }) => `${time} までクールダウン`,
         memberActive: "アクティブメンバー",
         memberEnabled: "有効",
         memberDisabled: "無効",
-        memberAutoDisabledModelNotEntitled: "自動的に無効化：選択したモデルは利用できません",
         memberPriority: ({ priority }: { priority: number }) => `優先度 ${priority}`,
         memberExhaustedUntil: ({ time }: { time: string }) => `${time} まで枯渇`,
         memberQuotaExhaustedUntil: ({ time }: { time: string }) => `${time} まで使用制限`,
@@ -3965,7 +4162,6 @@ localTailscale: {
         removeMember: "メンバーを削除",
         removeMemberConfirmTitle: "メンバーを削除",
         removeMemberConfirmBody: ({ profileId }: { profileId: string }) => `このグループから「${profileId}」を削除しますか？`,
-        runtimeFallbackUnsupported: 'この接続済みサービスでは自動フォールバックを利用できません。',
         removeMembersConfirmBody: ({ count, members }: { count: number; members: string }) => `このプールから${count === 1 ? "このメンバー" : `${count} 人のメンバー`}を削除しますか？\n\n${members}`,
         manageMembersTitle: 'メンバーを管理',
         manageMembersSubtitle: ({ count, total }: { count: number; total: number }) => `${total} 件中 ${count} 件のアカウント`,
@@ -3978,13 +4174,6 @@ localTailscale: {
         membersTitle: "メンバー",
         membersSubtitle: ({ enabled, total }: { enabled: number; total: number }) => `${enabled}/${total} 有効`,
         optionsTitle: "オプション",
-        autoSwitchTitle: "自動フォールバック",
-        autoQuotaResetTitle: "クォータリセットを自動的に使用",
-        autoDisablePlanInvalidTitle: "選択したモデルを利用できないアカウントを無効化",
-        autoDisablePlanInvalidSubtitle: "プランで選択したモデルを利用できない場合、そのプールアカウントを自動的に無効化します。手動で再び有効にできます。初期設定はオフです。",
-        autoQuotaResetSubtitle: "プール内に利用可能なアカウントがなく、使い切ったクォータをリセットできる場合にのみ、保存されたリセットを消費します。初期設定はオフです。",
-        autoSwitchEnabledSubtitle: "アクティブなアカウントに回復が必要なとき、別のメンバーへ切り替えます。",
-        autoSwitchDisabledSubtitle: "手動で切り替えるまでアクティブなメンバーを使い続けます。",
         quotaLimitsTitle: "使用量制限",
         quotaLimitsAllTitle: "報告されたすべての制限",
         quotaLimitsAllSubtitle: "このプロバイダーが報告するすべての割り当てを切り替え判断に使用します。",
@@ -3999,33 +4188,10 @@ localTailscale: {
         quotaLimitReportingSubtitle: ({ reporting, total }: { reporting: number; total: number }) => `${total}個の有効なアカウントのうち${reporting}個が報告`,
         quotaLimitsSearchPlaceholder: "使用量制限を検索",
         strategyTitle: "選択戦略",
-        strategyPriorityTitle: "優先順",
-        strategyPrioritySubtitle: "優先度の小さい番号から先に試します。",
-        strategyLeastLimitedTitle: "制限が少ない順",
-        strategyLeastLimitedSubtitle: "使用可能なクォータが最も多いメンバーを優先します。",
-        strategyManualTitle: "手動切り替え",
-        strategyManualSubtitle: "手動で変更されるまでアクティブなメンバーだけを使います。",
-        softSwitchThresholdTitle: "ソフト切り替えしきい値",
-        softSwitchThresholdSubtitle: ({ percent }: { percent: string }) => `より安全なメンバーがある場合、残り ${percent}% 未満で切り替えます。`,
-        softSwitchThresholdPromptTitle: "ソフト切り替えしきい値",
-        softSwitchThresholdPromptBody: "Happier がより安全なアカウントを優先する残りパーセントを入力します。0 にするとソフト切り替えを無効にします。",
-        invalidSoftSwitchThresholdTitle: "しきい値が無効です",
-        invalidSoftSwitchThresholdBody: "0 から 100 までの数値を入力してください。",
-        staleProbeTitle: "古いクォータを再確認するまで",
-        staleProbeSubtitle: ({ minutes }: { minutes: string }) => `クォータデータが ${minutes} 分より古い場合に再確認します。`,
-        staleProbePromptTitle: "古いクォータを再確認するまで",
-        staleProbePromptBody: "Happier が再確認するまでクォータデータを再利用できる分数を入力します。",
-        invalidStaleProbeTitle: "確認間隔が無効です",
-        invalidStaleProbeBody: "1 分以上を入力してください。",
-        switchBudgetTitle: "自動切り替えの上限",
-        switchBudgetSubtitle: ({ perTurn, perHour }: { perTurn: string; perHour: string }) => `1 ターンあたり最大 ${perTurn} 回、セッション 1 時間あたり最大 ${perHour} 回の自動切り替え。`,
-        recoveryModeTitle: "復旧モード",
         recoveryModeOffSubtitle: "このグループを自動的に復旧しません。",
         recoveryModeWaitUntilResetSubtitle: "制限のリセットを待ってから再開します。",
         recoveryModeSwitchThenResumeSubtitle: "別のメンバーに切り替えてから再開します。",
         recoveryModeSwitchOrWaitSubtitle: "可能なら別のメンバーに切り替え、できない場合はリセットを待ちます。",
-        recoveryPromptTitle: "回復プロンプト",
-        recoveryPromptSubtitle: "このグループでは標準の回復および再開プロンプトを使います。",
         missingTitle: "グループが見つかりません",
         missingBody: ({ service, groupId }: { service: string; groupId: string }) =>
           `${service} に「${groupId}」というグループはありません。`,
@@ -4092,7 +4258,9 @@ localTailscale: {
   },
 
   settingsAttachments: {
+    pageDescription: '添付したファイルの保存先と、ソース管理での扱いを設定します。',
     disabled: {
+      bannerTitle: 'ファイルのアップロードはオフです',
       title: "添付ファイル",
       footer: "この機能はサーバーまたはビルドポリシーによって無効化されています。",
     },
@@ -4100,16 +4268,19 @@ localTailscale: {
       title: "ファイルアップロード",
     },
     uploadLocation: {
+      rowTitle: 'アップロードの保存先',
       title: "アップロード先",
       footer:
         "ワークスペースへのアップロードが最も互換性があります。OS の一時ディレクトリへのアップロードはリポジトリアーティファクトを避けるのに役立ちますが、より厳しいサンドボックスでは読み取れない場合があります。",
       options: {
         workspace: {
+          short: 'ワークスペース',
           title: "ワークスペースのディレクトリ（推奨）",
           subtitle:
             "アップロードはワークスペース相対ディレクトリに書き込まれるため、エージェントのサンドボックスが確実に読み取れます。",
         },
         osTemp: {
+          short: 'システムの一時フォルダ',
           title: "OS の一時ディレクトリ",
           subtitle:
             "アップロードは OS の一時ディレクトリに書き込まれます。より厳しいサンドボックスでは問題になる場合があります。",
@@ -4117,6 +4288,7 @@ localTailscale: {
       },
     },
     workspaceDirectory: {
+      usedForWorkspace: 'アップロードをワークスペースに保存するときに使用します',
       title: "ワークスペースのディレクトリ",
       footer:
         "アップロード先がワークスペースのディレクトリに設定されている場合のみ使用されます。",
@@ -4131,27 +4303,32 @@ localTailscale: {
       },
     },
     sourceControlIgnore: {
+      rowTitle: 'アップロードを無視',
       title: "バージョン管理の無視設定",
       footer:
         "ローカルのみの無視設定は誤ってコミットするのを防ぎます。.gitignore を選ぶと追跡ファイルが変更される可能性があります。",
       options: {
         gitInfoExclude: {
+          short: 'ローカル',
           title: "ローカルで無視（.git/info/exclude）（推奨）",
           subtitle:
             "リポジトリのファイルを変更せずに誤コミットを防ぎます。",
         },
         gitignore: {
+          short: '.gitignore',
           title: ".gitignore で無視",
           subtitle:
             "ワークスペースの .gitignore にエントリを書き込みます（コミットされる可能性があります）。",
         },
         none: {
+          short: 'オフ',
           title: "無視ルールを書き込まない",
           subtitle:
             "リポジトリ設定によってはアップロードがバージョン管理に拾われる場合があります。",
         },
       },
       writeIgnoreRules: {
+        subtitle: 'アップロードを保存するときに Happier が無視ルールを追加します。',
         title: "無視ルールを書き込む",
       },
     },
@@ -4161,7 +4338,7 @@ localTailscale: {
         "これらの制限はローカルの CLI アップロードハンドラで（ベストエフォートで）適用されます。",
       invalidValueTitle: "無効な値",
       maxAttachmentSize: {
-        title: "添付の最大サイズ（バイト）",
+        title: '添付の最大サイズ',
         promptTitle: "添付の最大サイズ（バイト）",
         promptMessage: "例: 25MB の場合は 26214400。",
         invalidValueMessage: "1024 から 1073741824 の間の数値を入力してください。",
@@ -4170,6 +4347,84 @@ localTailscale: {
   },
 
   settingsSourceControl: {
+    page: {
+      description: "セッションでのコミット、プッシュ、差分の動作。",
+      commits: {
+        title: "コミット",
+        description: "セッションでの変更がどのようにコミットになるか。",
+      },
+      commitStrategy: {
+        title: "コミット方式",
+        atomic: "アトミック",
+        gitStaging: "Git ステージング",
+        atomicDescription: "保留中の変更をまとめてコミットするため、エージェント同士が Git インデックスを共有しません。",
+        gitStagingDescription: "コミット前にファイルや行を含めたり除外したりできます。",
+      },
+      coAuthoredByDescription: "エージェントが書いたコミットメッセージにエージェントのクレジットを入れます。",
+      generator: {
+        description: "エージェントが保留中の変更からメッセージを下書きします。マシンでサブエージェントのサポートが必要です。",
+        agentTitle: "エージェント",
+        agentDescription: "提案メッセージを書きます。",
+        instructionsTitle: "指示",
+        instructionsDescription: "毎回のリクエストに追加されます（従うスタイルなど）。",
+      },
+      remote: {
+        title: "プルとプッシュ",
+        description: "確認と、プッシュが拒否されたときの動作。",
+      },
+      pushRejection: {
+        title: "プッシュが拒否されたとき",
+        ask: "確認する",
+        fetch: "フェッチ",
+        manual: "手動",
+        askDescription: "ブランチが upstream より遅れているとき、フェッチする前に確認します。",
+        fetchDescription: "ブランチが upstream より遅れているとき、自動でフェッチします。",
+        manualDescription: "復旧はあなたに任せます。",
+      },
+      routing: {
+        title: "リポジトリのバックエンド",
+        description: "選択したマシンで .git フォルダーのあるリポジトリを扱うバックエンド。",
+        rowTitle: ".git リポジトリのバックエンド",
+        git: "Git",
+        sapling: "Sapling",
+        chooseMachine: "マシンを選択",
+        chooseMachineDescription: "バックエンドは上で選んだマシンから読み込まれます。",
+        waiting: ({ machine }: { machine: string }) => `${machine} を待っています`,
+        offline: ({ machine }: { machine: string }) => `${machine} はオフラインです`,
+        unavailable: ({ machine }: { machine: string }) => `${machine} は利用できません`,
+        waitingDescription: "オンラインになり応答するとバックエンドが表示されます。",
+        unavailableDescription: "上で別のマシンを選んでください。",
+      },
+      services: {
+        description: "バックエンドが連携するコードホストのアカウント。",
+      },
+      files: {
+        title: "差分とファイル",
+        description: "レビュー時の変更とファイルの見た目。シンタックスハイライトは実験的で、非常に大きな差分ではオフになることがあります。",
+        renderer: "差分レンダラー",
+        rendererPierre: "Pierre",
+        rendererHappier: "Happier",
+        layout: "差分のレイアウト",
+        unified: "統合",
+        split: "左右に並べる",
+        highlighting: "シンタックスハイライト",
+        off: "オフ",
+        simple: "シンプル",
+        advanced: "高度",
+        density: "変更されたファイル",
+        comfortable: "ゆったり",
+        compact: "コンパクト",
+      },
+      backend: {
+        defaultDiff: "既定の差分表示",
+      },
+      editor: {
+        description: "ファイルの保存方法と Markdown の開き方。リッチエディターで保持できないファイルは常にテキストとして開きます。",
+        markdownTitle: "Markdown の開き方",
+        rich: "リッチ",
+        raw: "テキスト",
+      },
+    },
   title: 'ファイルとソース管理',
   editor: 'エディタ',
   editorFooter: 'ファイルエディタの動作を設定します。',
@@ -4384,94 +4639,96 @@ localTailscale: {
   },
 
   settingsDesktop: {
+    ...menuBarModeTranslations.ja,
     title: 'デスクトップ',
-    footer: 'このコンピューター上の Tauri デスクトップ連携を管理します。',
-    startOnLoginTitle: 'ログイン時に起動',
-    startOnLoginSubtitle: 'このコンピューターにサインインしたときに Happier を自動的に起動します。',
+    footer: 'このコンピューターでのデスクトップアプリの起動とアクティビティ表示の設定です。',
+    startupTitle: '起動',
+    unavailableTitle: 'デスクトップアプリ専用',
+    unavailableSubtitle: 'これらの設定を変更するには、コンピューターで Happier のデスクトップアプリを開いてください。',
 
     overlay: {
-      title: 'Desktop overlay',
-      footer: 'Controls the local floating activity surface on this device.',
-      enabledTitle: 'Enable desktop overlay',
-      enabledSubtitle: 'Show a local floating activity surface on this device',
-      visibilityModeTitle: 'Visibility mode',
-      visibilityModeSubtitle: 'Choose when the overlay should appear',
-      visibilityAttentionOnlyTitle: 'Attention only',
-      visibilityActiveSessionsTitle: 'Active sessions',
-      visibilityAlwaysWhenEnabledTitle: 'Always when enabled',
-      showWhenRunningTitle: 'Show when running',
-      showWhenRunningSubtitle: 'Show the overlay while sessions are running',
-      showWhenAttentionRequiredTitle: 'Show when attention is required',
-      showWhenAttentionRequiredSubtitle: 'Show the overlay when a session needs your input',
-      showWhenReadyTitle: 'Show when ready',
-      showWhenReadySubtitle: 'Show the overlay when a turn finishes and waits for input',
-      alwaysOnTopTitle: 'Always on top',
-      alwaysOnTopSubtitle: 'Keep the overlay above other windows',
-      interactionTitle: 'Interaction',
-      interactionFooter: 'Choose how the overlay behaves while it is visible.',
-      autoHideEnabledTitle: 'Auto-hide',
-      autoHideEnabledSubtitle: 'Hide the overlay after it has been idle',
-      autoHideDelayTitle: 'Auto-hide delay',
-      autoHideDelaySubtitle: 'Choose how long the overlay waits before hiding',
-      autoHideDelay3sTitle: '3 seconds',
-      autoHideDelay6sTitle: '6 seconds',
-      autoHideDelay10sTitle: '10 seconds',
-      autoHideDelay30sTitle: '30 seconds',
-      expandedBehaviorTitle: 'Expanded behavior',
-      expandedBehaviorSubtitle: 'Choose how the overlay expands',
-      expandedBehaviorClickTitle: 'Click',
-      expandedBehaviorHoverTitle: 'Hover',
-      expandedBehaviorShortcutOnlyTitle: 'Shortcut only',
-      interactiveCollapsedTitle: 'Collapsed is interactive',
-      interactiveCollapsedSubtitle: 'Allow the collapsed overlay to respond to clicks',
-      collapsedClickActionTitle: 'Collapsed click action',
-      collapsedClickActionSubtitle: 'Choose what the overlay does when collapsed',
-      collapsedClickActionExpandOverlayTitle: 'Expand overlay',
-      collapsedClickActionOpenPrimarySessionTitle: 'Open primary session',
-      collapsedClickActionOpenSessionsTitle: 'Open sessions list',
-      placementTitle: 'Placement',
-      placementFooter: 'Choose where the overlay sits on the screen.',
-      presentationModeTitle: 'Presentation mode',
-            presentationModeSubtitle: 'Choose whether the overlay follows the display notch or floats freely',
-            presentationAutomaticTitle: 'Automatic',
-            presentationNotchIntegratedTitle: 'Notch-integrated',
-            presentationFloatingOverlayTitle: 'Floating overlay',
-            hostModeFallbackTitle: 'Host mode: Floating overlay',
-            hostModeFallbackSubtitle: 'Notch-integrated mode is unavailable on this display, so the overlay falls back to a floating overlay.',
-            placementModeTitle: 'Placement mode',
-            placementModeSubtitle: 'Switch between anchored and custom placement',
-      placementAnchoredTitle: 'Anchored',
-      placementCustomTitle: 'Custom',
-      anchorPresetTitle: 'Anchor preset',
-      anchorPresetSubtitle: 'Pick the anchor used for the overlay position',
-      anchorTopCenterTitle: 'Top center',
-      anchorTopLeftTitle: 'Top left',
-      anchorTopRightTitle: 'Top right',
-      anchorBottomCenterTitle: 'Bottom center',
-      anchorBottomLeftTitle: 'Bottom left',
-      anchorBottomRightTitle: 'Bottom right',
-      anchorLeftCenterTitle: 'Left center',
-      anchorRightCenterTitle: 'Right center',
-      allowRepositioningTitle: 'Allow repositioning',
-      allowRepositioningSubtitle: 'Let the overlay be dragged into a custom position',
-      lockPositionTitle: 'Lock position',
-      lockPositionSubtitle: 'Keep the overlay fixed in place',
-      resetPositionTitle: 'Reset position',
-      resetPositionSubtitle: 'Return to the default anchored position',
-      presentationTitle: 'Presentation',
-      presentationFooter: 'Tune how the overlay looks when it is collapsed.',
-      densityTitle: 'Density',
-      densitySubtitle: 'Choose the amount of spacing used in the overlay',
-      densityCompactTitle: 'Compact',
-      densityComfortableTitle: 'Comfortable',
-      compactStyleTitle: 'Compact style',
-      compactStyleSubtitle: 'Choose the shape used for the collapsed overlay',
-      compactStylePillTitle: 'Pill',
-      compactStylePanelTitle: 'Panel',
-      showSessionCountTitle: 'Show session count',
-      showSessionCountSubtitle: 'Show how many sessions are currently represented',
-      showPreviewTextTitle: 'Show preview text',
-      showPreviewTextSubtitle: 'Show the latest preview text when space allows',
+      title: 'デスクトップオーバーレイ',
+      footer: 'このコンピューターでセッションのアクティビティを表示する小さなフローティングウィンドウです。',
+      enabledTitle: 'デスクトップオーバーレイを有効化',
+      enabledSubtitle: 'このデバイスにアクティビティを示すフローティング表示を出します',
+      visibilityModeTitle: '表示のタイミング',
+      visibilityModeSubtitle: 'オーバーレイを表示するタイミングを選びます',
+      visibilityAttentionOnlyTitle: '対応が必要なときのみ',
+      visibilityActiveSessionsTitle: 'アクティブなセッション',
+      visibilityAlwaysWhenEnabledTitle: '有効な間は常に表示',
+      showWhenRunningTitle: '実行中に表示',
+      showWhenRunningSubtitle: 'セッションの実行中にオーバーレイを表示します',
+      showWhenAttentionRequiredTitle: '対応が必要なときに表示',
+      showWhenAttentionRequiredSubtitle: 'セッションで入力が必要になったときにオーバーレイを表示します',
+      showWhenReadyTitle: '準備ができたら表示',
+      showWhenReadySubtitle: 'ターンが終わって入力待ちになったときにオーバーレイを表示します',
+      alwaysOnTopTitle: '常に手前に表示',
+      alwaysOnTopSubtitle: 'オーバーレイを他のウィンドウより手前に表示します',
+      interactionTitle: '操作',
+      interactionFooter: '表示中のオーバーレイの動作を選びます。',
+      autoHideEnabledTitle: '自動で非表示',
+      autoHideEnabledSubtitle: '操作がない状態が続くとオーバーレイを非表示にします',
+      autoHideDelayTitle: '自動非表示までの時間',
+      autoHideDelaySubtitle: 'オーバーレイが非表示になるまでの待ち時間を選びます',
+      autoHideDelay3sTitle: '3 秒',
+      autoHideDelay6sTitle: '6 秒',
+      autoHideDelay10sTitle: '10 秒',
+      autoHideDelay30sTitle: '30 秒',
+      expandedBehaviorTitle: '展開の動作',
+      expandedBehaviorSubtitle: 'オーバーレイの展開方法を選びます',
+      expandedBehaviorClickTitle: 'クリック',
+      expandedBehaviorHoverTitle: 'ホバー',
+      expandedBehaviorShortcutOnlyTitle: 'ショートカットのみ',
+      interactiveCollapsedTitle: '折りたたみ時も操作可能',
+      interactiveCollapsedSubtitle: '折りたたんだオーバーレイでもクリックに反応するようにします',
+      collapsedClickActionTitle: '折りたたみ時のクリック動作',
+      collapsedClickActionSubtitle: '折りたたみ時にオーバーレイをクリックしたときの動作を選びます',
+      collapsedClickActionExpandOverlayTitle: 'オーバーレイを展開',
+      collapsedClickActionOpenPrimarySessionTitle: 'メインのセッションを開く',
+      collapsedClickActionOpenSessionsTitle: 'セッション一覧を開く',
+      placementTitle: '配置',
+      placementFooter: '画面上のオーバーレイの位置を選びます。',
+      presentationModeTitle: '表示モード',
+            presentationModeSubtitle: 'オーバーレイをディスプレイのノッチに合わせるか、自由に浮かせるかを選びます',
+            presentationAutomaticTitle: '自動',
+            presentationNotchIntegratedTitle: 'ノッチ一体型',
+            presentationFloatingOverlayTitle: 'フローティングオーバーレイ',
+            hostModeFallbackTitle: '現在のモード: フローティングオーバーレイ',
+            hostModeFallbackSubtitle: 'このディスプレイではノッチ一体型を使えないため、オーバーレイはフローティング表示になります。',
+            placementModeTitle: '配置モード',
+            placementModeSubtitle: '基準点に固定する配置とカスタム配置を切り替えます',
+      placementAnchoredTitle: '基準点に固定',
+      placementCustomTitle: 'カスタム',
+      anchorPresetTitle: '基準点のプリセット',
+      anchorPresetSubtitle: 'オーバーレイの位置の基準点を選びます',
+      anchorTopCenterTitle: '上中央',
+      anchorTopLeftTitle: '左上',
+      anchorTopRightTitle: '右上',
+      anchorBottomCenterTitle: '下中央',
+      anchorBottomLeftTitle: '左下',
+      anchorBottomRightTitle: '右下',
+      anchorLeftCenterTitle: '左中央',
+      anchorRightCenterTitle: '右中央',
+      allowRepositioningTitle: '位置の変更を許可',
+      allowRepositioningSubtitle: 'オーバーレイをドラッグして好きな位置に移動できるようにします',
+      lockPositionTitle: '位置を固定',
+      lockPositionSubtitle: 'オーバーレイの位置を固定します',
+      resetPositionTitle: '位置をリセット',
+      resetPositionSubtitle: '既定の基準点の位置に戻します',
+      presentationTitle: '表示',
+      presentationFooter: '折りたたんだときのオーバーレイの見た目を調整します。',
+      densityTitle: '表示密度',
+      densitySubtitle: 'オーバーレイの余白の量を選びます',
+      densityCompactTitle: 'コンパクト',
+      densityComfortableTitle: 'ゆったり',
+      compactStyleTitle: 'コンパクト表示のスタイル',
+      compactStyleSubtitle: '折りたたんだオーバーレイの形を選びます',
+      compactStylePillTitle: 'ピル',
+      compactStylePanelTitle: 'パネル',
+      showSessionCountTitle: 'セッション数を表示',
+      showSessionCountSubtitle: '現在表示しているセッションの数を示します',
+      showPreviewTextTitle: 'プレビューテキストを表示',
+      showPreviewTextSubtitle: '表示できる余裕があれば最新のプレビューテキストを表示します',
     },},
 
   settingsPets: {
@@ -4482,7 +4739,8 @@ localTailscale: {
     disabledSubtitle: 'このデバイスでコンパニオンを使うには、機能でペットを有効にしてください。',
     disabledByServerTitle: 'このサーバーではペットが無効です',
     disabledByServerSubtitle: '管理者がこのサーバーのペットコンパニオンを無効にしています。',
-    accountTitle: 'アカウントの既定値',
+    accountTitle: '相棒',
+    accountDescription: 'アカウント全体の設定です。デバイスごとに変更することもできます。',
     enabledTitle: 'ペットを有効化',
     enabledSubtitle: 'このアカウントでコンパニオン画面を表示します。',
     companionSizeTitle: 'ペットのサイズ',
@@ -4502,6 +4760,9 @@ localTailscale: {
     helpDocsTitle: 'ペットのヘルプ',
     helpDocsSubtitle: 'セットアップとトラブルシューティング用の Happier ドキュメントを開きます。',
     detectCodexPetsTitle: 'Codex ペットを検出',
+    codexPetsTitle: 'Codex のペット',
+    codexPetsDescription: 'Codex で作ったペットをこのデバイスで使えます。',
+    detectedCodexPetsTitle: 'Codex で見つかったペット',
     detectCodexPetsSubtitle: 'ローカルの Codex homes から互換ペットを探します。',
     detectedCodexPetsTileSubtitle: 'Codex で見つかり、このデバイスに参加する準備ができています。',
     detectedCodexPetsEmptyTitle: 'Codex ペットが見つかりません',
@@ -4527,6 +4788,7 @@ localTailscale: {
     importToAccountTitle: 'アカウントへインポート',
     importToAccountSubtitle: '互換性のあるローカルペットをアップロードして複数デバイスで使います。',
     desktopOverlayTitle: 'デスクトップオーバーレイ',
+    desktopOverlayDescription: 'ペットをアプリのウィンドウの外、デスクトップに表示できます。',
     overlayTrayTitle: 'ペットのアクティビティ',
     overlayStatusWaiting: '待機中',
     overlayStatusFailed: '失敗',
@@ -4555,6 +4817,7 @@ localTailscale: {
   },
 
   settingsNotifications: {
+        pageDescription: '通知する内容、場所、静かにする時間を選びます。',
         remoteAlerts: {
             title: "アプリ終了中のセッション通知",
             accountTitle: "リモートセッション通知を許可",
@@ -4572,7 +4835,7 @@ localTailscale: {
             deviceUnavailable: "このアプリのビルドではデバイスを登録できません。",
             deviceEnrolled: "デバイス登録を確認済み",
             deviceNotEnrolled: "デバイス登録は未確認です",
-            supportedEvents: "現在、このデバイスはセッション準備完了の通知に対応しています。配信にはOSの通知許可も必要です。",
+            supportedEvents: "このデバイスはセッションのアクティビティ通知に対応しています。配信にはOSの通知許可も必要です。",
         },
     badges: {
       title: "このデバイスのバッジ",
@@ -4637,6 +4900,7 @@ localTailscale: {
         openSettingsFailed: 'システム設定を開けませんでした。',
     },
     pushTroubleshooting: {
+      pageDescription: 'このデバイスにプッシュ通知が届かない原因を確認して解決します。',
       status: {
         title: "状態",
         footer: "アカウント設定、OS 権限、サーバー登録状態を確認します。",
@@ -4657,8 +4921,8 @@ localTailscale: {
         allowedSubtitle: "このアプリの通知が許可されています。",
         denied: "拒否",
         notRequested: "未リクエスト",
-        canAskAgainSubtitle: "タップして権限をリクエストします。",
-        openSettingsSubtitle: "タップしてシステム設定を開きます。",
+        canAskAgainSubtitle: 'Happier はこのデバイスで権限をリクエストできます。',
+        openSettingsSubtitle: 'システム設定で Happier の通知を許可してください。',
       },
       token: {
         title: "このデバイス",
@@ -4704,6 +4968,8 @@ localTailscale: {
       },
     },
     webhooks: {
+      signingSecretReplaceAction: '置き換え',
+      signingSecretAddAction: 'シークレットを追加',
       title: "Webhook 通知",
       footer: "このアカウントの追加 webhook エンドポイントへリモートアクティビティ通知を送信します。",
       addTitle: "Webhook を追加",
@@ -4741,6 +5007,9 @@ localTailscale: {
       userActionsSubtitle: "セッションが回答または確認を必要とするときに送信します",
     },
     foregroundBehavior: {
+      needsDeviceNotifications: '変更するにはデバイス通知をオンにしてください。',
+      accountShort: '同期',
+      rowTitle: 'バナーとサウンド',
       title: "アプリ内通知",
       footer:
         "アプリ使用中の通知を制御します。現在表示中のセッションの通知は常にミュートされます。",
@@ -4798,19 +5067,20 @@ localTailscale: {
       privacyTitleOnlyTitle: "タイトルのみ",
       privacyIncludePreviewTitle: "プレビュー文字列を含める",
       liveActivities: {
-        title: "Live Activities",
+        maxConcurrentNeedsSessionSpecific: '「セッション別」戦略で利用できます。',
+        title: 'ライブアクティビティ',
         footer: "iPhone のロック画面と Dynamic Island の表示を制御します。",
         enabledSubtitle: "このデバイスで Live Activities を有効化",
-        strategyTitle: 'Activity strategy',
+        strategyTitle: 'アクティビティの方針',
         strategySubtitle: '1つのアクティビティを最重要のセッションに追従させるか、固定するかを選びます。',
         presentationTitle: '表示モード',
         presentationSubtitle: 'Live Activities が現在のセッションをどのように強調するかを選びます。',
         focusedTitle: "フォーカスしたセッション",
         attentionTitle: "注意",
         runningTitle: "実行中のセッション",
-        dynamicPrimaryTitle: 'Dynamic primary',
-        pinnedPrimaryTitle: 'Pinned primary',
-        sessionSpecificTitle: 'Session specific',
+        dynamicPrimaryTitle: '動的メイン',
+        pinnedPrimaryTitle: '固定メイン',
+        sessionSpecificTitle: 'セッション別',
         maxConcurrentTitle: "同時表示数の上限",
         maxConcurrentOneTitle: "1 件",
         maxConcurrentTwoTitle: "2 件",
@@ -4860,6 +5130,7 @@ localTailscale: {
         },
       },
       widgets: {
+        modeTitle: '内容',
         title: "ホーム画面ウィジェット",
         footer: "デバイスのホーム画面に表示されるウィジェット概要を制御します。",
         enabledSubtitle: "このデバイスでウィジェットを有効化",
@@ -4871,6 +5142,12 @@ localTailscale: {
       },
     },
     quietHours: {
+      customSubtitle: 'カスタムのスケジュールが設定されています。オプションを選ぶと置き換わります。',
+      syncedShort: '同期',
+      nightlyShort: '毎晩',
+      offShort: 'オフ',
+      deviceRowTitle: 'このデバイス',
+      accountRowTitle: 'アカウントのスケジュール',
       title: "静かな時間",
       footer: "アカウントの静かな時間は既定ですべての場所に適用されます。デバイスの上書きはこのデバイスにのみ影響します。",
       accountOffTitle: "アカウントの静かな時間なし",
@@ -4885,6 +5162,11 @@ localTailscale: {
       deviceCustomNightlySubtitle: "このデバイスでアカウント時間を 22:00 から 7:00 に上書きします",
     },
     sounds: {
+      previewAction: '再生',
+      customSubtitle: 'カスタムのサウンドが設定されています。オプションを選ぶと置き換わります。',
+      accountDefaultShort: 'システム',
+      accountHappierShort: 'Happier',
+      accountRowTitle: 'サウンド',
       title: "サウンド",
       footer: "アカウントの既定サウンドはすべての場所で同期されます。このデバイスではローカルサウンドを消音できます。",
       accountHappierTitle: "Happier サウンド",
@@ -4931,15 +5213,90 @@ localTailscale: {
     },
   },
 
+  mcpSettings: mcpSettingsTranslations.ja,
+  agentInstallJob: agentInstallJobTranslations.ja,
+  secretsSettings: secretsSettingsTranslations.ja,
   settingsProviders: settingsProvidersTranslations.ja,
 
   settingsAgents: {
       authoring: {
+          setUpMachine: 'マシンを設定',
           configureAcpBackendPrompt: 'Happier にカスタム ACP エージェントを追加するのを手伝ってください。どのエージェントを実行したいか、どう起動するか（コマンド、引数、環境変数）を私に尋ね、このマシンでコマンドが動くことを確認してから agents.acp.backends.upsert アクションで保存してください（先に action_spec_get で入力を確認してください）。設定 → エージェントに表示されたら教えてください。',
           addAgentPrompt: 'Happier に新しいコーディングエージェントを追加したいです。どのエージェントか私に尋ねてください。ACP（Agent Client Protocol）に対応していてコマンドで起動できるなら、agents.acp.backends.upsert アクションでカスタム ACP エージェントとして追加してください。そうでなければ、happier-plugin-authoring スキルに従い plugins.scaffold アクションから始めて、それを追加する Happier プラグインを作ってください。変更する前に、どちらを選んだか、その理由を教えてください。',
           needsMachine: '実行するマシンが必要です。マシンの設定を開きます。',
           useAgentToConfigure: 'エージェントで設定',
           useAgentToConfigureDescription: 'エージェントが何を実行したいか尋ね、保存します。',
+      },
+      customAcp: {
+          newTitle: '新しい ACP エージェント',
+          description: 'Happier がコマンドで起動し、ACP で通信するカスタムエージェントです。',
+          agentSection: 'エージェント',
+          agentSectionDescription: 'セッション開始時の表示方法です。',
+          nameTitle: '名前',
+          namePlaceholder: 'マイエージェント',
+          idTitle: 'ID',
+          idDerivedDescription: '名前から作成されます。セッションはこれでエージェントを見つけます。',
+          idFixedDescription: '保存後は変更できません。セッションはこれでエージェントを見つけます。',
+          idPending: '名前から作成',
+          shortNameTitle: '短い名前',
+          shortNameDescription: 'カスタムエージェント内で一意の短い名前です。',
+          descriptionTitle: '説明',
+          optionalPlaceholder: '任意',
+          launchSection: '起動',
+          launchSectionDescription: 'エージェントを起動するために Happier がマシンで実行するものです。',
+          commandTitle: 'コマンド',
+          argsTitle: '引数',
+          argsDescription: 'この順番でコマンドに渡されます。',
+          argumentLabel: ({ position }: { position: number }) => `引数 ${position}`,
+          argumentPlaceholder: '引数',
+          addArgument: '引数を追加',
+          removeArgument: ({ position }: { position: number }) => `引数 ${position} を削除`,
+          defaultModeTitle: '既定のモード',
+          defaultModelTitle: '既定のモデル',
+          agentDefaultPlaceholder: 'エージェントの既定値',
+          environmentSection: '環境',
+          environmentSectionDescription: '起動時にコマンドへ設定されます。値は保存済みシークレットから取得できます。',
+          addVariable: '変数を追加',
+          noVariablesTitle: '変数なし',
+          noVariablesDescription: 'コマンドはマシンの環境で起動します。',
+          signInSection: 'サインイン',
+          signInSectionDescription: 'マシン上でこのエージェントにサインインする方法です。',
+          signInMethodTitle: '方法',
+          authLoginTerminal: 'ターミナルでサインイン',
+          authStatusOnly: '状態の確認のみ',
+          authManualOnly: '手動でサインイン',
+          authUnsupported: 'サインインなし',
+          loginCommandTitle: 'サインインコマンド',
+          loginArgsTitle: 'サインイン引数',
+          docsUrlTitle: 'サインインガイド',
+          docsUrlDescription: 'サインイン方法を説明するページです。',
+          machineLoginKeyTitle: 'サインイン状態キー',
+          machineLoginKeyDescription: 'マシンがこのエージェントのサインイン状態を報告する際のキーです。',
+          capabilitiesSection: '機能',
+          capabilitiesSectionDescription: 'エージェントが対応する機能です。「不明」はセッション開始時にエージェントが報告する内容を使います。',
+          supportsModes: 'モード',
+          supportsModels: 'モデルの選択',
+          supportsConfigOptions: '設定オプション',
+          promptImages: 'プロンプト内の画像',
+          hintUnknown: '不明',
+          hintYes: 'はい',
+          hintNo: 'いいえ',
+          discard: '破棄',
+          notFound: 'このカスタムエージェントはアカウントにありません。',
+          deleteTitle: 'このエージェントを削除しますか？',
+          deleteConfirm: ({ name }: { name: string }) => `${name} はセッション開始時に表示されなくなります。`,
+          errors: {
+              nameRequired: '名前を入力してください。',
+              idRequired: 'ID を入力してください。',
+              idInvalid: '英小文字・数字・ドット・ハイフン・アンダースコアを使い、英字か数字で始めてください。',
+              idTaken: 'この ID は別のカスタムエージェントで使われています。',
+              shortNameInvalid: '英小文字・数字・ドット・ハイフン・アンダースコアを使い、英字か数字で始めてください。',
+              shortNameTaken: 'この短い名前は別のカスタムエージェントで使われています。',
+              commandRequired: 'エージェントを起動するコマンドを入力してください。',
+              urlInvalid: 'https:// で始まる完全なアドレスを入力してください。',
+              envInvalid: '変数名には英大文字・数字・アンダースコアを使います。',
+              fieldInvalid: 'この値を確認してください。',
+          },
       },
       collection: {
           askAgentToAdd: 'エージェントに追加を依頼',
@@ -5647,6 +6004,8 @@ localTailscale: {
   settingsFeatures: {
     // Features settings screen
     experiments: "実験的機能",
+    generalTitle: '一般',
+    generalDescription: '日常的に使うオプションをオン・オフできます。',
     experimentsDescription:
       "開発中の実験的機能を有効にします。これらの機能は不安定であったり、予告なく変更される場合があります。",
     experimentalFeatures: "実験的機能",
@@ -5654,8 +6013,8 @@ localTailscale: {
     experimentalFeaturesDisabled: "安定版機能のみを使用",
     experimentalOptions: "実験オプション",
     experimentalOptionsDescription: "有効にする実験的機能を選択します。",
-    localTogglesTitle: "機能",
-    localTogglesFooter: "機能ごとのローカルトグル（サーバー対応とは独立）。",
+    localTogglesTitle: 'オプション機能',
+    localTogglesFooter: 'Happier の一部の機能をオン・オフします。',
     featureDiagnostics: {
       title: "機能診断",
       footer:
@@ -5673,7 +6032,7 @@ localTailscale: {
       }) => `${state}（blockedBy=${blockedBy ?? "null"}, code=${code}）`,
     },
     expAutomations: "オートメーション",
-    expAutomationsSubtitle: "オートメーションのUIとスケジュール機能を有効化",
+    expAutomationsSubtitle: "スケジュールで、または何かが起きたときにワークフローを実行します。",
     expExecutionRuns: "実行ラン",
     expExecutionRunsSubtitle:
       "実行ラン（サブエージェント/レビュー）の制御プレーンUIを有効化",
@@ -5718,13 +6077,10 @@ localTailscale: {
       "デーモン連携の音声エージェントUIを有効化（実行ランが必要）",
     expVoiceDaemonInference: 'デーモン音声推論',
     expVoiceDaemonInferenceSubtitle: 'デーモンベースのローカル音声推論コントロールを有効にする',
-    expLiveActivities: 'Live Activities',
+    expLiveActivities: 'ライブアクティビティ',
     expLiveActivitiesSubtitle: 'セッション進行状況の Live Activities サーフェスを有効にする',
     expHomeScreenWidgets: 'ホーム画面ウィジェット',
     expHomeScreenWidgetsSubtitle: 'Happier アクティビティ用のホーム画面ウィジェットを有効にする',
-    expConnectedServicesQuotas: "連携サービスのクォータ",
-    expConnectedServicesQuotasSubtitle:
-      "連携サービスのクォータバッジと使用量メーターを表示",
     expMemorySearch: "メモリ検索",
     expMemorySearchSubtitle: "ローカルメモリ検索の画面と設定を有効化",
     expSessionsDirect: "外部セッション",
@@ -5773,9 +6129,6 @@ localTailscale: {
       "非アクティブセッションをプロジェクト別にグループ化",
     groupInactiveSessionsByProjectSubtitle:
       "非アクティブなチャットをプロジェクトごとに整理",
-    environmentBadge: "環境バッジ",
-    environmentBadgeSubtitle:
-      "Happier のタイトル横に現在のアプリ環境を示す小さなバッジを表示",
     enhancedSessionWizard: "拡張セッションウィザード",
     enhancedSessionWizardEnabled: "プロファイル優先セッションランチャーが有効",
     enhancedSessionWizardDisabled: "標準セッションランチャーを使用",
@@ -5974,6 +6327,7 @@ localTailscale: {
   },
 
   newSession: {
+    folder: folderlessSessionTranslations.ja.composer,
     ...newSessionMcpTranslationExtension,
     ...acpCatalogTranslationExtension.newSession,
     // Used by new-session screen and launch flows
@@ -6094,6 +6448,7 @@ localTailscale: {
     temporaryComputer: {
         title: '一時的なコンピュータ',
         subtitle: '別のコンピュータ向けに、検証済みの Runner パッケージを準備します。',
+        continueLater: '後で続ける',
         cancelConnectedTitle: 'この一時的なコンピュータをキャンセルしますか？',
         cancelConnectedBody: '相手のコンピュータはすでに接続されています。キャンセルすると双方でこのリクエストが終了しますが、ここにある現在の下書きはそのまま残ります。',
         choosePlatform: 'コンピュータのプラットフォームを選択',
@@ -6173,8 +6528,8 @@ localTailscale: {
             reconciling: 'このリクエストを確認しています…',
             preparing: 'パッケージを準備しています…',
             waiting_for_computer: 'コンピュータを待っています',
-            review_unavailable: '選択した AI アクセスは、この一時的なコンピュータ用にまだ準備できません。このリクエストをキャンセルし、Happier を更新してからもう一度お試しください。',
-            materialization_unavailable: 'この一時的なコンピュータではまだセッションを作成できません。このリクエストをキャンセルし、Happier を更新してからもう一度お試しください。',
+            review_unavailable: '選択した AI アクセスは、この一時的なコンピュータ用にまだ準備できません。リクエストは保存されています。アクセスが利用可能になったら再試行してください。',
+            materialization_unavailable: 'この一時的なコンピュータではまだセッションを作成できません。リクエストは保存されています。アクセスが利用可能になったら再試行してください。',
             waiting_for_approval: '承認を待っています',
             connected: 'コンピューターに接続しました',
             installing_agent: '選択したエージェントをインストールしています…',
@@ -6395,20 +6750,22 @@ localTailscale: {
   sessionHandoff: sessionHandoffTranslationExtensions.ja,
 
   session: {
+    folderless: folderlessSessionTranslations.ja.display,
         access: sessionAccessTranslations['ja'],
+        untitled: '無題のセッション',
         follow: sessionFollowTranslations['ja'],
         homeFreshness: sessionHomeFreshnessTranslations['ja'],
+        embedded: sessionEmbeddedTranslations['ja'],
     providerBinding: providerSessionTranslations.ja,
     transcriptNavigation: {
       title: "ナビゲート",
       modeAll: "すべて",
       modePinned: "ピン留め",
-      entryCount: ({ count }: { count: number }) => `${count} 件`,
+      turnCount: ({ count }: { count: number }) => `${count} ターン`,
       pinnedCount: ({ count }: { count: number }) => `${count} 件のピン留め`,
-      emptyPinnedTitle: "ピン留めされたメッセージはありません",
-      emptyPinnedBody: "重要なターンをここに残すにはメッセージをピン留めします。",
-      emptyAllTitle: "ナビゲーション項目はありません",
-      emptyAllBody: "ユーザーのターンとピン留めメッセージがここに表示されます。",
+      emptyPinnedTitle: "あとで戻るターンをピン留めしましょう",
+      emptyAllTitle: "メッセージごとにここへ立ち寄れます",
+      emptyAllBody: "新しいものが上に表示されます。ターンをタップすると戻れます。あとで見返すものはピン留めしましょう。",
       entryA11y: ({ label }: { label: string }) => `${label} に移動`,
       entryPinnedA11y: ({ label }: { label: string }) => `ピン留めメッセージに移動: ${label}`,
       fallbackPinnedAssistant: "ピン留めされたアシスタントメッセージ",
@@ -6426,6 +6783,44 @@ localTailscale: {
       railScrollDownA11y: "ナビゲーションを下にスクロール",
       emptyPinnedHint: "メッセージにカーソルを合わせてピンアイコンを選ぶと固定できます。",
       emptyPinnedPrivacy: "ピン留めはこのデバイスにのみ保存されます。",
+      showAllTurns: "すべてのターンを表示",
+      filterApprovals: "承認",
+      filterErrors: "エラー",
+      filtersA11y: "ターンを表示",
+      approvalsCount: ({ count }: { count: number }) => `承認 ${count} 件`,
+      errorsCount: ({ count }: { count: number }) => `エラーのあるターン ${count} 件`,
+      waitingCount: ({ count }: { count: number }) => `${count} 件があなたを待っています`,
+      soFar: "これまで",
+      toolCount: ({ count }: { count: number }) => `ツール ${count} 回`,
+      allowedCount: ({ count }: { count: number }) => `${count} 件許可`,
+      deniedCount: ({ count }: { count: number }) => `${count} 件拒否`,
+      failedCount: ({ count }: { count: number }) => `${count} 件失敗`,
+      durationSeconds: ({ seconds }: { seconds: number }) => `${seconds}秒`,
+      durationMinutes: ({ minutes, seconds }: { minutes: number; seconds: string }) => `${minutes}分${seconds}秒`,
+      durationHours: ({ hours, minutes }: { hours: number; minutes: string }) => `${hours}時間${minutes}分`,
+      now: "今",
+      waitingForYou: "あなたを待っています",
+      waitingForYouOn: ({ label }: { label: string }) => `あなたを待っています · ${label}`,
+      approvalAllowed: ({ label }: { label: string }) => `許可 · ${label}`,
+      approvalDenied: ({ label }: { label: string }) => `拒否 · ${label}`,
+      pinnedAnswer: "ピン留めした回答",
+      sessionStarted: "セッション開始",
+      agentOnMachine: ({ agent, machine }: { agent: string; machine: string }) => `${machine} 上の ${agent}`,
+      partialApprovals: "これまでに読み込んだターンの承認です。",
+      partialErrors: "これまでに読み込んだターンのエラーです。",
+      filterEndApprovals: ({ count, total }: { count: number; total: number }) => `${total} ターン中 ${count} ターンが承認を求めました。`,
+      filterEndErrors: ({ count, total }: { count: number; total: number }) => `${total} ターン中 ${count} ターンで失敗したステップがありました。`,
+      loadEarlierTurns: "以前のターンを読み込む",
+      loadingEarlierTurns: "以前のターンを読み込み中…",
+      earlierTurnsNotListed: "以前のターンはまだ表示されていません。",
+      noApprovals: "承認を求めたターンはありません。",
+      noApprovalsSoFar: "これまでに読み込んだターンに承認はありません。",
+      noErrors: "このセッションに失敗したステップはありません。",
+      noErrorsSoFar: "これまでに読み込んだターンに失敗したステップはありません。",
+      machineOffline: ({ machine }: { machine: string }) => `${machine} はオフラインです`,
+      sessionOffline: "このセッションはオフラインです",
+      backToTime: ({ time }: { time: string }) => `${time} に戻る`,
+      backToReading: "読んでいた場所に戻る",
     },
 
     inputPlaceholder: "メッセージを入力...",
@@ -6796,7 +7191,7 @@ localTailscale: {
         openSubagents: ({ count }: { count: number }) => (count > 0 ? `エージェントを開く (${count})` : 'エージェントを開く'),
         participants: {
           to: '宛先',
-          lead: 'メイン',
+          lead: 'このセッション',
           sendToTitle: '送信先',
           broadcast: ({ teamId }: { teamId: string }) => `ブロードキャスト: ${teamId}`,
           executionRun: ({ runId }: { runId: string }) => `実行 ${runId}`,
@@ -6992,6 +7387,8 @@ localTailscale: {
           invalid: 'このままではメッセージを受け付けられませんでした。',
           archived: 'このセッションはアーカイブ済みで、入力を受け付けません。',
           unauthorized: 'このセッションに送信する権限がありません。',
+          modelNotGranted: '選択したモデルは許可されていません。',
+          permissionModeNotGranted: '選択した権限モードは許可されていません。',
           targetUnavailable: '選択したエージェント会話は利用できなくなりました。何も送信されていません。',
           targetUpdateRequired: 'エージェント会話への送信には、更新された Home とコンピューターが必要です。何も送信されていません。',
           cancelled: '送信は受け付けられる前にキャンセルされました。',
@@ -7172,6 +7569,7 @@ localTailscale: {
   },
 
     universalSearch: {
+        scopeFilterLabel: 'Home',
         commitsUpdateRequired: 'コミットを検索するには、このマシンの Happier を更新してください。',
     moreResultsAvailable: 'さらに結果があります。検索条件を絞り込んでください。',
     sections: {
@@ -7195,23 +7593,18 @@ localTailscale: {
         shortcutsHelpHelp: 'キーボードショートカットを開く',
         shortcutsHelpNewSession: '新規セッション',
         commands: {
-            sessionsCategory: 'セッション',
-            navigationCategory: 'ナビゲーション',
+            actionsCategory: 'アクション',
+            navigationCategory: '移動先',
             recentSessionsCategory: '最近のセッション',
             runsCategory: '走る',
             voiceCategory: '声',
             systemCategory: 'システム',
             developerCategory: '開発者',
             newSessionTitle: '新しいセッション',
-            newSessionSubtitle: '新しいチャットセッションを開始する',
             viewAllSessionsTitle: 'すべてのセッションを表示',
-            viewAllSessionsSubtitle: 'チャット履歴を閲覧する',
             settingsTitle: '設定',
-            settingsSubtitle: '設定を構成する',
             accountTitle: 'アカウント',
-            accountSubtitle: 'アカウントを管理する',
             connectTerminalTitle: 'QRをスキャンして端末を接続します',
-            connectTerminalSubtitle: '端末に表示される接続を承認します',
             memorySearchTitle: 'サーチメモリー',
             memorySearchSubtitle: '過去の会話を横断的に検索する',
             sessionFallbackTitle: ({ id }: { id: string }) => `Session ${id}`,
@@ -7221,29 +7614,26 @@ localTailscale: {
             startReviewRunTitle: 'レビューの実行を開始する',
             startPlanRunTitle: '計画の実行を開始する',
             startDelegationRunTitle: '委任の実行を開始する',
-            executionRunsSubtitle: '実行の実行',
             openSessionRunsTitle: 'オープンセッションの実行',
             runsForCurrentSessionSubtitle: '現在のセッションで実行されます',
             runsAcrossMachinesSubtitle: 'マシン間で実行',
             resetVoiceAgentTitle: '音声エージェントをリセットする',
-            voiceSubtitle: '声',
             signOutTitle: 'サインアウト',
-            signOutSubtitle: 'アカウントからサインアウトする',
             developerMenuTitle: '開発者メニュー',
-            developerMenuSubtitle: '開発者ツールにアクセスする',
         },
     pets: {
       category: "ペット",
       wakeTitle: "ペットを起こす",
-      wakeSubtitle: "このサーフェスにコンパニオンを表示します。",
       tuckTitle: "ペットをしまう",
-      tuckSubtitle: "このサーフェスでコンパニオンを非表示にします。",
       resetPositionTitle: "ペットの位置をリセット",
-      resetPositionSubtitle: "コンパニオンを既定の場所へ戻します。",
       chooseTitle: "ペットを選択",
       chooseSubtitle: "ペット設定を開きます。",
       refreshCodexTitle: "Codex ペットを更新",
-      refreshCodexSubtitle: "設定を開き、ローカルの Codex ペットを検出します。",
+    },
+    hints: {
+      move: '移動',
+      open: '開く',
+      close: '閉じる',
     },
   },
 
@@ -7415,7 +7805,30 @@ localTailscale: {
     },},
 
   server: {
+    pageSections: {
+      savedDescription: '作業中の Home を切り替えたり、保存済みの Home の名前変更や削除ができます。',
+      addTitle: 'Home を追加',
+    },
+    page: {
+      description: 'このデバイスが接続する Home と、その接続方法。',
+      connectionTitle: '接続',
+      connectionDescription: 'このデバイスが Home に接続する方法。',
+    },
     // Used by Server Configuration screen (app/(app)/server.tsx)
+    homeOnHost: ({ host }: { host: string }) => `${host} 上の Home`,
+    homes: {
+      currentTitle: 'このデバイスが使用中',
+      currentPill: '現在',
+      switch: '切り替え',
+      signIn: 'サインイン',
+      signInAgainTitle: ({ name }: { name: string }) => `${name} を使うには再度サインインしてください`,
+      signInAgainDescription: 'このデバイスはこの Home からサインアウトしているため、セッションとマシンをここで読み込めません。',
+      unavailableTitle: ({ name }: { name: string }) => `${name} に接続できません`,
+      unavailableDescription: 'この Home から応答がありません。起動していて、このデバイスから接続できることを確認してください。',
+      connectionDetails: '接続の詳細',
+      nameThisHome: 'このHomeに名前を付ける',
+      addByAddress: 'アドレスで追加',
+    },
     serverConfiguration: "Home 設定",
     enterServerUrl: "Home のアドレスを入力してください",
     notValidHappyServer: "有効な Happier Home ではありません",
@@ -7492,6 +7905,8 @@ localTailscale: {
       keepForever: "自動削除なし",
       automaticDeletionEnabled: "自動削除が有効です",
       detailsUnavailable: "自動削除は有効ですが、このクライアントでは有効なポリシーをすべて表示できません",
+      readFailed: "この Home の保持ポリシーを読み取れませんでした",
+      disclosureUnreadable: "この Home のデータ保持を確認できませんでした",
       singlePolicySummary: ({ domain, policy }: { domain: string; policy: string }) => `${domain}: ${policy}`,
       relayCleanupSummary: ({ policies }: { policies: string }) => `この Home は${policies}をクリーンアップします。`,
       relayCleanupAfterDays: ({ domain, count }: { domain: string; count: number }) => `${domain}（${count}日後）`,
@@ -7514,8 +7929,16 @@ localTailscale: {
       globalLocks: "グローバルロック",
       automationRuns: "自動化の実行",
       automationRunEvents: "自動化実行イベント",
+      homeAdministrationEvents: 'アクティビティ (この Home の監査)',
     },
     multiServerView: {
+        presentationChoice: {
+            title: 'セッションの表示',
+            flat: '1つのリスト',
+            grouped: 'Home ごと',
+            flatDescription: '各セッションに Home がバッジで表示されます。',
+            groupedDescription: 'Home ごとにセクションが分かれます。',
+        },
       editMembersAction: "このグループの Home を編集",
       title: "このビューの Home",
       footer: "これらの Home をセッション一覧にどう表示するか、どの Home をこのグループに含めるかを選びます。",
@@ -7564,6 +7987,7 @@ localTailscale: {
     viewOptions: '表示オプション',
     searchSessions: 'セッションを検索',
     searchSessionsPlaceholder: 'セッションを検索...',
+    closeSearch: '検索を閉じる',
     searchEverythingFor: ({ query }: { query: string }) => `すべてから「${query}」を検索`,
     searchGroupInThisView: 'この表示内',
     searchGroupOtherMatches: 'その他の一致',
@@ -7620,8 +8044,6 @@ localTailscale: {
     dragA11yBlockedUnsupportedItem: 'このアイテムはフォルダーに移動できません',
     hideInactiveSessions: '非アクティブなセッションを非表示',
     showInactiveSessions: '非アクティブなセッションを表示',
-    attentionSectionTitle: '確認が必要',
-    workingSectionTitle: '処理中',
     loadingSectionTitle: "読み込み中",
         backgroundWorkingSectionTitle: 'バックグラウンドで実行中',
     selectionSelectedCount: ({ count }: { count: number }) => count === 1 ? '1 session selected' : `${count} sessions selected`,
@@ -7695,6 +8117,7 @@ localTailscale: {
   },
 
     workspacePresentation: {
+        homeFolder: "ホームフォルダ",
         checkoutKinds: {
             primary: "主要チェックアウト",
             git_worktree: "Git ワークツリー",
@@ -7922,7 +8345,9 @@ localTailscale: {
       references: '参照',
       skills: 'スキル',
       commands: 'コマンド',
+      people: 'メンバー',
     },
+    suggestionTypeMoreToNarrow: 'さらに入力して絞り込む',
     stopCodingTurn: "コーディングターンを停止",
       nonSteerableSend: {
         title: 'エージェントは処理中です',
@@ -7995,6 +8420,8 @@ localTailscale: {
     agent: {
       sectionTitle: "エージェント",
       unselected: "エージェントを選択",
+      noLongerAvailableOn: ({ machine }: { machine: string }) => `${machine} では利用できなくなりました · 別のものを選択`,
+      noLongerAvailable: '利用できなくなりました · 別のものを選択',
       claude: "Claude",
       codex: "Codex",
       cursor: "Cursor",
@@ -8400,6 +8827,7 @@ localTailscale: {
   },
 
   files: {
+            pane: filesPaneTranslations.ja,
             revealInFiles: "ファイルで表示",
             openChanges: "変更を開く",
     searchPlaceholder: "ファイルを検索...",
@@ -8562,7 +8990,7 @@ localTailscale: {
     stash: {
       summaryA11y: "スタッシュの詳細を開く",
       summaryTitle: "管理されたスタッシュ",
-      detailsTitle: "管理されたスタッシュ",
+      detailsTitle: "スタッシュ",
       empty: "管理されたスタッシュはありません。",
       failedToLoad: "スタッシュの読み込みに失敗しました。",
       failedToLoadDiff: "スタッシュ差分の読み込みに失敗しました。",
@@ -8643,7 +9071,6 @@ localTailscale: {
     notRepo: "ソース管理リポジトリではありません",
     notUnderSourceControl: "このディレクトリはソース管理下にありません",
     sourceControlStale: {
-        title: 'ソース管理に注意が必要です',
         body: '最後に成功した更新を表示しています。最新の更新は完了しませんでした。',
     },
     repositoryInit: {
@@ -8787,6 +9214,8 @@ localTailscale: {
           missingContext: "コミットのコンテキストがありません",
           failedToLoadDiff: "コミット差分の読み込みに失敗しました",
           diffUnavailableTitle: "コミット差分を表示できません",
+          couldNotOpenTitle: ({ sha }: { sha: string }) => `コミット ${sha} を開けませんでした`,
+          couldNotOpenReason: '変更を読み込めませんでした。再試行するか、履歴に戻ってください。',
           diffUnavailableHint:
             "［ファイル］画面からコミットをもう一度開いてみてください。",
           commitLabel: "コミット",
@@ -8809,6 +9238,7 @@ localTailscale: {
 	          commit: "コミット",
 	          generateFailed: "コミットメッセージを生成できませんでした",
 	          generatorDisabled: "コミットメッセージ生成が無効です",
+	          title: "コミットを作成",
 	        },
       commitAdjacentPush: {
         accessibilityLabel: ({ target }: { target: string }) => `${target} に push`,
@@ -9197,6 +9627,26 @@ localTailscale: {
       diagnostic: ({ value }: { value: string }) => `Diagnostic: ${value}`,
       countBadge: ({ total, running }: { total: string; running: string }) => `${total} services · ${running} running`,
     },
+    pane: {
+      runningOn: ({ count, machine }: { count: number; machine: string }) => `${machine} で ${count} 件実行中`,
+      running: ({ count }: { count: number }) => `${count} 件実行中`,
+      nothingRunningOn: ({ machine }: { machine: string }) => `${machine} で実行中のものはありません`,
+      nothingRunning: '実行中のものはありません',
+      offlineOn: ({ machine }: { machine: string }) => `${machine} はオフラインです`,
+      offline: 'このマシンはオフラインです',
+      offlineReason: '復帰すると、開発サーバーがここに再び表示されます。',
+      checkAgain: '再確認',
+      sectionRunning: '実行中',
+      sectionReady: '開始可能',
+      sectionElsewhereOn: ({ machine }: { machine: string }) => `${machine} のその他`,
+      sectionElsewhere: 'このマシンのその他',
+      happierServices: ({ count }: { count: number }) => `Happier のサービス（${count}）`,
+      emptyTitle: '作っているものをプレビュー',
+      emptyReason: 'このワークスペースで起動した開発サーバーがここに表示され、スマートフォンでも開けるリンクが付きます。',
+      copyAddress: 'アドレスをコピー',
+      publicLinkTitle: '公開リンク',
+      publicLinkScanHint: 'スキャンしてスマートフォンで開きます。',
+    },
     session: {
       thisSessionTitle: 'このセッション',
       workspaceTitle: 'ワークスペース',
@@ -9315,14 +9765,15 @@ localTailscale: {
       },
       createActionA11y: '公開プレビューリンクを作成',
       revokeActionA11y: '公開プレビューリンクを取り消す',
-      confirmTitle: 'サービスを公開しますか？',
+      confirmTitle: 'このサービスへのリンクを共有しますか？',
       confirmMessage: ({ service }: { service: string }) =>
-        `「${service}」は共有可能なシークレットリンクを通じてインターネット上で公開されます。`,
-      confirmCta: '公開リンクを作成',
+        `「${service}」に、ほかのデバイスから開けるリンクを作成します。`,
+      confirmCta: `リンクを作成`,
             revokeConfirmTitle: '公開リンクを取り消しますか？',
             revokeConfirmMessage: ({ url }: { url: string }) => `公開プレビューリンク ${url} を取り消しますか？利用中のユーザーはアクセスできなくなります。`,
             revokeConfirmCta: 'リンクを取り消す',
             consequenceReach: 'リンクを知っている人は誰でもこのサービスを開けます。サインインは不要です。',
+            consequenceReachSignedIn: `Happier にサインインしていて、このセッションを開ける人だけがリンクを開けます。`,
             consequenceExpiry: '下に表示された有効期間が切れると、リンクは自動的に使えなくなります。',
             consequenceRevoke: 'このパネルからいつでも取り消せます。',
             lifetimeLabel: '有効期間',
@@ -9335,6 +9786,7 @@ localTailscale: {
     actions: {
       terminateDetectedA11y: '検出されたローカルサービスを終了',
       forgetA11y: 'このサービスを一覧から非表示にする',
+      hiddenNotice: 'サービスを非表示にしました',
       terminatePidOnlyConfidence: '終了の信頼度: PID のみの識別です。確認が必要です',
             copyAddressA11y: 'サービスアドレスをコピー',
             terminateConfirmTitle: 'サービスを終了しますか？',
@@ -9343,7 +9795,9 @@ localTailscale: {
             stopConfirmTitle: 'サービスを停止しますか？',
             stopConfirmMessage: ({ service }: { service: string }) => `${service} を停止しますか？再起動するまでサービスに接続できなくなります。`,
             stopConfirmCta: '停止',
+            openA11y: ({ service }: { service: string }) => `${service} を開く`,
             startA11y: 'サービスを開始',
+            runScriptA11y: '新しいターミナルタブでスクリプトを実行',
             failure: {
                 title: '操作が完了しませんでした',
                 refused: 'マシンがこの操作を拒否しました。このマシンのローカルサービスの権限を確認してから、もう一度お試しください。',
@@ -9403,57 +9857,21 @@ localTailscale: {
       stop: '録画を停止',
       cancel: '録画をキャンセル',
     },
-    fidelity: {
-        pixel: 'ビジュアルキャプチャ',
-        cdp: 'ブラウザキャプチャ',
-        injectedPage: 'ページキャプチャ',
-        nativeCallback: 'ネイティブキャプチャ',
-        streamFrame: 'ストリームキャプチャ',
-        previewProxy: 'プレビューキャプチャ',
-        unavailable: 'キャプチャ待機中',
+    failure: {
+      stopTitle: '録画を停止できませんでした',
+      stopBody: 'まだ録画中の可能性があります。少し待ってからもう一度お試しください。',
+      discardTitle: '録画を破棄できませんでした',
+      discardBody: 'クリップは削除されていません。少し待ってからもう一度お試しください。',
     },
     status: {
       noView: 'ブラウザービューが選択されていません。',
-      unavailable: ({ reason }: { reason: string }) => `録画を利用できません: ${reason}`,
-      ready: ({ fidelity }: { fidelity: string }) => `録画準備完了 (${fidelity})`,
-      recording: ({ elapsed, fidelity }: { elapsed: string; fidelity: string }) => `録画中 ${elapsed} (${fidelity})`,
-      temporary: '一時保存',
-      attached: '添付済み',
-      discarded: '破棄済み',
     },
   },
 
-  browserAutomation: {
-    actions: {
-      cancel: '自動操作をキャンセル',
-    },
-    status: {
-      noView: 'ブラウザービューが選択されていません。',
-      unavailable: '自動操作を利用できません',
-            running: '自動操作中',
-            readyForActions: '自動操作の準備完了',
-      ready: ({ authority }: { authority: string }) => `自動操作準備完了 (${authority})`,
-      active: ({ requestId }: { requestId: string }) => `自動操作中: ${requestId}`,
-    },
-    timeline: {
-      entry: ({ action, status }: { action: string; status: string }) => `${action}: ${status}`,
-            action: {
-                inspect: 'ページを検査',
-                interact: 'ページを操作',
-                navigate: 'ページを移動',
-                browserAction: 'ブラウザ操作',
-            },
-            status: {
-                succeeded: '完了',
-                failed: '失敗',
-                canceled: 'キャンセル済み',
-                timedOut: 'タイムアウト',
-                stale: '古いページ',
-                blocked: 'ブロック済み',
-                unsupported: '未対応',
-            },
-    },
-  },
+  browserPresence: browserPresenceTranslations.ja,
+
+  computerUse: computerUseTranslations.ja,
+  browserTool: browserToolTranslations.ja,
 
   browserSurface: {
     title: 'ブラウザー',
@@ -9463,6 +9881,10 @@ localTailscale: {
   },
 
   browserLaunchpad: {
+    pane: {
+      previewsFrom: ({ machine }: { machine: string }) => `${machine} からのプレビュー`,
+      previews: 'このマシンからのプレビュー',
+    },
     refreshing: 'ブラウザーターゲットを更新中',
     sections: {
       running: '実行中のプレビュー',
@@ -9491,7 +9913,6 @@ localTailscale: {
     },
     error: {
       title: 'ブラウザーターゲットに注意が必要です',
-      subtitle: ({ reason }: { reason: string }) => `更新に失敗しました: ${reason}`,
     },
   },
 
@@ -9500,7 +9921,6 @@ localTailscale: {
       label: 'ブラウザーアドレス',
       placeholder: 'URLを入力',
             copy: 'URL をコピー',
-            searchUnconfigured: '検索エンジンが設定されていません。ウェブアドレスを入力してください。',
     },
         frame: {
             errorTitle: 'ページを読み込めませんでした',
@@ -9586,6 +10006,9 @@ localTailscale: {
     },
     unavailable: {
       generic: "このページは現在利用できません。",
+      previewElsewhereTitle: ({ service, machine }: { service: string; machine: string }) => `${service} は ${machine} で実行中です`,
+      previewElsewhereTitleUnknownMachine: ({ service }: { service: string }) => `${service} は別のマシンで実行中です`,
+      previewElsewhere: `このデバイスからは直接開けません。ローカルサービスからリンクを共有すると、ここで開けます。`,
       desktopEngineUnavailable: "このマシンでは組み込みブラウザーエンジンを利用できません。",
       desktopWebView: "このマシンでは組み込みブラウザーエンジンを利用できません。このページはシステムブラウザーで開けます。",
       desktopWebViewUnsupportedPlatform: "このプラットフォームでは組み込みブラウジングをまだ利用できません。",
@@ -9644,15 +10067,9 @@ localTailscale: {
       lowBandwidth: '低帯域幅',
       degradedCodec: 'コーデック低下',
     },
-    actions: {
-      requestKeyframe: 'キーフレームを要求',
-      lowerQuality: '品質を下げる',
-    },
     controls: {
       readOnly: '読み取り専用',
       controlling: '操作中',
-      controlsUnavailable: '操作不可',
-      controlsAvailable: '操作可能',
     },
     renderer: {
       fallback: 'フォールバックレンダラー',
@@ -9937,8 +10354,6 @@ localTailscale: {
   },
 
       settingsActions: {
-      aboutSubtitle: "各アクションをアプリ、音声、統合のどこに表示するかを選択します。利用不可のタイルは表示したままにして、機能、プライバシー、ランタイムのどれでブロックされているかを分かるようにします。",
-      aboutFooter: "これらの設定はアカウント既定にグローバルに適用されます。利用不可のタイルは、対象が現在ブロックされている理由を示します。",
       searchPlaceholder: "アクションを検索",
       detailSearchPlaceholder: "サーフェスを検索",
       noResults: "現在の検索に一致するアクションはありません。",
@@ -9948,11 +10363,8 @@ localTailscale: {
       invalidActionTitle: "アクションが見つかりません",
       invalidActionSubtitle: "このアクションはこのビルドでは利用できなくなりました。",
       configureActionAccessibilityLabel: "アクションを設定",
-      approvalHelpTitle: "承認モード",
       approvalHelpBody: "「先に確認」では、このサーフェスからアクションを実行する前に確認を表示します。「許可」では、このサーフェスから承認プロンプトなしで実行できます。",
       contributed: {
-        machineSelectionTitle: "提供アクションのマシンを選択",
-        machineSelectionBody: "インストール済みプラグインが宣言したアクションを表示・設定するマシンを選択します。",
         removedDescription: "この提供アクションは選択したマシンでは利用できなくなりました。保存済みの設定は保持されます。",
         removedTargetsTitle: "提供アクションは利用できません",
         removedTargetsBody: "このアクションは現在、選択したマシンで宣言されていません。保存済みの設定はここで利用できます。",
@@ -9983,6 +10395,14 @@ localTailscale: {
           },
       },
       spawnPolicy: {
+          allowLists: {
+              rolesTitle: "許可する役割",
+              rolesSubtitle: "エージェントが開始できる役割を選びます。",
+              agentsTitle: "許可するエージェント",
+              agentsSubtitle: "委任された作業を実行できるエージェントを選びます。",
+              none: "すべて禁止",
+              selected: ({ count }: { count: number }) => `${count} 件選択`,
+          },
           title: "AI セッション作成ポリシー",
           footer: "これらの設定は、Happier セッション内のアシスタントが別のセッションを作成するときだけ適用されます。親から継承した設定は引き続き許可され、拒否された項目は明確なエラーで明示的な上書きを拒否します。",
           toggles: {
@@ -9994,6 +10414,7 @@ localTailscale: {
               allowAgentModeOverride: { title: "エージェントモード", subtitle: "エージェントまたはセッションモードを選べるようにします。" },
               allowConfigOptionOverrides: { title: "設定オプション", subtitle: "思考 effort や workflow などのプロバイダー設定を許可します。" },
               allowProfileOverride: { title: "プロファイル", subtitle: "秘密情報を公開せずに profile id を選べるようにします。" },
+              allowEnvironmentVariables: { title: "環境変数", subtitle: "新しいセッションで明示的な環境変数を許可します。" },
               allowConnectedServicesOverride: { title: "接続済みサービス", subtitle: "接続済みサービスのバインディングを参照で選べるようにします。" },
               allowMcpSelectionOverride: { title: "MCP 選択", subtitle: "継承した MCP サーバー選択を上書きできるようにします。" },
               allowTranscriptStorageOverride: { title: "トランスクリプト保存", subtitle: "互換性のある保存モードを選べるようにします。" },
@@ -10059,7 +10480,7 @@ localTailscale: {
             voiceFeature: "この対象を使うには、音声アシスタント設定を有効にしてください。",
             voiceInventoryPrivacy: "この対象を使うには、音声アシスタントのプライバシー設定でデバイス情報の共有を有効にしてください。",
             mcpFeature: "このアクションを MCP 経由で表示するには MCP サーバーを有効にしてください。",
-            executionRunsFeature: "このアクションまたは対象を使うには execution runs を有効にしてください。",
+            executionRunsFeature: "このアクションまたは対象を使うにはバックグラウンド実行を有効にしてください。",
             memorySearchFeature: "このアクションを使うにはローカルメモリ検索を有効にしてください。",
             sessionHandoffFeature: "このアクションを使うにはセッションハンドオフを有効にしてください。",
             notAvailableInThisApp: 'このターゲットは、このクライアントではまだ表示されません。',
@@ -10101,11 +10522,11 @@ localTailscale: {
             },
             run_list: {
                 title: "実行ラン一覧",
-                subtitle: "execution run の一覧から表示されます。",
+                subtitle: "バックグラウンド実行の一覧から表示されます。",
             },
             run_card: {
                 title: "実行ランカード",
-                subtitle: "execution run カードに表示されます。",
+                subtitle: "バックグラウンド実行カードに表示されます。",
             },
             voice_tool: {
                 title: "音声ツール",
@@ -10298,7 +10719,7 @@ settingsSession: {
         composer: { title: '入力と送信', entrySubtitle: 'Enter で送信、履歴、入力欄の外観、実行中の送信動作。' },
         providerLimits: { title: 'プロバイダー制限と使用量', entrySubtitle: '使用制限からの回復とコンポーザー横の使用量ゲージ。' },
         resume: { title: '再開とハンドオフ', entrySubtitle: 'トランスクリプト再生による再開とマシン間移動の既定値。' },
-        runtime: { title: 'ランタイムとターミナル', entrySubtitle: 'tmux、Windows Terminal ウィンドウ、Terminal Connect 互換性。' },
+        runtime: { title: 'ランタイムとターミナル', entrySubtitle: 'マシン上でセッションを tmux で開始します。' },
     banners: {
         title: 'バナー',
         footer: '入力欄の上のバナーはステータスバッジに折りたためます。その状態を記憶するかどうかを選べます。',
@@ -10740,7 +11161,7 @@ settingsSession: {
           "新規セッションは、プロジェクトショートカットまたは下書きが設定を指定しない限り既定値を使います。",
         wizardSettingsTitle: "新規セッションウィザード",
         wizardSettingsSubtitle: "各ウィザード選択欄をリストまたはドロップダウンで表示するかを選びます。",
-        wizardDispositionTitle: "ウィザード配置",
+        wizardDispositionTitle: 'ウィザードのレイアウト',
         wizardDispositionSubtitle: "各ウィザード選択欄をリストまたはドロップダウンで表示するかを選びます。",
         wizardLayoutTitle: "ウィザードレイアウト",
         wizardLayoutFooter: "広い画面でウィザードセクションをどう配置するかを制御します。",
@@ -10788,6 +11209,7 @@ settingsSession: {
       title: "既定のセッションタイプ",
               footer: "新しいセッションを、Happier セッションとして開始するか、プロバイダー直結の直接セッションとして開始するかを選択します。",
               globalTitle: "グローバル既定",
+              noDirectAgents: "有効なエージェントはまだダイレクトセッションを開始できないため、新しいセッションは Happier セッションになります。",
               persistedSubtitle: "新しいセッションを Happier に保存し、既定でデバイス間で同期します。",
               directSubtitle: "プロバイダーが対応している場合は、マシンに紐づく直接セッションを開始します。",
               globalSubtitle: ({ label }: { label: string }) => `グローバル既定: ${label}`,
@@ -10824,7 +11246,7 @@ settingsSession: {
           customBackendIdSubtitle: "バックエンドIDを入力（例: claude）。",
           customModelIdSubtitle: "モデルIDを入力（例: default）。",
           requiresModelNotice: "下で要約モデルを選んでください。未設定の場合、リプレイは直近のメッセージのみになります。",
-          requiresExecutionRunsNotice: "要約には実行ランが必要ですが、このアカウントでは無効です。リプレイは直近のメッセージのみを使います。",
+          requiresExecutionRunsNotice: "要約にはバックグラウンド実行が必要ですが、このアカウントでは無効です。リプレイは直近のメッセージのみを使います。",
         },
         recentMessagesTitle: "含める最近メッセージ",
         recentMessagesPlaceholder: "16",
@@ -10865,14 +11287,15 @@ settingsSession: {
     ...voiceDiagnosticsTranslations.ja,
     intents: {
       dictation: { title: '音声入力', subtitle: '1回の発話を入力欄のテキストに変換します。' },
-      conversations: { title: '音声会話', subtitle: 'プロバイダーを選び、基本設定を行います。' },
-      privacy: { title: 'プライバシーとデータ', subtitle: 'プロバイダーの処理、コンテキスト共有、音声履歴を確認します。', processingTitle: 'プロバイダーによる処理' },
-      advanced: { title: '詳細設定', subtitle: '音声UI、実行マシン、診断を設定します。' },
+      conversations: { title: '音声会話', subtitle: 'エージェントと声で話します。音声プロバイダーを選んで設定します。' },
+      privacy: { title: 'プライバシーとデータ', subtitle: '音声プロバイダーに送られる内容と、Happier が保存する音声履歴。', processingTitle: 'プロバイダーによる処理' },
+      advanced: { title: '詳細設定', subtitle: '画面上での音声の表示、ローカル音声の実行場所、診断。' },
     },
     history: {
       title: '音声履歴',
       sectionTitle: '履歴',
       sectionFooter: '対象なしおよびグローバル音声会話の文字起こしを確認または削除します。',
+      pageDescription: 'グローバル音声と、セッション外で始めた会話の文字起こし。',
       entryTitle: '音声履歴',
       entrySubtitle: '保存された音声文字起こしを検索、書き出し、または消去します。',
       searchTitle: '読み込み済み履歴を検索',
@@ -10944,6 +11367,8 @@ settingsSession: {
     },
     // Voice settings screen
     modeTitle: "音声",
+    providerSectionTitle: "プロバイダー",
+    providerSectionDescription: "話したときに聞き取り、応答する相手です。有効なプロバイダーは一度に 1 つです。",
     modeDescription:
       "音声機能を設定します。音声を完全に無効にするか、Happier Voice（サブスクリプションが必要）を使用するか、ご自身のElevenLabsアカウントを使用できます。",
     mode: {
@@ -10977,7 +11402,7 @@ settingsSession: {
     },
     ui: {
       title: "音声サーフェス",
-      footer: "音声イベントの画面内フィード（セッションには書き込みません）。",
+      footer: "話している間の画面上での音声の表示。ここでの内容はセッションに書き込まれません。",
       activityFeedEnabled: "音声アクティビティフィードを有効化",
       activityFeedEnabledSubtitle: "音声利用中に最近の音声イベントを表示",
       activityFeedAutoExpandOnStart: "開始時に自動で展開",
@@ -11666,7 +12091,6 @@ settingsSession: {
       mediatorVerbosityBalanced: "バランス",
       mediatorIdleTtl: "メディエーター idle TTL",
       mediatorIdleTtlSubtitle: "非アクティブ時に自動停止（60–3600秒）",
-      mediatorIdleTtlTitle: "メディエーター idle TTL（秒）",
       mediatorIdleTtlDescription: "60〜3600 の数値を入力してください。",
       mediatorIdleTtlInvalid: "60〜3600 の数値を入力してください。",
       mediatorChatModelSource: "メディエーター モデル（チャット）",
@@ -11897,9 +12321,9 @@ settingsSession: {
         feature_unavailable: "選択したエージェントのランタイムでは音声を利用できません。",
       },},
     privacy: {
-      title: "プライバシー",
+      title: "コンテキストの共有",
       footer:
-        "音声プロバイダーには選択されたセッションコンテキストが送信されます。",
+        "音声がプロバイダーとやり取りするときに、セッションやこのアプリについて含めてよい情報。",
       shareSessionSummary: "セッション要約を共有",
       shareSessionSummarySubtitle: "音声コンテキストにセッション要約を含めます",
       shareRecentMessages: "最近のメッセージを共有",
@@ -11957,12 +12381,49 @@ settingsSession: {
   },
 
   settingsAccount: {
+    providerCatalogUnavailable: '利用可能なサインイン接続を確認できませんでした。',
     securityPageDescription: "この Home のサインイン方法、復旧、セッション、暗号化。",
+    accountServiceUnsupportedTitle: ({ accountService }: { accountService: string }) => `${accountService} はまだ Home を見つけられません`,
+    accountServiceUnsupportedBody: "これらの機能を使うには、Home を見つけられるサービスでサインインしてください。Home はこれまでどおり使えます。",
+    accountServiceUnreachableTitle: ({ accountService }: { accountService: string }) => `${accountService} に接続できません`,
+    accountServiceUnreachableBody: "Home とこのデバイスには影響ありません。再試行するか、別のサービスを選んでください。",
+    accountServiceCustodyTitle: ({ accountService }: { accountService: string }) => `保存された ${accountService} のサインインを開けません`,
+    accountServiceCustodyBody: "このデバイスのセキュアストレージが応答しませんでした。再試行するか、もう一度サインインしてください。",
+    accountServiceChangeService: "サービスを変更",
+    accountServiceChooserTitle: "サインインサービス",
+    accountServiceChooserDescription: "アカウントの保存先です。Home と、この Home へのサインイン方法は変わりません。",
+    accountServiceChooserCurrent: "現在",
+    accountServiceChooserDefault: "デフォルト",
+    accountServiceChooserHomeOffersSignIn: "サインインも提供している、使用中の Home",
+    accountServiceChooserAnother: "別のサービス…",
+    accountServiceChooserAnotherDescription: "アドレスを入力",
+    accountServiceChooserAddressLabel: "サインインサービスのアドレス",
+    accountServiceChooserAddressHelp: "サインインして Home を見つけるために使うサービスのアドレスです。",
+    accountServiceCheck: "確認",
+    accountServiceUse: ({ accountService }: { accountService: string }) => `${accountService} を使う`,
+    accountServiceUseThis: "このサービスを使う",
+    accountServiceFindsHomes: "Home を検出",
+    accountServiceSignsInToHomes: "Home にサインイン",
+    accountServiceKeepsSignIn: ({ accountService }: { accountService: string }) => `${accountService} のサインインはこのデバイスに保存されたままなので、戻してもサインイン状態が続きます。`,
+    accountServiceSignedInWith: ({ provider }: { provider: string }) => `${provider} でサインイン中`,
+    accountServiceSignedIn: "サインイン済み",
+    accountServiceLinkUnreachableHome: "ほかのデバイスからこの Home にまだ接続できないため、リンクできません。",
+    accountServiceSignOut: ({ accountService }: { accountService: string }) => `${accountService} からサインアウト`,
+    accountServiceLinkLocalHomeDescription: "このデバイスのみ。リンクすると、ほかのデバイスからも見つけられます。",
+    accountServiceLink: "リンク",
+    accountServiceMoreWays: "ほかのサインイン方法",
+    accountServiceFewerWays: "表示を減らす",
+    accountServiceCreateAccount: "初めてですか？アカウントを作成",
+    accountServiceRecoveryKeyTitle: ({ accountService }: { accountService: string }) => `${accountService} の復元キー`,
+    accountServiceRecoveryKeyBody: "このキーはアカウント作成時に一度だけ表示され、この端末には保存されていません。パスワードを忘れた場合、アカウントを復元できるのはこのキーだけです。",
+    accountServiceRecoveryKeySaved: "保存しました",
+    accountServiceRecoveryKeyKeyOnly: ({ accountService }: { accountService: string }) => `この ${accountService} アカウントにはパスワードがないため、ここでキーを解除できません。サインインに使うキーそのもので、この端末には保存されていません。`,
+    accountServiceCreateExplanation: ({ accountService }: { accountService: string }) => `リンクをメールでお送りします。この端末で開いてから、${accountService} のパスワードを設定してください。`,
+    accountServiceForgotExplanation: ({ accountService }: { accountService: string }) => `${accountService} のパスワードをリセットするリンクをメールでお送りします。`,
     hideRecoveryKey: "復旧キーを隠す",
     showRecoveryKey: "復旧キーを表示",
     accountIdCopy: "アカウント ID をコピー",
     accountIdLabel: "アカウント ID",
-    accountServiceSignInCta: ({ accountService }: { accountService: string }) => `${accountService} にサインイン`,
     accountServiceBenefitFindHomes: "Home が見つかる",
     thisHome: "この Home",
     thisHomeTitle: "この Home",
@@ -11975,6 +12436,8 @@ settingsSession: {
     apiAccessSectionTitle: "API アクセス",
     endToEndEncrypted: "エンドツーエンド暗号化",
     notEndToEndEncrypted: "エンドツーエンド暗号化なし",
+    encryptionFactChecking: "暗号化を確認中…",
+    encryptionFactUnread: "暗号化を読み取れませんでした",
     editUsername: "ユーザー名を編集",
     chooseUsername: "ユーザー名を選択",
     signInSecurityDescription: ({ home }: { home: string }) => `${home} へのサインイン方法。`,
@@ -11999,8 +12462,7 @@ settingsSession: {
     accountServiceBenefitDevicesDescription: "スマートフォンやほかのデバイスを Home につなげます。",
     accountServiceLinkedHomes: "リンクされた Home",
     accountServiceRefreshedAt: ({ time }: { time: string }) => `${time} に更新`,
-    accountServiceSignInAgain: "再度サインイン",
-    accountServiceAdvancedSummary: "サインインサービス · 診断",
+    accountServiceAdvancedSummary: "サービス ID · 診断",
     accountDetails: "アカウントの詳細",
     devices: "デバイス",
     security: "サインインとセキュリティ",
@@ -12060,10 +12522,9 @@ settingsSession: {
     accountServiceHomes: 'Homes',
     accountServiceFindHomes: 'Home を探す',
         accountServiceFindHomesDescription: 'リンク済みの Home を探し、選択済みまたは優先の Home を開きます。',
-        accountServiceCheckingConnection: '接続を確認しています…',
         accountServiceReconnectRequired: ({ accountService }: { accountService?: string }) => accountService ? `${accountService} にもう一度サインイン` : 'アカウントにもう一度サインイン',
         accountServiceReconnectDescription: 'アカウントのサインイン期限が切れました。Home を更新または接続するには、もう一度サインインしてください。',
-        accountServiceDiscoveryDescription: 'リンクされた Home を自動的に検出して接続します。既存の Home と現在のフォーカスは変わりません。',
+        accountServiceDiscoveryDescription: "アカウントにリンクされた Home は、サインインしたすべてのデバイスに表示されます。",
         accountServiceDiscoveringHomes: 'リンクされた Home を検出しています…',
         accountServiceDiscoveryUnsupported: 'Home の検出は利用できません',
         accountServiceDiscoveryUnsupportedDescription: 'リンク済みの Home を探すには、別のアカウントを使用してください。',
@@ -12092,10 +12553,10 @@ settingsSession: {
     server: "サーバー",
     backup: "バックアップ",
     backupDescription: "復旧キーでこの暗号化されたアカウントへのアクセスを復元できます。パスワードマネージャーなど、安全な場所に保存してください。",
+    recoveryKeyRowDescription: "すべてのデバイスを失ってもアクセスを復元できます。",
     secretKey: "復旧キー",
     tapToReveal: "タップして表示",
     tapToHide: "タップして非表示",
-    secretKeyLabel: "復旧キー (タップでコピー)",
     secretKeyCopied:
       "復旧キーがクリップボードにコピーされました。安全な場所に保管してください！",
     secretKeyCopyFailed: "復旧キーのコピーに失敗しました",
@@ -12144,11 +12605,14 @@ settingsSession: {
   settingsLanguage: {
     // Language settings screen
     title: "言語",
+    pageDescription: 'すべてのデバイスで Happier が使う言語です。',
+    appLanguageTitle: 'アプリの言語',
+    listDescription: '変更するとアプリが再起動します。',
     description:
       "アプリインターフェースの言語を選択します。この設定はすべてのデバイスで同期されます。",
     currentLanguage: "現在の言語",
     automatic: "自動",
-    automaticSubtitle: "デバイス設定から検出",
+    automaticSubtitle: 'このデバイスに合わせる',
     needsRestart: "言語が変更されました",
     needsRestartMessage:
       "新しい言語設定を適用するにはアプリの再起動が必要です。",
@@ -12162,17 +12626,9 @@ settingsSession: {
   },
 
   updateBanner: {
-    updateShort: "更新",
     updateAvailable: "アップデートが利用可能",
-    pressToApply: "タップしてアップデートを適用",
-    whatsNew: "新機能",
-    seeLatest: "最新のアップデートと改善を確認",
     nativeUpdateAvailable: "アプリのアップデートが利用可能",
-    tapToUpdateAppStore: "タップしてApp Storeで更新",
-    tapToUpdatePlayStore: "タップしてPlay Storeで更新",
 
-    checkNowTitle: "今すぐ確認",
-    checkNowSubtitle: "利用可能なアプリのアップデートを確認します。",
     lastCheckedTitle: "最終確認",},
 
   changelog: {
@@ -13041,6 +13497,16 @@ settingsSession: {
     back: "戻る",
     notFound: "マシンが見つかりません",
     unknownMachine: "不明なマシン",
+    unnamedMachine: "名前のないマシン",
+    lockedMachine: "ロックされたマシン",
+    removedMachine: "削除されたマシン",
+    replacedMachine: "置き換えられたマシン",
+    unlistedMachine: "一覧にないマシン",
+    lockedReason: {
+        missingKey: "エンドツーエンドで暗号化されており、このデバイスにはまだ鍵がありません",
+        unopenable: "エンドツーエンドで暗号化されており、このデバイスの鍵では開けません",
+        unreadable: "このデバイスでは詳細を読み取れません",
+    },
     unknownPath: "不明なパス",
     previousSessionsTitle: "以前のセッション（直近5件まで）",
     tmux: {
@@ -13140,6 +13606,10 @@ settingsSession: {
     pluginAttributionExternalForwarded: ({ sender, pluginId }: { sender: string; pluginId: string }) => `プラグイン ${pluginId} 経由で ${sender} が転送`,
     pluginAttributionExternalSender: '外部の送信者',
     pluginAttributionExternalBot: '外部のボット',
+    provenanceFrom: ({ source }: { source: string }) => `${source} から`,
+    provenanceSession: 'セッション',
+    provenanceAutomation: '自動化',
+    provenanceWorkflow: 'ワークフロー',
     unknownEvent: "不明なイベント",
     runtimeConfigOutcomeAppliesBeforeNextMessage: '次のメッセージの前に適用されます',
     runtimeConfigOutcomeQueuedUntilReady: '準備ができるまで待機中',
@@ -13671,6 +14141,8 @@ settingsSession: {
     projects: {
     emptyTitle: "プロジェクトはまだありません",
     emptyDescription: "プロジェクトでは、セッション外でマシン上のファイルを閲覧・編集し、Git を使えます。",
+    noneOpenTitle: "開いているプロジェクトはありません",
+    noneOpenDescription: "一覧からプロジェクトを選ぶか、マシン上のフォルダーを追加してください。",
     groups: {
       pinned: "ピン留め",
       addFirst: "プロジェクトを追加",
@@ -13722,6 +14194,19 @@ settingsSession: {
     },
   },
    ...apiTokenSettingsTranslations.ja,
+   ...embedSettingsTranslations.ja,
+   ...embedTranslations.ja,
+   ...actionFamilyTranslations.ja,
+   ...providerCollectionTranslations.ja,
+   ...settingsSearchKeywordsTranslations.ja,
+   ...automationPageTranslations.ja,
+    ...settingsSessionPagesTranslations.ja,
+    ...workspaceTabTranslations.ja,
+    ...workspaceBarTranslations.ja,
+   ...settingsProfilesRemoteHostsPageTranslations.ja,
+   ...profilesPageTranslations.ja,
+   ...machineDetailPageTranslations.ja,
+   ...sessionPageTranslations.ja,
    settingsPlugins: {
       updateReview: pluginUpdateReviewTranslations.ja,
       ...pluginWebhookAdministrationTranslations['ja'],
@@ -13740,6 +14225,11 @@ settingsSession: {
     administrationMachineTitle: "管理先",
     executionOriginTitle: "実行先",
     targetSelection: {
+      missingInHome: ({ home }: { home: string }) => `このマシンは ${home} にもうありません`,
+      missingInThisHome: "このマシンはこの Home にもうありません",
+      unreachableHome: ({ home }: { home: string }) => `${home} に接続できません`,
+      unreachableThisHome: "この Home に接続できません",
+      chooseAnother: "別のマシンを選ぶ",
       clear: "選択を解除",
       locked: "マシンの詳細がロックされています。別のマシンを選んでください。",
       missing: "見つかりません。別のマシンを選んでください。",
@@ -13904,7 +14394,6 @@ settingsSession: {
     genericSettingsUnavailable: "このマシンではプラグイン設定を利用できません。",
     genericSettingsLoadError: "プラグイン設定を読み込めませんでした。",
     genericSettingsSaveError: "プラグイン設定を保存できませんでした。",
-    genericSettingsEmpty: "このプラグインには編集可能な設定がありません。",
     registriesTitle: "プライベート npm レジストリ",
     registriesFooter: "レジストリへのサインインはパッケージアクセスのみを制御します。レジストリを削除またはサインアウトしても、インストール済みで信頼済みのプラグインは利用できます。",
     registriesAdd: "レジストリを追加",
@@ -13973,7 +14462,137 @@ settingsSession: {
   cacheTitle: 'サマリーキャッシュ',
   cacheSubtitle: 'チェックポイントのサマリーは受領 ID で再利用され、working tree のサマリーは一時的に扱われます。',
   },
+    updates: {
+        pageDescription: 'このデバイスとマシンで Happier が更新できるすべてのもの。',
+        catalogSubtitle: 'このアプリ、コマンドライン、エージェントツール',
+        title: "アップデート",
+        thisAppTitle: "Happier",
+        happierCliTitle: "Happier CLI",
+        sections: {
+          thisApp: "このアプリ",
+          thisComputer: "このコンピュータ",
+          machine: "マシン",
+        },
+        offline: "オフライン",
+        pill: {
+          updates: ({ count }: { count: number }) => "アップデート",
+          running: "アップデート中…",
+          ready: "再起動してアップデート",
+          failed: "アップデートが完了しませんでした",
+          required: "アップデートが必要です",
+          completed: "アップデート完了",
+        },
+        a11y: {
+          pillAvailable: ({ count }: { count: number }) => `アップデート、${count} 件利用可能`,
+          pillRunning: "アップデート、アップデート中",
+          pillReady: "アップデート、再起動して完了",
+          pillFailed: "アップデート、完了しなかったアップデートがあります",
+          pillRequired: "アップデート、アップデートが必要です",
+          pillCompleted: "アップデート、完了",
+          rowOn: ({ title, where }: { title: string; where: string }) => `${where} の ${title}`,
+          actionOn: ({ action, title, where }: { action: string; title: string; where: string }) => `${where} の ${title} を${action}`,
+          progress: ({ percent }: { percent: number }) => `${percent} パーセント`,
+        },
+        summary: {
+          checking: "アップデートを確認中…",
+          available: ({ count }: { count: number }) => `${count} 件のアップデートがあります`,
+          updatingBatch: ({ done, total }: { done: number; total: number }) => `${total} 件中 ${Math.min(done + 1, total)} 件目をアップデート中…`,
+          updating: "アップデート中…",
+          keepWorking: "そのまま作業を続けられます。",
+          ready: "再起動して Happier のアップデートを完了",
+          failedCount: ({ count }: { count: number }) => `${count} 件のアップデートが完了しませんでした`,
+          notCheckedYet: "未確認",
+          required: "アップデートが必要です",
+          upToDate: "すべて最新です",
+          unknown: "一部のバージョンを確認できませんでした",
+          unchecked: "既知のアップデートはありません",
+          uncheckedMeta: "まだ確認していないツールがあります。",
+          offline: "一部のマシンがオフラインです",
+          checkedAt: ({ time }: { time: string }) => `最終確認: ${time}`,
+          upToDateDescription: "Happier、コマンドライン、エージェントはすべて最新です。",
+          unknownDescription: "確認できたものはすべて最新です。残りは接続できたときに再確認します。",
+          offlineDescription: "接続できるものはすべて最新です。オフラインのマシンは戻ったときに確認します。",
+        },
+        settingsSubtitle: {
+          upToDate: "最新",
+          available: ({ count }: { count: number }) => `${count} 件のアップデートがあります`,
+          running: "アップデート中…",
+          ready: "再起動してアップデートを完了",
+          required: "アップデートが必要です",
+          failed: "完了しなかったアップデートがあります",
+          unknown: "すべてのアップデートを確認できませんでした",
+          unchecked: "確認していないツールがあります",
+          offline: "一部のマシンがオフラインです",
+          checking: "アップデートを確認中…",
+        },
+        action: {
+          update: "アップデート",
+          updateAll: "すべてアップデート",
+          restart: "再起動してアップデート",
+          reload: "再読み込み",
+          storeIos: "App Store でアップデート",
+          storeAndroid: "Google Play でアップデート",
+          checkNow: "アップデートを確認",
+          stopAfterThis: "これが終わったら停止",
+          skipVersion: "このバージョンをスキップ",
+          openUpdates: "アップデートを開く",
+          whatsNew: "新機能",
+          viewLog: "ログを表示",
+        },
+        row: {
+            cliNotManaged: 'このコマンドラインは Happier がインストールしたものではないため、置き換えません。',
+          versionChange: ({ from, to }: { from: string; to: string }) => `${from} → ${to}`,
+          upToDateVersion: ({ version }: { version: string }) => `最新 · ${version}`,
+          available: ({ version }: { version: string }) => `${version} が利用可能`,
+          downloading: ({ version }: { version: string }) => `${version} をダウンロード中`,
+          downloadingUpdate: "アップデートをダウンロード中",
+          updatingTo: ({ version }: { version: string }) => `${version} にアップデート中…`,
+          updating: "アップデート中…",
+          restarting: "再起動中…",
+          restartingService: "バックグラウンドサービスを再起動中…",
+          readyVersion: ({ version }: { version: string }) => `${version} の準備ができました`,
+          ready: "アップデートの準備完了",
+          webNewBuild: "Happier の新しいバージョンの準備ができました",
+          requiredApp: "このバージョンはサポートが終了しました。Happier を使い続けるにはアップデートしてください。",
+          appCheckFailed: "新しいバージョンを確認できませんでした。",
+          appDownloadFailed: "ダウンロードが完了しませんでした。",
+          appInstallFailed: "アップデートをインストールできませんでした。",
+          latestUnknown: "新しいバージョンを確認できませんでした",
+          rolledBack: ({ kept, target }: { kept: string; target: string }) => `${target} はこのマシンで起動しなかったため、${kept} のままです。`,
+          installedByYou: "ユーザーがインストール",
+          updateItYourWay: "インストールしたときと同じ方法でアップデートしてください。",
+          offline: "オフライン中はアップデートできません",
+          skipped: ({ version }: { version: string }) => `${version} をスキップしました`,
+          checking: "確認中…",
+          failedGeneric: "アップデートが完了しませんでした。もう一度お試しください。",
+          remoteUnsupported: "このマシンはコマンドラインをリモートでアップデートできません。マシン上で直接アップデートしてください。",
+          updateNotVerified: "アップデートは実行されましたが、バージョンが変わりませんでした。",
+          rolledBackLocal: "アップデートを開始できなかったため、このコンピュータは以前のバージョンに戻りました。",
+          smokeFailed: "新しいバージョンがこのコンピュータで動作しなかったため、変更はありません。",
+          waitingReconnect: "インストール済み、このマシンの再接続を待っています",
+          couldNotStart: ({ message }: { message: string }) => `アップデートを開始できませんでした: ${message}`,
+          restartsService: 'バックグラウンドサービスを再起動します。セッションは再接続されます。',
+          alreadyCurrent: 'すでに最新です',
+          anotherUpdateRunning: 'このマシンで別のアップデートが実行中です。完了してから再試行してください。',
+          outcomeUnknown: 'アップデートの開始を確認できませんでした。再試行して確認してください。',
+          othersUpToDate: ({ count }: { count: number }) => `ほか ${count} 件は最新`,
+          waitingOffline: ({ count }: { count: number }) => `${count} 件のアップデートがオンライン復帰を待っています`,
+        },
+        footer: "アップデートはマシンごとにインストールされます。コマンドラインのアップデート後、Happier はそのマシンのバックグラウンドサービスを再起動します。",
+        tray: {
+          available: ({ count }: { count: number }) => `アップデートがあります (${count})…`,
+          running: "アップデート中…",
+          ready: "再起動して Happier をアップデート",
+          required: "アップデートが必要です…",
+          failed: "完了しなかったアップデートがあります…",
+        },
+    },
     machinePools: machinePoolTranslations.ja,
+    settingsConnections: settingsConnectionsTranslations.ja,
+    settingsMachines: settingsMachinesTranslations.ja,
+    connectedServicesSettings: connectedServicesSettingsTranslations.ja,
+    connectedServicesPool: connectedServicesPoolTranslations.ja,
+    connectedServicesCollection: connectedServicesCollectionTranslations.ja,
     externalSessions: {
         ...externalSessionOperationTranslations.ja,
         ...externalSessionSettingsTranslations.ja,
@@ -14026,6 +14645,7 @@ settingsSession: {
     browseActivityIdle: "アイドル",
     browseActivityUnknown: "不明",
         browseSearchPlaceholder: "読み込み済みセッションを検索…",
+        browseSearchAgentPlaceholder: ({ agent }: { agent: string }) => `${agent} のセッションを検索…`,
         browseNoSearchResults: "この検索に一致する読み込み済みセッションはまだありません。",
     browseIndexing: "外部セッションをインデックスしています…",
     browseIndexingProgress: ({ scanned, total }: { scanned: number; total: number }) => `${total} 件中 ${scanned} 件をインデックス済み`,
@@ -14063,6 +14683,8 @@ settingsSession: {
     },
     workflows: workflowTranslations.ja,
     homeGovernance: homeGovernanceTranslations.ja,
+    homeFeatures: homeFeatureTranslations.ja,
+    homeSettings: homeSettingsTranslations.ja,
     teams: teamsTranslations.ja.teams,
     identityAdministration: identityAdministrationTranslations.ja.identityAdministration,
     personalHome: {
@@ -14091,6 +14713,8 @@ settingsSession: {
     },
     settingsSearch: {
     placeholder: "設定を検索",
+    pagesTitle: "ページ",
+    settingsTitle: "設定",
   },
     onboardingJourney: {
         accessibility: {

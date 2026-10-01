@@ -4,6 +4,7 @@ import {
   createHomeCredentialDestinationV1,
   isHomeCredentialDestinationAllowedV1,
   normalizeServerIdentityIdCapability,
+  type HomeConnectionDescriptorV1,
   type HomeCredentialDestinationSelectionV1,
 } from '@happier-dev/protocol';
 import type { ResolvedHomeTarget } from '@happier-dev/cli-common/homeTarget';
@@ -22,6 +23,28 @@ export type VerifiedTerminalAuthEnrollmentRuntime = Readonly<{
   homeServerIdentityId: string;
   credentialDestination: HomeCredentialDestinationSelectionV1;
 }>;
+
+export class HomeFeaturesUnreadableError extends Error {
+  readonly code = 'HOME_FEATURES_UNREADABLE' as const;
+
+  constructor() {
+    super('The selected Home reports features this CLI cannot read. Update the CLI/daemon and retry.');
+    this.name = 'HomeFeaturesUnreadableError';
+  }
+}
+
+export function readTerminalAuthHomeIdentity(snapshot: CliServerFeaturesSnapshot): string | null {
+  if (snapshot.status === 'unsupported' && snapshot.reason === 'invalid_payload') {
+    throw new HomeFeaturesUnreadableError();
+  }
+  return snapshot.status === 'ready'
+    ? normalizeServerIdentityIdCapability(snapshot.features.capabilities.serverIdentity?.serverIdentityId)
+    : null;
+}
+
+export type AuthenticatedExactHomeConnectionDescriptorObservation =
+  | Readonly<{ kind: 'available'; descriptor: HomeConnectionDescriptorV1 }>
+  | Readonly<{ kind: 'unavailable' }>;
 
 type HttpResponse = Readonly<{ data: unknown }>;
 type Post = (url: string, data?: unknown, config?: AxiosRequestConfig<unknown>) => Promise<HttpResponse>;
@@ -51,6 +74,36 @@ function sameCredentialDestination(
 }
 
 /**
+ * A complete descriptor may become exact local routing authority only when it came from the
+ * authenticated feature projection. Public fallback remains usable for URL-only compatibility,
+ * but is advisory and must never be promoted to an exact descriptor generation.
+ */
+export function resolveAuthenticatedExactHomeConnectionDescriptorObservation(params: Readonly<{
+  snapshot: CliServerFeaturesSnapshot;
+  expectedHomeServerIdentityId: string;
+}>): AuthenticatedExactHomeConnectionDescriptorObservation {
+  if (params.snapshot.status !== 'ready' || params.snapshot.provenance !== 'authenticated') {
+    return { kind: 'unavailable' };
+  }
+
+  const descriptor = params.snapshot.features.homeConnectionDescriptor;
+  if (!descriptor) return { kind: 'unavailable' };
+
+  const observedIdentity = normalizeServerIdentityIdCapability(
+    params.snapshot.features.capabilities.serverIdentity?.serverIdentityId,
+  );
+  if (
+    !observedIdentity
+    || observedIdentity !== params.expectedHomeServerIdentityId
+    || descriptor.homeServerIdentityId !== observedIdentity
+  ) {
+    throw new Error('Authenticated Home descriptor identity does not match the selected Home');
+  }
+
+  return { kind: 'available', descriptor };
+}
+
+/**
  * Verifies the acquired first-contact runtime before request/status/claim and again after claim.
  * The loopback runtime origin is transport-only; credential authority comes from the authenticated
  * descriptor destination returned by the acquisition owner.
@@ -61,11 +114,7 @@ export function verifyTerminalAuthEnrollmentRuntime(params: Readonly<{
   snapshot: CliServerFeaturesSnapshot;
 }>): VerifiedTerminalAuthEnrollmentRuntime {
   normalizedOrigin(params.runtime.runtimeOrigin);
-  const observedIdentity = params.snapshot.status === 'ready'
-    ? normalizeServerIdentityIdCapability(
-        params.snapshot.features.capabilities.serverIdentity?.serverIdentityId,
-      )
-    : null;
+  const observedIdentity = readTerminalAuthHomeIdentity(params.snapshot);
   if (!observedIdentity) {
     throw new Error('Unable to verify the selected Home identity');
   }

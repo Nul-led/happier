@@ -5,26 +5,30 @@ import {
     type HomeAccountChangeEvent,
 } from '@/sync/runtime/orchestration/homeAccountChange';
 
-function accountChangeAffectsWorkflowRunList(event: HomeAccountChangeEvent): boolean {
+function accountChangeAffectsWorkflowRunList(event: HomeAccountChangeEvent, runId?: string): boolean {
     return event.entityIds === undefined
-        || event.entityIds.some((entityId) => entityId.startsWith('workflow-run:'));
+        || event.entityIds.some((entityId) => runId === undefined
+            ? entityId.startsWith('workflow-run:')
+            : entityId === `workflow-run:${runId}`);
 }
 
 /**
- * Observe the incumbent Home Account-change wake for one visible Runs window.
+ * Observe the incumbent Home Account-change wake for a visible Runs window
+ * or one demanded exact Run. Invocation-only writes use this same wake.
  *
  * This does not interpret Run state or own synchronization: the existing list
  * query remains authoritative for filter membership, including attention.
  */
 export function subscribeVisibleWorkflowRunListInvalidation(params: Readonly<{
     lifetime: ActiveServerAccountScopeLifetime;
+    runId?: string;
     isVisibleWindowLoaded: () => boolean;
     invalidate: () => void;
 }>): () => void {
     const unsubscribe = subscribeHomeAccountChange((event) => {
         if (!params.lifetime.isCurrent()) return;
         if (!areServerProfileIdentifiersEquivalent(event.serverId, params.lifetime.scope.serverId)) return;
-        if (!accountChangeAffectsWorkflowRunList(event)) return;
+        if (!accountChangeAffectsWorkflowRunList(event, params.runId)) return;
         if (!params.isVisibleWindowLoaded()) return;
         params.invalidate();
     });

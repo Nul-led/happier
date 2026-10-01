@@ -27,12 +27,15 @@ export async function runCliCommandBestEffort(params: Readonly<{
   args: string[];
   timeoutMs?: number;
   env?: Readonly<Record<string, string>>;
+  processEnv?: NodeJS.ProcessEnv;
 }>): Promise<Readonly<{ ok: boolean; stdout: string; stderr: string; exitCode: number | null }>> {
   const timeoutMs = typeof params.timeoutMs === 'number' ? params.timeoutMs : 1_000;
   const isWindows = process.platform === 'win32';
   const isCmdScript = isWindows && /\.(cmd|bat)$/i.test(params.resolvedPath);
+  const processEnv = params.processEnv ?? process.env;
+  const execEnv = params.env ? { ...processEnv, ...params.env } : processEnv;
   const needsJavaScriptRuntime = agentCliPathRequiresJavaScriptRuntime(params.resolvedPath);
-  const runtimeExecutable = resolveAgentCliJavaScriptRuntimeCommand(params.resolvedPath, process.env, {
+  const runtimeExecutable = resolveAgentCliJavaScriptRuntimeCommand(params.resolvedPath, execEnv, {
     isBunRuntime: typeof process.versions.bun === 'string',
     currentExecPath: process.execPath,
   });
@@ -42,7 +45,6 @@ export async function runCliCommandBestEffort(params: Readonly<{
     if (Buffer.isBuffer(value)) return value.toString('utf8');
     return '';
   };
-  const execEnv = params.env ? { ...process.env, ...params.env } : process.env;
 
   try {
     if (needsJavaScriptRuntime && !runtimeExecutable) {

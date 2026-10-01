@@ -71,15 +71,7 @@ export async function handleAuthRequest(args: string[], signal?: AbortSignal): P
   try {
     const featuresSnapshot = await fetchServerFeaturesSnapshot({ serverUrl: acquired.runtime.runtimeOrigin, ...(signal ? { signal } : {}) });
     const verified = verifyTerminalAuthEnrollmentRuntime({ target, runtime: acquired.runtime, snapshot: featuresSnapshot });
-    const serverIdentityId = featuresSnapshot.status === 'ready'
-      ? featuresSnapshot.features.capabilities.serverIdentity.serverIdentityId?.trim() ?? ''
-      : '';
-    if (!serverIdentityId) {
-      throw new Error(
-        `Unable to verify the selected Home identity at ${configuration.apiServerUrl}; `
-        + 'the terminal authentication request was not created.',
-      );
-    }
+    const serverIdentityId = verified.homeServerIdentityId;
 
     const secret = new Uint8Array(randomBytes(32));
     const keypair = tweetnacl.box.keyPair.fromSecretKey(secret);

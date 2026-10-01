@@ -14,22 +14,23 @@ it('maps the canonical Action outcome-unknown settlement to an unconfirmed outco
     expect(problem).toEqual({ field: 'form', messageKey: UNCONFIRMED });
 });
 
-it('never blames the credential when a dispatched mutation lost its verdict', () => {
+it('keeps an untyped preflight failure determinate', () => {
     const problem = describeEmailPasswordFailure(
         new TypeError('Network request failed'),
-        { effectMayHaveBegun: true },
     );
 
-    expect(problem).toEqual({ field: 'form', messageKey: UNCONFIRMED });
+    expect(problem).toEqual({ field: 'form', messageKey: 'settingsAccount.nativePassword.offline' });
 });
 
 it('keeps an untyped mutation refusal off the password field', () => {
     const problem = describeEmailPasswordFailure(
         new HappyError('nope', false, { kind: 'auth', code: 'something_unmapped', status: 400 }),
-        { effectMayHaveBegun: true, credentialField: 'currentPassword' },
+        { credentialField: 'currentPassword' },
     );
 
-    expect(problem).toEqual({ field: 'form', messageKey: UNCONFIRMED });
+    // The Home refused for a reason this client cannot name: say the Home did not complete it,
+    // not that the method is unavailable and not that the password was wrong.
+    expect(problem).toEqual({ field: 'form', messageKey: 'settingsAccount.nativePassword.serverUnavailable' });
 });
 
 it('retains the existence-neutral sign-in failure for a login attempt that begins no effect', () => {
@@ -39,6 +40,5 @@ it('retains the existence-neutral sign-in failure for a login attempt that begin
     });
     expect(describeEmailPasswordFailure(
         new HappyError('nope', false, { kind: 'auth', code: 'authentication_failed', status: 401 }),
-        { effectMayHaveBegun: true },
     )).toEqual({ field: 'password', messageKey: 'settingsAccount.nativePassword.signInFailed' });
 });

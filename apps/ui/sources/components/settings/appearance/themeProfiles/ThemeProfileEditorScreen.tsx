@@ -1,14 +1,21 @@
 import * as React from 'react';
-import { useLocalSearchParams, useRouter } from 'expo-router';
+import { useLocalSearchParams, useRouter } from '@/components/appShell/workspace/destinationRoute';
 import { Appearance, View } from 'react-native';
-import { StyleSheet, useUnistyles } from 'react-native-unistyles';
+import { StyleSheet } from 'react-native-unistyles';
 
 import { Item } from '@/components/ui/lists/Item';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
 import { ItemList } from '@/components/ui/lists/ItemList';
-import { DropdownMenu, type DropdownMenuItem } from '@/components/ui/forms/dropdown/DropdownMenu';
-import { SettingsActionFooter } from '@/components/ui/settingsSurface/SettingsActionFooter';
-import { Text, TextInput } from '@/components/ui/text/Text';
+import { FieldTextInput } from '@/components/ui/forms/FieldTextInput';
+import { RoundButton } from '@/components/ui/buttons/RoundButton';
+import { PageHeader, type PageHeaderMetaFact } from '@/components/ui/layout/PageHeader';
+import { PageHeaderMenu, type PageHeaderMenuAction } from '@/components/ui/layout/PageHeaderEntityParts';
+import { SectionContentRow } from '@/components/ui/lists/SectionContentRow';
+import { SegmentedChoiceItem } from '@/components/ui/lists/SegmentedChoiceItem';
+import { Text } from '@/components/ui/text/Text';
+import { ThemePalettePreview } from '@/components/settings/appearance/ThemeModePreview';
+import { useApplyThemeSelection } from '@/components/settings/appearance/useApplyThemeSelection';
+import { resolveThemeProfile } from '@/theme/profiles/resolveThemeProfile';
 import { useReducedMotionPreference } from '@/hooks/ui/useReducedMotionPreference';
 import { Modal } from '@/modal';
 import { useLocalSettingMutable } from '@/sync/domains/state/storage';
@@ -30,7 +37,6 @@ import { ThemeColorTokenRow } from './ThemeColorTokenRow';
 import { ThemeProfilePresetDropdown } from './ThemeProfilePresetDropdown';
 import { ThemeProfilePreviewPane } from './ThemeProfilePreviewPane';
 import { buildThemeProfileTokenGroups, getThemeProfileRecentColors } from './themeProfileEditorModel';
-import { Icon } from '@/components/ui/icons/Icon';
 import {
     buildThemePresetSourceOptions,
     replaceThemeProfileDraftFromPresetSource,
@@ -94,7 +100,6 @@ const createProfileName = (count: number): string => t('settingsAppearance.theme
 const createNewProfileRouteId = 'new';
 
 export const ThemeProfileEditorScreen = React.memo(function ThemeProfileEditorScreen() {
-    const { theme } = useUnistyles();
     const styles = stylesheet;
     const router = useRouter();
     const params = useLocalSearchParams();
@@ -147,7 +152,6 @@ export const ThemeProfileEditorScreen = React.memo(function ThemeProfileEditorSc
         });
     });
     const [presetMenuOpen, setPresetMenuOpen] = React.useState(false);
-    const [assetAppearanceMenuOpen, setAssetAppearanceMenuOpen] = React.useState(false);
     const [invalidByToken, setInvalidByToken] = React.useState<Readonly<Record<string, boolean>>>({});
     const previewAppliedRef = React.useRef(false);
     const committedRef = React.useRef(false);
@@ -166,20 +170,6 @@ export const ThemeProfileEditorScreen = React.memo(function ThemeProfileEditorSc
     const assetAppearance = React.useMemo(() => (
         draft ? resolveThemeProfileAssetAppearance(draft) : mode
     ), [draft, mode]);
-    const assetAppearanceItems = React.useMemo((): readonly DropdownMenuItem[] => ([
-        {
-            id: 'light',
-            title: t('settingsAppearance.themeOptions.light'),
-            subtitle: t('settingsAppearance.themeDescriptions.light'),
-            icon: <Icon name="sun" size={20} color={theme.colors.accent.blue} />,
-        },
-        {
-            id: 'dark',
-            title: t('settingsAppearance.themeOptions.dark'),
-            subtitle: t('settingsAppearance.themeDescriptions.dark'),
-            icon: <Icon name="moon" size={20} color={theme.colors.accent.blue} />,
-        },
-    ]), [theme.colors.accent.blue]);
     const groups = React.useMemo(() => buildThemeProfileTokenGroups(), []);
     const recentColors = React.useMemo(() => (draft ? getThemeProfileRecentColors(draft) : []), [draft]);
     const hasInvalidColor = Object.values(invalidByToken).some(Boolean);
@@ -273,37 +263,40 @@ export const ThemeProfileEditorScreen = React.memo(function ThemeProfileEditorSc
         });
     }, [assetAppearance, draft, readonly, reduceMotion, saveDisabled, setThemeProfiles, themePreference, themeProfiles]);
 
+    const applyThemeSelection = useApplyThemeSelection();
     const deactivate = React.useCallback(async () => {
         committedRef.current = true;
         if (!draft) return;
-        const nextThemeProfiles = clearActiveThemeProfileReferences(themeProfiles, draft.id);
-        setThemeProfiles(nextThemeProfiles);
-        applyThemeRuntimeSelection({
-            themePreference,
-            themeProfiles: nextThemeProfiles,
-            systemTheme: Appearance.getColorScheme() === 'dark' ? 'dark' : 'light',
-        });
+        // Returning a mode to its default goes through the one theme-selection owner.
+        applyThemeSelection(themePreference, clearActiveThemeProfileReferences(themeProfiles, draft.id));
         router.back();
-    }, [draft, router, setThemeProfiles, themePreference, themeProfiles]);
+    }, [applyThemeSelection, draft, router, themePreference, themeProfiles]);
 
     const deleteProfile = React.useCallback(async () => {
         if (!draft || readonly) return;
+        // A theme a mode uses says which mode loses it; that mode returns to its default theme.
+        const assignedSlots = (['light', 'dark'] as const).filter((mode) => themeProfiles.activeProfileIds[mode] === draft.id);
+        const slotNames = assignedSlots.map((mode) => t(mode === 'light'
+            ? 'settingsAppearance.themeProfiles.lightModeSection'
+            : 'settingsAppearance.themeProfiles.darkModeSection'));
         const confirmed = await Modal.confirm(
             t('settingsAppearance.themeProfiles.deleteProfile'),
-            t('settingsAppearance.themeProfiles.deleteProfileSubtitle'),
+            assignedSlots.length > 0
+                ? t('settingsAppearance.themeProfiles.deleteAssignedThemeBody', { slots: slotNames.join(' · ') })
+                : t('settingsAppearance.themeProfiles.deleteProfileSubtitle'),
             { confirmText: t('common.delete'), destructive: true },
         );
         if (!confirmed) return;
         committedRef.current = true;
         const nextThemeProfiles = removeThemeProfile(themeProfiles, draft.id);
-        setThemeProfiles(nextThemeProfiles);
-        applyThemeRuntimeSelection({
-            themePreference,
-            themeProfiles: nextThemeProfiles,
-            systemTheme: Appearance.getColorScheme() === 'dark' ? 'dark' : 'light',
-        });
+        if (assignedSlots.length > 0) {
+            // The canonical selection owner stores and applies the fallback (theme, status bar, transition).
+            applyThemeSelection(themePreference, nextThemeProfiles);
+        } else {
+            setThemeProfiles(nextThemeProfiles);
+        }
         router.back();
-    }, [draft, readonly, router, setThemeProfiles, themePreference, themeProfiles]);
+    }, [applyThemeSelection, draft, readonly, router, setThemeProfiles, themePreference, themeProfiles]);
 
     React.useEffect(() => {
         if (!draft || readonly || hasInvalidColor || hasInvalidProfileName || hasProfileLimitReached) return;
@@ -329,60 +322,104 @@ export const ThemeProfileEditorScreen = React.memo(function ThemeProfileEditorSc
         });
     }, []);
 
+    const inUse = persisted && draft !== null && isThemeProfileActive(themeProfiles, draft.id);
+    const menuActions = React.useMemo((): readonly PageHeaderMenuAction[] => [
+        ...(!readonly ? [{ id: 'reset', title: t('settingsAppearance.themeProfiles.resetMode'), onSelect: resetMode }] : []),
+        // Duplicating and exporting work on a saved or built-in theme, never an unsaved draft.
+        ...(!isNewProfile ? [
+            {
+                id: 'duplicate',
+                title: t('settingsAppearance.themeProfiles.duplicateTheme'),
+                disabled: themeProfiles.profiles.length >= THEME_PROFILE_MAX_PROFILES,
+                onSelect: cloneProfile,
+            },
+            { id: 'export', title: t('settingsAppearance.themeProfiles.exportProfile'), onSelect: exportProfile },
+        ] : []),
+        ...(inUse && !readonly ? [{ id: 'deactivate', title: t('settingsAppearance.themeProfiles.deactivateProfile'), onSelect: deactivate }] : []),
+        ...(persisted && !readonly ? [{ id: 'delete', title: t('settingsAppearance.themeProfiles.deleteTheme'), onSelect: deleteProfile }] : []),
+    ], [cloneProfile, deactivate, deleteProfile, exportProfile, inUse, isNewProfile, persisted, readonly, resetMode, themeProfiles.profiles.length]);
+    const markPalette = React.useMemo(() => resolveThemeProfile({ mode: assetAppearance, profile: draft }), [assetAppearance, draft]);
+
     if (!draft) {
         return (
-            <ItemList testID="settings-theme-profile-editor" style={{ paddingTop: 0 }}>
-                <ItemGroup>
-                    <Item title={t('settingsAppearance.themeProfiles.missingProfile')} mode="info" />
-                </ItemGroup>
+            <ItemList testID="settings-theme-profile-editor" style={{ paddingTop: 0 }} presentation="page">
+                <PageHeader
+                    alwaysShowTitle
+                    title={t('settingsAppearance.themeProfiles.missingProfile')}
+                    description={t('settingsAppearance.themeProfiles.missingProfileDescription')}
+                />
             </ItemList>
         );
     }
 
+    const title = profileDisplayName?.trim() || t('settingsAppearance.themeProfiles.newTheme');
+    const meta: PageHeaderMetaFact[] = [
+        { key: 'mode', text: t(assetAppearance === 'dark' ? 'settingsAppearance.themeOptions.dark' : 'settingsAppearance.themeOptions.light') },
+        { key: 'kind', text: t(readonly ? 'settingsAppearance.themeProfiles.builtInTheme' : 'settingsAppearance.themeProfiles.customTheme') },
+        ...(inUse ? [{ key: 'inUse', text: t('settingsAppearance.themeProfiles.inUse') }] : []),
+    ];
+
     return (
-        <ItemList testID="settings-theme-profile-editor" style={{ paddingTop: 0 }}>
-            <ItemGroup title={readonly ? t('settingsAppearance.themeProfiles.presetGroup') : t('settingsAppearance.themeProfiles.detailsGroup')}>
-                <Item
-                    title={readonly ? t('settingsAppearance.themeProfiles.readOnlyPreset') : (
-                        <View style={styles.profileNameRow}>
-                            <Text style={styles.profileNameLabel}>{t('settingsAppearance.themeProfiles.profileName')}</Text>
-                            <TextInput
+        <ItemList testID="settings-theme-profile-editor" style={{ paddingTop: 0 }} presentation="page" keyboardShouldPersistTaps="handled">
+            <PageHeader
+                testID="settings-theme-profile-header"
+                alwaysShowTitle
+                title={title}
+                description={t(readonly
+                    ? 'settingsAppearance.themeProfiles.builtInThemeDescription'
+                    : 'settingsAppearance.themeProfiles.editorDescription')}
+                meta={meta}
+                details={hasProfileLimitReached ? (
+                    <Text
+                        testID="settings-theme-profile-limit-error"
+                        accessibilityRole="alert"
+                        style={styles.headerError}
+                    >
+                        {t('settingsAppearance.themeProfiles.themeLimitDescription', { count: THEME_PROFILE_MAX_PROFILES })}
+                    </Text>
+                ) : undefined}
+                leading={(
+                    <View style={styles.markPreview}>
+                        <ThemePalettePreview palette={markPalette} />
+                    </View>
+                )}
+                actions={(
+                    <View style={styles.headerActions}>
+                        {!readonly ? (
+                            <RoundButton
+                                testID="settings-theme-profile-save"
+                                size="small"
+                                title={t('settingsAppearance.themeProfiles.saveAndUse')}
+                                disabled={saveDisabled}
+                                onPress={() => { void saveAndActivate(); }}
+                            />
+                        ) : null}
+                        <PageHeaderMenu testID="settings-theme-profile-menu" actions={menuActions} />
+                    </View>
+                )}
+            />
+
+            {!readonly ? (
+                <ItemGroup
+                    title={t('settingsAppearance.themeProfiles.detailsGroup')}
+                    description={t('settingsAppearance.themeProfiles.detailsDescription')}
+                >
+                    <Item
+                        title={t('settingsAppearance.themeProfiles.themeName')}
+                        accessoryLayout="adaptive"
+                        showChevron={false}
+                        rightElement={(
+                            <FieldTextInput
                                 testID="settings-theme-profile-name"
                                 value={draft.name}
                                 onChangeText={(name) => setDraft({ ...draft, name, updatedAt: nowThemeProfileTimestamp() })}
-                                style={styles.profileNameInput}
+                                accessibilityLabel={t('settingsAppearance.themeProfiles.themeName')}
+                                autoCapitalize="words"
+                                autoFocus={isNewProfile}
+                                error={hasInvalidProfileName ? t('settingsAppearance.themeProfiles.invalidProfileName') : null}
                             />
-                        </View>
-                    )}
-                    mode="info"
-                    icon={<Icon name="palette" size={29} color={theme.colors.accent.indigo} />}
-                    detail={readonly ? profileDisplayName : undefined}
-                />
-                {hasInvalidProfileName ? (
-                    <Text
-                        testID="settings-theme-profile-name-error"
-                        style={{
-                            color: theme.colors.state.danger.foreground,
-                            paddingHorizontal: 16,
-                            paddingBottom: 8,
-                        }}
-                    >
-                        {t('settingsAppearance.themeProfiles.invalidProfileName')}
-                    </Text>
-                ) : null}
-                {hasProfileLimitReached ? (
-                    <Text
-                        testID="settings-theme-profile-limit-error"
-                        style={{
-                            color: theme.colors.state.danger.foreground,
-                            paddingHorizontal: 16,
-                            paddingBottom: 8,
-                        }}
-                    >
-                        {t('settingsAppearance.themeProfiles.profileLimitReached')}
-                    </Text>
-                ) : null}
-                {!readonly ? (
+                        )}
+                    />
                     <ThemeProfilePresetDropdown
                         open={presetMenuOpen}
                         onOpenChange={setPresetMenuOpen}
@@ -390,50 +427,36 @@ export const ThemeProfileEditorScreen = React.memo(function ThemeProfileEditorSc
                         selectedOption={selectedPreset}
                         onSelect={(presetId) => { void selectPreset(presetId); }}
                     />
-                ) : null}
-                {!readonly ? (
-                    <DropdownMenu
-                        open={assetAppearanceMenuOpen}
-                        onOpenChange={setAssetAppearanceMenuOpen}
-                        variant="selectable"
-                        search={false}
-                        selectedId={assetAppearance}
-                        showCategoryTitles={false}
-                        matchTriggerWidth={true}
-                        connectToTrigger={true}
-                        rowKind="item"
-                        itemTrigger={{
-                            title: t('settingsAppearance.themeProfiles.assetAppearance'),
-                            subtitle: t('settingsAppearance.themeProfiles.assetAppearanceSubtitle'),
-                            icon: <Icon name="image" size={29} color={theme.colors.accent.indigo} />,
-                            showSelectedSubtitle: false,
-                            itemProps: { testID: 'settings-theme-profile-asset-appearance' },
-                        }}
-                        items={assetAppearanceItems}
-                        onSelect={updateAssetAppearance}
+                    <SegmentedChoiceItem<ThemeProfileMode>
+                        testID="settings-theme-profile-asset-appearance"
+                        testIDPrefix="settings-theme-profile-asset-appearance"
+                        title={t('settingsAppearance.themeProfiles.themeAppearance')}
+                        subtitle={t('settingsAppearance.themeProfiles.themeAppearanceDescription')}
+                        subtitleLines={0}
+                        options={[
+                            { id: 'light', label: t('settingsAppearance.themeOptions.light') },
+                            { id: 'dark', label: t('settingsAppearance.themeOptions.dark') },
+                        ]}
+                        value={assetAppearance}
+                        onChange={updateAssetAppearance}
                     />
-                ) : null}
-                <Item
-                    testID={`settings-theme-profile-clone-${draft.id}`}
-                    title={t('settingsAppearance.themeProfiles.cloneProfile')}
-                    subtitle={profileDisplayName ?? draft.name}
-                    icon={<Icon name="copy" size={29} color={theme.colors.accent.blue} />}
-                    onPress={cloneProfile}
-                    disabled={themeProfiles.profiles.length >= THEME_PROFILE_MAX_PROFILES}
-                />
-                <Item
-                    testID={`settings-theme-profile-export-${draft.id}`}
-                    title={t('settingsAppearance.themeProfiles.exportProfile')}
-                    subtitle={t('settingsAppearance.themeProfiles.exportProfileSubtitle')}
-                    icon={<Icon name="download" size={29} color={theme.colors.accent.green} />}
-                    onPress={exportProfile}
-                />
+                </ItemGroup>
+            ) : null}
+
+            <ItemGroup title={t('settingsAppearance.themeProfiles.previewSection')}>
+                <SectionContentRow>
+                    <ThemeProfilePreviewPane profile={draft} mode={mode} />
+                </SectionContentRow>
             </ItemGroup>
 
-            <ThemeProfilePreviewPane profile={draft} mode={mode} />
-
-            {groups.map((group) => (
-                <ItemGroup key={group.group} title={t(groupTitleKeys[group.group as keyof typeof groupTitleKeys] ?? 'settingsAppearance.themeProfiles.groups.background')}>
+            {groups.map((group, index) => (
+                <ItemGroup
+                    key={group.group}
+                    title={t(groupTitleKeys[group.group as keyof typeof groupTitleKeys] ?? 'settingsAppearance.themeProfiles.groups.background')}
+                    description={index === 0 ? t(readonly
+                        ? 'settingsAppearance.themeProfiles.colorsReadOnlyDescription'
+                        : 'settingsAppearance.themeProfiles.colorsDescription') : undefined}
+                >
                     {group.tokens.map((token) => (
                         <ThemeColorTokenRow
                             key={token.id}
@@ -450,70 +473,26 @@ export const ThemeProfileEditorScreen = React.memo(function ThemeProfileEditorSc
                     ))}
                 </ItemGroup>
             ))}
-
-            {!readonly ? (
-                <ItemGroup title={t('settingsAppearance.themeProfiles.resetGroup')}>
-                    <Item
-                        testID={`settings-theme-profile-reset-${mode}`}
-                        title={t('settingsAppearance.themeProfiles.resetMode')}
-                        icon={<Icon name="arrow-clockwise" size={29} color={theme.colors.accent.orange} />}
-                        onPress={resetMode}
-                    />
-                    {persisted && isThemeProfileActive(themeProfiles, draft.id) ? (
-                        <>
-                            <Item
-                                testID="settings-theme-profile-deactivate"
-                                title={t('settingsAppearance.themeProfiles.deactivateProfile')}
-                                subtitle={t('settingsAppearance.themeProfiles.deactivateProfileSubtitle')}
-                                icon={<Icon name="circle-half" size={29} color={theme.colors.status.connecting} />}
-                                onPress={() => { void deactivate(); }}
-                            />
-                            <Item
-                                testID="settings-theme-profile-delete"
-                                title={t('settingsAppearance.themeProfiles.deleteProfile')}
-                                subtitle={t('settingsAppearance.themeProfiles.deleteProfileSubtitle')}
-                                destructive
-                                icon={<Icon name="trash" size={29} color={theme.colors.state.danger.foreground} />}
-                                onPress={() => { void deleteProfile(); }}
-                            />
-                        </>
-                    ) : null}
-                </ItemGroup>
-            ) : null}
-
-            {!readonly ? (
-                <SettingsActionFooter
-                    primaryLabel={t('settingsAppearance.themeProfiles.saveAndActivate')}
-                    primaryTestID="settings-theme-profile-save"
-                    primaryDisabled={saveDisabled}
-                    onPrimaryPress={() => { void saveAndActivate(); }}
-                />
-            ) : null}
         </ItemList>
     );
 });
 
 const stylesheet = StyleSheet.create((theme) => ({
-    profileNameRow: {
-        alignItems: 'center',
+    headerActions: {
         flexDirection: 'row',
-        flexWrap: 'wrap',
-        gap: 16,
-        width: '100%',
+        alignItems: 'center',
+        gap: 8,
     },
-    profileNameLabel: {
-        color: theme.colors.text.primary,
-        fontSize: 16,
-        fontWeight: '700',
+    headerError: {
+        color: theme.colors.state.danger.foreground,
+        fontSize: 13,
+        lineHeight: 18,
     },
-    profileNameInput: {
-        backgroundColor: 'transparent',
-        borderWidth: 0,
-        color: theme.colors.input.text,
-        flex: 1,
-        minWidth: 180,
-        paddingHorizontal: 0,
-        paddingVertical: 0,
-        textAlign: 'left',
+    // The theme preview owns its shape; entity marks do not provide a backing tile.
+    markPreview: {
+        width: 44,
+        height: 44,
+        borderRadius: 11,
+        overflow: 'hidden',
     },
 }));

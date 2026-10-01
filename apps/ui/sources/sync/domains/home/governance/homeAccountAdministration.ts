@@ -89,6 +89,8 @@ export type HomeAccountAdministrationActions = Readonly<{
     disable: HomeAccountActionAvailability;
     enable: HomeAccountActionAvailability;
     delete: HomeAccountActionAvailability;
+    /** End every signed-in session of the Account; not offered once it is no longer active. */
+    signOutEverywhere: HomeAccountActionAvailability;
     /**
      * The roles this viewer may actually assign to this target. The role sheet
      * renders exactly these, so no surface re-derives a local role ladder.
@@ -105,6 +107,7 @@ export type HomeAccountAdministrationTarget = Readonly<{
         disable: HomeAccountMutationCapabilityV1;
         reenable: HomeAccountMutationCapabilityV1;
         delete: HomeAccountMutationCapabilityV1;
+        signOutEverywhere: HomeAccountMutationCapabilityV1;
     };
 }>;
 
@@ -172,6 +175,11 @@ export function resolveHomeAccountAdministrationActions(params: Readonly<{
             ['target_not_suspended', 'target_retired'],
         ),
         delete: presentProjectedCapability(target.mutationCapabilities.delete, mutationsAvailable),
+        signOutEverywhere: presentProjectedCapability(
+            target.mutationCapabilities.signOutEverywhere,
+            mutationsAvailable,
+            ['target_not_active', 'target_retired'],
+        ),
         assignableRoles: setRole.state === 'hidden' ? NO_ROLES : assignableRoles,
     });
 }

@@ -12,6 +12,7 @@ import type { KeyboardPlatform } from '@/keyboard/types';
 import { ModalCardFrame } from '@/modal/components/card/ModalCardFrame';
 import type { CustomModalInjectedProps } from '@/modal/types';
 import { t } from '@/text';
+import { motionTokens } from '@/components/ui/motion/motionTokens';
 
 export type KeyboardShortcutCapturePromptModalProps = CustomModalInjectedProps & Readonly<{
     title: string;
@@ -82,7 +83,7 @@ export function KeyboardShortcutCapturePromptModal(props: KeyboardShortcutCaptur
                         style={({ pressed }) => [
                             styles.button,
                             { backgroundColor: theme.colors.button.secondary.background },
-                            pressed ? { opacity: 0.82 } : null,
+                            pressed ? { opacity: motionTokens.press.opacitySubtle } : null,
                         ]}
                     >
                         <Text style={{ color: theme.colors.button.secondary.tint }}>
@@ -96,7 +97,7 @@ export function KeyboardShortcutCapturePromptModal(props: KeyboardShortcutCaptur
                         style={({ pressed }) => [
                             styles.button,
                             { backgroundColor: theme.colors.button.primary.background },
-                            pressed ? { opacity: 0.86 } : null,
+                            pressed ? { opacity: motionTokens.press.opacitySubtle } : null,
                         ]}
                     >
                         <Text style={{ color: theme.colors.button.primary.tint }}>
@@ -148,16 +149,6 @@ const styles = StyleSheet.create(() => ({
         minHeight: 44,
         paddingHorizontal: 18,
         paddingVertical: 14,
-        ...(Platform.select({
-            web: {
-                outline: 'none',
-                outlineStyle: 'none',
-                outlineWidth: 0,
-                outlineColor: 'transparent',
-                boxShadow: 'none',
-            },
-            default: {},
-        }) as object),
     },
     hint: {
         lineHeight: 20,

@@ -2,11 +2,16 @@ import * as React from 'react';
 import { Pressable, View } from 'react-native';
 
 import type {
-    StructuredQuestionAnswersV1,
     WorkflowInvocationRecoveryV1,
     WorkflowProgressEnvelopeV1,
 } from '@happier-dev/protocol';
 
+import { PermissionPromptCard } from '@/components/tools/shell/permissions/PermissionPromptCard';
+import type {
+    ExecutionRunPromptResponse,
+    ExecutionRunPromptResponseTarget,
+} from '@/components/tools/shell/permissions/executionRunPromptResponseTarget';
+import { UserActionPromptCard } from '@/components/tools/shell/userActions/UserActionPromptCard';
 import { ToolbarButton } from '@/components/ui/buttons/ToolbarButton';
 import { Text } from '@/components/ui/text/Text';
 import { t } from '@/text';
@@ -21,7 +26,23 @@ import type {
     WorkflowInvocationRecoveryPresentation,
     WorkflowRecoveryContinuation,
 } from './workflowRunDetailPresentation';
-import { projectWorkflowInvocationRequests, type WorkflowInvocationRequest } from './workflowPermissionRequests';
+import { projectWorkflowInvocationRequests } from './workflowPermissionRequests';
+import { createReadOnlySessionTranscriptSource } from '@/components/sessions/transcript/source/readOnlySessionTranscriptSource';
+import { SessionTranscriptSourceProvider } from '@/components/sessions/transcript/source/SessionTranscriptSourceContext';
+
+const NO_PENDING_REQUESTS: ReadonlySet<string> = new Set();
+
+/** Detached Run cards carry their own responder, never a Session mutation authority. */
+function WorkflowRunPromptSource(props: Readonly<{ runId: string; children: React.ReactNode }>) {
+    const [source] = React.useState(() => createReadOnlySessionTranscriptSource({
+        sessionId: props.runId,
+        messages: [],
+        reducerState: null,
+        metadata: null,
+        agentState: null,
+    }));
+    return <SessionTranscriptSourceProvider source={source}>{props.children}</SessionTranscriptSourceProvider>;
+}
 
 /**
  * One exact selected invocation.
@@ -42,20 +63,23 @@ export type WorkflowInvocationDetailProps = Readonly<{
      * is not present in the read definition.
      */
     workspaceSourceLabel: string | null;
+    /** Why this row is waiting or was skipped, when its canonical facts say so. */
+    cause?: string | null;
     contentUnavailable?: boolean;
     onOpenSession?: (sessionId: string) => void;
     onOpenExecutionRun?: (runId: string) => void;
-    onRespondPermission?: (request: Readonly<{ requestId: string; approved: boolean }>) => void;
-    onAnswerQuestion?: (request: Readonly<{
-        requestId: string;
-        answers: StructuredQuestionAnswersV1;
-    }>) => void;
     /**
-     * Requests whose decision is already in flight. Both controls stay
+     * Answers a request recorded for this invocation's detached Execution Run.
+     * The host supplies it only while the exact evidence is confirmed; a
+     * rejection is shown by the canonical card that sent it.
+     */
+    onRespondToRequest?: (response: ExecutionRunPromptResponse) => Promise<void>;
+    /**
+     * Requests whose answer is already in flight. Their controls stay
      * withdrawn until the host sees that answer settle, so the same request
      * cannot be allowed and denied in the same moment.
      */
-    pendingPermissionRequestIds?: ReadonlySet<string>;
+    pendingRequestIds?: ReadonlySet<string>;
     onCopyWorkspace?: (directory: string) => void;
     onOpenWorkspace?: (workspaceRefId: string, directory: string) => void;
     onReattach?: () => void;
@@ -193,7 +217,26 @@ export function WorkflowInvocationDetail(props: WorkflowInvocationDetailProps): 
         && replacement.document.text.trim().length > 0
         && !operationPending;
     const retryable = acknowledgementSatisfied && !operationPending;
-    const pendingRequests = projectWorkflowInvocationRequests(props.progress);
+    const pendingRequests = React.useMemo(() => projectWorkflowInvocationRequests(props.progress), [props.progress]);
+    /**
+     * Requests are answered through the canonical Session prompt cards,
+     * addressed to the one Execution Run that owns them. Only a detached run
+     * records them here; nothing about this invocation grants a Session's
+     * authority, and last-known content that could not be confirmed as current
+     * is shown without a responder.
+     */
+    const detachedExecutionRunId = props.progress?.execution?.kind === 'detached_run'
+        ? props.progress.execution.runId
+        : null;
+    const respondToRequest = props.contentUnavailable === true ? undefined : props.onRespondToRequest;
+    const pendingRequestIds = props.pendingRequestIds ?? NO_PENDING_REQUESTS;
+    const executionRunTarget = React.useMemo((): ExecutionRunPromptResponseTarget | null => (
+        detachedExecutionRunId === null ? null : {
+            executionRunId: detachedExecutionRunId,
+            pendingRequestIds,
+            ...(respondToRequest === undefined ? {} : { respond: respondToRequest }),
+        }
+    ), [detachedExecutionRunId, pendingRequestIds, respondToRequest]);
     const attempt = props.progress === null ? null : describeWorkflowInvocationAttempt(props.progress.attempt);
     // A step that executed and reported no usage is explicitly unavailable
     // (UX-26), never zero and never silently absent. A container frame runs no
@@ -212,8 +255,21 @@ export function WorkflowInvocationDetail(props: WorkflowInvocationDetailProps): 
     return (
         <View testID={`${testIDPrefix}-selected-detail`} style={styles.section}>
             {props.contentUnavailable === true ? (
-                <Text testID={`${testIDPrefix}-content-unavailable`} style={styles.provenance}>
-                    {t('workflows.contentUnavailable')}
+                <Text
+                    testID={`${testIDPrefix}-content-unavailable`}
+                    style={styles.provenance}
+                    accessibilityRole="text"
+                    accessibilityLiveRegion="polite"
+                    role="status"
+                >
+                    {/* Two different situations wore the same sentence. With
+                        nothing opened the private content genuinely cannot be
+                        read here; with last-known content still on screen the
+                        honest statement is that it could not be confirmed as
+                        current — and its actions are withdrawn above. */}
+                    {props.progress === null
+                        ? t('workflows.contentUnavailable')
+                        : t('workflows.run.evidenceStale')}
                 </Text>
             ) : null}
             {/* A retried attempt says which one it is, in the same words as its row. */}
@@ -222,69 +278,48 @@ export function WorkflowInvocationDetail(props: WorkflowInvocationDetailProps): 
                     {attempt.label}
                 </Text>
             ) : null}
+            {props.cause === undefined || props.cause === null ? null : (
+                <Text testID={`${testIDPrefix}-invocation-cause`} style={styles.provenance}>
+                    {props.cause}
+                </Text>
+            )}
             {props.progress?.reason?.message === undefined ? null : (
                 <Text style={styles.provenance}>{props.progress.reason.message}</Text>
             )}
-            {pendingRequests.length === 0 ? null : (
+            {executionRunTarget === null || pendingRequests.length === 0 ? null : (
+                <WorkflowRunPromptSource key={executionRunTarget.executionRunId} runId={executionRunTarget.executionRunId}>
                 <View testID={`${testIDPrefix}-permission-requests`} style={styles.section}>
                     <Text style={styles.sectionLabel}>{t('workflows.run.needsYou')}</Text>
                     {pendingRequests.map((request) => {
-                        if (request.kind === 'user_action') {
-                            return (
-                                <WorkflowQuestionRequest
-                                    key={request.requestId}
-                                    request={request}
-                                    testIDPrefix={testIDPrefix}
-                                    responding={props.pendingPermissionRequestIds?.has(request.requestId) === true}
-                                    onAnswer={props.onAnswerQuestion}
-                                />
-                            );
-                        }
-                        const responding = props.pendingPermissionRequestIds?.has(request.requestId) === true;
-                        return (
-                            <View key={request.requestId} style={styles.section}>
-                                <Text testID={`${testIDPrefix}-permission-${request.requestId}`} style={styles.detailValue} selectable>
-                                    {request.tool}
-                                    {request.arguments === undefined ? '' : `\n${JSON.stringify(request.arguments, null, 2)}`}
-                                </Text>
-                                {props.onRespondPermission === undefined ? null : (
-                                    <View style={styles.actions}>
-                                        <Pressable
-                                            testID={`${testIDPrefix}-permission-${request.requestId}-allow`}
-                                            accessibilityRole="button"
-                                            accessibilityState={{ disabled: responding, busy: responding }}
-                                            disabled={responding}
-                                            onPress={() => {
-                                                if (responding) return;
-                                                props.onRespondPermission?.({ requestId: request.requestId, approved: true });
-                                            }}
-                                            style={styles.actionTarget}
-                                        >
-                                            <Text style={responding ? styles.provenance : styles.action}>
-                                                {t('notifications.actions.allow')}
-                                            </Text>
-                                        </Pressable>
-                                        <Pressable
-                                            testID={`${testIDPrefix}-permission-${request.requestId}-deny`}
-                                            accessibilityRole="button"
-                                            accessibilityState={{ disabled: responding, busy: responding }}
-                                            disabled={responding}
-                                            onPress={() => {
-                                                if (responding) return;
-                                                props.onRespondPermission?.({ requestId: request.requestId, approved: false });
-                                            }}
-                                            style={styles.actionTarget}
-                                        >
-                                            <Text style={responding ? styles.provenance : styles.action}>
-                                                {t('notifications.actions.deny')}
-                                            </Text>
-                                        </Pressable>
-                                    </View>
-                                )}
-                            </View>
+                        const pendingRequest = {
+                            id: request.requestId,
+                            tool: request.tool,
+                            kind: request.kind,
+                            arguments: request.arguments,
+                            createdAt: null,
+                        };
+                        return request.kind === 'user_action' ? (
+                            <UserActionPromptCard
+                                key={request.requestId}
+                                request={pendingRequest}
+                                location={null}
+                                executionRun={executionRunTarget}
+                                metadata={null}
+                                canApprovePermissions={true}
+                            />
+                        ) : (
+                            <PermissionPromptCard
+                                key={request.requestId}
+                                request={pendingRequest}
+                                location={null}
+                                executionRun={executionRunTarget}
+                                metadata={null}
+                                canApprovePermissions={true}
+                            />
                         );
                     })}
                 </View>
+                </WorkflowRunPromptSource>
             )}
             {recovery.remainingNotStartedSiblingCount === null
                 || recovery.remainingNotStartedSiblingCount === 0 ? null : (
@@ -426,7 +461,7 @@ export function WorkflowInvocationDetail(props: WorkflowInvocationDetailProps): 
                 ) : null}
             {execution !== undefined
                 && recovery.canInspectExecution
-                && execution.kind !== 'session'
+                && execution.kind === 'detached_run'
                 && props.onOpenExecutionRun !== undefined ? (
                     <Pressable
                         testID={`${testIDPrefix}-open-execution-run`}
@@ -653,97 +688,6 @@ export function WorkflowInvocationDetail(props: WorkflowInvocationDetailProps): 
                     {t('workflows.recovery.waitingForStop')}
                 </Text>
             ) : null}
-        </View>
-    );
-}
-
-function WorkflowQuestionRequest(props: Readonly<{
-    request: WorkflowInvocationRequest;
-    testIDPrefix: string;
-    responding: boolean;
-    onAnswer?: WorkflowInvocationDetailProps['onAnswerQuestion'];
-}>): React.ReactElement {
-    const [answers, setAnswers] = React.useState<Record<string, readonly string[]>>({});
-    const [customAnswers, setCustomAnswers] = React.useState<Record<string, string>>({});
-    const updateAnswer = React.useCallback((answerKey: string, values: readonly string[]) => {
-        setAnswers((current) => ({ ...current, [answerKey]: values }));
-    }, []);
-    const complete = props.request.questions.every((question) => (
-        !question.required
-        || (answers[question.answerKey]?.length ?? 0) > 0
-        || (customAnswers[question.answerKey]?.length ?? 0) > 0
-    ));
-    const submittedAnswers = React.useMemo<StructuredQuestionAnswersV1>(() => Object.fromEntries(
-        props.request.questions.flatMap((question) => {
-            const selected = answers[question.answerKey] ?? [];
-            const custom = customAnswers[question.answerKey] ?? '';
-            const values = question.selection === 'multiple'
-                ? custom.length > 0 ? [...selected, custom] : selected
-                : custom.length > 0 ? [custom] : selected;
-            return values.length > 0 ? [[question.answerKey, values] as const] : [];
-        }),
-    ), [answers, customAnswers, props.request.questions]);
-    return (
-        <View testID={`${props.testIDPrefix}-question-${props.request.requestId}`} style={styles.section}>
-            {props.request.questions.map((question, questionIndex) => (
-                <View key={`${question.answerKey}-${questionIndex}`} style={styles.section}>
-                    {question.header === undefined || question.header === null ? null : (
-                        <Text style={styles.sectionLabel}>{question.header}</Text>
-                    )}
-                    <Text style={styles.detailValue} selectable>{question.question}</Text>
-                    {question.choices.map((choice, choiceIndex) => {
-                        const selected = answers[question.answerKey]?.includes(choice.value) === true;
-                        return (
-                            <Pressable
-                                key={`${choice.value}-${choiceIndex}`}
-                                testID={`${props.testIDPrefix}-question-${props.request.requestId}-choice-${choiceIndex}`}
-                                accessibilityRole={question.selection === 'multiple' ? 'checkbox' : 'radio'}
-                                accessibilityState={{ checked: selected, disabled: props.responding }}
-                                disabled={props.responding}
-                                onPress={() => updateAnswer(
-                                    question.answerKey,
-                                    question.selection === 'multiple'
-                                        ? selected
-                                            ? (answers[question.answerKey] ?? []).filter((value) => value !== choice.value)
-                                            : [...(answers[question.answerKey] ?? []), choice.value]
-                                        : [choice.value],
-                                )}
-                                style={styles.actionTarget}
-                            >
-                                <Text style={selected ? styles.action : styles.detailKey}>{choice.label}</Text>
-                                {choice.description === undefined || choice.description === null ? null : (
-                                    <Text style={styles.provenance}>{choice.description}</Text>
-                                )}
-                            </Pressable>
-                        );
-                    })}
-                    {question.selection === 'text' || question.allowCustom ? (
-                        <MultiTextInput
-                            testID={`${props.testIDPrefix}-question-${props.request.requestId}-freeform`}
-                            value={customAnswers[question.answerKey] ?? ''}
-                            onChangeText={(value) => setCustomAnswers((current) => ({ ...current, [question.answerKey]: value }))}
-                            placeholder={question.freeformPlaceholder
-                                ?? question.freeformDescription
-                                ?? t('notifications.activity.requestLabels.customAnswer')}
-                            editable={!props.responding}
-                        />
-                    ) : null}
-                </View>
-            ))}
-            {props.onAnswer === undefined ? null : (
-                <Pressable
-                    testID={`${props.testIDPrefix}-question-${props.request.requestId}-submit`}
-                    accessibilityRole="button"
-                    accessibilityState={{ disabled: !complete || props.responding, busy: props.responding }}
-                    disabled={!complete || props.responding}
-                    onPress={() => props.onAnswer?.({ requestId: props.request.requestId, answers: submittedAnswers })}
-                    style={styles.actionTarget}
-                >
-                    <Text style={!complete || props.responding ? styles.provenance : styles.action}>
-                        {t('tools.askUserQuestion.submit')}
-                    </Text>
-                </Pressable>
-            )}
         </View>
     );
 }

@@ -14,6 +14,29 @@ import {
 } from './connections.js';
 
 describe('Channels V1 connection management contracts', () => {
+    const providerSelection = {
+        target: {
+            pluginId: 'happier.channels',
+            sourceCustody: {
+                kind: 'bundled_first_party',
+                packagedRuntime: { kind: 'cli_version_root', versionRootId: 'cli-version-1' },
+            },
+        },
+        point: {
+            pointId: 'providers',
+            protocol: { id: 'happier.channels/providers', version: 1 },
+        },
+        contributor: {
+            pluginId: 'happier.channel.telegram',
+            contributionId: 'provider',
+            sourceCustody: {
+                kind: 'managed',
+                immutableGenerationId: 'generation-telegram-1',
+                installSource: 'npm',
+            },
+        },
+    } as const;
+
     it('derives a bounded deterministic webhook source identity from the canonical connection id', () => {
         expect(CONVERSATION_CONNECTION_WEBHOOK_SOURCE_INSTANCE_ID_PREFIX_V1)
             .toBe('channels.connection.');
@@ -28,21 +51,6 @@ describe('Channels V1 connection management contracts', () => {
     });
 
     it('admits the complete create contract through the host-admitted provider selection and the strict endpoint relay', () => {
-        const providerSelection = {
-            target: {
-                pluginId: 'happier.channels',
-                immutableGenerationId: 'generation-channels-1',
-            },
-            point: {
-                pointId: 'providers',
-                protocol: { id: 'happier.channels/providers', version: 1 },
-            },
-            contributor: {
-                pluginId: 'happier.channel.telegram',
-                contributionId: 'provider',
-                immutableGenerationId: 'generation-telegram-1',
-            },
-        } as const;
         const checkpointedPull = {
             providerSelection,
             providerSetupInput: { botToken: 'opaque' },
@@ -107,21 +115,6 @@ describe('Channels V1 connection management contracts', () => {
     });
 
     it('keeps connection transfer caller-owned, revision-guarded, and strict across transport replacement', () => {
-        const providerSelection = {
-            target: {
-                pluginId: 'happier.channels',
-                immutableGenerationId: 'generation-channels-1',
-            },
-            point: {
-                pointId: 'providers',
-                protocol: { id: 'happier.channels/providers', version: 1 },
-            },
-            contributor: {
-                pluginId: 'happier.channel.telegram',
-                contributionId: 'provider',
-                immutableGenerationId: 'generation-telegram-1',
-            },
-        } as const;
         const transfer = {
             connectionId: 'connection-1',
             expectedRevision: 7,

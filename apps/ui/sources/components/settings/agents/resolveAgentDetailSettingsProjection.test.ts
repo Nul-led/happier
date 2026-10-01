@@ -88,20 +88,18 @@ describe('resolveAgentDetailPluginSettingsProjection', () => {
 });
 
 describe('resolveAgentDetailExternalSessionsBinding', () => {
-    function projectionWithContributions(contributions: readonly Readonly<{
+    function projectionWithAgents(agents: readonly Readonly<{
         pluginId: string;
         localId: string;
     }>[]) {
+        // The describe's Agent catalog is the one record of which Agents this
+        // projection carries; the lifecycle table no longer ships Agent rows.
         return {
             generation: 4,
-            agentsById: {},
-            contributionIntrospection: {
-                contributions: contributions.map(({ pluginId, localId }) => ({
-                    progression: { merged: true },
-                    projection: { state: 'projected' },
-                    contribution: { kind: 'localId', family: 'agents', pluginId, localId },
-                })),
-            },
+            agentsById: Object.fromEntries(agents.map(({ pluginId, localId }) => [
+                `${pluginId}:${localId}`,
+                { id: `${pluginId}:${localId}`, identity: { pluginId, localId } },
+            ])),
         } as unknown as Parameters<typeof resolveAgentDetailExternalSessionsBinding>[0]['projection'];
     }
 
@@ -109,7 +107,7 @@ describe('resolveAgentDetailExternalSessionsBinding', () => {
         // The previous localId-only scan found two unique candidates and
         // silently dropped the binding; the qualified identity binds it.
         const binding = resolveAgentDetailExternalSessionsBinding({
-            projection: projectionWithContributions([
+            projection: projectionWithAgents([
                 { pluginId: 'acme.one', localId: 'helper' },
                 { pluginId: 'acme.two', localId: 'helper' },
             ]),
@@ -125,7 +123,7 @@ describe('resolveAgentDetailExternalSessionsBinding', () => {
 
     it('refuses when the exact identity has no projected agent contribution', () => {
         expect(resolveAgentDetailExternalSessionsBinding({
-            projection: projectionWithContributions([
+            projection: projectionWithAgents([
                 { pluginId: 'acme.one', localId: 'helper' },
             ]),
             agentId: 'helper',
@@ -138,13 +136,13 @@ describe('resolveAgentDetailExternalSessionsBinding', () => {
             generation: 4,
             agentsById: {
                 helper: {
+                    identity: IDENTITY_ONE,
                     externalSessions: {
                         agent: IDENTITY_ONE,
                         generation: 4,
                     },
                 },
             },
-            contributionIntrospection: { contributions: [] },
         } as unknown as Parameters<typeof resolveAgentDetailExternalSessionsBinding>[0]['projection'];
 
         expect(resolveAgentDetailExternalSessionsBinding({

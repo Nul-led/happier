@@ -1,11 +1,5 @@
 import { defineAccountSettingAnalytics } from './accountSettingAnalyticsPresentation';
 
-function objectKeyCount(value: unknown): number {
-    return value && typeof value === 'object' && !Array.isArray(value)
-        ? Object.keys(value as Record<string, unknown>).length
-        : 0;
-}
-
 function arrayCount(value: unknown): number {
     return Array.isArray(value) ? value.length : 0;
 }
@@ -33,14 +27,6 @@ function buildDismissedCliWarningsSummaryProperties(value: unknown): Record<stri
 }
 
 export const ACCOUNT_COLLECTION_SETTING_ANALYTICS = defineAccountSettingAnalytics({
-    recentMachinePaths: {
-        trackCurrentState: true,
-        trackChanges: true,
-        valueKind: 'count',
-        privacy: 'count_only',
-        identityScope: 'person',
-        serializeCurrent: arrayCount,
-    },
     favoriteDirectories: {
         trackCurrentState: true,
         trackChanges: true,
@@ -96,14 +82,6 @@ export const ACCOUNT_COLLECTION_SETTING_ANALYTICS = defineAccountSettingAnalytic
         privacy: 'count_only',
         identityScope: 'person',
         serializeCurrent: arrayCount,
-    },
-    sessionSplitCanvasLayoutsV1: {
-        trackCurrentState: true,
-        trackChanges: true,
-        valueKind: 'count',
-        privacy: 'count_only',
-        identityScope: 'person',
-        serializeCurrent: objectKeyCount,
     },
     dismissedCLIWarnings: {
         trackCurrentState: true,

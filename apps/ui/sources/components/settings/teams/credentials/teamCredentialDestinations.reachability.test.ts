@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
@@ -18,13 +18,6 @@ import {
 
 const UI_SOURCES_ROOT = join(__dirname, '..', '..', '..', '..');
 const SETTINGS_ROUTES_ROOT = join(UI_SOURCES_ROOT, 'app', '(app)', 'settings');
-const ROUTE_REGISTRY_PATH = join(
-    UI_SOURCES_ROOT,
-    'components',
-    'settings',
-    'navigation',
-    'settingsRouteRegistry.ts',
-);
 
 const ADDRESS = { serverId: 'home-a', teamId: 'team-1' } as const;
 const RESOURCE_ID = 'resource-1';
@@ -80,17 +73,21 @@ describe('team credential destinations', () => {
         expect(unreachable).toEqual([]);
     });
 
-    it('registers every credential destination with the settings stack chrome', () => {
-        const registry = readFileSync(ROUTE_REGISTRY_PATH, 'utf8');
+    it('registers every credential destination with the settings stack chrome', async () => {
+        const { resolveSettingsNestedRouteName } = await import('@/components/settings/navigation/settingsRouteRegistry');
+        // Team destinations live in the Teams collection's nested navigator; each one must resolve to
+        // the registered screen of its own route file, or it falls back to the raw router segment
+        // for its title and Back affordance instead of the Settings chrome.
         const unregistered = DESTINATIONS
-            .map(toRouteName)
-            .map((routeName) => (existsSync(join(SETTINGS_ROUTES_ROOT, routeName, 'index.tsx'))
-                ? `${routeName}/index`
-                : routeName))
-            .filter((routeName) => !registry.includes(`name: '${routeName}'`));
+            .map((destination) => {
+                const routeName = toRouteName(destination);
+                const expected = (existsSync(join(SETTINGS_ROUTES_ROOT, routeName, 'index.tsx'))
+                    ? `${routeName}/index`
+                    : routeName).replace(/^teams\//, '');
+                return { expected, resolved: resolveSettingsNestedRouteName('teams', destination.split('?')[0]) };
+            })
+            .filter(({ expected, resolved }) => resolved !== expected);
 
-        // Unregistered settings routes fall back to the raw router segment for
-        // their title and Back affordance instead of the Settings chrome.
         expect(unregistered).toEqual([]);
     });
 });

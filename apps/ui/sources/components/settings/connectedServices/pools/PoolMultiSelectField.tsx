@@ -25,11 +25,17 @@ export type PoolMultiSelectFieldProps = Readonly<{
     emptySubtitle: string;
     searchPlaceholder: string;
     optionTestIDPrefix: string;
-    icon: React.ReactNode;
     disabled?: boolean;
     minimumSelected?: number;
     exclusiveId?: string;
     testID?: string;
+    /** Always offer search (a members list the person scans by name), not only for long lists. */
+    searchable?: boolean;
+    /** Controlled open state, for a surface that opens the menu from elsewhere (an empty state). */
+    open?: boolean;
+    onOpenChange?: (open: boolean) => void;
+    /** A different trigger than the field row (a section's "Manage members" button). */
+    renderTrigger?: (input: Readonly<{ toggle: () => void; open: boolean; disabled: boolean }>) => React.ReactNode;
 }>;
 
 const SEARCHABLE_CANDIDATE_THRESHOLD = 8;
@@ -39,7 +45,13 @@ export const PoolMultiSelectField = React.memo(function PoolMultiSelectField(
     props: PoolMultiSelectFieldProps,
 ) {
     const { theme } = useUnistyles();
-    const [open, setOpen] = React.useState(false);
+    const [localOpen, setLocalOpen] = React.useState(false);
+    const open = props.open ?? localOpen;
+    const onOpenChange = props.onOpenChange;
+    const setOpen = React.useCallback((next: boolean) => {
+        setLocalOpen(next);
+        onOpenChange?.(next);
+    }, [onOpenChange]);
     const [draft, setDraft] = React.useState<ReadonlySet<string> | null>(null);
     const committed = React.useMemo(() => new Set(props.selectedIds), [props.selectedIds]);
     const selected = draft ?? committed;
@@ -68,7 +80,7 @@ export const PoolMultiSelectField = React.memo(function PoolMultiSelectField(
         }
         if (draft) commitDraft(draft);
         setDraft(null);
-    }, [commitDraft, draft, props.selectedIds]);
+    }, [commitDraft, draft, props.selectedIds, setOpen]);
 
     const items = React.useMemo(() => props.candidates.map((candidate) => {
         const checked = selected.has(candidate.id);
@@ -96,6 +108,10 @@ export const PoolMultiSelectField = React.memo(function PoolMultiSelectField(
     ]);
 
     const disabled = props.disabled || props.candidates.length === 0;
+    // A controlled open request (the empty state's action) seeds the draft the same way a trigger press does.
+    React.useEffect(() => {
+        if (open && draft === null) setDraft(new Set(props.selectedIds));
+    }, [draft, open, props.selectedIds]);
     return (
         <DropdownMenu
             open={open}
@@ -118,17 +134,18 @@ export const PoolMultiSelectField = React.memo(function PoolMultiSelectField(
             variant="selectable"
             rowKind="item"
             showCategoryTitles={false}
-            matchTriggerWidth
-            search={props.candidates.length > SEARCHABLE_CANDIDATE_THRESHOLD}
+            // A section button (Manage members) is narrower than its list; a field row is not.
+            matchTriggerWidth={!props.renderTrigger}
+            {...(props.renderTrigger ? { placement: 'bottom' as const, popoverAnchorAlign: 'end' as const, maxWidthCap: 360 } : {})}
+            search={props.searchable === true || props.candidates.length > SEARCHABLE_CANDIDATE_THRESHOLD}
             searchPlaceholder={props.searchPlaceholder}
-            trigger={({ toggle, open: isOpen }) => (
+            trigger={({ toggle, open: isOpen }) => props.renderTrigger ? props.renderTrigger({ toggle, open: isOpen, disabled }) : (
                 <Item
                     testID={props.testID}
                     title={props.title}
                     subtitle={props.candidates.length === 0
                         ? props.emptySubtitle
                         : props.subtitle(selectedCount, props.candidates.length, selected)}
-                    icon={props.icon}
                     rightElement={(
                         <Icon
                             name={isOpen ? 'caret-up' : 'caret-down'}

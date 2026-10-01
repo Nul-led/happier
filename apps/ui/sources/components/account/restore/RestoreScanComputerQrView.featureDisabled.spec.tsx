@@ -31,7 +31,8 @@ vi.mock('@/auth/context/AuthContext', () => ({
     useAuth: () => ({ login: vi.fn(async () => {}), refreshFromActiveServer: vi.fn(async () => {}) }),
 }));
 
-vi.mock('@/sync/domains/server/serverProfiles', () => ({
+vi.mock('@/sync/domains/server/serverProfiles', async (importOriginal) => ({
+    ...(await importOriginal<typeof import('@/sync/domains/server/serverProfiles')>()),
     getActiveServerUrl: () => 'https://stack.example.test',
 }));
 

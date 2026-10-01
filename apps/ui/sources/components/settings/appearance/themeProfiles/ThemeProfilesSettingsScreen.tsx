@@ -1,273 +1,209 @@
 import * as React from 'react';
-import { Appearance, Platform, View } from 'react-native';
-import { setStatusBarStyle } from 'expo-status-bar';
-import { useRouter } from 'expo-router';
+import { useRouter } from '@/components/appShell/workspace/destinationRoute';
 import { useUnistyles } from 'react-native-unistyles';
 
 import { Item } from '@/components/ui/lists/Item';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
 import { ItemList } from '@/components/ui/lists/ItemList';
-import { ItemRowActions } from '@/components/ui/lists/ItemRowActions';
-import type { ItemAction } from '@/components/ui/lists/itemActions';
+import { SectionContentRow } from '@/components/ui/lists/SectionContentRow';
+import { SelectionTiles } from '@/components/ui/forms/SelectionTiles';
 import { DropdownMenu, type DropdownMenuItem } from '@/components/ui/forms/dropdown/DropdownMenu';
-import { resolveStatusBarStyleForThemePreference, type ThemePreference } from '@/components/ui/layout/statusBarStyle';
-import { runThemePreferenceChange } from '@/components/settings/appearance/themePreferenceTransition';
-import { useReducedMotionPreference } from '@/hooks/ui/useReducedMotionPreference';
-import { Modal } from '@/modal';
+import { RoundButton } from '@/components/ui/buttons/RoundButton';
+import { Icon, ICON_SIZE } from '@/components/ui/icons/Icon';
+import { ThemePalettePreview } from '@/components/settings/appearance/ThemeModePreview';
+import { useApplyThemeSelection } from '@/components/settings/appearance/useApplyThemeSelection';
+import { SettingsPageHeader } from '@/components/settings/shell/SettingsPageHeader';
+import { SettingAnchor } from '@/components/settings/shell/SettingRow';
+import { THEMES_SETTINGS } from './themesSettings';
 import { useLocalSettingMutable } from '@/sync/domains/state/storage';
 import { t } from '@/text';
-import { createThemeProfileDraft } from '@/theme/profiles/createThemeProfileDraft';
 import { THEME_PROFILE_MAX_PROFILES } from '@/theme/profiles/themeProfileConstants';
-import { applyThemeRuntimeSelection } from '@/theme/profiles/themeProfileRuntime';
-import { isThemeProfileActive, setActiveThemeProfileForMode } from '@/theme/profiles/themeProfilePersistence';
-import type { ThemeProfileMode, ThemeProfilesLocalStateV1, ThemeProfileV1 } from '@/theme/profiles/themeProfileTypes';
+import { resolveThemeProfile } from '@/theme/profiles/resolveThemeProfile';
+import { setActiveThemeProfileForMode } from '@/theme/profiles/themeProfilePersistence';
+import type { ThemeProfileMode, ThemeProfilesLocalStateV1 } from '@/theme/profiles/themeProfileTypes';
 import { buildThemePresetSourceOptions, type ThemePresetSourceOption } from './themeProfilePresetOptions';
-import { Icon } from '@/components/ui/icons/Icon';
-import {
-    createThemeProfileId,
-    nowThemeProfileTimestamp,
-    removeThemeProfile,
-    upsertThemeProfile,
-} from './themeProfileScreenUtils';
 
 const profileEditorRoute = (profileId: string) => ({
     pathname: '/settings/appearance/themes/[profileId]' as const,
     params: { profileId },
 });
 
-const createProfileName = (count: number): string => t('settingsAppearance.themeProfiles.newProfileName', { count });
+const THEME_MODES: readonly ThemeProfileMode[] = ['light', 'dark'];
 
+/** A mode's tile value: the theme it uses, or the mode's own base theme when none is set. */
+const activeTileId = (themeProfiles: ThemeProfilesLocalStateV1, mode: ThemeProfileMode): string => (
+    themeProfiles.activeProfileIds[mode] ?? mode
+);
+
+/**
+ * Themes: which theme light mode and dark mode use (a visual choice, so tiles showing each theme's own
+ * colours), then the user's own themes, which open in the editor. Adding a theme starts in that
+ * collection: a new theme (starting from any theme) or an import.
+ */
 export const ThemeProfilesSettingsScreen = React.memo(function ThemeProfilesSettingsScreen() {
     const { theme } = useUnistyles();
     const router = useRouter();
-    const reduceMotion = useReducedMotionPreference();
-    const [themePreference, setThemePreference] = useLocalSettingMutable('themePreference');
-    const [themeProfiles, setThemeProfiles] = useLocalSettingMutable('themeProfiles');
-    const [builtInDropdownOpen, setBuiltInDropdownOpen] = React.useState(false);
+    const [themePreference] = useLocalSettingMutable('themePreference');
+    const [themeProfiles] = useLocalSettingMutable('themeProfiles');
+    const [addMenuOpen, setAddMenuOpen] = React.useState(false);
     const presetOptions = React.useMemo(() => buildThemePresetSourceOptions(themeProfiles), [themeProfiles]);
-    const customPresetOptions = React.useMemo(() => presetOptions.filter((option) => option.kind === 'custom'), [presetOptions]);
-    const builtInPresetOptions = React.useMemo(() => presetOptions.filter((option) => option.kind !== 'custom'), [presetOptions]);
+    const customOptions = React.useMemo(() => presetOptions.filter((option) => option.kind === 'custom'), [presetOptions]);
     const profileLimitReached = themeProfiles.profiles.length >= THEME_PROFILE_MAX_PROFILES;
 
-    const openImport = React.useCallback(() => {
-        router.push('/settings/appearance/themes/import');
-    }, [router]);
+    // The one theme-selection writer: stores, applies, sets the status bar and plays the transition.
+    const applyThemeSelection = useApplyThemeSelection();
+
+    const selectForMode = React.useCallback((mode: ThemeProfileMode, optionId: string) => {
+        // The mode's own tile is its base theme: no profile.
+        const profileId = optionId === mode ? null : optionId;
+        if (themeProfiles.activeProfileIds[mode] === profileId) return;
+        applyThemeSelection(themePreference, setActiveThemeProfileForMode(themeProfiles, mode, profileId));
+    }, [applyThemeSelection, themePreference, themeProfiles]);
 
     const openCreate = React.useCallback(() => {
-        router.push(profileEditorRoute('new'));
-    }, [router]);
-
-    const applyThemeSelection = React.useCallback((nextThemePreference: ThemePreference, nextThemeProfiles: ThemeProfilesLocalStateV1) => {
-        const systemTheme = Appearance.getColorScheme() === 'dark' ? 'dark' : 'light';
-        void runThemePreferenceChange({
-            currentPreference: themePreference,
-            nextPreference: nextThemePreference,
-            platform: Platform.OS,
-            reduceMotion,
-            forceAnimate: true,
-            systemTheme,
-            mutation: () => {
-                setThemePreference(nextThemePreference);
-                setThemeProfiles(nextThemeProfiles);
-                applyThemeRuntimeSelection({
-                    themePreference: nextThemePreference,
-                    themeProfiles: nextThemeProfiles,
-                    systemTheme,
-                });
-                setStatusBarStyle(resolveStatusBarStyleForThemePreference(nextThemePreference, systemTheme), true);
-            },
-        });
-    }, [reduceMotion, setThemePreference, setThemeProfiles, themePreference]);
-
-    const duplicateTheme = React.useCallback((option: ThemePresetSourceOption) => {
         if (profileLimitReached) return;
-        const id = createThemeProfileId();
-        const now = nowThemeProfileTimestamp();
-        const profile = createThemeProfileDraft({
-            id,
-            name: t('settingsAppearance.themeProfiles.cloneName', { name: option.title || createProfileName(themeProfiles.profiles.length + 1) }),
-            now,
-            sourceProfile: option.profile ?? undefined,
-        });
-        setThemeProfiles(upsertThemeProfile(themeProfiles, profile));
-        router.push(profileEditorRoute(id));
-    }, [profileLimitReached, router, setThemeProfiles, themeProfiles]);
+        router.push(profileEditorRoute('new'));
+    }, [profileLimitReached, router]);
 
-    const selectBaseTheme = React.useCallback((mode: ThemeProfileMode) => {
-        applyThemeSelection(themePreference, setActiveThemeProfileForMode(themeProfiles, mode, null));
-    }, [applyThemeSelection, themePreference, themeProfiles]);
-
-    const selectProfile = React.useCallback((option: ThemePresetSourceOption) => {
-        applyThemeSelection(themePreference, setActiveThemeProfileForMode(themeProfiles, option.preferredMode, option.id));
-    }, [applyThemeSelection, themePreference, themeProfiles]);
-
-    const activatePresetOption = React.useCallback((option: ThemePresetSourceOption) => {
-        if (option.id === 'light' || option.id === 'dark') {
-            selectBaseTheme(option.id);
-            return;
-        }
-        selectProfile(option);
-    }, [selectBaseTheme, selectProfile]);
-
-    const deleteProfile = React.useCallback(async (profile: ThemeProfileV1) => {
-        const confirmed = await Modal.confirm(
-            t('settingsAppearance.themeProfiles.deleteProfile'),
-            t('settingsAppearance.themeProfiles.deleteProfileSubtitle'),
-            { confirmText: t('common.delete'), destructive: true },
-        );
-        if (!confirmed) return;
-
-        const nextThemeProfiles = removeThemeProfile(themeProfiles, profile.id);
-        if (isThemeProfileActive(themeProfiles, profile.id)) {
-            applyThemeSelection(themePreference, nextThemeProfiles);
-            return;
-        }
-        setThemeProfiles(nextThemeProfiles);
-    }, [applyThemeSelection, setThemeProfiles, themePreference, themeProfiles]);
-
-    const isPresetOptionActive = React.useCallback((option: ThemePresetSourceOption): boolean => {
-        if (option.id === 'light') return themeProfiles.activeProfileIds.light === null;
-        if (option.id === 'dark') return themeProfiles.activeProfileIds.dark === null;
-        return themeProfiles.activeProfileIds.light === option.id || themeProfiles.activeProfileIds.dark === option.id;
-    }, [themeProfiles.activeProfileIds]);
-
-    const renderPresetActions = React.useCallback((option: ThemePresetSourceOption) => {
-        const actions: ItemAction[] = [];
-
-        if (!profileLimitReached) {
-            actions.push({
-                id: `duplicate-${option.id}`,
-                title: t('settingsAppearance.themeProfiles.duplicateTheme'),
-                subtitle: option.title,
-                icon: 'copy',
-                color: theme.colors.accent.blue,
-                inlineTestID: `settings-theme-duplicate-${option.id}`,
-                onPress: () => duplicateTheme(option),
-            });
-        }
-
-        if (option.kind === 'custom' && option.profile) {
-            const profile = option.profile;
-            actions.unshift({
-                id: `edit-${option.id}`,
-                title: t('settingsAppearance.themeProfiles.editProfile'),
-                subtitle: option.title,
-                icon: 'pencil-simple',
-                color: theme.colors.accent.blue,
-                inlineTestID: `settings-theme-edit-${option.id}`,
-                onPress: () => router.push(profileEditorRoute(profile.id)),
-            });
-            actions.push({
-                id: `delete-${option.id}`,
-                title: t('settingsAppearance.themeProfiles.deleteProfile'),
-                subtitle: option.title,
-                icon: 'trash',
-                destructive: true,
-                inlineTestID: `settings-theme-delete-${option.id}`,
-                onPress: () => { void deleteProfile(profile); },
-            });
-        }
-
-        return (
-            <View testID={`settings-theme-profile-${option.kind === 'custom' ? 'custom' : 'built-in'}-actions-${option.id}`} style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
-                {isPresetOptionActive(option) ? (
-                    <Icon name="check-circle" size={20} color={theme.colors.status.connected} />
-                ) : null}
-                <ItemRowActions
-                    title={option.title}
-                    actions={actions}
-                    compactActionIds={actions.map((action) => action.id)}
-                    pinnedActionIds={actions.map((action) => action.id)}
-                    overflowTriggerTestID={`settings-theme-actions-${option.id}`}
-                    iconSize={18}
-                    gap={12}
-                />
-            </View>
-        );
-    }, [deleteProfile, duplicateTheme, isPresetOptionActive, profileLimitReached, router, theme.colors.accent.blue, theme.colors.status.connected]);
-
-    const renderPresetRow = React.useCallback((option: ThemePresetSourceOption) => {
-        const builtIn = option.kind !== 'custom';
-        const iconName = option.kind === 'builtIn' ? 'sparkle' : option.id === 'dark' ? 'moon' : 'sun';
-        return (
-            <Item
-                key={option.id}
-                testID={builtIn ? `settings-theme-profile-built-in-${option.id}` : `settings-theme-profile-custom-${option.id}`}
-                title={option.title}
-                subtitle={option.subtitle}
-                selected={isPresetOptionActive(option)}
-                icon={<Icon name={iconName} size={29} color={option.kind === 'builtIn' ? theme.colors.accent.indigo : theme.colors.status.connecting} />}
-                rightElement={renderPresetActions(option)}
-                onPress={() => activatePresetOption(option)}
-            />
-        );
-    }, [activatePresetOption, isPresetOptionActive, renderPresetActions, theme.colors.accent.indigo, theme.colors.status.connecting]);
-
-    const builtInDropdownItems = React.useMemo((): readonly DropdownMenuItem[] => (
-        builtInPresetOptions.map((option) => {
-            const iconName = option.kind === 'builtIn' ? 'sparkle' : option.id === 'dark' ? 'moon' : 'sun';
-            return {
-                id: option.id,
-                testID: `settings-theme-profile-built-in-option-${option.id}`,
-                title: option.title,
-                subtitle: option.subtitle,
-                icon: <Icon name={iconName} size={20} color={option.kind === 'builtIn' ? theme.colors.accent.indigo : theme.colors.status.connecting} />,
-                rightElement: renderPresetActions(option),
-            };
-        })
-    ), [builtInPresetOptions, renderPresetActions, theme.colors.accent.indigo, theme.colors.status.connecting]);
+    const addMenuItems = React.useMemo((): readonly DropdownMenuItem[] => [
+        {
+            id: 'create',
+            testID: 'settings-theme-profile-create',
+            title: t('settingsAppearance.themeProfiles.newTheme'),
+            subtitle: profileLimitReached
+                ? t('settingsAppearance.themeProfiles.themeLimitDescription', { count: THEME_PROFILE_MAX_PROFILES })
+                : t('settingsAppearance.themeProfiles.newThemeDescription'),
+            disabled: profileLimitReached,
+        },
+        {
+            id: 'import',
+            testID: 'settings-theme-profile-import',
+            title: t('settingsAppearance.themeProfiles.importProfile'),
+            subtitle: t('settingsAppearance.themeProfiles.importThemeDescription'),
+        },
+    ], [profileLimitReached]);
 
     return (
-        <ItemList testID="settings-theme-profiles-screen" style={{ paddingTop: 0 }}>
-            <ItemGroup title={t('settingsAppearance.themeProfiles.builtInGroup')} footer={t('settingsAppearance.themeProfiles.builtInFooter')}>
-                <DropdownMenu
-                    open={builtInDropdownOpen}
-                    onOpenChange={setBuiltInDropdownOpen}
-                    variant="selectable"
-                    search
-                    selectedId={null}
-                    showCategoryTitles={false}
-                    matchTriggerWidth
-                    connectToTrigger
-                    rowKind="item"
-                    itemTrigger={{
-                        title: t('settingsAppearance.themeProfiles.builtInGroup'),
-                        subtitle: t('settingsAppearance.themeProfiles.builtInFooter'),
-                        icon: <Icon name="sparkle" size={29} color={theme.colors.accent.indigo} />,
-                        showSelectedSubtitle: false,
-                        itemProps: { testID: 'settings-theme-profile-built-in-dropdown-trigger' },
-                    }}
-                    items={builtInDropdownItems}
-                    onSelect={(itemId) => {
-                        const option = builtInPresetOptions.find((entry) => entry.id === itemId);
-                        if (option) activatePresetOption(option);
-                    }}
-                />
-            </ItemGroup>
+        <ItemList testID="settings-theme-profiles-screen" style={{ paddingTop: 0 }} presentation="page">
+            <SettingsPageHeader description={t('settingsAppearance.themeProfiles.pageDescription')} />
 
-            {customPresetOptions.length > 0 ? (
-                <ItemGroup title={t('settingsAppearance.themeProfiles.customGroup')} footer={t('settingsAppearance.themeProfiles.customFooter')}>
-                    {customPresetOptions.map(renderPresetRow)}
-                </ItemGroup>
-            ) : null}
+            {THEME_MODES.map((mode) => (
+                <ThemeModeTilesSection
+                    key={mode}
+                    mode={mode}
+                    options={presetOptions}
+                    value={activeTileId(themeProfiles, mode)}
+                    onSelect={selectForMode}
+                />
+            ))}
 
-            <ItemGroup title={t('settingsAppearance.themeProfiles.actionsGroup')}>
-                <Item
-                    testID="settings-theme-profile-create"
-                    title={t('settingsAppearance.themeProfiles.createProfile')}
-                    subtitle={t('settingsAppearance.themeProfiles.createProfileSubtitle')}
-                    icon={<Icon name="plus-circle" size={29} color={theme.colors.accent.blue} />}
-                    onPress={openCreate}
-                    disabled={profileLimitReached}
-                />
-                <Item
-                    testID="settings-theme-profile-import"
-                    title={t('settingsAppearance.themeProfiles.importProfile')}
-                    subtitle={t('settingsAppearance.themeProfiles.importProfileSubtitle')}
-                    icon={<Icon name="file-arrow-down" size={29} color={theme.colors.accent.green} />}
-                    onPress={openImport}
-                />
+            <ItemGroup
+                title={t('settingsAppearance.themeProfiles.yourThemes')}
+                description={t('settingsAppearance.themeProfiles.yourThemesDescription')}
+                action={(
+                    <DropdownMenu
+                        testID="settings-theme-profile-add-menu"
+                        open={addMenuOpen}
+                        onOpenChange={setAddMenuOpen}
+                        items={addMenuItems}
+                        onSelect={(id) => {
+                            setAddMenuOpen(false);
+                            if (id === 'create') openCreate();
+                            if (id === 'import') router.push('/settings/appearance/themes/import');
+                        }}
+                        placement="bottom"
+                        popoverAnchorAlign="end"
+                        matchTriggerWidth={false}
+                        maxWidthCap={320}
+                        showCategoryTitles={false}
+                        popoverPortalWebTarget="body"
+                        trigger={({ toggle }) => (
+                            <RoundButton
+                                testID="settings-theme-profile-add"
+                                size="small"
+                                display="inverted"
+                                title={t('settingsAppearance.themeProfiles.addTheme')}
+                                leading={<Icon name="plus" size={ICON_SIZE.sm} color={theme.colors.text.secondary} />}
+                                textStyle={{ color: theme.colors.text.secondary }}
+                                onPress={toggle}
+                            />
+                        )}
+                    />
+                )}
+            >
+                {customOptions.length === 0 ? (
+                    <SettingAnchor setting={THEMES_SETTINGS.settings.yourThemes}>
+                        <Item
+                            testID="settings-theme-profile-custom-empty"
+                            title={t('settingsAppearance.themeProfiles.noProfiles')}
+                            subtitle={t('settingsAppearance.themeProfiles.noProfilesDescription')}
+                            onPress={openCreate}
+                        />
+                    </SettingAnchor>
+                ) : customOptions.map((option, index) => {
+                    const row = (
+                        <Item
+                            key={option.id}
+                            testID={`settings-theme-profile-custom-${option.id}`}
+                            title={option.title}
+                            subtitle={customThemeSummary(option, themeProfiles)}
+                            onPress={() => router.push(profileEditorRoute(option.id))}
+                        />
+                    );
+                    // Search lands on the first of your themes.
+                    return index === 0
+                        ? <SettingAnchor key={option.id} setting={THEMES_SETTINGS.settings.yourThemes}>{row}</SettingAnchor>
+                        : row;
+                })}
             </ItemGroup>
         </ItemList>
+    );
+});
+
+function customThemeSummary(option: ThemePresetSourceOption, themeProfiles: ThemeProfilesLocalStateV1): string {
+    const mode = t(option.preferredMode === 'dark' ? 'settingsAppearance.themeOptions.dark' : 'settingsAppearance.themeOptions.light');
+    const inUse = themeProfiles.activeProfileIds.light === option.id || themeProfiles.activeProfileIds.dark === option.id;
+    return inUse ? `${mode} · ${t('settingsAppearance.themeProfiles.inUse')}` : mode;
+}
+
+/**
+ * The themes a mode can use, each shown in its own colours. Previews are resolved once per theme set
+ * (static props, no runtime theme reads).
+ */
+const ThemeModeTilesSection = React.memo(function ThemeModeTilesSection(props: Readonly<{
+    mode: ThemeProfileMode;
+    options: readonly ThemePresetSourceOption[];
+    value: string;
+    onSelect: (mode: ThemeProfileMode, optionId: string) => void;
+}>) {
+    const { mode, onSelect } = props;
+    const tiles = React.useMemo(() => props.options
+        .filter((option) => option.preferredMode === mode)
+        .map((option) => ({
+            id: option.id,
+            title: option.kind === 'base' ? t('settingsAppearance.themeProfiles.defaultTheme') : option.title,
+            preview: <ThemePalettePreview palette={resolveThemeProfile({ mode, profile: option.profile })} />,
+        })), [mode, props.options]);
+    const title = t(mode === 'dark' ? 'settingsAppearance.themeProfiles.darkModeSection' : 'settingsAppearance.themeProfiles.lightModeSection');
+    return (
+        <ItemGroup
+            title={title}
+            description={t(mode === 'dark'
+                ? 'settingsAppearance.themeProfiles.darkModeSectionDescription'
+                : 'settingsAppearance.themeProfiles.lightModeSectionDescription')}
+        >
+            <SettingAnchor setting={mode === 'dark' ? THEMES_SETTINGS.settings.darkTheme : THEMES_SETTINGS.settings.lightTheme}>
+                <SectionContentRow testID={`settings-theme-${mode}-tiles`}>
+                    <SelectionTiles
+                        variant="visual"
+                        accessibilityLabel={title}
+                        testIdPrefix={`settings-theme-${mode}`}
+                        value={props.value}
+                        onChange={(next) => { if (next) onSelect(mode, next); }}
+                        options={tiles}
+                    />
+                </SectionContentRow>
+            </SettingAnchor>
+        </ItemGroup>
     );
 });

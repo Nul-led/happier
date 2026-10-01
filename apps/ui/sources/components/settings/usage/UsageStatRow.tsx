@@ -10,11 +10,8 @@ import { Icon, type IconName } from '@/components/ui/icons/Icon';
 const Ionicons = SafeIonicons;
 
 /**
- * The ONE compact label/value row for every usage surface (Task 2). Before this,
- * the settings-home banner (`SettingsUsageSummaryStrip`) and the usage page
- * (`InsightsSection`) each hand-rolled their own label/value row at different
- * type sizes and spacing (14px airy rows vs 13px rows). This is their single
- * owner: 13px secondary label · 13px tabular primary value · 8px vertical
+ * The ONE compact label/value row for every usage surface (Task 2): the usage page's sections
+ * share it rather than each hand-rolling a label/value row. The single owner: 13px secondary label · 13px tabular primary value · 8px vertical
  * padding · 36px min row height — a compact, scannable standard, no per-surface
  * forks. The pivot's richer ranked row (rank + sparkline + pill) reuses the same
  * density tokens below without inheriting this row's simple two-slot layout.

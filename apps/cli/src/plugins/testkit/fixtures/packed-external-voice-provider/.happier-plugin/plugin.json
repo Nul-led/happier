@@ -51,10 +51,9 @@
         "placementBindings": ["detailsPanel"],
         "execution": {
           "target": "client",
-          "client": {
-            "artifactId": "voice-runtime-web",
-            "modulePath": "./voiceRuntime",
-            "exportName": "activate"
+    "client": {
+      "artifactId": "voice-runtime-web",
+      "exportName": "activate"
           },
           "platforms": ["web", "ios", "android"]
         },
@@ -318,10 +317,9 @@
             ]
           }
         },
-        "client": {
-          "artifactId": "voice-runtime-web",
-          "modulePath": "./voiceRuntime",
-          "exportName": "activate"
+    "client": {
+      "artifactId": "voice-runtime-web",
+      "exportName": "activate"
         }
       },
       {
@@ -414,7 +412,6 @@
         },
         "client": {
           "artifactId": "voice-runtime-web",
-          "modulePath": "./voiceRuntime",
           "exportName": "activate"
         }
       },

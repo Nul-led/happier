@@ -1,6 +1,6 @@
 import React from 'react';
-import { Platform, View } from 'react-native';
-import { useRouter } from 'expo-router';
+import { Platform } from 'react-native';
+import { useRouter } from '@/components/appShell/workspace/destinationRoute';
 
 import { DEFAULT_AGENT_ID } from '@/agents/catalog/catalog';
 import { Item } from '@/components/ui/lists/Item';
@@ -21,7 +21,6 @@ import type { ScmCommitStrategy } from '@/scm/settings/commitStrategy';
 import type { ScmDiffArea } from '@happier-dev/protocol';
 import { Modal } from '@/modal';
 import { t, type TranslationKey } from '@/text';
-import { useUnistyles } from 'react-native-unistyles';
 import { Switch } from '@/components/ui/forms/Switch';
 import type {
     ScmGitRepoPreferredBackend,
@@ -36,196 +35,143 @@ import {
     setRemoteConfirmationForKind,
     shouldConfirmRemoteOperation,
 } from '@/scm/settings/remoteConfirmationPolicy';
-import { TextInput } from '@/components/ui/text/Text';
-import { Icon, type IconName } from '@/components/ui/icons/Icon';
+import { FieldTextInput } from '@/components/ui/forms/FieldTextInput';
+import { DropdownMenu } from '@/components/ui/forms/dropdown/DropdownMenu';
+import { SegmentedChoiceItem } from '@/components/ui/lists/SegmentedChoiceItem';
+import { SettingsPageHeader } from '@/components/settings/shell/SettingsPageHeader';
+import { SettingAnchor, SettingRow, SettingSection } from '@/components/settings/shell/SettingRow';
+import { SOURCE_CONTROL_SETTINGS } from '@/components/settings/sourceControl/sourceControlSettings';
 
 
-type IoniconName = IconName;
+/**
+ * Without a machine's source-control backends, the routing section (which says to choose a machine)
+ * also answers for the per-backend rows it cannot show yet.
+ */
+const BACKEND_SECTIONS = [SOURCE_CONTROL_SETTINGS.sectionRefs.backends];
+
+/** Anchors the per-backend default-diff row on one backend only, so a search reveal marks one row. */
+function BackendDefaultDiffAnchor(props: Readonly<{ anchored: boolean; children: React.ReactElement; showDivider?: boolean }>) {
+    if (!props.anchored) {
+        return props.showDivider === undefined
+            ? props.children
+            : React.cloneElement(props.children as React.ReactElement<{ showDivider?: boolean }>, { showDivider: props.showDivider });
+    }
+    return <SettingAnchor setting={SOURCE_CONTROL_SETTINGS.settings.backendDefaultDiff} showDivider={props.showDivider}>{props.children}</SettingAnchor>;
+}
 
 const COMMIT_STRATEGY_OPTIONS: ReadonlyArray<{
     id: ScmCommitStrategy;
-    titleKey: TranslationKey;
-    subtitleKey: TranslationKey;
-    iconName: IoniconName;
+    labelKey: TranslationKey;
+    descriptionKey: TranslationKey;
 }> = [
-    {
-        id: 'atomic',
-        titleKey: 'settingsSourceControl.commitStrategy.options.atomic.title',
-        subtitleKey: 'settingsSourceControl.commitStrategy.options.atomic.subtitle',
-        iconName: 'shield-check',
-    },
-    {
-        id: 'git_staging',
-        titleKey: 'settingsSourceControl.commitStrategy.options.gitStaging.title',
-        subtitleKey: 'settingsSourceControl.commitStrategy.options.gitStaging.subtitle',
-        iconName: 'git-diff',
-    },
+    { id: 'atomic', labelKey: 'settingsSourceControl.page.commitStrategy.atomic', descriptionKey: 'settingsSourceControl.page.commitStrategy.atomicDescription' },
+    { id: 'git_staging', labelKey: 'settingsSourceControl.page.commitStrategy.gitStaging', descriptionKey: 'settingsSourceControl.page.commitStrategy.gitStagingDescription' },
 ];
 
 const LEGACY_GIT_REPO_BACKEND_OPTIONS: ReadonlyArray<{
     id: ScmGitRepoPreferredBackend;
-    titleKey: TranslationKey;
-    subtitleKey: TranslationKey;
-    iconName: IoniconName;
+    labelKey: TranslationKey;
+    descriptionKey: TranslationKey;
 }> = [
-    {
-        id: 'git',
-        titleKey: 'settingsSourceControl.gitRoutingPreference.options.git.title',
-        subtitleKey: 'settingsSourceControl.gitRoutingPreference.options.git.subtitle',
-        iconName: 'github-logo',
-    },
-    {
-        id: 'sapling',
-        titleKey: 'settingsSourceControl.gitRoutingPreference.options.sapling.title',
-        subtitleKey: 'settingsSourceControl.gitRoutingPreference.options.sapling.subtitle',
-        iconName: 'git-branch',
-    },
+    { id: 'git', labelKey: 'settingsSourceControl.page.routing.git', descriptionKey: 'settingsSourceControl.gitRoutingPreference.options.git.subtitle' },
+    { id: 'sapling', labelKey: 'settingsSourceControl.page.routing.sapling', descriptionKey: 'settingsSourceControl.gitRoutingPreference.options.sapling.subtitle' },
 ];
 
 const PUSH_REJECT_OPTIONS: ReadonlyArray<{
     id: ScmPushRejectPolicy;
-    titleKey: TranslationKey;
-    subtitleKey: TranslationKey;
-    iconName: IoniconName;
+    labelKey: TranslationKey;
+    descriptionKey: TranslationKey;
 }> = [
-    {
-        id: 'prompt_fetch',
-        titleKey: 'settingsSourceControl.pushRejectionRecovery.options.promptFetch.title',
-        subtitleKey: 'settingsSourceControl.pushRejectionRecovery.options.promptFetch.subtitle',
-        iconName: 'lifebuoy',
-    },
-    {
-        id: 'auto_fetch',
-        titleKey: 'settingsSourceControl.pushRejectionRecovery.options.autoFetch.title',
-        subtitleKey: 'settingsSourceControl.pushRejectionRecovery.options.autoFetch.subtitle',
-        iconName: 'arrows-clockwise',
-    },
-    {
-        id: 'manual',
-        titleKey: 'settingsSourceControl.pushRejectionRecovery.options.manual.title',
-        subtitleKey: 'settingsSourceControl.pushRejectionRecovery.options.manual.subtitle',
-        iconName: 'hand',
-    },
+    { id: 'prompt_fetch', labelKey: 'settingsSourceControl.page.pushRejection.ask', descriptionKey: 'settingsSourceControl.page.pushRejection.askDescription' },
+    { id: 'auto_fetch', labelKey: 'settingsSourceControl.page.pushRejection.fetch', descriptionKey: 'settingsSourceControl.page.pushRejection.fetchDescription' },
+    { id: 'manual', labelKey: 'settingsSourceControl.page.pushRejection.manual', descriptionKey: 'settingsSourceControl.page.pushRejection.manualDescription' },
 ];
 
 const DIFF_MODE_OPTIONS: ReadonlyArray<{
     id: ScmDiffArea;
-    titleKey: TranslationKey;
-    iconName: IoniconName;
+    labelKey: TranslationKey;
 }> = [
-    { id: 'pending', titleKey: 'settingsSourceControl.diffMode.pending', iconName: 'clock' },
-    { id: 'both', titleKey: 'settingsSourceControl.diffMode.combined', iconName: 'git-merge' },
-    { id: 'included', titleKey: 'settingsSourceControl.diffMode.included', iconName: 'check-circle' },
+    { id: 'pending', labelKey: 'settingsSourceControl.diffMode.pending' },
+    { id: 'both', labelKey: 'settingsSourceControl.diffMode.combined' },
+    { id: 'included', labelKey: 'settingsSourceControl.diffMode.included' },
 ];
 
 const FILES_SYNTAX_HIGHLIGHTING_OPTIONS: ReadonlyArray<{
     id: 'off' | 'simple' | 'advanced';
-    titleKey: TranslationKey;
-    subtitleKey: TranslationKey;
-    iconName: IoniconName;
+    labelKey: TranslationKey;
+    descriptionKey: TranslationKey;
 }> = [
-    {
-        id: 'off',
-        titleKey: 'settingsSourceControl.filesDisplay.syntaxHighlighting.options.off.title',
-        subtitleKey: 'settingsSourceControl.filesDisplay.syntaxHighlighting.options.off.subtitle',
-        iconName: 'text-aa',
-    },
-    {
-        id: 'simple',
-        titleKey: 'settingsSourceControl.filesDisplay.syntaxHighlighting.options.simple.title',
-        subtitleKey: 'settingsSourceControl.filesDisplay.syntaxHighlighting.options.simple.subtitle',
-        iconName: 'palette',
-    },
-    {
-        id: 'advanced',
-        titleKey: 'settingsSourceControl.filesDisplay.syntaxHighlighting.options.advanced.title',
-        subtitleKey: 'settingsSourceControl.filesDisplay.syntaxHighlighting.options.advanced.subtitle',
-        iconName: 'sparkle',
-    },
+    { id: 'off', labelKey: 'settingsSourceControl.page.files.off', descriptionKey: 'settingsSourceControl.filesDisplay.syntaxHighlighting.options.off.subtitle' },
+    { id: 'simple', labelKey: 'settingsSourceControl.page.files.simple', descriptionKey: 'settingsSourceControl.filesDisplay.syntaxHighlighting.options.simple.subtitle' },
+    { id: 'advanced', labelKey: 'settingsSourceControl.page.files.advanced', descriptionKey: 'settingsSourceControl.filesDisplay.syntaxHighlighting.options.advanced.subtitle' },
 ];
 
 const FILES_DIFF_RENDERER_OPTIONS: ReadonlyArray<{
     id: 'pierre' | 'happier';
-    titleKey: TranslationKey;
-    subtitleKey: TranslationKey;
-    iconName: IoniconName;
+    labelKey: TranslationKey;
+    descriptionKey: TranslationKey;
 }> = [
-    {
-        id: 'pierre',
-        titleKey: 'settingsSourceControl.filesDisplay.diffRenderer.options.pierre.title',
-        subtitleKey: 'settingsSourceControl.filesDisplay.diffRenderer.options.pierre.subtitle',
-        iconName: 'sparkle',
-    },
-    {
-        id: 'happier',
-        titleKey: 'settingsSourceControl.filesDisplay.diffRenderer.options.happier.title',
-        subtitleKey: 'settingsSourceControl.filesDisplay.diffRenderer.options.happier.subtitle',
-        iconName: 'code',
-    },
+    { id: 'pierre', labelKey: 'settingsSourceControl.page.files.rendererPierre', descriptionKey: 'settingsSourceControl.filesDisplay.diffRenderer.options.pierre.subtitle' },
+    { id: 'happier', labelKey: 'settingsSourceControl.page.files.rendererHappier', descriptionKey: 'settingsSourceControl.filesDisplay.diffRenderer.options.happier.subtitle' },
 ];
 
 const FILES_DIFF_PRESENTATION_OPTIONS: ReadonlyArray<{
     id: 'unified' | 'split';
-    titleKey: TranslationKey;
-    subtitleKey: TranslationKey;
-    iconName: IoniconName;
+    labelKey: TranslationKey;
+    descriptionKey: TranslationKey;
 }> = [
-    {
-        id: 'unified',
-        titleKey: 'settingsSourceControl.filesDisplay.diffPresentation.options.unified.title',
-        subtitleKey: 'settingsSourceControl.filesDisplay.diffPresentation.options.unified.subtitle',
-        iconName: 'arrows-down-up',
-    },
-    {
-        id: 'split',
-        titleKey: 'settingsSourceControl.filesDisplay.diffPresentation.options.split.title',
-        subtitleKey: 'settingsSourceControl.filesDisplay.diffPresentation.options.split.subtitle',
-        iconName: 'grid-four',
-    },
+    { id: 'unified', labelKey: 'settingsSourceControl.page.files.unified', descriptionKey: 'settingsSourceControl.filesDisplay.diffPresentation.options.unified.subtitle' },
+    { id: 'split', labelKey: 'settingsSourceControl.page.files.split', descriptionKey: 'settingsSourceControl.filesDisplay.diffPresentation.options.split.subtitle' },
 ];
 
 const FILES_CHANGED_FILES_DENSITY_OPTIONS: ReadonlyArray<{
     id: 'comfortable' | 'compact';
-    titleKey: TranslationKey;
-    subtitleKey: TranslationKey;
-    iconName: IoniconName;
+    labelKey: TranslationKey;
+    descriptionKey: TranslationKey;
 }> = [
-    {
-        id: 'comfortable',
-        titleKey: 'settingsSourceControl.filesDisplay.changedFilesDensity.options.comfortable.title',
-        subtitleKey: 'settingsSourceControl.filesDisplay.changedFilesDensity.options.comfortable.subtitle',
-        iconName: 'list',
-    },
-    {
-        id: 'compact',
-        titleKey: 'settingsSourceControl.filesDisplay.changedFilesDensity.options.compact.title',
-        subtitleKey: 'settingsSourceControl.filesDisplay.changedFilesDensity.options.compact.subtitle',
-        iconName: 'list',
-    },
+    { id: 'comfortable', labelKey: 'settingsSourceControl.page.files.comfortable', descriptionKey: 'settingsSourceControl.filesDisplay.changedFilesDensity.options.comfortable.subtitle' },
+    { id: 'compact', labelKey: 'settingsSourceControl.page.files.compact', descriptionKey: 'settingsSourceControl.filesDisplay.changedFilesDensity.options.compact.subtitle' },
+];
+
+const PULL_REQUEST_PLACEMENT_OPTIONS: ReadonlyArray<{
+    id: 'sidebar' | 'details';
+    labelKey: TranslationKey;
+}> = [
+    { id: 'sidebar', labelKey: 'sessionGitPullRequest.settings.sidebar' },
+    { id: 'details', labelKey: 'sessionGitPullRequest.settings.details' },
 ];
 
 const MARKDOWN_EDIT_MODE_OPTIONS: ReadonlyArray<{
     id: 'rich' | 'raw';
-    titleKey: TranslationKey;
-    subtitleKey: TranslationKey;
-    iconName: IoniconName;
+    labelKey: TranslationKey;
+    descriptionKey: TranslationKey;
 }> = [
-    {
-        id: 'rich',
-        titleKey: 'settingsSourceControl.markdownEditMode.options.rich.title',
-        subtitleKey: 'settingsSourceControl.markdownEditMode.options.rich.subtitle',
-        iconName: 'file-text',
-    },
-    {
-        id: 'raw',
-        titleKey: 'settingsSourceControl.markdownEditMode.options.raw.title',
-        subtitleKey: 'settingsSourceControl.markdownEditMode.options.raw.subtitle',
-        iconName: 'code',
-    },
+    { id: 'rich', labelKey: 'settingsSourceControl.page.editor.rich', descriptionKey: 'settingsSourceControl.markdownEditMode.options.rich.subtitle' },
+    { id: 'raw', labelKey: 'settingsSourceControl.page.editor.raw', descriptionKey: 'settingsSourceControl.markdownEditMode.options.raw.subtitle' },
 ];
 
+/** Options for a segmented row, translated. */
+const SCM_GIT_PANE_LAYOUT_OPTIONS = [
+    { id: 'unified', labelKey: 'sessionGitDisplay.layoutUnified' },
+    { id: 'tabs', labelKey: 'sessionGitDisplay.layoutTabs' },
+] as const satisfies ReadonlyArray<{ id: 'unified' | 'tabs'; labelKey: TranslationKey }>;
+const SCM_CHANGED_FILES_LAYOUT_OPTIONS = [
+    { id: 'list', labelKey: 'sessionGitDisplay.showAsList' },
+    { id: 'tree', labelKey: 'sessionGitDisplay.showAsTree' },
+] as const satisfies ReadonlyArray<{ id: 'list' | 'tree'; labelKey: TranslationKey }>;
+
+function translateOptions<T extends string>(options: ReadonlyArray<{ id: T; labelKey: TranslationKey; descriptionKey?: TranslationKey }>) {
+    return options.map((option) => ({
+        id: option.id,
+        label: t(option.labelKey),
+        description: option.descriptionKey ? t(option.descriptionKey) : undefined,
+    }));
+}
+
+/** The most a segmented row holds; longer backend lists use a field select. */
+const MAX_SEGMENTED_OPTIONS = 4;
+
 export const SourceControlSettingsView = React.memo(function SourceControlSettingsView() {
-    const { theme } = useUnistyles();
     const { push } = useRouter();
     const administrationTargetSelection = useMachineAdministrationTargetSelection(
         MACHINE_ADMINISTRATION_SELECTION_KEYS_V1.sourceControl,
@@ -241,11 +187,14 @@ export const SourceControlSettingsView = React.memo(function SourceControlSettin
     const applySettings = useApplySettings();
     const [scmRemoteConfirmPolicy, setScmRemoteConfirmPolicy] = useSettingMutable('scmRemoteConfirmPolicy');
     const [scmPushRejectPolicy, setScmPushRejectPolicy] = useSettingMutable('scmPushRejectPolicy');
+    const [scmPullRequestPlacement, setScmPullRequestPlacement] = useSettingMutable('scmPullRequestPlacement');
     const [scmDefaultDiffModeByBackend, setScmDefaultDiffModeByBackend] = useSettingMutable('scmDefaultDiffModeByBackend');
     const [filesDiffSyntaxHighlightingMode, setFilesDiffSyntaxHighlightingMode] = useSettingMutable('filesDiffSyntaxHighlightingMode');
     const [filesDiffRendererMode, setFilesDiffRendererMode] = useSettingMutable('filesDiffRendererMode');
     const [filesDiffPresentationStyle, setFilesDiffPresentationStyle] = useSettingMutable('filesDiffPresentationStyle');
     const [filesChangedFilesRowDensity, setFilesChangedFilesRowDensity] = useSettingMutable('filesChangedFilesRowDensity');
+    const [scmGitPaneLayout, setScmGitPaneLayout] = useSettingMutable('scmGitPaneLayout');
+    const [scmChangedFilesLayout, setScmChangedFilesLayout] = useSettingMutable('scmChangedFilesLayout');
     const [showLineNumbers, setShowLineNumbers] = useSettingMutable('showLineNumbers');
     const [showLineNumbersInToolViews, setShowLineNumbersInToolViews] = useSettingMutable('showLineNumbersInToolViews');
     const [wrapLinesInDiffs, setWrapLinesInDiffs] = useSettingMutable('wrapLinesInDiffs');
@@ -300,84 +249,248 @@ export const SourceControlSettingsView = React.memo(function SourceControlSettin
         if (delta) applySettings(delta);
     }, [applySettings]);
 
-    const renderIcon = React.useCallback((iconName: IoniconName) => (
-        <Icon name={iconName} size={29} color={theme.colors.text.secondary} />
-    ), [theme.colors.text.secondary]);
+    const routingScopeState = administrationTargetSelection.state;
+    const routingScopeMachineName = routingScopeState.kind === 'unselected'
+        ? null
+        : routingScopeState.kind === 'online'
+            ? routingScopeState.machine.displayName
+            : routingScopeState.snapshot?.displayName ?? routingScopeState.target.machineId;
+    const routingOptions = contributionCatalog.source === 'legacy'
+        ? LEGACY_GIT_REPO_BACKEND_OPTIONS.map((option) => ({
+            id: resolveScmGitRepoPreferredBackendId({ legacyPreference: option.id, qualifiedPreference: null }),
+            preferenceId: option.id as string,
+            label: t(option.labelKey),
+            description: t(option.descriptionKey),
+        }))
+        : contributionCatalog.backends.map((backend) => ({
+            id: backend.id,
+            preferenceId: backend.id,
+            label: backend.title,
+            description: describeProjectedMetadata(backend.description) || undefined,
+        }));
+    const selectedRoutingOption = routingOptions.find((option) => option.id === effectiveScmGitRepoPreferredBackendId);
+    const [routingMenuOpen, setRoutingMenuOpen] = React.useState(false);
+
+    // One anchor per page for the per-backend default diff: search reveals the first backend that
+    // offers a choice, and the first backend's section answers when none does.
+    const defaultDiffAnchorBackendIndex = backendPlugins.findIndex((plugin) => (
+        backendUiRegistry.getPlugin(plugin.backendId).diffModeConfig(null).availableModes
+            .some((mode) => DIFF_MODE_OPTIONS.some((option) => option.id === mode))
+    ));
 
     return (
-        <ItemList style={{ paddingTop: 0 }}>
-            <MachineAdministrationTargetSelector
-                selection={administrationTargetSelection}
-                testIDPrefix="settings.sourceControl.administration.target"
+        <ItemList style={{ paddingTop: 0 }} presentation="page">
+            <SettingsPageHeader
+                description={t('settingsSourceControl.page.description')}
+                actions={(
+                    <MachineAdministrationTargetSelector
+                        selection={administrationTargetSelection}
+                        testIDPrefix="settings.sourceControl.administration.target"
+                        presentation="chip"
+                    />
+                )}
             />
+
+            {/* The generator's agent and instructions wait on its switch, in this section. */}
+            <SettingSection section={SOURCE_CONTROL_SETTINGS.sectionRefs.commits}>
             <ItemGroup
-                title={t('settingsSourceControl.commitStrategy.title')}
-                footer={t('settingsSourceControl.commitStrategy.footer')}
+                title={t('settingsSourceControl.page.commits.title')}
+                description={t('settingsSourceControl.page.commits.description')}
             >
-                {COMMIT_STRATEGY_OPTIONS.map((option) => (
+                <SettingAnchor setting={SOURCE_CONTROL_SETTINGS.settings.commitStrategy}>
+                    <SegmentedChoiceItem<ScmCommitStrategy>
+                        subtitleLines={0}
+                        title={t(SOURCE_CONTROL_SETTINGS.settings.commitStrategy.titleKey)}
+                        testIDPrefix="settings.sourceControl.commitStrategy"
+                        options={translateOptions(COMMIT_STRATEGY_OPTIONS)}
+                        value={scmCommitStrategy === 'git_staging' ? 'git_staging' : 'atomic'}
+                        onChange={setScmCommitStrategy}
+                    />
+                </SettingAnchor>
+                <SettingRow
+                    subtitleLines={0}
+                    setting={SOURCE_CONTROL_SETTINGS.settings.commitMessageGenerator}
+                    rightElement={(
+                        <Switch
+                            value={effectiveCommitMessageGeneratorEnabled}
+                            onValueChange={(value) => setScmCommitMessageGeneratorEnabled(value)}
+                        />
+                    )}
+                    onPress={() => setScmCommitMessageGeneratorEnabled(!effectiveCommitMessageGeneratorEnabled)}
+                    showChevron={false}
+                />
+                {effectiveCommitMessageGeneratorEnabled ? (
+                    <SettingRow
+                        subtitleLines={0}
+                        setting={SOURCE_CONTROL_SETTINGS.settings.commitMessageAgent}
+                        detail={effectiveCommitMessageGeneratorBackendId}
+                        onPress={async () => {
+                            const next = await Modal.prompt(t('settingsSourceControl.commitMessageGenerator.backendPromptTitle'), t('settingsSourceControl.commitMessageGenerator.backendPromptMessage'), {
+                                defaultValue: effectiveCommitMessageGeneratorBackendId,
+                                placeholder: DEFAULT_AGENT_ID,
+                                confirmText: t('common.save'),
+                                cancelText: t('common.cancel'),
+                            });
+                            if (typeof next === 'string' && next.trim()) {
+                                setScmCommitMessageGeneratorBackendId(next.trim());
+                            }
+                        }}
+                    />
+                ) : null}
+                {effectiveCommitMessageGeneratorEnabled ? (
+                    <SettingRow
+                        subtitleLines={0}
+                        setting={SOURCE_CONTROL_SETTINGS.settings.commitMessageInstructions}
+                        accessoryLayout="stacked"
+                        showChevron={false}
+                        rightElement={(
+                            <FieldTextInput
+                                testID="settings.sourceControl.commitMessageInstructions"
+                                accessibilityLabel={t(SOURCE_CONTROL_SETTINGS.settings.commitMessageInstructions.titleKey)}
+                                placeholder={t('settingsSourceControl.commitMessageGenerator.instructionsPlaceholder')}
+                                value={effectiveCommitMessageGeneratorInstructions}
+                                multiline
+                                autoCapitalize="sentences"
+                                onChangeText={(value) => setScmCommitMessageGeneratorInstructions(String(value))}
+                            />
+                        )}
+                    />
+                ) : null}
+                <SettingRow
+                    subtitleLines={0}
+                    setting={SOURCE_CONTROL_SETTINGS.settings.includeCoAuthoredBy}
+                    rightElement={(
+                        <Switch
+                            value={effectiveIncludeCoAuthoredBy}
+                            onValueChange={(value) => setScmIncludeCoAuthoredBy(value)}
+                        />
+                    )}
+                    onPress={() => setScmIncludeCoAuthoredBy(!effectiveIncludeCoAuthoredBy)}
+                    showChevron={false}
+                />
+            </ItemGroup>
+            </SettingSection>
+
+            <ItemGroup
+                title={t('settingsSourceControl.page.remote.title')}
+                description={t('settingsSourceControl.page.remote.description')}
+            >
+                <SettingRow
+                    subtitleLines={0}
+                    setting={SOURCE_CONTROL_SETTINGS.settings.confirmBeforePulling}
+                    rightElement={(
+                        <Switch
+                            value={confirmsPull}
+                            onValueChange={(value) => setScmRemoteConfirmPolicy(setRemoteConfirmationForKind(effectiveRemoteConfirmPolicy, 'pull', value))}
+                        />
+                    )}
+                    onPress={() => setScmRemoteConfirmPolicy(setRemoteConfirmationForKind(effectiveRemoteConfirmPolicy, 'pull', !confirmsPull))}
+                    showChevron={false}
+                />
+                <SettingRow
+                    subtitleLines={0}
+                    setting={SOURCE_CONTROL_SETTINGS.settings.confirmBeforePushing}
+                    rightElement={(
+                        <Switch
+                            value={confirmsPush}
+                            onValueChange={(value) => setScmRemoteConfirmPolicy(setRemoteConfirmationForKind(effectiveRemoteConfirmPolicy, 'push', value))}
+                        />
+                    )}
+                    onPress={() => setScmRemoteConfirmPolicy(setRemoteConfirmationForKind(effectiveRemoteConfirmPolicy, 'push', !confirmsPush))}
+                    showChevron={false}
+                />
+                <SettingAnchor setting={SOURCE_CONTROL_SETTINGS.settings.pushRejection}>
+                    <SegmentedChoiceItem<ScmPushRejectPolicy>
+                        subtitleLines={0}
+                        title={t(SOURCE_CONTROL_SETTINGS.settings.pushRejection.titleKey)}
+                        testIDPrefix="settings.sourceControl.pushRejection"
+                        options={translateOptions(PUSH_REJECT_OPTIONS)}
+                        value={PUSH_REJECT_OPTIONS.some((option) => option.id === scmPushRejectPolicy) ? scmPushRejectPolicy as ScmPushRejectPolicy : 'prompt_fetch'}
+                        onChange={setScmPushRejectPolicy}
+                    />
+                </SettingAnchor>
+                <SettingAnchor setting={SOURCE_CONTROL_SETTINGS.settings.pullRequestPlacement}>
+                    <SegmentedChoiceItem<'sidebar' | 'details'>
+                        subtitleLines={0}
+                        title={t(SOURCE_CONTROL_SETTINGS.settings.pullRequestPlacement.titleKey)}
+                        subtitle={t('sessionGitPullRequest.settings.placementDescription')}
+                        testIDPrefix="settings.sourceControl.pullRequestPlacement"
+                        options={translateOptions(PULL_REQUEST_PLACEMENT_OPTIONS)}
+                        value={scmPullRequestPlacement === 'details' ? 'details' : 'sidebar'}
+                        onChange={setScmPullRequestPlacement}
+                    />
+                </SettingAnchor>
+            </ItemGroup>
+
+            <SettingSection section={SOURCE_CONTROL_SETTINGS.sectionRefs.routing} answersFor={backendPlugins.length > 0 ? undefined : BACKEND_SECTIONS}>
+            <ItemGroup
+                title={t('settingsSourceControl.page.routing.title')}
+                description={t('settingsSourceControl.page.routing.description')}
+            >
+                {routingOptions.length === 0 ? (
                     <Item
-                        key={option.id}
-                        title={t(option.titleKey)}
-                        subtitle={t(option.subtitleKey)}
-                        icon={renderIcon(option.iconName)}
-                        rightElement={scmCommitStrategy === option.id ? <Icon name="check" size={20} color={theme.colors.accent.blue} /> : null}
-                        onPress={() => setScmCommitStrategy(option.id)}
+                        testID="settings.sourceControl.routing.scopeState"
+                        title={routingScopeMachineName === null
+                            ? t('settingsSourceControl.page.routing.chooseMachine')
+                            : routingScopeState.kind === 'online'
+                                ? t('settingsSourceControl.page.routing.waiting', { machine: routingScopeMachineName })
+                                : routingScopeState.kind === 'offline'
+                                    ? t('settingsSourceControl.page.routing.offline', { machine: routingScopeMachineName })
+                                    : t('settingsSourceControl.page.routing.unavailable', { machine: routingScopeMachineName })}
+                        subtitle={routingScopeMachineName === null
+                            ? t('settingsSourceControl.page.routing.chooseMachineDescription')
+                            : routingScopeState.kind === 'online' || routingScopeState.kind === 'offline'
+                                ? t('settingsSourceControl.page.routing.waitingDescription')
+                                : t('settingsSourceControl.page.routing.unavailableDescription')}
                         showChevron={false}
                     />
-                ))}
-            </ItemGroup>
-
-            <ItemGroup
-                title={t('settingsSourceControl.gitRoutingPreference.title')}
-                footer={t('settingsSourceControl.gitRoutingPreference.footer')}
-            >
-                {contributionCatalog.source === 'legacy'
-                    ? LEGACY_GIT_REPO_BACKEND_OPTIONS.map((option) => (
-                        <Item
-                            key={option.id}
-                            title={t(option.titleKey)}
-                            subtitle={t(option.subtitleKey)}
-                            icon={renderIcon(option.iconName)}
-                            rightElement={
-                                effectiveScmGitRepoPreferredBackendId === resolveScmGitRepoPreferredBackendId({
-                                    legacyPreference: option.id,
-                                    qualifiedPreference: null,
-                                })
-                                    ? <Icon name="check" size={20} color={theme.colors.accent.blue} />
-                                    : null
-                            }
-                            onPress={() => setScmGitRepoPreferredBackend(option.id)}
-                            showChevron={false}
-                        />
-                    ))
-                    : contributionCatalog.backends.map((backend) => (
-                        <Item
-                            key={backend.id}
-                            title={backend.title}
-                            subtitle={describeProjectedMetadata(backend.description)}
-                            icon={renderIcon('git-branch')}
-                            rightElement={
-                                effectiveScmGitRepoPreferredBackendId === backend.id
-                                    ? <Icon name="check" size={20} color={theme.colors.accent.blue} />
-                                    : null
-                            }
-                            onPress={contributionCatalogIsStale
-                                ? undefined
-                                : () => setScmGitRepoPreferredBackend(backend.id)}
+                ) : routingOptions.length <= MAX_SEGMENTED_OPTIONS ? (
+                    <SettingAnchor setting={SOURCE_CONTROL_SETTINGS.settings.gitRouting}>
+                        <SegmentedChoiceItem<string>
+                            subtitleLines={0}
+                            title={t(SOURCE_CONTROL_SETTINGS.settings.gitRouting.titleKey)}
+                            testIDPrefix="settings.sourceControl.gitRouting"
+                            options={routingOptions}
+                            value={selectedRoutingOption?.id ?? ''}
                             disabled={contributionCatalogIsStale}
-                            showChevron={false}
+                            onChange={(next) => {
+                                const option = routingOptions.find((candidate) => candidate.id === next);
+                                if (option) setScmGitRepoPreferredBackend(option.preferenceId);
+                            }}
                         />
-                    ))}
+                    </SettingAnchor>
+                ) : (
+                    <SettingAnchor setting={SOURCE_CONTROL_SETTINGS.settings.gitRouting}>
+                        <DropdownMenu
+                            open={routingMenuOpen}
+                            onOpenChange={setRoutingMenuOpen}
+                            selectedId={selectedRoutingOption?.id}
+                            items={routingOptions.map((option) => ({ id: option.id, title: option.label, subtitle: option.description }))}
+                            onSelect={(id) => {
+                                const option = routingOptions.find((candidate) => candidate.id === id);
+                                if (option && !contributionCatalogIsStale) setScmGitRepoPreferredBackend(option.preferenceId);
+                                setRoutingMenuOpen(false);
+                            }}
+                            itemTrigger={{
+                                title: t(SOURCE_CONTROL_SETTINGS.settings.gitRouting.titleKey),
+                                subtitle: selectedRoutingOption?.description,
+                            }}
+                        />
+                    </SettingAnchor>
+                )}
             </ItemGroup>
+            </SettingSection>
 
             {hostingProviders.length > 0 ? (
-                <ItemGroup title={t('connectedServices.title')}>
+                <ItemGroup
+                    title={t('connectedServices.title')}
+                    description={t('settingsSourceControl.page.services.description')}
+                >
                     {hostingProviders.map((provider) => (
                         <Item
                             key={provider.providerId}
                             title={provider.title}
                             subtitle={describeProjectedMetadata(provider.description)}
-                            icon={renderIcon(provider.authService ? 'key' : 'cloud')}
                             onPress={!contributionCatalogIsStale && provider.serviceId ? () => push({
                                 pathname: '/(app)/settings/connected-services/[serviceId]',
                                 params: { serviceId: provider.serviceId },
@@ -389,280 +502,188 @@ export const SourceControlSettingsView = React.memo(function SourceControlSettin
                 </ItemGroup>
             ) : null}
 
+            {/* The layout row exists only with the Pierre renderer; the section (with its Renderer row) answers otherwise. */}
+            <SettingSection section={SOURCE_CONTROL_SETTINGS.sectionRefs.files}>
             <ItemGroup
-                title={t('settingsSourceControl.remoteConfirmation.title')}
-                footer={t('settingsSourceControl.remoteConfirmation.footer')}
-            >
-                <Item
-                    title={t('settingsSourceControl.remoteConfirmation.confirmBeforePulling.title')}
-                    subtitle={t('settingsSourceControl.remoteConfirmation.confirmBeforePulling.subtitle')}
-                    icon={renderIcon('arrow-circle-down')}
-                    rightElement={(
-                        <Switch
-                            compact
-                            value={confirmsPull}
-                            onValueChange={(value) => setScmRemoteConfirmPolicy(setRemoteConfirmationForKind(effectiveRemoteConfirmPolicy, 'pull', value))}
-                        />
-                    )}
-                    onPress={() => setScmRemoteConfirmPolicy(setRemoteConfirmationForKind(effectiveRemoteConfirmPolicy, 'pull', !confirmsPull))}
-                    showChevron={false}
-                />
-                <Item
-                    title={t('settingsSourceControl.remoteConfirmation.confirmBeforePushing.title')}
-                    subtitle={t('settingsSourceControl.remoteConfirmation.confirmBeforePushing.subtitle')}
-                    icon={renderIcon('arrow-circle-up')}
-                    rightElement={(
-                        <Switch
-                            compact
-                            value={confirmsPush}
-                            onValueChange={(value) => setScmRemoteConfirmPolicy(setRemoteConfirmationForKind(effectiveRemoteConfirmPolicy, 'push', value))}
-                        />
-                    )}
-                    onPress={() => setScmRemoteConfirmPolicy(setRemoteConfirmationForKind(effectiveRemoteConfirmPolicy, 'push', !confirmsPush))}
-                    showChevron={false}
-                />
-            </ItemGroup>
-
-            <ItemGroup
-                title={t('settingsSourceControl.pushRejectionRecovery.title')}
-                footer={t('settingsSourceControl.pushRejectionRecovery.footer')}
-            >
-                {PUSH_REJECT_OPTIONS.map((option) => (
-                    <Item
-                        key={option.id}
-                        title={t(option.titleKey)}
-                        subtitle={t(option.subtitleKey)}
-                        icon={renderIcon(option.iconName)}
-                        rightElement={scmPushRejectPolicy === option.id ? <Icon name="check" size={20} color={theme.colors.accent.blue} /> : null}
-                        onPress={() => setScmPushRejectPolicy(option.id)}
-                        showChevron={false}
-                    />
-                ))}
-            </ItemGroup>
-
-            <ItemGroup
-                title={t('settingsSourceControl.commitMessageGenerator.title')}
-                footer={t('settingsSourceControl.commitMessageGenerator.footer')}
-            >
-                <Item
-                    title={t('settingsSourceControl.commitMessageGenerator.title')}
-                    subtitle={effectiveCommitMessageGeneratorEnabled ? t('common.enabled') : t('common.disabled')}
-                    icon={renderIcon('sparkle')}
-                    rightElement={effectiveCommitMessageGeneratorEnabled ? <Icon name="check" size={20} color={theme.colors.accent.blue} /> : null}
-                    onPress={() => setScmCommitMessageGeneratorEnabled(!effectiveCommitMessageGeneratorEnabled)}
-                    showChevron={false}
-                />
-                <Item
-                    title={t('settingsSourceControl.commitMessageGenerator.backendItemTitle', { backendId: effectiveCommitMessageGeneratorBackendId })}
-                    subtitle={t('settingsSourceControl.commitMessageGenerator.backendItemSubtitle')}
-                    icon={renderIcon('hard-drives')}
-                    onPress={async () => {
-                        const next = await Modal.prompt(t('settingsSourceControl.commitMessageGenerator.backendPromptTitle'), t('settingsSourceControl.commitMessageGenerator.backendPromptMessage'), {
-                            defaultValue: effectiveCommitMessageGeneratorBackendId,
-                            placeholder: DEFAULT_AGENT_ID,
-                            confirmText: t('common.save'),
-                            cancelText: t('common.cancel'),
-                        });
-                        if (typeof next === 'string' && next.trim()) {
-                            setScmCommitMessageGeneratorBackendId(next.trim());
-                        }
-                    }}
-                    showChevron={false}
-                />
-
-                <View style={{ paddingHorizontal: 16, paddingTop: 0, gap: 6 }}>
-                      <TextInput
-                        style={{
-                            borderWidth: 1,
-                            borderColor: theme.colors.border.default,
-                            borderRadius: 10,
-                            paddingHorizontal: 12,
-                            paddingVertical: 10,
-                            height: 110,
-                            textAlignVertical: 'top' as any,
-                            color: theme.colors.text.primary,
-                        }}
-                        placeholder={t('settingsSourceControl.commitMessageGenerator.instructionsPlaceholder')}
-                        placeholderTextColor={theme.colors.text.secondary}
-                        value={effectiveCommitMessageGeneratorInstructions}
-                        multiline={true}
-                        onChangeText={(value) => setScmCommitMessageGeneratorInstructions(String(value))}
-                    />
-                </View>
-            </ItemGroup>
-
-            <ItemGroup
-                title={t('settingsSourceControl.commitAttribution.title')}
-                footer={t('settingsSourceControl.commitAttribution.footer')}
-            >
-                <Item
-                    title={t('settingsSourceControl.commitAttribution.includeCoAuthoredBy.title')}
-                    subtitle={effectiveIncludeCoAuthoredBy ? t('common.enabled') : t('common.disabled')}
-                    icon={renderIcon('users')}
-                    rightElement={effectiveIncludeCoAuthoredBy ? <Icon name="check" size={20} color={theme.colors.accent.blue} /> : null}
-                    onPress={() => setScmIncludeCoAuthoredBy(!effectiveIncludeCoAuthoredBy)}
-                    showChevron={false}
-                />
-            </ItemGroup>
-
-            <ItemGroup
-                title={t('settingsSourceControl.filesDisplay.title')}
-                footer={t('settingsSourceControl.filesDisplay.footer')}
+                title={t('settingsSourceControl.page.files.title')}
+                description={t('settingsSourceControl.page.files.description')}
             >
                 {(Platform.OS === 'web' || String(Platform.OS) === 'node') ? (
-                    <>
-                        {FILES_DIFF_RENDERER_OPTIONS.map((option) => (
-                            <Item
-                                key={option.id}
-                                title={t(option.titleKey)}
-                                subtitle={t(option.subtitleKey)}
-                                icon={renderIcon(option.iconName)}
-                                rightElement={effectiveFilesDiffRendererMode === option.id ? <Icon name="check" size={20} color={theme.colors.accent.blue} /> : null}
-                                onPress={() => setFilesDiffRendererMode(option.id)}
-                                showChevron={false}
-                            />
-                        ))}
-                        {effectiveFilesDiffRendererMode === 'pierre' ? (
-                            <>
-                                {FILES_DIFF_PRESENTATION_OPTIONS.map((option) => (
-                                    <Item
-                                        key={option.id}
-                                        title={t(option.titleKey)}
-                                        subtitle={t(option.subtitleKey)}
-                                        icon={renderIcon(option.iconName)}
-                                        rightElement={effectiveFilesDiffPresentationStyle === option.id ? <Icon name="check" size={20} color={theme.colors.accent.blue} /> : null}
-                                        onPress={() => setFilesDiffPresentationStyle(option.id)}
-                                        showChevron={false}
-                                    />
-                                ))}
-                            </>
-                        ) : null}
-                    </>
+                    <SettingAnchor setting={SOURCE_CONTROL_SETTINGS.settings.diffRenderer}>
+                        <SegmentedChoiceItem<'pierre' | 'happier'>
+                            subtitleLines={0}
+                            title={t(SOURCE_CONTROL_SETTINGS.settings.diffRenderer.titleKey)}
+                            testIDPrefix="settings.sourceControl.diffRenderer"
+                            options={translateOptions(FILES_DIFF_RENDERER_OPTIONS)}
+                            value={effectiveFilesDiffRendererMode}
+                            onChange={setFilesDiffRendererMode}
+                        />
+                    </SettingAnchor>
                 ) : null}
-                {FILES_SYNTAX_HIGHLIGHTING_OPTIONS.map((option) => (
-                    <Item
-                        key={option.id}
-                        title={t(option.titleKey)}
-                        subtitle={t(option.subtitleKey)}
-                        icon={renderIcon(option.iconName)}
-                        rightElement={effectiveFilesDiffSyntaxHighlightingMode === option.id ? <Icon name="check" size={20} color={theme.colors.accent.blue} /> : null}
-                        onPress={() => setFilesDiffSyntaxHighlightingMode(option.id)}
-                        showChevron={false}
+                {(Platform.OS === 'web' || String(Platform.OS) === 'node') && effectiveFilesDiffRendererMode === 'pierre' ? (
+                    <SettingAnchor setting={SOURCE_CONTROL_SETTINGS.settings.diffLayout}>
+                        <SegmentedChoiceItem<'unified' | 'split'>
+                            subtitleLines={0}
+                            title={t(SOURCE_CONTROL_SETTINGS.settings.diffLayout.titleKey)}
+                            testIDPrefix="settings.sourceControl.diffLayout"
+                            options={translateOptions(FILES_DIFF_PRESENTATION_OPTIONS)}
+                            value={effectiveFilesDiffPresentationStyle}
+                            onChange={setFilesDiffPresentationStyle}
+                        />
+                    </SettingAnchor>
+                ) : null}
+                <SettingAnchor setting={SOURCE_CONTROL_SETTINGS.settings.syntaxHighlighting}>
+                    <SegmentedChoiceItem<'off' | 'simple' | 'advanced'>
+                        subtitleLines={0}
+                        title={t(SOURCE_CONTROL_SETTINGS.settings.syntaxHighlighting.titleKey)}
+                        testIDPrefix="settings.sourceControl.syntaxHighlighting"
+                        options={translateOptions(FILES_SYNTAX_HIGHLIGHTING_OPTIONS)}
+                        value={effectiveFilesDiffSyntaxHighlightingMode}
+                        onChange={setFilesDiffSyntaxHighlightingMode}
                     />
-                ))}
-                {FILES_CHANGED_FILES_DENSITY_OPTIONS.map((option) => (
-                    <Item
-                        key={option.id}
-                        title={t(option.titleKey)}
-                        subtitle={t(option.subtitleKey)}
-                        icon={renderIcon(option.iconName)}
-                        rightElement={effectiveFilesChangedFilesRowDensity === option.id ? <Icon name="check" size={20} color={theme.colors.accent.blue} /> : null}
-                        onPress={() => setFilesChangedFilesRowDensity(option.id)}
-                        showChevron={false}
+                </SettingAnchor>
+                <SettingAnchor setting={SOURCE_CONTROL_SETTINGS.settings.gitPaneLayout}>
+                    <SegmentedChoiceItem<'unified' | 'tabs'>
+                        subtitleLines={0}
+                        title={t(SOURCE_CONTROL_SETTINGS.settings.gitPaneLayout.titleKey)}
+                        testIDPrefix="settings.sourceControl.gitPaneLayout"
+                        options={translateOptions(SCM_GIT_PANE_LAYOUT_OPTIONS)}
+                        value={scmGitPaneLayout === 'tabs' ? 'tabs' : 'unified'}
+                        onChange={setScmGitPaneLayout}
                     />
-                ))}
-                <Item
-                    title={t('settingsAppearance.showLineNumbersInDiffs')}
-                    subtitle={t('settingsAppearance.showLineNumbersInDiffsDescription')}
-                    icon={renderIcon('list')}
+                </SettingAnchor>
+                <SettingAnchor setting={SOURCE_CONTROL_SETTINGS.settings.changedFilesLayout}>
+                    <SegmentedChoiceItem<'list' | 'tree'>
+                        subtitleLines={0}
+                        title={t(SOURCE_CONTROL_SETTINGS.settings.changedFilesLayout.titleKey)}
+                        testIDPrefix="settings.sourceControl.changedFilesLayout"
+                        options={translateOptions(SCM_CHANGED_FILES_LAYOUT_OPTIONS)}
+                        value={scmChangedFilesLayout === 'tree' ? 'tree' : 'list'}
+                        onChange={setScmChangedFilesLayout}
+                    />
+                </SettingAnchor>
+                <SettingAnchor setting={SOURCE_CONTROL_SETTINGS.settings.changedFilesDensity}>
+                    <SegmentedChoiceItem<'comfortable' | 'compact'>
+                        subtitleLines={0}
+                        title={t(SOURCE_CONTROL_SETTINGS.settings.changedFilesDensity.titleKey)}
+                        testIDPrefix="settings.sourceControl.changedFilesDensity"
+                        options={translateOptions(FILES_CHANGED_FILES_DENSITY_OPTIONS)}
+                        value={effectiveFilesChangedFilesRowDensity}
+                        onChange={setFilesChangedFilesRowDensity}
+                    />
+                </SettingAnchor>
+                <SettingRow
+                    subtitleLines={0}
+                    setting={SOURCE_CONTROL_SETTINGS.settings.showLineNumbersInDiffs}
                     rightElement={<Switch value={showLineNumbers === true} onValueChange={setShowLineNumbers} />}
                     showChevron={false}
                     onPress={() => setShowLineNumbers(showLineNumbers !== true)}
                 />
-                <Item
-                    title={t('settingsAppearance.showLineNumbersInToolViews')}
-                    subtitle={t('settingsAppearance.showLineNumbersInToolViewsDescription')}
-                    icon={renderIcon('code')}
+                <SettingRow
+                    subtitleLines={0}
+                    setting={SOURCE_CONTROL_SETTINGS.settings.showLineNumbersInToolViews}
                     rightElement={<Switch value={showLineNumbersInToolViews === true} onValueChange={setShowLineNumbersInToolViews} />}
                     showChevron={false}
                     onPress={() => setShowLineNumbersInToolViews(showLineNumbersInToolViews !== true)}
                 />
-                <Item
-                    title={t('settingsAppearance.wrapLinesInDiffs')}
-                    subtitle={t('settingsAppearance.wrapLinesInDiffsDescription')}
-                    icon={renderIcon('arrow-elbow-down-right')}
+                <SettingRow
+                    subtitleLines={0}
+                    setting={SOURCE_CONTROL_SETTINGS.settings.wrapLinesInDiffs}
                     rightElement={<Switch value={wrapLinesInDiffs === true} onValueChange={setWrapLinesInDiffs} />}
                     showChevron={false}
                     onPress={() => setWrapLinesInDiffs(wrapLinesInDiffs !== true)}
                 />
             </ItemGroup>
+            </SettingSection>
 
-            {backendPlugins.map((plugin) => (
-                <ItemGroup key={plugin.backendId} title={t('settingsSourceControl.backends.backendGroupTitle', { backendTitle: plugin.title })} footer={plugin.description}>
-                    {(() => {
-                        const backendUiPlugin = backendUiRegistry.getPlugin(plugin.backendId);
-                        const availableModes = backendUiPlugin.diffModeConfig(null).availableModes;
-                        const legacyBackendId = getFirstPartyScmBackendLegacyLocalId(plugin.backendId);
-                        const selectedDiffMode = currentDiffModeByBackend[plugin.backendId]
-                            ?? (legacyBackendId ? currentDiffModeByBackend[legacyBackendId] : undefined);
-                        return DIFF_MODE_OPTIONS
-                            .filter((option) => availableModes.includes(option.id))
-                            .map((option) => (
-                                <Item
-                                    key={`diff-${plugin.backendId}-${option.id}`}
-                                    title={t('settingsSourceControl.backends.defaultDiffItemTitle', { backendTitle: plugin.title, diffModeTitle: t(option.titleKey) })}
+            {backendPlugins.map((plugin, backendIndex) => {
+                const backendUiPlugin = backendUiRegistry.getPlugin(plugin.backendId);
+                const availableModes = backendUiPlugin.diffModeConfig(null).availableModes;
+                const legacyBackendId = getFirstPartyScmBackendLegacyLocalId(plugin.backendId);
+                const selectedDiffMode = currentDiffModeByBackend[plugin.backendId]
+                    ?? (legacyBackendId ? currentDiffModeByBackend[legacyBackendId] : undefined);
+                const diffModeOptions = translateOptions(DIFF_MODE_OPTIONS.filter((option) => availableModes.includes(option.id)));
+                const anchorsDefaultDiff = backendIndex === defaultDiffAnchorBackendIndex;
+                const group = (
+                    <ItemGroup
+                        key={plugin.backendId}
+                        title={t('settingsSourceControl.backends.backendGroupTitle', { backendTitle: plugin.title })}
+                        description={plugin.description}
+                    >
+                        {diffModeOptions.length > 0 ? (
+                            <BackendDefaultDiffAnchor anchored={anchorsDefaultDiff}>
+                                {diffModeOptions.length > 1 ? (
+                                <SegmentedChoiceItem<ScmDiffArea>
+                                    subtitleLines={0}
+                                    testID={`settings.sourceControl.backend.${plugin.backendId}.defaultDiff`}
+                                    title={t(SOURCE_CONTROL_SETTINGS.settings.backendDefaultDiff.titleKey)}
                                     subtitle={t('settingsSourceControl.backends.defaultDiffItemSubtitle')}
-                                    icon={renderIcon(option.iconName)}
-                                    rightElement={
-                                        selectedDiffMode === option.id
-                                            ? <Icon name="check" size={20} color={theme.colors.accent.blue} />
-                                            : null
-                                    }
-                                    onPress={contributionCatalogIsStale ? undefined : () => {
+                                    testIDPrefix={`settings.sourceControl.backend.${plugin.backendId}.defaultDiff`}
+                                    options={diffModeOptions}
+                                    value={selectedDiffMode ?? diffModeOptions[0].id}
+                                    disabled={contributionCatalogIsStale}
+                                    onChange={(mode) => {
                                         setScmDefaultDiffModeByBackend({
                                             ...currentDiffModeByBackend,
-                                            [plugin.backendId]: option.id,
+                                            [plugin.backendId]: mode,
                                         });
                                     }}
-                                    disabled={contributionCatalogIsStale}
+                                />
+                            ) : (
+                                <Item
+                                    testID={`settings.sourceControl.backend.${plugin.backendId}.defaultDiff`}
+                                    title={t(SOURCE_CONTROL_SETTINGS.settings.backendDefaultDiff.titleKey)}
+                                    subtitle={t('settingsSourceControl.backends.defaultDiffItemSubtitle')}
+                                    detail={diffModeOptions[0].label}
                                     showChevron={false}
                                 />
-                            ));
-                    })()}
-                    {plugin.infoItems.map((item) => (
-                        <Item
-                            key={item.id}
-                            title={item.title}
-                            subtitle={item.subtitle}
-                            icon={renderIcon(item.iconName)}
-                            showChevron={false}
-                        />
-                    ))}
-                </ItemGroup>
-            ))}
-            {/* Editor */}
-            <ItemGroup title={t('settingsSourceControl.editor')} footer={t('settingsSourceControl.editorFooter')}>
-                <Item
-                    title={t('settingsSourceControl.editorAutoSave')}
-                    subtitle={t('settingsSourceControl.editorAutoSaveDescription')}
-                    icon={<Icon name="floppy-disk" size={29} color={theme.colors.accent.blue} />}
+                            )}
+                            </BackendDefaultDiffAnchor>
+                        ) : null}
+                        {plugin.infoItems.map((item) => (
+                            <Item
+                                key={item.id}
+                                title={item.title}
+                                subtitle={item.subtitle}
+                                showChevron={false}
+                            />
+                        ))}
+                    </ItemGroup>
+                );
+                return backendIndex === 0 ? (
+                    <SettingSection key={plugin.backendId} section={SOURCE_CONTROL_SETTINGS.sectionRefs.backends}>{group}</SettingSection>
+                ) : group;
+            })}
+
+            <ItemGroup
+                title={t('settingsSourceControl.editor')}
+                description={t('settingsSourceControl.page.editor.description')}
+            >
+                <SettingRow
+                    subtitleLines={0}
+                    setting={SOURCE_CONTROL_SETTINGS.settings.editorAutoSave}
                     rightElement={
                         <Switch
                             value={filesEditorAutoSave === true}
                             onValueChange={setFilesEditorAutoSave}
                         />
                     }
+                    onPress={() => setFilesEditorAutoSave(filesEditorAutoSave !== true)}
                     showChevron={false}
                 />
-            </ItemGroup>
-            {markdownRichEditorEnabled ? (
-                <ItemGroup
-                    title={t('settingsSourceControl.markdownEditMode.title')}
-                    footer={t('settingsSourceControl.markdownEditMode.footer')}
-                >
-                    {MARKDOWN_EDIT_MODE_OPTIONS.map((option) => (
-                        <Item
-                            key={option.id}
-                            title={t(option.titleKey)}
-                            subtitle={t(option.subtitleKey)}
-                            icon={renderIcon(option.iconName)}
-                            rightElement={effectiveMarkdownDefaultEditMode === option.id ? <Icon name="check" size={20} color={theme.colors.accent.blue} /> : null}
-                            onPress={() => setMarkdownDefaultEditMode(option.id)}
-                            showChevron={false}
+                {markdownRichEditorEnabled ? (
+                    <SettingAnchor setting={SOURCE_CONTROL_SETTINGS.settings.markdownEditMode}>
+                        <SegmentedChoiceItem<'rich' | 'raw'>
+                            subtitleLines={0}
+                            title={t(SOURCE_CONTROL_SETTINGS.settings.markdownEditMode.titleKey)}
+                            testIDPrefix="settings.sourceControl.markdownEditMode"
+                            options={translateOptions(MARKDOWN_EDIT_MODE_OPTIONS)}
+                            value={effectiveMarkdownDefaultEditMode}
+                            onChange={setMarkdownDefaultEditMode}
                         />
-                    ))}
-                </ItemGroup>
-            ) : null}
+                    </SettingAnchor>
+                ) : null}
+            </ItemGroup>
         </ItemList>
     );
 });

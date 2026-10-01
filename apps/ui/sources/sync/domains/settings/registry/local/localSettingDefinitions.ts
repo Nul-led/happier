@@ -1,4 +1,11 @@
 import { buildSettingArtifacts, defineSettingDefinitions } from '@happier-dev/protocol';
+import {
+    buildUiSurfaceExecutableApprovalKeyStringV1,
+    createUiSurfaceRequestedCapabilitiesDigestV1,
+    normalizeUiSurfaceCapabilityRequestV1,
+    UiSurfaceCapabilityRequestV1Schema,
+    UiSurfaceExecutableApprovalKeyV1Schema,
+} from '@happier-dev/protocol/plugins/ui';
 import { z } from 'zod';
 import { ACTIVITY_SURFACE_LOCAL_SETTING_DEFINITIONS } from './localSettingDefinitions.activitySurfaces';
 import { LAYOUT_LOCAL_SETTING_DEFINITIONS } from './localSettingDefinitions.layout';
@@ -15,7 +22,39 @@ const SessionMruOrderSchema = z.array(z.unknown())
         .map((value) => value.trim()))
     .catch([]);
 
+const UiSurfaceExecutableApprovalSchema = z.object({
+    approval: UiSurfaceExecutableApprovalKeyV1Schema,
+    capabilities: UiSurfaceCapabilityRequestV1Schema.transform((request, ctx) => {
+        const normalized = normalizeUiSurfaceCapabilityRequestV1(request);
+        if (normalized) return normalized;
+        ctx.addIssue({ code: 'custom', message: 'Invalid reviewed surface capabilities' });
+        return z.NEVER;
+    }),
+}).strict();
+
+// Historical booleans prove only their exact key. New approvals retain the
+// reviewed request so a strictly narrower request can reuse the same consent.
+const UiSurfaceExecutableApprovalsSchema = z.record(
+    z.string().min(1),
+    z.union([z.literal(true), UiSurfaceExecutableApprovalSchema]),
+).refine((entries) => Object.entries(entries).every(([key, entry]) => entry === true || (
+    key === buildUiSurfaceExecutableApprovalKeyStringV1(entry.approval)
+    && entry.approval.requestedCapabilitiesDigest === createUiSurfaceRequestedCapabilitiesDigestV1(entry.capabilities)
+)), { message: 'Surface approval must match its reviewed scope and capabilities' });
+
 export const LOCAL_SETTING_DEFINITIONS = defineSettingDefinitions({
+    hideConnectedAccountIdentities: {
+        schema: z.boolean().catch(false),
+        default: false,
+        description: 'Hide connected account identities on this device',
+        storageScope: 'local',
+    },
+    homeApplicationCarrierEligibility: {
+        schema: z.enum(['automatic', 'standard_only']).catch('standard_only'),
+        default: 'automatic',
+        description: 'Application carrier selection for Homes on this device',
+        storageScope: 'local',
+    },
     debugMode: {
         schema: z.boolean(),
         default: false,
@@ -40,10 +79,33 @@ export const LOCAL_SETTING_DEFINITIONS = defineSettingDefinitions({
         description: 'Focused session folder navigation state for the local session list',
         storageScope: 'local',
     },
+    connectedServicesIndexViewV1: {
+        // List (default, lines limits up across accounts) or Grid, for Connected services on this device.
+        schema: z.enum(['list', 'grid']).catch('list'),
+        default: 'list',
+        description: 'Whether Connected services lists its accounts or shows them as cards on this device',
+        storageScope: 'local',
+    },
+    pluginsCollectionViewV1: {
+        // Grid (default) or List, remembered per Plugins view on this device.
+        schema: z.object({
+            installed: z.enum(['grid', 'list']).optional(),
+            discover: z.enum(['grid', 'list']).optional(),
+        }).catch({}),
+        default: {},
+        description: 'Whether the Plugins Installed and Browse views show a grid or a list on this device',
+        storageScope: 'local',
+    },
     collapsedGroupKeysV1: {
         schema: z.record(z.string(), z.boolean()).default({}),
         default: {},
         description: 'Collapsed state for session list groups on this device',
+        storageScope: 'local',
+    },
+    homesReconcileAcknowledgedHomeIds: {
+        schema: z.array(z.string().min(1)).catch([]),
+        default: [],
+        description: 'Homes whose "Your Homes are connected" choice this device has settled (Keep both / Use …)',
         storageScope: 'local',
     },
     brandHeroSeenAt: {
@@ -120,6 +182,13 @@ export const LOCAL_SETTING_DEFINITIONS = defineSettingDefinitions({
         storageScope: 'local',
         analytics: { trackCurrentState: true, trackChanges: true, valueKind: 'boolean', privacy: 'safe', identityScope: 'device_user' },
     },
+    titleStripThemeToggleVisible: {
+        schema: z.boolean(),
+        default: true,
+        description: 'Show the light/dark switch in the window toolbar on tablets and desktops',
+        storageScope: 'local',
+        analytics: { trackCurrentState: true, trackChanges: true, valueKind: 'boolean', privacy: 'safe', identityScope: 'device_user' },
+    },
     sidebarWidthPx: {
         schema: z.number(),
         default: 320,
@@ -175,7 +244,7 @@ export const LOCAL_SETTING_DEFINITIONS = defineSettingDefinitions({
         analytics: { trackCurrentState: true, trackChanges: true, valueKind: 'boolean', privacy: 'safe', identityScope: 'device_user' },
     },
     uiSurfaceExecutableApprovalsV1: {
-        schema: z.record(z.string().min(1), z.literal(true)),
+        schema: UiSurfaceExecutableApprovalsSchema,
         default: {},
         description: 'Viewer-local approvals for exact executable UI surface fingerprints',
         storageScope: 'local',
@@ -186,12 +255,6 @@ export const LOCAL_SETTING_DEFINITIONS = defineSettingDefinitions({
         description: 'Automatically open the right sidebar when entering a session (web/tablet)',
         storageScope: 'local',
         analytics: { trackCurrentState: true, trackChanges: true, valueKind: 'boolean', privacy: 'safe', identityScope: 'device_user' },
-    },
-    sessionGettingStartedGuidanceDismissed: {
-        schema: z.boolean(),
-        default: false,
-        description: 'Suppress the “set up a computer” empty-state guidance after the setup wizard was dismissed once',
-        storageScope: 'local',
     },
     detailsPaneTabsBehavior: {
         schema: z.enum(['preview', 'persistent']),

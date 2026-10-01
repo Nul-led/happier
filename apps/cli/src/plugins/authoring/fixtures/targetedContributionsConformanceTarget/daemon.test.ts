@@ -24,12 +24,12 @@ async function loadTargetAction(): Promise<TargetAction> {
   return action;
 }
 
-function contribution(handle: object, immutableGenerationId = 'contributor-generation-current') {
+function contribution(handle: object, occurrenceId = 'contributor-occurrence-current') {
   return Object.freeze({
     contributor: Object.freeze({
       pluginId: contributorPluginId,
       contributionId: 'provider-a',
-      immutableGenerationId,
+      occurrenceId,
     }),
     operations: Object.freeze({ verify: handle }),
   });
@@ -42,7 +42,7 @@ describe('targeted-contributions packed conformance target fixture', () => {
     const operation = Object.freeze({ opaque: 'current-operation' });
     const observation = {
       readCurrent: vi.fn(async () => Object.freeze({
-        generation: 'target-generation-current',
+        occurrenceId: 'target-occurrence-current',
         contributions: Object.freeze([contribution(operation)]),
       })),
       dispose: vi.fn(),
@@ -66,17 +66,17 @@ describe('targeted-contributions packed conformance target fixture', () => {
         actions: { executeAdmittedTargetedOperation },
       },
     })).resolves.toEqual({
-      targetGeneration: 'target-generation-current',
+      targetOccurrenceId: 'target-occurrence-current',
       contributors: [{
         pluginId: contributorPluginId,
         contributionId: 'provider-a',
-        immutableGenerationId: 'contributor-generation-current',
+        occurrenceId: 'contributor-occurrence-current',
       }],
       verifications: [{
         contributor: {
           pluginId: contributorPluginId,
           contributionId: 'provider-a',
-          immutableGenerationId: 'contributor-generation-current',
+          occurrenceId: 'contributor-occurrence-current',
         },
         result: { verified: true },
       }],
@@ -95,7 +95,7 @@ describe('targeted-contributions packed conformance target fixture', () => {
     const signal = new AbortController().signal;
     const observation = {
       readCurrent: vi.fn(async () => Object.freeze({
-        generation: 'target-generation-empty',
+        occurrenceId: 'target-occurrence-empty',
         contributions: Object.freeze([]),
       })),
       dispose: vi.fn(),
@@ -109,7 +109,7 @@ describe('targeted-contributions packed conformance target fixture', () => {
         actions: { executeAdmittedTargetedOperation },
       },
     })).resolves.toEqual({
-      targetGeneration: 'target-generation-empty',
+      targetOccurrenceId: 'target-occurrence-empty',
       contributors: [],
       verifications: [],
     });
@@ -127,11 +127,11 @@ describe('targeted-contributions packed conformance target fixture', () => {
       readCurrent: vi.fn(async () => {
         reads += 1;
         return Object.freeze({
-          generation: reads === 1 ? 'target-generation-stale' : 'target-generation-current',
+          occurrenceId: reads === 1 ? 'target-occurrence-stale' : 'target-occurrence-current',
           contributions: Object.freeze([
             contribution(
               reads === 1 ? staleOperation : currentOperation,
-              reads === 1 ? 'contributor-generation-stale' : 'contributor-generation-current',
+              reads === 1 ? 'contributor-occurrence-stale' : 'contributor-occurrence-current',
             ),
           ]),
         });
@@ -156,9 +156,9 @@ describe('targeted-contributions packed conformance target fixture', () => {
 
     await expect(targetAction({}, context)).rejects.toBe(stale);
     await expect(targetAction({}, context)).resolves.toMatchObject({
-      targetGeneration: 'target-generation-current',
+      targetOccurrenceId: 'target-occurrence-current',
       verifications: [{
-        contributor: { immutableGenerationId: 'contributor-generation-current' },
+        contributor: { occurrenceId: 'contributor-occurrence-current' },
         result: { verified: true },
       }],
     });

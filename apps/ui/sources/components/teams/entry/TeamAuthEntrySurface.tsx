@@ -28,13 +28,16 @@ import {
     type WelcomeActionAdmission,
 } from '@/components/onboarding/preAuth/WelcomeActionList';
 import { projectTeamAuthAction } from '@/components/teams/entry/teamAuthAction';
+import { teamSignInReturnPath } from '@/components/teams/entry/teamSignInHome';
 import {
     presentTeamEntryUnavailableReason,
     presentTeamsDisabledOnHome,
 } from '@/components/teams/entry/teamAuthenticationFailure';
 import { resolveTeamJoinPresentation } from '@/components/teams/join/teamJoinOutcome';
 import { TeamInvitationPreviewDetails } from '@/components/teams/join/TeamInvitationPreviewDetails';
-import { useTeamInvitationPreview } from '@/hooks/teams/useTeamInvitationPreview';
+import { useTeamInvitationPreview, type TeamInvitationPreviewState } from '@/hooks/teams/useTeamInvitationPreview';
+import { useFeatureDecision } from '@/hooks/server/useFeatureDecision';
+import { resolveFeatureAvailabilityArm } from '@/hooks/server/resolveFeatureAvailabilityArm';
 import { UnauthenticatedSplitShell } from '@/components/onboarding/unauthShell';
 import { Avatar } from '@/components/ui/avatar/Avatar';
 import { SurfaceStateCard } from '@/components/ui/surfaces/SurfaceStateCard';
@@ -149,9 +152,8 @@ type TeamAuthEntrySurfaceProps = Readonly<{
     /** Returns a recovery attempt to the already-bound Account without accepting the invitation. */
     onUseCurrentAccount?: () => void;
     /**
-     * Where the account-service handoff comes back to. The Home's own surfaces
-     * name their return path the same way; this page defaults to the app root
-     * like every other account-entry caller rather than inventing one.
+     * Where the account-service handoff comes back to. Without an explicit path,
+     * the resolved Team and Home identify the canonical Team sign-in destination.
      */
     accountServiceReturnTo?: string;
 }> & (
@@ -259,6 +261,15 @@ export const TeamAuthEntrySurface = React.memo(function TeamAuthEntrySurface(pro
     );
     const [retryRevision, setRetryRevision] = React.useState(0);
     const [loadState, setLoadState] = React.useState<LoadState>({ kind: 'loading', requestKey });
+    // Diagnose a refusal only; a successful contextual projection remains the
+    // sole owner of choices/admission and needs no competing capability probe.
+    const teamsDecision = useFeatureDecision('teams', {
+        scopeKind: 'spawn',
+        serverId: loadState.requestKey === requestKey
+            && (loadState.kind === 'unavailable' || loadState.kind === 'incompatible' || loadState.kind === 'offline')
+            ? resolvedTarget?.serverId
+            : null,
+    });
     const [admissionState, setAdmissionState] = React.useState<AdmissionState>({ kind: 'idle' });
     const [pendingActionId, setPendingActionId] = React.useState<string | null>(null);
     const activeActionIdRef = React.useRef<string | null>(null);
@@ -325,19 +336,25 @@ export const TeamAuthEntrySurface = React.memo(function TeamAuthEntrySurface(pro
                     scope: { kind: 'invitation', token: invitationToken },
                     ...(accountScope ? { accountScope } : {}),
                 })
-                : teamId !== undefined
+                : invitationContinuation !== undefined
                     ? await fetchAuthEntry({
                         ...transport,
-                        scope: { kind: 'team', teamId },
+                        scope: { kind: 'invitation', continuation: invitationContinuation },
                         ...(accountScope ? { accountScope } : {}),
                     })
-                    : null;
+                    : teamId !== undefined
+                        ? await fetchAuthEntry({
+                            ...transport,
+                            scope: { kind: 'team', teamId },
+                            ...(accountScope ? { accountScope } : {}),
+                        })
+                        : null;
             if (result === null) return;
             if (controller.signal.aborted) return;
 
             if (result.kind === 'ready') {
                 const projection = result.projection;
-                const hasMatchingScope = invitationToken
+                const hasMatchingScope = invitationToken !== undefined || invitationContinuation !== undefined
                     ? projection.scope.kind === 'invitation'
                     : projection.scope.kind === 'team';
                 if (
@@ -416,13 +433,25 @@ export const TeamAuthEntrySurface = React.memo(function TeamAuthEntrySurface(pro
      * *of*, so the Join action stays withheld until this Home has described an
      * active offer rather than letting somebody accept an unread consequence.
      */
-    const previewState = useTeamInvitationPreview({
+    const publicPreviewState = useTeamInvitationPreview({
         target: invitationToken ? props.target : undefined,
         token: invitationToken,
         revision: retryRevision,
     });
-    const invitationIsJoinable = invitationContinuation !== undefined
-        || (previewState.kind === 'ready' && previewState.preview.state === 'active');
+    // Opaque custody cannot be sent to the public bearer endpoint. Auth entry
+    // resolves the same bounded offer for its exact Account without consuming it.
+    const heldPreview = isMatchingReadyState(loadState, requestKey)
+        && isInvitationAdmissionProjection(loadState.projection)
+        ? loadState.projection.preview
+        : undefined;
+    const previewState: TeamInvitationPreviewState = invitationContinuation
+        ? heldPreview
+            ? { kind: 'ready', preview: heldPreview }
+            : loadState.kind === 'ready'
+                ? { kind: 'failed', retryable: true }
+                : { kind: 'loading' }
+        : publicPreviewState;
+    const invitationIsJoinable = previewState.kind === 'ready' && previewState.preview.state === 'active';
 
     const acceptInvitation = React.useCallback(async (projection: TeamEntryProjection) => {
         if (!accountScope || (!invitationToken && !invitationContinuation) || approvalPending) return;
@@ -513,7 +542,14 @@ export const TeamAuthEntrySurface = React.memo(function TeamAuthEntrySurface(pro
     const accountServiceDiscovery = accountServiceEntry.status === 'ready'
         ? accountServiceEntry.discovery
         : null;
-    const accountServiceReturnTo = props.accountServiceReturnTo ?? '/';
+    const accountServiceReturnTo = props.accountServiceReturnTo ?? (
+        loadState.kind === 'ready' && resolvedTarget
+            ? teamSignInReturnPath({
+                teamId: loadState.projection.team.teamId,
+                carrier: resolvedTarget.serverIdentityId,
+            })
+            : '/'
+    );
     const accountServiceHref = React.useMemo(() => {
         // Only the Home's own external policy opens this door. With no policy the
         // hook still probes the device's selected service, which is this device's
@@ -553,6 +589,10 @@ export const TeamAuthEntrySurface = React.memo(function TeamAuthEntrySurface(pro
         const accountLabel = projection.account
             ? formatAccountDisplayName(projection.account) ?? t('teams.entry.unnamedAccount')
             : null;
+        const signInServiceName = projectedSignInService?.mode === 'external'
+            ? accountServiceDiscovery?.accountServiceDisplayName
+                ?? fallbackHomeLabel(projectedSignInService.endpoint)
+            : null;
         const admissionComplete = admissionState.kind === 'complete' ? admissionState.result : null;
         const admissionTerminal = admissionState.kind === 'terminal' ? admissionState : null;
         const admissionTerminalPresentation = admissionTerminal
@@ -568,6 +608,7 @@ export const TeamAuthEntrySurface = React.memo(function TeamAuthEntrySurface(pro
             : null;
         const switchAccountOffered = projection.state === 'admission_required'
             && projection.actions.some((action) => action.kind === 'switch_account');
+        const firstRunnableAuthenticateIndex = projection.actions.findIndex((action) => action.kind === 'authenticate');
         content = (
             <View testID="team-auth-entry-ready" style={styles.content}>
                 <View testID="team-auth-entry-lockup" style={styles.lockup}>
@@ -609,6 +650,16 @@ export const TeamAuthEntrySurface = React.memo(function TeamAuthEntrySurface(pro
                             home: homeDisplayName,
                         })}
                     </Text>
+                    {signInServiceName ? (
+                        <Text
+                            testID="team-auth-entry-sign-in-service-origin"
+                            style={styles.guidance}
+                        >
+                            {t(accountServiceUnreachable
+                                ? 'teams.entry.signInServiceUnavailableOrigin'
+                                : 'teams.entry.signInServiceOrigin', { service: signInServiceName })}
+                        </Text>
+                    ) : null}
                     {accountLabel ? (
                         <Text
                             testID="team-auth-entry-account-label"
@@ -714,7 +765,7 @@ export const TeamAuthEntrySurface = React.memo(function TeamAuthEntrySurface(pro
                                 ? t('teams.join.alreadyMemberTitle')
                                 : t('teams.entry.readyStatus')}
                         </Text>
-                        {invitationToken ? (
+                        {invitation ? (
                             <TeamInvitationPreviewDetails state={previewState} onRetry={retry} />
                         ) : null}
                         <WelcomeActionList admission={admission}>
@@ -837,7 +888,7 @@ export const TeamAuthEntrySurface = React.memo(function TeamAuthEntrySurface(pro
                                         <WelcomeActionCard
                                             key={`${action.origin}:${action.methodId}:${action.action}:${action.mode}`}
                                             testID={`team-auth-entry-action:${action.methodId}`}
-                                            primary={index === 0 && accountServiceHref === null}
+                                            primary={index === firstRunnableAuthenticateIndex && accountServiceHref === null}
                                             title={t('teams.entry.continueWith', { method: action.presentation.displayName })}
                                             {...(iconName ? { iconName } : {})}
                                             accentColor={action.presentation.connectButtonColor}
@@ -898,30 +949,41 @@ export const TeamAuthEntrySurface = React.memo(function TeamAuthEntrySurface(pro
         );
     } else {
         const isIncompatible = loadState.kind === 'incompatible';
-        const isOffline = loadState.kind === 'offline';
+        const featureArm = resolveFeatureAvailabilityArm(teamsDecision);
+        const updateRequired = isIncompatible && featureArm === 'unsupported';
+        const isOffline = loadState.kind === 'offline'
+            || (isIncompatible && featureArm === 'unknown');
         // A Home that named its reason gets §10 copy that says what to do next;
         // `entry_not_available` keeps the opaque card that reveals nothing —
         // unless this Home's own invitation preview already declared that Teams
         // are turned off here, which is a current Home stating an operator
         // choice, not a missing Team.
-        const named = loadState.kind === 'unavailable'
+        const contextualReason = loadState.kind === 'unavailable'
             ? presentTeamEntryUnavailableReason(loadState.reason)
                 ?? (previewState.kind === 'feature_unavailable' ? presentTeamsDisabledOnHome() : null)
             : null;
+        const named = contextualReason ?? (featureArm === 'server_disabled' || featureArm === 'policy_disabled'
+            ? presentTeamsDisabledOnHome()
+            : null);
+        const retryableTerminal = loadState.kind === 'offline'
+            || loadState.kind === 'incompatible'
+            || (loadState.kind === 'unavailable' && loadState.reason === 'directory_delayed');
         content = (
             <SurfaceStateCard
                 testID={`team-auth-entry-${loadState.kind}`}
                 kind={named?.kind ?? (isIncompatible ? 'warning' : isOffline ? 'error' : 'unavailable')}
-                title={named?.title ?? (isIncompatible
+                title={named?.title ?? (updateRequired
                     ? t('teams.join.updateRequiredTitle')
                     : isOffline
                         ? t('teams.join.offlineTitle')
-                        : t('teams.errors.notFound'))}
+                        : isIncompatible
+                            ? t('teams.unavailable.title')
+                            : t('teams.errors.notFound'))}
                 reason={named?.body ?? (isOffline ? t('teams.join.offlineBody') : undefined)}
                 {...(loadState.kind === 'unavailable' && named
                     ? { diagnosticCode: loadState.reason }
                     : {})}
-                action={{ label: t('common.retry'), onPress: retry }}
+                action={retryableTerminal ? { label: t('common.retry'), onPress: retry } : undefined}
                 // Every §10 refusal ends with "or go back to your own work", and
                 // a restricted Team reached from a public link is otherwise a
                 // dead end with nothing but an endless Retry. This is the same
@@ -940,6 +1002,7 @@ export const TeamAuthEntrySurface = React.memo(function TeamAuthEntrySurface(pro
             testID="team-auth-entry-shell"
             stepId={`team-auth-entry:${loadState.kind}`}
             isWelcomeStep={false}
+            showMobileWordmark
             allowMobileBrandHero={false}
             onOpenRelayCustomFlow={NOOP}
             onBrandHeroGetStarted={NOOP}

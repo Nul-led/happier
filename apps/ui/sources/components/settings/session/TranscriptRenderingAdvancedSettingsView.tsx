@@ -1,25 +1,73 @@
 import * as React from 'react';
-import { useUnistyles } from 'react-native-unistyles';
 
-import { Item } from '@/components/ui/lists/Item';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
 import { ItemList } from '@/components/ui/lists/ItemList';
 import { Switch } from '@/components/ui/forms/Switch';
-import { Modal } from '@/modal';
+import { FieldValueItem } from '@/components/ui/forms/FieldValueItem';
 import { t } from '@/text';
 import { useSettingMutable } from '@/sync/domains/state/storage';
-import { Icon } from '@/components/ui/icons/Icon';
+import { normalizeTranscriptMotionPreset } from '@/components/sessions/transcript/motion/TranscriptMotionContext';
+import { SettingsPageHeader } from '@/components/settings/shell/SettingsPageHeader';
+import { SettingAnchor, SettingRow } from '@/components/settings/shell/SettingRow';
+import type { SettingRef } from '@/components/settings/catalog/settingDeclarations';
+import { TRANSCRIPT_ADVANCED_SETTINGS } from '@/components/settings/session/transcriptAdvancedSettings';
 
-type TranscriptMotionPreset = 'off' | 'subtle' | 'full';
+/** Each number's accepted range; a typed value outside it is saved as the nearest bound. */
+const BOUNDS = {
+    COALESCE_WINDOW_MS: { min: 0, max: 200 },
+    COALESCE_MAX_BATCH: { min: 1, max: 2000 },
+    THINKING_STALE_MS: { min: 5000, max: 600_000 },
+    MOTION_FRESHNESS_MS: { min: 0, max: 600_000 },
+    PIN_OFFSET_PX: { min: 0, max: 400 },
+    JUMP_MIN_NEW_COUNT: { min: 1, max: 999 },
+} as const;
 
 function clampInt(value: number, bounds: Readonly<{ min: number; max: number }>): number {
     if (!Number.isFinite(value)) return bounds.min;
     return Math.min(bounds.max, Math.max(bounds.min, Math.trunc(value)));
 }
 
+function formatInteger(value: unknown): string {
+    return typeof value === 'number' && Number.isFinite(value) ? String(Math.trunc(value)) : '';
+}
+
+/**
+ * A declared whole-number setting on this page: the shared inline field (`FieldValueItem`), with the
+ * typed number moved to the setting's bounds before it is saved.
+ */
+function BoundedIntegerSettingRow(props: Readonly<{
+    setting: SettingRef;
+    value: unknown;
+    bounds: Readonly<{ min: number; max: number }>;
+    onCommit: (next: number) => void;
+    disabled?: boolean;
+    testID?: string;
+    showDivider?: boolean;
+}>) {
+    const saved = formatInteger(props.value);
+    const { bounds, onCommit } = props;
+    const commit = React.useCallback((draft: string) => {
+        const next = clampInt(Number(draft), bounds);
+        if (String(next) !== saved) onCommit(next);
+        return String(next);
+    }, [bounds, onCommit, saved]);
+    return (
+        <SettingAnchor setting={props.setting} showDivider={props.showDivider}>
+            <FieldValueItem
+                title={t(props.setting.titleKey)}
+                subtitle={props.setting.descriptionKey ? t(props.setting.descriptionKey) : undefined}
+                kind="integer"
+                disabled={props.disabled}
+                fieldTestID={props.testID}
+                value={saved}
+                onCommit={commit}
+            />
+        </SettingAnchor>
+    );
+}
+
 export const TranscriptRenderingAdvancedSettingsView = React.memo(function TranscriptRenderingAdvancedSettingsView() {
-    const { theme } = useUnistyles();
-    const popoverBoundaryRef = React.useRef<any>(null);
+    const settings = TRANSCRIPT_ADVANCED_SETTINGS.settings;
 
     const [transcriptStreamingCoalesceEnabled, setTranscriptStreamingCoalesceEnabled] = useSettingMutable('transcriptStreamingCoalesceEnabled');
     const [transcriptStreamingCoalesceWindowMs, setTranscriptStreamingCoalesceWindowMs] = useSettingMutable('transcriptStreamingCoalesceWindowMs');
@@ -28,8 +76,7 @@ export const TranscriptRenderingAdvancedSettingsView = React.memo(function Trans
     const [transcriptThinkingPulseStaleMs, setTranscriptThinkingPulseStaleMs] = useSettingMutable('transcriptThinkingPulseStaleMs');
 
     const [transcriptMotionPreset] = useSettingMutable('transcriptMotionPreset');
-    const normalizedMotionPreset: TranscriptMotionPreset =
-        transcriptMotionPreset === 'off' || transcriptMotionPreset === 'full' ? transcriptMotionPreset : 'subtle';
+    const normalizedMotionPreset = normalizeTranscriptMotionPreset(transcriptMotionPreset);
 
     const [transcriptMotionFreshnessMs, setTranscriptMotionFreshnessMs] = useSettingMutable('transcriptMotionFreshnessMs');
     const [transcriptAnimateNewItemsEnabled, setTranscriptAnimateNewItemsEnabled] = useSettingMutable('transcriptAnimateNewItemsEnabled');
@@ -42,18 +89,18 @@ export const TranscriptRenderingAdvancedSettingsView = React.memo(function Trans
     const [transcriptScrollJumpToBottomMinNewCount, setTranscriptScrollJumpToBottomMinNewCount] = useSettingMutable('transcriptScrollJumpToBottomMinNewCount');
     const [transcriptScrollJumpToBottomAnimateScroll, setTranscriptScrollJumpToBottomAnimateScroll] = useSettingMutable('transcriptScrollJumpToBottomAnimateScroll');
 
+    // Motion timing only matters while transcript animations are on.
     const canAdjustMotion = normalizedMotionPreset !== 'off';
 
     return (
-        <ItemList ref={popoverBoundaryRef} style={{ paddingTop: 0 }}>
+        <ItemList style={{ paddingTop: 0 }} presentation="page">
+            <SettingsPageHeader description={t('settingsSessionPages.transcript.advancedPageDescription')} />
             <ItemGroup
                 title={t('settingsSession.transcript.advanced.performanceTitle')}
-                footer={t('settingsSession.transcript.advanced.performanceFooter')}
+                description={t('settingsSession.transcript.advanced.performanceFooter')}
             >
-                <Item
-                    title={t('settingsSession.transcript.advanced.coalesceEnabledTitle')}
-                    subtitle={t('settingsSession.transcript.advanced.coalesceEnabledSubtitle')}
-                    icon={<Icon name="stack-simple" size={29} color={theme.colors.accent.indigo} />}
+                <SettingRow
+                    setting={settings.coalesceEnabled}
                     rightElement={
                         <Switch
                             value={transcriptStreamingCoalesceEnabled === true}
@@ -63,43 +110,22 @@ export const TranscriptRenderingAdvancedSettingsView = React.memo(function Trans
                     showChevron={false}
                     onPress={() => setTranscriptStreamingCoalesceEnabled((transcriptStreamingCoalesceEnabled !== true) as any)}
                 />
-
-                <Item
-                    title={t('settingsSession.transcript.advanced.coalesceWindowTitle')}
-                    subtitle={t('settingsSession.transcript.advanced.coalesceWindowSubtitle', { value: String(transcriptStreamingCoalesceWindowMs ?? 0) })}
-                    icon={<Icon name="timer" size={29} color={theme.colors.text.secondary} />}
-                    onPress={async () => {
-                        const raw = await Modal.prompt(
-                            t('settingsSession.transcript.advanced.coalesceWindowPromptTitle'),
-                            t('settingsSession.transcript.advanced.coalesceWindowPromptBody'),
-                        );
-                        if (raw == null) return;
-                        const parsed = Number(String(raw).replace(/[^0-9]/g, ''));
-                        if (!Number.isFinite(parsed)) return;
-                        setTranscriptStreamingCoalesceWindowMs(clampInt(parsed, { min: 0, max: 200 }) as any);
-                    }}
+                <BoundedIntegerSettingRow
+                    setting={settings.coalesceWindow}
+                    testID="settings-transcript-advanced-coalesce-window"
+                    value={transcriptStreamingCoalesceWindowMs}
+                    bounds={BOUNDS.COALESCE_WINDOW_MS}
+                    onCommit={(next) => setTranscriptStreamingCoalesceWindowMs(next as any)}
                 />
-
-                <Item
-                    title={t('settingsSession.transcript.advanced.coalesceMaxBatchTitle')}
-                    subtitle={t('settingsSession.transcript.advanced.coalesceMaxBatchSubtitle', { value: String(transcriptStreamingCoalesceMaxBatchSize ?? 0) })}
-                    icon={<Icon name="funnel-simple" size={29} color={theme.colors.text.secondary} />}
-                    onPress={async () => {
-                        const raw = await Modal.prompt(
-                            t('settingsSession.transcript.advanced.coalesceMaxBatchPromptTitle'),
-                            t('settingsSession.transcript.advanced.coalesceMaxBatchPromptBody'),
-                        );
-                        if (raw == null) return;
-                        const parsed = Number(String(raw).replace(/[^0-9]/g, ''));
-                        if (!Number.isFinite(parsed)) return;
-                        setTranscriptStreamingCoalesceMaxBatchSize(clampInt(parsed, { min: 1, max: 2000 }) as any);
-                    }}
+                <BoundedIntegerSettingRow
+                    setting={settings.coalesceMaxBatch}
+                    testID="settings-transcript-advanced-coalesce-max-batch"
+                    value={transcriptStreamingCoalesceMaxBatchSize}
+                    bounds={BOUNDS.COALESCE_MAX_BATCH}
+                    onCommit={(next) => setTranscriptStreamingCoalesceMaxBatchSize(next as any)}
                 />
-
-                <Item
-                    title={t('settingsSession.transcript.advanced.streamingPartialOutputTitle')}
-                    subtitle={t('settingsSession.transcript.advanced.streamingPartialOutputSubtitle')}
-                    icon={<Icon name="pulse" size={29} color={theme.colors.text.secondary} />}
+                <SettingRow
+                    setting={settings.streamingPartialOutput}
                     rightElement={
                         <Switch
                             value={transcriptStreamingPartialOutputEnabled !== false}
@@ -109,50 +135,32 @@ export const TranscriptRenderingAdvancedSettingsView = React.memo(function Trans
                     showChevron={false}
                     onPress={() => setTranscriptStreamingPartialOutputEnabled((transcriptStreamingPartialOutputEnabled === false) as any)}
                 />
-
-                <Item
-                    title={t('settingsSession.transcript.advanced.thinkingPulseStaleTitle')}
-                    subtitle={t('settingsSession.transcript.advanced.thinkingPulseStaleSubtitle', { value: String(transcriptThinkingPulseStaleMs ?? 0) })}
-                    icon={<Icon name="hourglass" size={29} color={theme.colors.text.secondary} />}
-                    onPress={async () => {
-                        const raw = await Modal.prompt(
-                            t('settingsSession.transcript.advanced.thinkingPulseStalePromptTitle'),
-                            t('settingsSession.transcript.advanced.thinkingPulseStalePromptBody'),
-                        );
-                        if (raw == null) return;
-                        const parsed = Number(String(raw).replace(/[^0-9]/g, ''));
-                        if (!Number.isFinite(parsed)) return;
-                        setTranscriptThinkingPulseStaleMs(clampInt(parsed, { min: 5000, max: 600_000 }) as any);
-                    }}
+                <BoundedIntegerSettingRow
+                    setting={settings.thinkingPulseStale}
+                    testID="settings-transcript-advanced-thinking-stale"
+                    value={transcriptThinkingPulseStaleMs}
+                    bounds={BOUNDS.THINKING_STALE_MS}
+                    onCommit={(next) => setTranscriptThinkingPulseStaleMs(next as any)}
                 />
-
             </ItemGroup>
 
             <ItemGroup
-                title={t('settingsSession.transcript.advanced.motionTitle')}
-                footer={t('settingsSession.transcript.advanced.motionFooter')}
+                title={t('settingsSession.transcript.motionTitle')}
+                description={canAdjustMotion
+                    ? t('settingsSession.transcript.advanced.motionFooter')
+                    : t('settingsSessionPages.transcript.advancedMotionOff')}
             >
-                <Item
-                    title={t('settingsSession.transcript.advanced.freshnessTitle')}
-                    subtitle={t('settingsSession.transcript.advanced.freshnessSubtitle', { value: String(transcriptMotionFreshnessMs ?? 0) })}
-                    icon={<Icon name="timer" size={29} color={theme.colors.text.secondary} />}
-                    onPress={async () => {
-                        if (!canAdjustMotion) return;
-                        const raw = await Modal.prompt(
-                            t('settingsSession.transcript.advanced.freshnessPromptTitle'),
-                            t('settingsSession.transcript.advanced.freshnessPromptBody'),
-                        );
-                        if (raw == null) return;
-                        const parsed = Number(String(raw).replace(/[^0-9]/g, ''));
-                        if (!Number.isFinite(parsed)) return;
-                        setTranscriptMotionFreshnessMs(clampInt(parsed, { min: 0, max: 600_000 }) as any);
-                    }}
+                <BoundedIntegerSettingRow
+                    setting={settings.freshness}
+                    testID="settings-transcript-advanced-freshness"
+                    value={transcriptMotionFreshnessMs}
+                    bounds={BOUNDS.MOTION_FRESHNESS_MS}
+                    disabled={!canAdjustMotion}
+                    onCommit={(next) => setTranscriptMotionFreshnessMs(next as any)}
                 />
-
-                <Item
-                    title={t('settingsSession.transcript.advanced.animateNewItemsTitle')}
-                    subtitle={t('settingsSession.transcript.advanced.animateNewItemsSubtitle')}
-                    icon={<Icon name="sparkle" size={29} color={theme.colors.accent.orange} />}
+                <SettingRow
+                    setting={settings.animateNewItems}
+                    disabled={!canAdjustMotion}
                     rightElement={
                         <Switch
                             value={transcriptAnimateNewItemsEnabled === true}
@@ -166,11 +174,9 @@ export const TranscriptRenderingAdvancedSettingsView = React.memo(function Trans
                         setTranscriptAnimateNewItemsEnabled((transcriptAnimateNewItemsEnabled !== true) as any);
                     }}
                 />
-
-                <Item
-                    title={t('settingsSession.transcript.advanced.animateToolExpandCollapseTitle')}
-                    subtitle={t('settingsSession.transcript.advanced.animateToolExpandCollapseSubtitle')}
-                    icon={<Icon name="arrows-down-up" size={29} color={theme.colors.text.secondary} />}
+                <SettingRow
+                    setting={settings.animateToolExpandCollapse}
+                    disabled={!canAdjustMotion}
                     rightElement={
                         <Switch
                             value={transcriptAnimateToolExpandCollapseEnabled === true}
@@ -184,11 +190,9 @@ export const TranscriptRenderingAdvancedSettingsView = React.memo(function Trans
                         setTranscriptAnimateToolExpandCollapseEnabled((transcriptAnimateToolExpandCollapseEnabled !== true) as any);
                     }}
                 />
-
-                <Item
-                    title={t('settingsSession.transcript.advanced.animateToolExpandCollapseFreshOnlyTitle')}
-                    subtitle={t('settingsSession.transcript.advanced.animateToolExpandCollapseFreshOnlySubtitle')}
-                    icon={<Icon name="leaf" size={29} color={theme.colors.text.secondary} />}
+                <SettingRow
+                    setting={settings.animateToolExpandCollapseFreshOnly}
+                    disabled={!canAdjustMotion || transcriptAnimateToolExpandCollapseEnabled !== true}
                     rightElement={
                         <Switch
                             value={transcriptAnimateToolExpandCollapseFreshOnly === true}
@@ -203,11 +207,9 @@ export const TranscriptRenderingAdvancedSettingsView = React.memo(function Trans
                         setTranscriptAnimateToolExpandCollapseFreshOnly((transcriptAnimateToolExpandCollapseFreshOnly !== true) as any);
                     }}
                 />
-
-                <Item
-                    title={t('settingsSession.transcript.advanced.animateThinkingTitle')}
-                    subtitle={t('settingsSession.transcript.advanced.animateThinkingSubtitle')}
-                    icon={<Icon name="lightbulb" size={29} color={theme.colors.text.secondary} />}
+                <SettingRow
+                    setting={settings.animateThinking}
+                    disabled={!canAdjustMotion}
                     rightElement={
                         <Switch
                             value={transcriptAnimateThinkingEnabled === true}
@@ -224,29 +226,18 @@ export const TranscriptRenderingAdvancedSettingsView = React.memo(function Trans
             </ItemGroup>
 
             <ItemGroup
-                title={t('settingsSession.transcript.advanced.scrollTitle')}
-                footer={t('settingsSession.transcript.advanced.scrollFooter')}
+                title={t('settingsSession.transcript.scrollTitle')}
+                description={t('settingsSession.transcript.advanced.scrollFooter')}
             >
-                <Item
-                    title={t('settingsSession.transcript.advanced.pinOffsetTitle')}
-                    subtitle={t('settingsSession.transcript.advanced.pinOffsetSubtitle', { value: String(transcriptScrollPinOffsetThresholdPx ?? 0) })}
-                    icon={<Icon name="navigation-arrow" size={29} color={theme.colors.text.secondary} />}
-                    onPress={async () => {
-                        const raw = await Modal.prompt(
-                            t('settingsSession.transcript.advanced.pinOffsetPromptTitle'),
-                            t('settingsSession.transcript.advanced.pinOffsetPromptBody'),
-                        );
-                        if (raw == null) return;
-                        const parsed = Number(String(raw).replace(/[^0-9]/g, ''));
-                        if (!Number.isFinite(parsed)) return;
-                        setTranscriptScrollPinOffsetThresholdPx(clampInt(parsed, { min: 0, max: 400 }) as any);
-                    }}
+                <BoundedIntegerSettingRow
+                    setting={settings.pinOffset}
+                    testID="settings-transcript-advanced-pin-offset"
+                    value={transcriptScrollPinOffsetThresholdPx}
+                    bounds={BOUNDS.PIN_OFFSET_PX}
+                    onCommit={(next) => setTranscriptScrollPinOffsetThresholdPx(next as any)}
                 />
-
-                <Item
-                    title={t('settingsSession.transcript.advanced.autoFollowTitle')}
-                    subtitle={t('settingsSession.transcript.advanced.autoFollowSubtitle')}
-                    icon={<Icon name="arrow-circle-down" size={29} color={theme.colors.text.secondary} />}
+                <SettingRow
+                    setting={settings.autoFollow}
                     rightElement={
                         <Switch
                             value={transcriptScrollAutoFollowWhenPinned === true}
@@ -256,27 +247,15 @@ export const TranscriptRenderingAdvancedSettingsView = React.memo(function Trans
                     showChevron={false}
                     onPress={() => setTranscriptScrollAutoFollowWhenPinned((transcriptScrollAutoFollowWhenPinned !== true) as any)}
                 />
-
-                <Item
-                    title={t('settingsSession.transcript.advanced.jumpMinNewCountTitle')}
-                    subtitle={t('settingsSession.transcript.advanced.jumpMinNewCountSubtitle', { value: String(transcriptScrollJumpToBottomMinNewCount ?? 0) })}
-                    icon={<Icon name="caret-down" size={29} color={theme.colors.text.secondary} />}
-                    onPress={async () => {
-                        const raw = await Modal.prompt(
-                            t('settingsSession.transcript.advanced.jumpMinNewCountPromptTitle'),
-                            t('settingsSession.transcript.advanced.jumpMinNewCountPromptBody'),
-                        );
-                        if (raw == null) return;
-                        const parsed = Number(String(raw).replace(/[^0-9]/g, ''));
-                        if (!Number.isFinite(parsed)) return;
-                        setTranscriptScrollJumpToBottomMinNewCount(clampInt(parsed, { min: 1, max: 999 }) as any);
-                    }}
+                <BoundedIntegerSettingRow
+                    setting={settings.jumpMinNewCount}
+                    testID="settings-transcript-advanced-jump-min-count"
+                    value={transcriptScrollJumpToBottomMinNewCount}
+                    bounds={BOUNDS.JUMP_MIN_NEW_COUNT}
+                    onCommit={(next) => setTranscriptScrollJumpToBottomMinNewCount(next as any)}
                 />
-
-                <Item
-                    title={t('settingsSession.transcript.advanced.jumpAnimateScrollTitle')}
-                    subtitle={t('settingsSession.transcript.advanced.jumpAnimateScrollSubtitle')}
-                    icon={<Icon name="arrows-down-up" size={29} color={theme.colors.text.secondary} />}
+                <SettingRow
+                    setting={settings.jumpAnimateScroll}
                     rightElement={
                         <Switch
                             value={transcriptScrollJumpToBottomAnimateScroll === true}

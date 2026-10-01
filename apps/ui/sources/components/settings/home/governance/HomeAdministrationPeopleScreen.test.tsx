@@ -146,6 +146,32 @@ describe('HomeAdministrationPeopleScreen', () => {
         expect(routerPush).toHaveBeenCalledWith(`/settings/home/${home}/people/grace`);
     });
 
+    it('never shows a raw account id: an unnamed account is named once and told apart by its hint', async () => {
+        const home = await addAdministeredHome();
+        const unnamed = { firstName: null, lastName: null, username: null, avatarUrl: null };
+        harness.answer(home, LIST_PATH, {
+            body: {
+                items: [
+                    homeAccountRowFixture('cmn0a0oa40001tmj4izjp8qkg', { profile: unnamed }),
+                    homeAccountRowFixture('cmn0a0oa40001tmj4izj0000z', {
+                        profile: unnamed,
+                        authentication: { signInEmail: 'bo@example.test', usableMethodIds: [] },
+                    }),
+                ],
+                nextCursor: null,
+            },
+        });
+
+        const screen = await renderPeople(home);
+        await waitForHomeGovernance(() => {
+            expect(collectRenderedTestIds(screen.tree.toJSON())).toContain('home-people-row:cmn0a0oa40001tmj4izjp8qkg');
+        });
+        const text = screen.getTextContent();
+        expect(text).not.toContain('cmn0a0oa40001tmj4izjp8qkg');
+        expect(text).toContain('accountDisplay.unnamed');
+        expect(text).toContain('bo@example.test');
+    });
+
     it('searches the Home when a query is typed and shows the matches it found', async () => {
         const home = await addAdministeredHome();
         harness.answer(home, LIST_PATH, {
@@ -214,6 +240,33 @@ describe('HomeAdministrationPeopleScreen', () => {
 
         await waitForHomeGovernance(() => {
             expect(collectRenderedTestIds(screen.tree.toJSON())).toContain('home-people-search-empty');
+        });
+    });
+
+    it('offers retry for a retryable Home search failure and recovers the query', async () => {
+        const home = await addAdministeredHome();
+        harness.answer(home, LIST_PATH, {
+            body: { items: [homeAccountRowFixture('ada')], nextCursor: null },
+        });
+        harness.answer(home, SEARCH_PATH, { status: 503, body: { error: 'unavailable' } });
+
+        const screen = await renderPeople(home);
+        await waitForHomeGovernance(() => {
+            expect(collectRenderedTestIds(screen.tree.toJSON())).toContain('home-people-row:ada');
+        });
+
+        screen.changeTextByTestId('home-people-search', 'grace');
+        await waitForHomeGovernance(() => {
+            expect(collectRenderedTestIds(screen.tree.toJSON())).toContain('home-people-search-failed');
+        });
+
+        harness.answer(home, SEARCH_PATH, {
+            body: { accounts: [homeAccountPickerRowFixture('grace', 'Grace')] },
+        });
+        await screen.pressByTestIdAsync('home-people-search-retry');
+
+        await waitForHomeGovernance(() => {
+            expect(collectRenderedTestIds(screen.tree.toJSON())).toContain('home-people-search-row:grace');
         });
     });
 

@@ -22,6 +22,7 @@ import {
     DaemonProviderProfileMigrationConflictConfirmRequestV1Schema,
     DaemonProviderProfileMigrationConflictConfirmResponseV1Schema,
     RPC_METHODS,
+    RPC_ERROR_CODES,
     type DaemonProviderConnectionMutationResponseV1,
     type DaemonProviderConnectionsDescribeResponseV1,
     type DaemonProviderProbeResponseV1,
@@ -35,6 +36,7 @@ import {
     type DaemonProviderProfileMigrationConfirmResponseV1,
     type DaemonProviderProfileMigrationConflictConfirmResponseV1,
 } from '@happier-dev/protocol/rpc';
+import { readRpcErrorCode } from '@happier-dev/protocol/rpcErrors';
 import {
     createProviderErrorV1,
     ProviderErrorV1Schema,
@@ -44,6 +46,10 @@ import {
 import type { z } from 'zod';
 
 import { machineRpcWithServerScope } from '@/sync/runtime/orchestration/serverScopedRpc/serverScopedMachineRpc';
+import {
+    isMachineRpcTimeoutError,
+    MACHINE_RPC_TIMEOUT_ERROR_CODE,
+} from '@/sync/runtime/orchestration/serverScopedRpc/machineRpcTimeoutError';
 
 type ProviderRpcErrorContext = Readonly<{
     connectionId?: string;
@@ -111,9 +117,42 @@ export function providerErrorFromRpcFailure(
     context: Readonly<{ connectionId?: string; machineId?: string; sourceProfileId?: string }> = {},
 ): ProviderErrorV1 {
     const typed = ProviderErrorV1Schema.safeParse(caught);
-    return typed.success
-        ? typed.data
-        : createProviderErrorV1('provider_machine_unavailable', context);
+    if (typed.success) return typed.data;
+
+    const rpcErrorCode = readRpcErrorCode(caught);
+    const transportCode = caught && typeof caught === 'object' && 'code' in caught
+        ? (typeof caught.code === 'string' ? caught.code : undefined)
+        : undefined;
+    const message = caught instanceof Error ? caught.message : undefined;
+
+    if (rpcErrorCode === RPC_ERROR_CODES.METHOD_NOT_AVAILABLE || rpcErrorCode === RPC_ERROR_CODES.METHOD_NOT_FOUND) {
+        return createProviderErrorV1('agent_unavailable', context);
+    }
+    if (isMachineRpcTimeoutError(caught)
+        || transportCode === MACHINE_RPC_TIMEOUT_ERROR_CODE
+        || transportCode === 'ETIMEDOUT'
+        || transportCode === 'TIMEOUT'
+        || rpcErrorCode === MACHINE_RPC_TIMEOUT_ERROR_CODE
+        || rpcErrorCode === 'RPC_TIMEOUT') {
+        return createProviderErrorV1('agent_timeout', context);
+    }
+    if (rpcErrorCode === 'machine_offline'
+        || rpcErrorCode === 'MACHINE_ENCRYPTION_UNAVAILABLE'
+        || transportCode === 'machine_offline'
+        || transportCode === 'ENETUNREACH'
+        || transportCode === 'EHOSTUNREACH'
+        || transportCode === 'ENETDOWN'
+        || transportCode === 'ECONNREFUSED'
+        || transportCode === 'ENOTFOUND'
+        || transportCode === 'EAI_AGAIN'
+        || transportCode === 'ECONNRESET'
+        || transportCode === 'ERR_NETWORK'
+        || transportCode === 'OFFLINE'
+        || message === 'Socket not connected'
+        || message?.includes('Machine encryption not found')) {
+        return createProviderErrorV1('machine_offline', context);
+    }
+    return createProviderErrorV1('agent_error', context);
 }
 
 export async function describeProviderConnections(input: Readonly<{

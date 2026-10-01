@@ -15,7 +15,7 @@ export const NEW_SESSION_WIZARD_SETTINGS = defineSettingsPage({
         wideScreens: {
             titleKey: 'settingsSessionPages.wizard.wideScreensSection',
             settings: {
-                columns: { titleKey: 'settingsSession.sessionCreation.wizardColumnsTitle' },
+                columns: { storage: { scope: 'account', key: 'newSessionWizardColumnsEnabled', access: 'read_write' }, titleKey: 'settingsSession.sessionCreation.wizardColumnsTitle' },
             },
         },
         steps: {

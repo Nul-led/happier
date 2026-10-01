@@ -12,7 +12,7 @@ import type { PluginClientApi } from '@happier-dev/plugin-sdk';
 import type { PluginClientActionHandler } from '@happier-dev/plugin-sdk/actions';
 import {
     normalizePluginUiDestinationBindingV1,
-    PluginUiArtifactsManifestEntryV1Schema,
+    PluginUiArtifactsManifestEntryV2Schema,
     type CurrentUiContextSnapshotV1,
 } from '@happier-dev/protocol/plugins/ui';
 import { act } from 'react-test-renderer';
@@ -27,7 +27,6 @@ import {
 } from '@/components/plugins/reactNative/clientExecutableContributions';
 import { resolveProjectedPluginUiClientExecutables } from '@/components/plugins/reactNative/clientExecutableProjection';
 import type {
-    PluginReactNativeExecutableExport,
     PluginReactNativeLoaderBackend,
 } from '@/components/plugins/reactNative/loader';
 import { renderScreen } from '@/dev/testkit';
@@ -43,7 +42,12 @@ import {
 import type { PluginBrowserProjectionModel } from '@/sync/domains/plugins/browser/actions';
 import { EMPTY_PLUGIN_UI_PROJECTION, type PluginUiProjectionModel } from '@/sync/domains/plugins/ui/projection';
 import { PLUGIN_UI_CONTRIBUTION_ORIGIN_KEY } from '@/sync/domains/plugins/ui/projectionUnion';
-import type { PluginReactNativeBundleCacheIdentity } from '@/sync/domains/plugins/ui/reactNativeRuntime';
+
+// The presence capsule reads the session's agent from storage (testkit-owned boundary).
+vi.mock('@/sync/domains/state/storage', async () => {
+    const { createStorageModuleStub } = await import('@/dev/testkit/mocks/storage');
+    return createStorageModuleStub({});
+});
 
 vi.mock('@expo/vector-icons', async () => (await import('@/dev/testkit/mocks/icons')).createExpoVectorIconsMock());
 
@@ -315,6 +319,7 @@ if (!browserPanelBinding) throw new Error('Browser panel binding fixture is requ
 const browserPanelPlacement = {
     id: 'surfacePlacement:acme.browser:panel',
     pluginId: 'acme.browser',
+    occurrenceId: 'acme-browser-occurrence-current',
     contributionKind: 'surfacePlacement',
     descriptorId: 'panel',
     binding: browserPanelBinding,
@@ -336,6 +341,7 @@ const hostedWebBrowserPanelProjection: PluginUiProjectionModel = {
         'hostedWeb:acme.browser:panel': {
             id: 'hostedWeb:acme.browser:panel',
             pluginId: 'acme.browser',
+            occurrenceId: 'acme-browser-occurrence-1',
             contributionKind: 'hostedWeb',
             contributionId: 'panel',
             service: { kind: 'sessionEndpoint', endpointIdPath: '/endpointId' },
@@ -364,7 +370,6 @@ const BROWSER_CLIENT_ACTION_ID = 'refresh-preview';
 const BROWSER_CLIENT_ACTION_GENERATION = 17;
 const BROWSER_CLIENT_ACTION_TARGET = Object.freeze({
     artifactId: 'browser-client-action-bundle',
-    modulePath: './actions/refreshPreview',
     exportName: 'execute',
     platform: 'web' as const,
 });
@@ -395,20 +400,19 @@ const BROWSER_CLIENT_ACTION_AUTHORIZATION = Object.freeze({
     serviceAvailability: Object.freeze([]),
     operatingSystemAuthorization: Object.freeze([]),
 });
-const BROWSER_CLIENT_ACTION_ARTIFACT_GRAPH = PluginUiArtifactsManifestEntryV1Schema.parse({
-    contributionId: BROWSER_CLIENT_ACTION_TARGET.artifactId,
+const BROWSER_CLIENT_ACTION_ARTIFACT_GRAPH = PluginUiArtifactsManifestEntryV2Schema.parse({
+    artifactId: BROWSER_CLIENT_ACTION_TARGET.artifactId,
     tier: 'reactNative',
-    platform: BROWSER_CLIENT_ACTION_TARGET.platform,
-    entry: 'react-native/browser-client-action-bundle/index.js',
+    entry: 'react-native/browser-client-action-bundle/entry.cjs.bundle',
     files: [{
-        relativePath: 'react-native/browser-client-action-bundle/index.js',
+        relativePath: 'react-native/browser-client-action-bundle/entry.cjs.bundle',
         digest: 'sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd',
         byteSize: 10,
     }],
     digest: 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
-    builtWith: { bundler: 'vite', version: '7.0.0' },
-    hostUiApiVersion: '1.0.0',
-    compat: { react: '19.0.0', reactNative: '0.83.4' },
+    builtWith: { bundler: 'esbuild', version: '0.27.2' },
+    executable: { exports: [BROWSER_CLIENT_ACTION_TARGET.exportName] },
+    hostUiApiRange: '^1.0.0',
 });
 
 function createBrowserClientActionFixture(handler: PluginClientActionHandler): Readonly<{
@@ -419,6 +423,7 @@ function createBrowserClientActionFixture(handler: PluginClientActionHandler): R
     const action = PluginProjectedActionV2Schema.parse({
         id: BROWSER_CLIENT_ACTION_ID,
         pluginId: BROWSER_CLIENT_ACTION_PLUGIN_ID,
+        occurrenceId: 'occurrence-browser-client-action',
         title: 'Refresh preview',
         scopes: ['global'],
         surfaces: ['ui'],
@@ -427,7 +432,6 @@ function createBrowserClientActionFixture(handler: PluginClientActionHandler): R
             target: 'client',
             client: {
                 artifactId: BROWSER_CLIENT_ACTION_TARGET.artifactId,
-                modulePath: BROWSER_CLIENT_ACTION_TARGET.modulePath,
                 exportName: BROWSER_CLIENT_ACTION_TARGET.exportName,
             },
             platforms: [BROWSER_CLIENT_ACTION_TARGET.platform],
@@ -445,19 +449,6 @@ function createBrowserClientActionFixture(handler: PluginClientActionHandler): R
     const projectedAction = Object.freeze({
         ...action,
         [PLUGIN_UI_CONTRIBUTION_ORIGIN_KEY]: BROWSER_CLIENT_ACTION_ORIGIN_PROJECTION,
-    });
-    const cacheIdentity: PluginReactNativeBundleCacheIdentity = Object.freeze({
-        pluginId: BROWSER_CLIENT_ACTION_PLUGIN_ID,
-        contributionId: BROWSER_CLIENT_ACTION_ID,
-        artifactDigest: BROWSER_CLIENT_ACTION_ARTIFACT_GRAPH.digest,
-        hostAppVersion: '2.0.0',
-        hostUiApiVersion: '1.0.0',
-        reactVersion: '19.0.0',
-        reactNativeVersion: '0.83.4',
-        platform: BROWSER_CLIENT_ACTION_TARGET.platform,
-        channel: 'internal',
-        nativeCapabilitiesDigest: 'sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
-        projectionGeneration: BROWSER_CLIENT_ACTION_GENERATION,
     });
     const pluginUiProjection = Object.freeze({
         ...EMPTY_PLUGIN_UI_PROJECTION,
@@ -485,7 +476,9 @@ function createBrowserClientActionFixture(handler: PluginClientActionHandler): R
                 runtime: Object.freeze({
                     decision: Object.freeze({ state: 'load' }),
                     loadPolicy: Object.freeze({ source: 'installedArtifact' }),
-                    cacheIdentity,
+                    cacheIdentity: Object.freeze({
+                        artifactDigest: BROWSER_CLIENT_ACTION_ARTIFACT_GRAPH.digest,
+                    }),
                 }),
                 [PLUGIN_UI_CONTRIBUTION_ORIGIN_KEY]: BROWSER_CLIENT_ACTION_ORIGIN_PROJECTION,
             }),
@@ -509,17 +502,18 @@ function createBrowserClientActionFixture(handler: PluginClientActionHandler): R
         api.actions.register(BROWSER_CLIENT_ACTION_ID, handler);
     };
     const backend: PluginReactNativeLoaderBackend = Object.freeze({
-        backendId: 'reactNativeWebModule',
+        backendId: 'commonJs',
         available: true,
-        loadInstalledBundle: async () => activate as PluginReactNativeExecutableExport,
+        loadInstalledBundle: async () => activate,
     });
     const activation: PluginUiClientExecutableActivation = Object.freeze({
         pluginId: resolvedAction.pluginId,
         ...(resolvedAction.pluginVersion === undefined ? {} : { pluginVersion: resolvedAction.pluginVersion }),
+        hostUiApiRange: resolvedAction.artifactGraph.hostUiApiRange,
         contributes: resolvedAction.contributes,
         target: resolvedAction.target,
         executionOrigin: resolvedAction.executionOrigin,
-        projectionGeneration: resolvedAction.projectionGeneration,
+        occurrenceId: resolvedAction.occurrenceId,
         cache,
         identity: resolvedAction.cacheIdentity,
         moduleReference: resolvedAction.moduleReference,
@@ -871,7 +865,9 @@ describe('BrowserSurfaceHost', () => {
             />,
         );
 
-        expect(screen.findByTestId('browser-surface-recording-start')).not.toBeNull();
+        // Idle recording is a `⋯` tool (H-UX F-5): the shell offers it from the overflow menu.
+        await screen.pressByTestIdAsync('browser-surface-overflow');
+        expect(screen.findHostByTestId('browser-surface-overflow-item-start-recording')).not.toBeNull();
     });
 
     it('fails closed for browser recording when the recording policy is not explicitly enabled', async () => {
@@ -1129,6 +1125,32 @@ describe('BrowserSurfaceHost', () => {
         expect(screen.findByType('iframe').props.src).toBe('https://preview.happier.test/dashboard');
     });
 
+    it('navigates a streamed daemon view across origins without replacing its exact stream target', async () => {
+        const { BrowserSurfaceHost } = await import('./BrowserSurfaceHost');
+        const onViewTargetChange = vi.fn();
+        const sendDaemonCommand = vi.fn();
+        const initialBrowserState = openBrowserTarget(createBrowserViewState(), {
+            kind: 'streamedBrowser', targetId: 'exact-stream', streamId: 'exact-stream',
+        }, { browserSessionId: 'session_1', viewId: 'agent-view', platform: 'web', currentUrl: 'https://first.test/' });
+        const screen = await renderScreen(<BrowserSurfaceHost
+            browserSessionId="browser_surface:launchpad" platform="web" initialBrowserState={initialBrowserState}
+            pluginBrowserActionContext={{ sessionId: 'session_1' }}
+            policy={{ browserEnabled: true, viewTargetsEnabled: true, diagnosticsEnabled: false, contextEnabled: false }}
+            productModels={{ browserProfile: { profile: sessionBrowserProfile, activePermissionGrantCount: 0 } }}
+            browserFeatureDecision={enabledBrowserDecision} sendDaemonCommand={sendDaemonCommand}
+            onViewTargetChange={onViewTargetChange} testID="browser-surface"
+        />);
+        await act(async () => {
+            screen.changeTextByTestId('browser-surface-address', 'https://next.test/');
+        });
+        await act(async () => { screen.findByTestId('browser-surface-address')?.props.onSubmitEditing?.(); });
+        expect(sendDaemonCommand).toHaveBeenCalledWith(expect.objectContaining({
+            kind: 'navigate', browserSessionId: 'session_1', viewId: 'agent-view', url: 'https://next.test/',
+        }), expect.any(Function));
+        expect(onViewTargetChange).not.toHaveBeenCalled();
+        expect(screen.findByTestId('browser-surface-address')?.props.value).toBe('first.test');
+    });
+
     it('retargets the active local-preview view when typed navigation resolves to an external URL target', async () => {
         const { BrowserSurfaceHost } = await import('./BrowserSurfaceHost');
         const onViewTargetChange = vi.fn();
@@ -1161,8 +1183,6 @@ describe('BrowserSurfaceHost', () => {
             />,
         );
 
-        expect(screen.findByTestId('browser-surface-view-frame-external-escape')).toBeNull();
-
         await act(async () => {
             screen.changeTextByTestId('browser-surface-address', 'https://example.com/');
         });
@@ -1172,7 +1192,6 @@ describe('BrowserSurfaceHost', () => {
 
         expect(screen.findByType('iframe').props.src).toBe('https://example.com/');
         expect(screen.findByTestId('browser-surface-address')?.props.value).toBe('example.com');
-        expect(screen.findByTestId('browser-surface-view-frame-external-escape')).not.toBeNull();
         expect(onViewTargetChange).toHaveBeenCalledWith({
             browserSessionId: 'browser_session_default',
             viewId: 'browser_view:preview_1',
@@ -1500,7 +1519,7 @@ describe('BrowserSurfaceHost', () => {
             />,
         );
 
-        expect(screen.findByTestId('browser-surface-annotation-editor-tool-select')?.props.disabled).toBe(false);
+        expect(screen.findHostByTestId('browser-surface-annotation-editor-tool:select')?.props.accessibilityState?.disabled).not.toBe(true);
         screen.findByType(AnnotationCaptureSurface).props.onPick({ x: 18, y: 24 });
 
         expect(onStartElementPicker).toHaveBeenCalledTimes(1);

@@ -116,7 +116,7 @@ describe('invokeAgentCliInstall', () => {
     });
   });
 
-  it('defaults vendor recipe execution on for explicit real installs', async () => {
+  it('does not imply vendor consent from a real install invocation', async () => {
     const installAgentCli = vi.fn<(...args: any[]) => Promise<InstallAgentCliResult>>().mockResolvedValue({
       ok: true,
       alreadyInstalled: false,
@@ -144,7 +144,7 @@ describe('invokeAgentCliInstall', () => {
       expect.objectContaining({
         agentId: 'claude',
         dryRun: false,
-        allowVendorRecipeExecution: true,
+        allowVendorRecipeExecution: false,
       }),
     );
   });
@@ -182,7 +182,7 @@ describe('invokeAgentCliInstall', () => {
       expect.objectContaining({
         agentId: 'gemini',
         skipIfInstalled: false,
-        allowVendorRecipeExecution: true,
+        allowVendorRecipeExecution: false,
       }),
     );
   });
@@ -221,7 +221,7 @@ describe('invokeAgentCliInstall', () => {
         agentId: 'codex',
         intent: 'update',
         skipIfInstalled: false,
-        allowVendorRecipeExecution: true,
+        allowVendorRecipeExecution: false,
       }),
     );
   });

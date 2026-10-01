@@ -106,16 +106,12 @@ describe('usePluginMachineExecutionOriginSelection', () => {
     beforeEach(() => {
         fixture.selections = {
             v: 1,
-            targetsByKey: {},
             pluginExecutionOriginsByPluginId: { 'acme.plugin': selectedOrigin },
         };
         fixture.canonicalRaw = {
             unrelatedRoot: { preserved: true },
             machineAdministrationSelectionsV1: {
                 v: 1,
-                targetsByKey: {
-                    agents: { serverIdentityId: 'srv_two', machineId: 'machine-b' },
-                },
                 pluginExecutionOriginsByPluginId: {
                     'other.plugin': {
                         serverIdentityId: 'srv_two',
@@ -190,9 +186,6 @@ describe('usePluginMachineExecutionOriginSelection', () => {
             unrelatedRoot: { preserved: true },
             machineAdministrationSelectionsV1: {
                 v: 1,
-                targetsByKey: {
-                    agents: { serverIdentityId: 'srv_two', machineId: 'machine-b' },
-                },
                 pluginExecutionOriginsByPluginId: {
                     'other.plugin': {
                         serverIdentityId: 'srv_two',

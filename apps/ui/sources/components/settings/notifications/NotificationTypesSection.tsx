@@ -1,9 +1,6 @@
 import * as React from 'react';
 
-import { useUnistyles } from 'react-native-unistyles';
-
 import { Switch } from '@/components/ui/forms/Switch';
-import { Item } from '@/components/ui/lists/Item';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
 import { t } from '@/text';
 import {
@@ -11,7 +8,8 @@ import {
     type AttentionDeliveryPolicyV1,
     type RemoteAlertAttentionDeliveryEventId,
 } from '@happier-dev/protocol';
-import { Icon } from '@/components/ui/icons/Icon';
+import { SettingRow } from '@/components/settings/shell/SettingRow';
+import { NOTIFICATIONS_SETTINGS } from '@/components/settings/notifications/notificationsSettings';
 
 export type NotificationTypeEventId = RemoteAlertAttentionDeliveryEventId;
 
@@ -30,7 +28,6 @@ export function NotificationTypesSection({
     setReadyPreviewEnabled,
     setRequestPreviewEnabled,
 }: NotificationTypesSectionProps): React.ReactElement {
-    const { theme } = useUnistyles();
     const readyEnabled = policy.channels.expo_push.events.ready.enabled !== false && policy.events.ready.enabled !== false;
     const readyPreviewEnabled = policy.channels.expo_push.previewBehavior !== 'status_only';
     const requestPreviewEnabled = ['permission_request', 'user_action_request'].every(
@@ -49,12 +46,10 @@ export function NotificationTypesSection({
     return (
         <ItemGroup
             title={t('settingsNotifications.types.title')}
-            footer={t('settingsNotifications.types.footer')}
+            description={t('settingsNotifications.types.footer')}
         >
-            <Item
-                title={t('settingsNotifications.types.ready.title')}
-                subtitle={t('settingsNotifications.types.ready.subtitle')}
-                icon={<Icon name="check-circle" size={29} color={theme.colors.state.success.foreground} />}
+            <SettingRow
+                setting={NOTIFICATIONS_SETTINGS.settings.typesReady}
                 rightElement={(
                     <Switch
                         value={readyEnabled}
@@ -64,10 +59,8 @@ export function NotificationTypesSection({
                 )}
                 showChevron={false}
             />
-            <Item
-                title={t('settingsNotifications.types.readyPreview.title')}
-                subtitle={t('settingsNotifications.types.readyPreview.subtitle')}
-                icon={<Icon name="chat-circle-dots" size={29} color={theme.colors.text.secondary} />}
+            <SettingRow
+                setting={NOTIFICATIONS_SETTINGS.settings.typesReadyPreview}
                 rightElement={(
                     <Switch
                         value={readyPreviewEnabled}
@@ -77,10 +70,8 @@ export function NotificationTypesSection({
                 )}
                 showChevron={false}
             />
-            <Item
-                title={t('settingsNotifications.types.requestPreview.title')}
-                subtitle={t('settingsNotifications.types.requestPreview.subtitle')}
-                icon={<Icon name="chat-circle-dots" size={29} color={theme.colors.text.secondary} />}
+            <SettingRow
+                setting={NOTIFICATIONS_SETTINGS.settings.typesRequestPreview}
                 rightElement={(
                     <Switch
                         value={requestPreviewEnabled}
@@ -90,10 +81,8 @@ export function NotificationTypesSection({
                 )}
                 showChevron={false}
             />
-            <Item
-                title={t('settingsNotifications.types.permissionRequests.title')}
-                subtitle={t('settingsNotifications.types.permissionRequests.subtitle')}
-                icon={<Icon name="hand" size={29} color={theme.colors.text.secondary} />}
+            <SettingRow
+                setting={NOTIFICATIONS_SETTINGS.settings.typesPermissionRequests}
                 rightElement={(
                     <Switch
                         value={permissionRequestsEnabled}
@@ -103,10 +92,8 @@ export function NotificationTypesSection({
                 )}
                 showChevron={false}
             />
-            <Item
-                title={t('settingsNotifications.types.userActions.title')}
-                subtitle={t('settingsNotifications.types.userActions.subtitle')}
-                icon={<Icon name="chat-dots" size={29} color={theme.colors.text.secondary} />}
+            <SettingRow
+                setting={NOTIFICATIONS_SETTINGS.settings.typesUserActions}
                 rightElement={(
                     <Switch
                         value={userActionsEnabled}
@@ -116,11 +103,9 @@ export function NotificationTypesSection({
                 )}
                 showChevron={false}
             />
-            <Item
+            <SettingRow
                 testID="settings-notifications-type-follow-update"
-                title={t('session.follow.following')}
-                subtitle={t('session.follow.editor.subtitle')}
-                icon={<Icon name="bell" size={29} color={theme.colors.text.secondary} />}
+                setting={NOTIFICATIONS_SETTINGS.settings.following}
                 rightElement={(
                     <Switch
                         value={followUpdatesEnabled}

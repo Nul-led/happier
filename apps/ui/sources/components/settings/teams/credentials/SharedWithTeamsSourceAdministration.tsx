@@ -5,7 +5,7 @@ import type {
     TeamCredentialSourceResourceAdministrationV1,
 } from '@happier-dev/protocol/teams';
 import { teamCredentialSourceLocatorKeyV1 } from '@happier-dev/protocol/teams';
-import { useRouter } from 'expo-router';
+import { useRouter } from '@/components/appShell/workspace/destinationRoute';
 
 import { Item } from '@/components/ui/lists/Item';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
@@ -165,7 +165,7 @@ export const SharedWithTeamsSourceAdministration = React.memo(function SharedWit
 
     return (
         <>
-        <ItemGroup title={t('teams.credentials.sourceAdministration.title')} footer={error ?? undefined}>
+        <ItemGroup title={t('teams.credentials.sourceAdministration.title')} description={error ?? undefined}>
             {approval.approvalId ? <Item
                 testID="shared-with-teams:approval"
                 title={t('approvals.title')}

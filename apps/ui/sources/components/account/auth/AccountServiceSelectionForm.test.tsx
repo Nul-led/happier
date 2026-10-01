@@ -70,6 +70,30 @@ describe('AccountServiceSelectionForm', () => {
         });
     }
 
+    function supportedAuthEntry() {
+        return {
+            v: 1,
+            state: 'ready',
+            scope: { kind: 'home' },
+            actions: [{
+                kind: 'authenticate',
+                methodId: 'key_challenge',
+                action: 'login',
+                mode: 'keyed',
+                origin: 'home',
+                presentation: { displayName: 'Recovery key' },
+            }],
+            autoRedirect: null,
+        } as const;
+    }
+
+    function authEntryResponse(): Response {
+        return new Response(JSON.stringify(supportedAuthEntry()), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+        });
+    }
+
     const authEntryOptions = {
         authenticationCatalog: { provenance: 'structured' as const, methods: [] },
         authenticationActions: [],
@@ -78,27 +102,6 @@ describe('AccountServiceSelectionForm', () => {
         authEntryUnavailable: false,
         serverUrlForCopy: 'https://home.example.test',
         showAuthActions: false,
-        showProviderSignup: false,
-        showAnonymousSignup: false,
-        showMtlsLogin: false,
-        showKeylessProviderLogin: false,
-        providerId: null,
-        keylessProviderId: null,
-        providerSignupTitle: '',
-        providerKeylessTitle: '',
-        anonymousSignupTitle: '',
-        mtlsTitle: '',
-        primaryAction: null,
-        mtlsPrimary: false,
-        keylessPrimary: false,
-        autoRedirect: {
-            enabled: false,
-            providerId: null,
-            toKeyedProvision: false,
-            toKeylessLogin: false,
-            toMtls: false,
-            toLegacySignupProvider: false,
-        },
         retryServerCheck: () => {},
     } satisfies AuthEntryOptions;
 
@@ -160,7 +163,8 @@ describe('AccountServiceSelectionForm', () => {
         };
         const olderResponse = createDeferred<Response>();
         const newerResponse = createDeferred<Response>();
-        network.request.mockImplementation(async (endpointUrl: string) => {
+        network.request.mockImplementation(async (endpointUrl: string, path: string) => {
+            if (path === '/v1/auth/entry') return authEntryResponse();
             if (endpointUrl === 'https://next.example.test') return await olderResponse.promise;
             if (endpointUrl === 'https://newest.example.test') return await newerResponse.promise;
             throw new Error(`Unexpected endpoint ${endpointUrl}`);
@@ -273,10 +277,14 @@ describe('AccountServiceSelectionForm', () => {
     });
 
     it('persists a verified selection through the real onboarding surface and controller', async () => {
-        network.request.mockResolvedValue(new Response(JSON.stringify(supportedAccountService('srv_composed_service')), {
-            status: 200,
-            headers: { 'Content-Type': 'application/json' },
-        }));
+        network.request.mockImplementation(async (_endpointUrl: string, path: string) => (
+            path === '/v1/auth/entry'
+                ? authEntryResponse()
+                : new Response(JSON.stringify(supportedAccountService('srv_composed_service')), {
+                    status: 200,
+                    headers: { 'Content-Type': 'application/json' },
+                })
+        ));
         const { OnboardingWizardSurface } = await import('@/components/onboarding/surfaces/OnboardingWizardSurface');
         const { selectAccountServiceEndpoint } = await import('@/sync/ops/accountDirectory/selectAccountServiceEndpoint');
         const { resolveSelectedAccountServiceEndpoint } = await import('@/sync/domains/server/serverProfiles');
@@ -311,7 +319,9 @@ describe('AccountServiceSelectionForm', () => {
             source: 'user' as const,
         };
         const response = createDeferred<Response>();
-        network.request.mockImplementation(async () => await response.promise);
+        network.request.mockImplementation(async (_endpointUrl: string, path: string) => (
+            path === '/v1/auth/entry' ? authEntryResponse() : await response.promise
+        ));
         const { OnboardingWizardSurface } = await import('@/components/onboarding/surfaces/OnboardingWizardSurface');
         const { selectAccountServiceEndpoint } = await import('@/sync/ops/accountDirectory/selectAccountServiceEndpoint');
         const { setAccountServiceEndpoint, resolveSelectedAccountServiceEndpoint } = await import('@/sync/domains/server/serverProfiles');

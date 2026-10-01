@@ -8,7 +8,6 @@ import { t } from '@/text';
 import {
     resolveWorkflowMeterTone,
     resolveWorkflowProgressFraction,
-    type WorkflowStatusTone,
 } from './workflowPresentation';
 import type { WorkflowPhaseRollup } from '@/components/sessions/workState/sessionWorkflowActivityTypes';
 import type { SessionWorkflowRunStatusV1 } from '@happier-dev/protocol';
@@ -30,7 +29,6 @@ export type WorkflowRunHeaderProps = Readonly<{
     rollup: WorkflowPhaseRollup;
     /** Optional one-line summary, e.g. `Phase 2 of 3 · 3/5 agents · 45.2K tokens · 2m 15s`. */
     summaryLine?: string;
-    tone: WorkflowStatusTone;
     /** Present only when the header is acting as a collapsible control. */
     expanded?: boolean;
 }>;

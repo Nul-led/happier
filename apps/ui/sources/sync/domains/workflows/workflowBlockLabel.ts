@@ -1,25 +1,11 @@
 import type { WorkflowBlock, WorkflowDefinitionV1, WorkflowStep } from '@happier-dev/protocol/workflows/workflowV1';
+import { workflowStepPromptLabel } from '@happier-dev/protocol/workflows';
 
 function workflowStepFirstPromptLine(step: WorkflowStep): string | null {
   return step.document.text
     .split(/\r?\n/u)
     .map((line) => line.trim())
     .find((line) => line.length > 0) ?? null;
-}
-
-/**
- * A short, content-derived step label for private authoring and Run-detail UI.
- *
- * Labels are a view over the canonical prompt, never another authored or
- * persisted field. The visual bound keeps rows scannable without changing the
- * prompt or its identity.
- */
-export function workflowStepPromptLabel(step: WorkflowStep): string | null {
-  const firstNonemptyLine = workflowStepFirstPromptLine(step);
-  if (firstNonemptyLine === null) return null;
-  return firstNonemptyLine.length > 60
-    ? `${firstNonemptyLine.slice(0, 60)}…`
-    : firstNonemptyLine;
 }
 
 function firstWorkflowStep(blocks: readonly WorkflowBlock[]): WorkflowStep | null {
@@ -37,9 +23,13 @@ function firstWorkflowStep(blocks: readonly WorkflowBlock[]): WorkflowStep | nul
       if (step !== null) return step;
       continue;
     }
+    // An Action call, a nested workflow and a Wait for you carry no agent prompt.
+    if (block.kind === 'action' || block.kind === 'workflow' || block.kind === 'wait') continue;
     const bodyStep = firstWorkflowStep(block.body);
     if (bodyStep !== null) return bodyStep;
-    if (block.repetition.kind === 'evaluate') return block.repetition.evaluator;
+    if (block.repetition.kind === 'evaluate' && block.repetition.evaluator.kind === 'step') {
+      return block.repetition.evaluator;
+    }
   }
   return null;
 }
@@ -56,7 +46,10 @@ export function workflowDefinitionPromptTitle(definition: WorkflowDefinitionV1):
 
 /** Exact ids remain the fallback for reference pickers, where identity matters. */
 export function workflowBlockReferenceLabel(block: WorkflowBlock): string {
-  return block.kind === 'step'
-    ? workflowStepPromptLabel(block) ?? block.id
-    : block.id;
+  if (block.kind === 'step') return workflowStepPromptLabel(block) ?? block.id;
+  if (block.kind === 'wait') {
+    const firstLine = block.document.text.split(/\r?\n/u).map((line) => line.trim()).find((line) => line.length > 0);
+    return firstLine === undefined ? block.id : firstLine.length > 60 ? `${firstLine.slice(0, 60)}…` : firstLine;
+  }
+  return block.id;
 }

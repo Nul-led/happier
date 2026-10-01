@@ -62,8 +62,8 @@ function isPersistedProfileDispositionComplete(
   return profile.envVarRequirements.every((entry) => entry.name === credentialName || retained.has(entry.name));
 }
 
-function profileReferenceEvidence(raw: Readonly<Record<string, unknown>>, sourceProfileId: string): boolean {
-  if (raw.lastUsedProfile === sourceProfileId) return true;
+function profileReferenceEvidence(raw: Readonly<Record<string, unknown>>, sourceProfileId: string, lastUsedProfile: string | null): boolean {
+  if (lastUsedProfile === sourceProfileId) return true;
   if (stringArray(raw.favoriteProfiles).includes(sourceProfileId)) return true;
   const enabled = isRecord(raw.profileEnabledById) ? own(raw.profileEnabledById, sourceProfileId) : undefined;
   if (enabled === true) return true;
@@ -108,6 +108,7 @@ const DEFAULT_ENVIRONMENT_PROFILE_IDS = Object.freeze(['anthropic', 'codex', 'ge
 
 export function buildLegacyProfileMigrationContext(input: Readonly<{
   rawSettings: Readonly<Record<string, unknown>>;
+  authoringMemory: Readonly<{ lastUsedProfile: string | null }>;
   providersByContributionKey: ReadonlyMap<string, ProviderContributionEntry>;
   allocatedConnectionIdsBySourceProfileId: Readonly<Record<string, string>>;
   migratedAt: number;
@@ -120,7 +121,7 @@ export function buildLegacyProfileMigrationContext(input: Readonly<{
   ]);
 
   for (const sourceProfileId of DEFAULT_ENVIRONMENT_PROFILE_IDS) {
-    if (profileReferenceEvidence(input.rawSettings, sourceProfileId)) {
+    if (profileReferenceEvidence(input.rawSettings, sourceProfileId, input.authoringMemory.lastUsedProfile)) {
       candidates.push({ kind: 'default_environment', sourceProfileId });
     }
   }
@@ -156,7 +157,7 @@ export function buildLegacyProfileMigrationContext(input: Readonly<{
           === canonicalAgentTargetKey(descriptor.primaryModel.agentTargetKey)
         ? completedOutcome.modelSelection
         : null;
-      if (!profileReferenceEvidence(input.rawSettings, sourceProfileId)
+      if (!profileReferenceEvidence(input.rawSettings, sourceProfileId, input.authoringMemory.lastUsedProfile)
         && secretId === null
         && repairableCompletedSelection === null) continue;
       const connectionId = ProviderConnectionIdSchema.parse(

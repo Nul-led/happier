@@ -178,6 +178,47 @@ describe('runCliAccountServiceHomeEntry', () => {
     }
   });
 
+  it('reports the approval wait once with the Home and its expiry so the terminal can show that state', async () => {
+    vi.useFakeTimers();
+    const random = vi.spyOn(Math, 'random').mockReturnValue(0);
+    try {
+      const expiresAtMs = Date.now() + 10_000;
+      let resumeCount = 0;
+      const resume = vi.fn(async (): Promise<CliAccountServiceDirectoryAttemptOutcome> => {
+        resumeCount += 1;
+        if (resumeCount < 2) {
+          return { kind: 'awaiting_approval', homeServerIdentityId: 'home-1', expiresAtMs, resume };
+        }
+        return { kind: 'home_entered', homeServerIdentityId: 'home-1', profileId: 'studio', selection: 'preferred' };
+      });
+      const reportApprovalWait = vi.fn();
+      const ports = createPorts({
+        reportApprovalWait,
+        runDirectoryJourney: vi.fn(async () => ({
+          kind: 'awaiting_approval' as const,
+          homeServerIdentityId: 'home-1',
+          expiresAtMs,
+          resume,
+        })),
+      });
+
+      const result = runCliAccountServiceHomeEntry({
+        service: { endpoint: 'https://accounts.example' },
+        method: { kind: 'key' },
+        key: new Uint8Array(32),
+        timeoutMs: 10_000,
+      }, ports);
+      await vi.advanceTimersByTimeAsync(8_000);
+
+      await expect(result).resolves.toMatchObject({ kind: 'home_entered' });
+      expect(reportApprovalWait).toHaveBeenCalledTimes(1);
+      expect(reportApprovalWait).toHaveBeenCalledWith({ homeServerIdentityId: 'home-1', expiresAtMs });
+    } finally {
+      random.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
   it('aborts an approval observation already in flight when the overall entry timeout expires', async () => {
     vi.useFakeTimers();
     const random = vi.spyOn(Math, 'random').mockReturnValue(0);

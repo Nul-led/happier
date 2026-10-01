@@ -49,6 +49,7 @@ import {
   normalizeAccountSettingsVersionHint,
 } from './accountSettingsVersion';
 import { createAccountSettingsScopeKey } from './accountSettingsScopeKey';
+import { ACCOUNT_SETTINGS_REQUEST_TIMEOUT_MS } from './accountSettingsRequestTimeout';
 import {
   isAccountSettingsEncryptionMaterialUnavailableError,
   requireAccountSettingsEncryptionCredentials,
@@ -133,7 +134,7 @@ async function requestAccountSettingsV2(
       ...authorizationHeaders,
       'Content-Type': 'application/json',
     },
-    timeout: 15_000,
+    timeout: ACCOUNT_SETTINGS_REQUEST_TIMEOUT_MS,
     validateStatus: () => true,
   });
   if (response.status < 200 || response.status >= 300) {

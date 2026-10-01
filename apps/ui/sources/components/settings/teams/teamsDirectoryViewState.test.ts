@@ -111,6 +111,20 @@ describe('resolveTeamsDirectoryViewState', () => {
         ]);
     });
 
+    it('settles a Home whose saved credential is unreadable on its own retryable reason, never loading', () => {
+        const state = resolveTeamsDirectoryViewState({
+            homes: [{ serverId: 'alpha', state: 'unresolved', reason: 'credential_unreadable' }],
+            homeNamesByServerId: HOME_NAMES,
+            snapshotsByServerId: {},
+        });
+
+        // `kind` stays 'loading' until any Home answers (as for an offline
+        // Home); the row's own settled reason is what keeps the screen honest.
+        expect(state.unavailableHomes).toEqual([
+            expect.objectContaining({ serverId: 'alpha', reason: 'credential_unreadable', retryable: true }),
+        ]);
+    });
+
     it('keeps a capable Home rendered and reports an unsupported selected Home as update-required', () => {
         const admission = resolveTeamsSettingsAdmission({
             settings: { experiments: false, featureToggles: {} },

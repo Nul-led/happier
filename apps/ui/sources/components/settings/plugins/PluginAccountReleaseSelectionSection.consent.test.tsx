@@ -1,6 +1,7 @@
 import * as React from 'react';
 import { act } from 'react-test-renderer';
 import { afterEach, expect, it, vi } from 'vitest';
+import { PluginManifestV2Schema } from '@happier-dev/protocol';
 import { renderScreen, standardCleanup } from '@/dev/testkit';
 import { createPluginAccountAvailabilityReader } from '@/sync/domains/plugins/availability/reader';
 import { PluginAccountReleaseSelectionSection } from './PluginAccountReleaseSelectionSection';
@@ -25,7 +26,7 @@ it('requires a hosting disclosure decision before enabling Account storage', asy
                 intent: { pluginId, desiredVersion: '1.0.0', enabled: true, offlineUiHosting: 'disabled', writableCollections: [], revision: 'intent-1' },
                 release: {
                     ref: { pluginId, version: '1.0.0' }, archiveDigestSha256: `sha256:${'a'.repeat(64)}`,
-                    normalizedManifest: { schemaVersion: 2, id: pluginId, version: '1.0.0', displayName: 'Brand', engines: { happier: '^1.0.0' }, runtime: { apiVersion: 1 }, contributes: { resources: [{ id: 'brand', kind: 'asset', path: 'assets/brand.png', contentType: 'image/png' }] } },
+                    normalizedManifest: PluginManifestV2Schema.parse({ schemaVersion: 2, id: pluginId, version: '1.0.0', displayName: 'Brand', engines: { happier: '^1.0.0' }, runtime: { apiVersion: 1 }, contributes: { resources: [{ id: 'brand', kind: 'asset', path: 'assets/brand.png', contentType: 'image/png' }] } }),
                     collectionContracts: [],
                     uiSlots: [],
                     packageAssetArchive: { archiveDigestSha256: `sha256:${'c'.repeat(64)}`, resources: [{ resourceId: 'brand', path: 'assets/brand.png', mimeType: 'image/png', byteSize: 3, digestSha256: `sha256:${'d'.repeat(64)}` }] },

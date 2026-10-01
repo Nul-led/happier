@@ -20,6 +20,30 @@ function buildLifetime(params: Readonly<{
 }
 
 describe('subscribeVisibleWorkflowRunListInvalidation', () => {
+    it('refreshes demanded Run detail on a scoped wake without relying on a parent revision', () => {
+        const invalidate = vi.fn();
+        let demanded = true;
+        const unsubscribe = subscribeVisibleWorkflowRunListInvalidation({
+            lifetime: buildLifetime(),
+            runId: 'run-a',
+            isVisibleWindowLoaded: () => demanded,
+            invalidate,
+        });
+
+        publishHomeAccountChange('server-a', ['workflow-run:run-b']);
+        publishHomeAccountChange('server-b', ['workflow-run:run-a']);
+        expect(invalidate).not.toHaveBeenCalled();
+        publishHomeAccountChange('server-a', ['workflow-run:run-a']);
+        publishHomeAccountChange('server-a');
+        expect(invalidate).toHaveBeenCalledTimes(2);
+        demanded = false;
+        publishHomeAccountChange('server-a', ['workflow-run:run-a']);
+        expect(invalidate).toHaveBeenCalledTimes(2);
+        unsubscribe();
+        publishHomeAccountChange('server-a', ['workflow-run:run-a']);
+        expect(invalidate).toHaveBeenCalledTimes(2);
+    });
+
     it('invalidates a loaded visible window for an exact workflow Run change', () => {
         const invalidate = vi.fn();
         const unsubscribe = subscribeVisibleWorkflowRunListInvalidation({

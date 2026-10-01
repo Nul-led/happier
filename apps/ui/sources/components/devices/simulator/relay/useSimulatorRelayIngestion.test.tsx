@@ -1,7 +1,8 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { act } from 'react-test-renderer';
+import { Platform } from 'react-native';
 
-import { renderHook } from '@/dev/testkit';
+import { renderHook } from '@/dev/testkit/hooks/renderHook';
 import {
     type MachineLiveStreamCapsV1,
     type MachineLiveStreamFrameV1,
@@ -19,6 +20,7 @@ const STREAM_ID = 'stream_1';
 const SOURCE = 'machine_source';
 const TARGET = 'machine_target';
 const SIMULATOR_ID = 'sim_1';
+const platformOsDescriptor = Object.getOwnPropertyDescriptor(Platform, 'OS');
 
 const caps: MachineLiveStreamCapsV1 = {
     maxBitrateBps: 64_000,
@@ -57,8 +59,8 @@ function startRequest(): MachineLiveStreamStartRequestV1 {
                 maxFrameBytes: caps.maxFrameBytes,
                 maxDurationMs: caps.maxDurationMs,
                 maxTotalBytes: caps.maxTotalBytes,
-                iat: 1_000,
-                exp: 61_000,
+                iat: Date.now(),
+                exp: Date.now() + 60_000,
                 aud: 'happier-live-stream-relay-authorization',
             },
             signature: { keyId: 'relay_key_1', alg: 'Ed25519', valueBase64Url: 'AbCdEf012_-' },
@@ -147,12 +149,146 @@ function baseInput(transport: SimulatorRelayTransport): UseSimulatorRelayIngesti
 }
 
 describe('useSimulatorRelayIngestion', () => {
+    afterEach(() => {
+        vi.useRealTimers(); vi.restoreAllMocks(); vi.unstubAllGlobals();
+        if (platformOsDescriptor) Object.defineProperty(Platform, 'OS', platformOsDescriptor);
+    });
+
+    it('opens and renews the exact signed capture source', async () => {
+        vi.useFakeTimers();
+        vi.setSystemTime(1_000);
+        const fake = createFakeTransport();
+        let captures = 0;
+        const input = {
+            ...baseInput(fake.transport),
+            sourceId: 'browser-view-a',
+            streamFamily: 'browser.streamed',
+            startProduction: async (request: Parameters<NonNullable<UseSimulatorRelayIngestionInput['startProduction']>>[0]) => {
+                if (request.sourceId !== 'browser-view-a') return { ok: false as const, reasonCode: 'capture_source_unavailable' };
+                const initial = startRequest();
+                const authorized = {
+                    ...initial, streamFamily: request.streamFamily, sourceId: request.sourceId,
+                    authorization: { ...initial.authorization!, payload: {
+                        ...initial.authorization!.payload, streamFamily: request.streamFamily, sourceId: request.sourceId,
+                    } },
+                };
+                return { ok: true as const, routeKind: 'server_relay' as const, startRequest: authorized, relayAuthorization: authorized.authorization };
+            },
+            startDaemonRelay: async () => { captures += 1; return { ok: true as const, streamId: STREAM_ID }; },
+        };
+        const hook = await renderHook(() => useSimulatorRelayIngestion(input));
+        expect(captures).toBe(1);
+        await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+        expect(fake.sent).toContainEqual(expect.objectContaining({ message: {
+            kind: 'renew', startRequest: expect.objectContaining({ sourceId: 'browser-view-a', streamFamily: 'browser.streamed' }),
+        } }));
+        expect(captures).toBe(1);
+        await hook.unmount();
+    });
+
+    it('does not advertise H264 when the browser lacks the encoded chunk constructor', async () => {
+        // Native/browser globals are the platform SDK boundary, not negotiation policy.
+        Object.defineProperty(Platform, 'OS', { configurable: true, value: 'web' });
+        vi.stubGlobal('VideoDecoder', class {});
+        vi.stubGlobal('EncodedVideoChunk', undefined);
+        const fake = createFakeTransport();
+        const startDaemonRelay = vi.fn(baseInput(fake.transport).startDaemonRelay!);
+        const hook = await renderHook(() => useSimulatorRelayIngestion({
+            ...baseInput(fake.transport), sourceCodecs: ['h264.avcc'], startDaemonRelay,
+        }));
+        expect(hook.getCurrent().playerStatesBySimulatorId[SIMULATOR_ID]?.phase).toBe('error');
+        expect(startDaemonRelay).not.toHaveBeenCalled();
+    });
+
+    it('renews the signed stream grant without starting another capture and stops renewing after close', async () => {
+        vi.useFakeTimers();
+        vi.setSystemTime(1_000);
+        const fake = createFakeTransport();
+        let mints = 0;
+        let captures = 0;
+        const hook = await renderHook(() => useSimulatorRelayIngestion({
+            ...baseInput(fake.transport), viewerSocketId: 'viewer-socket-1',
+            startProduction: async () => {
+                mints += 1;
+                const request = startRequest();
+                return { ok: true, routeKind: 'server_relay', startRequest: request, relayAuthorization: request.authorization! };
+            },
+            startDaemonRelay: async () => { captures += 1; return { ok: true, streamId: STREAM_ID }; },
+        }));
+        await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+        expect(mints).toBe(2);
+        expect(captures).toBe(1);
+        expect(fake.sent).toContainEqual(expect.objectContaining({ message: expect.objectContaining({ kind: 'renew' }) }));
+        await act(async () => fake.deliver({ v: 1, sourceMachineId: SOURCE, targetMachineId: TARGET,
+            message: { kind: 'control', control: { v: 1, streamId: STREAM_ID, kind: 'grant_expiring', expiresAtMs: 91_000 } } }));
+        expect(mints).toBe(2);
+        await act(async () => { await vi.advanceTimersByTimeAsync(29_999); });
+        expect(mints).toBe(2);
+        await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+        expect(mints).toBe(3);
+        expect(captures).toBe(1);
+        await hook.unmount();
+        await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
+        expect(mints).toBe(3);
+    });
+
+    it('stops the exact stream when daemon start succeeds after unmount', async () => {
+        const fake = createFakeTransport();
+        let finishStart: ((result: { ok: true; streamId: string }) => void) | undefined;
+        const hook = await renderHook(() => useSimulatorRelayIngestion({
+            ...baseInput(fake.transport),
+            viewerSocketId: 'viewer-socket-1',
+            startDaemonRelay: () => new Promise((resolve) => { finishStart = resolve; }),
+        }));
+        await hook.unmount();
+        expect(fake.sent.filter((value) => value.message.kind === 'control')).toHaveLength(1);
+        await act(async () => { finishStart?.({ ok: true, streamId: STREAM_ID }); });
+        expect(fake.sent.filter((value) => value.message.kind === 'control')).toHaveLength(2);
+        expect(fake.sent.at(-1)).toMatchObject({
+            sourceMachineId: SOURCE, targetMachineId: TARGET, viewerSocketId: 'viewer-socket-1',
+            message: { kind: 'control', control: { kind: 'stop', streamId: STREAM_ID } },
+        });
+    });
+
+    it('does not start capture when the viewer has no common codec', async () => {
+        const fake = createFakeTransport();
+        const startDaemonRelay = vi.fn(baseInput(fake.transport).startDaemonRelay!);
+        const hook = await renderHook(() => useSimulatorRelayIngestion({
+            ...baseInput(fake.transport), sourceCodecs: ['h264.avcc'],
+            viewerCapabilities: { platform: 'native', renderers: ['mjpeg'], supportedCodecs: ['image.mjpeg'], degradedReasonCodes: [] },
+            startDaemonRelay,
+        }));
+        expect(startDaemonRelay).not.toHaveBeenCalled();
+        expect(hook.getCurrent().playerStatesBySimulatorId[SIMULATOR_ID]?.phase).toBe('error');
+    });
+
     it('opens the relay client without emitting the retired viewer-socket start envelope', async () => {
         const fake = createFakeTransport();
         const hook = await renderHook(() => useSimulatorRelayIngestion(baseInput(fake.transport)));
 
         expect(fake.sent).toEqual([]);
         expect(hook.getCurrent().playerStatesBySimulatorId[SIMULATOR_ID]).toBeDefined();
+    });
+
+    it('advances H264 only after decoder output and never revives a terminal source', async () => {
+        const fake = createFakeTransport();
+        const hook = await renderHook(() => useSimulatorRelayIngestion({
+            ...baseInput(fake.transport), sourceCodecs: ['h264.avcc'],
+            viewerCapabilities: { platform: 'web', renderers: ['webcodecs'], supportedCodecs: ['h264.avcc'], degradedReasonCodes: [] },
+        }));
+        await act(async () => fake.deliver(frameEnvelope({ ...imageFrame(1), codecId: 'h264.avcc',
+            payloadBase64: 'AAAABWEAAAAB', payloadSizeBytes: 9 })));
+        const pending = hook.getCurrent().playerStatesBySimulatorId[SIMULATOR_ID];
+        expect(pending?.phase).toBe('opening');
+        expect(pending?.decodedFrames).toBe(0);
+        expect(pending?.onFrameDecoded).toEqual(expect.any(Function));
+        await act(async () => pending?.onFrameDecoded?.());
+        expect(hook.getCurrent().playerStatesBySimulatorId[SIMULATOR_ID]?.phase).toBe('playing');
+        expect(hook.getCurrent().playerStatesBySimulatorId[SIMULATOR_ID]?.decodedFrames).toBe(1);
+        await act(async () => fake.deliver({ v: 1, sourceMachineId: SOURCE, targetMachineId: TARGET,
+            message: { kind: 'control', control: { v: 1, streamId: STREAM_ID, kind: 'stop', reasonCode: 'capture_stopped' } } }));
+        await act(async () => pending?.onFrameDecoded?.());
+        expect(hook.getCurrent().playerStatesBySimulatorId[SIMULATOR_ID]?.phase).toBe('stopped');
     });
 
     it('forwards the per-tab viewerSocketId to the relay client open (W1-C-2)', async () => {

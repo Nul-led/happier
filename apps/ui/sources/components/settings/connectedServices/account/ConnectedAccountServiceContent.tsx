@@ -1,46 +1,26 @@
 import * as React from 'react';
-import { useRouter } from 'expo-router';
-import { useUnistyles } from 'react-native-unistyles';
+import { useRouter } from '@/components/appShell/workspace/destinationRoute';
 
 import type {
     ConnectedServiceId,
-    ConnectedServiceQuotaSnapshotV1,
     PluginConnectedAccountAuthenticationModeV2,
-    QualifiedConnectedAccountQuotaSnapshotV4,
     QualifiedConnectedAccountProfileV4,
     QualifiedConnectedAccountRef,
 } from '@happier-dev/protocol';
 
+import { SettingsPageHeader } from '@/components/settings/shell/SettingsPageHeader';
 import { Item } from '@/components/ui/lists/Item';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
 import { ItemList } from '@/components/ui/lists/ItemList';
-import { EmptyState } from '@/components/ui/empty/EmptyState';
-import type { ItemAction } from '@/components/ui/lists/itemActions';
-import {
-    compareAccountHealthSeverity,
-    deriveAccountHealth,
-} from '@/sync/domains/connectedServices/deriveAccountHealth';
-import { AccountBlock } from './AccountBlock';
-import {
-    buildConnectedServiceAccountRowActions,
-    type ConnectedServiceAccountKind,
-} from './buildConnectedServiceAccountRowActions';
-import { QualifiedAccountBlock } from './QualifiedAccountBlock';
-import { QualifiedAccountDetailView } from './QualifiedAccountDetailView';
+import { QualifiedAccountDetail } from './QualifiedAccountDetail';
 import { SharedWithTeamsForSource } from '@/components/settings/teams/credentials/SharedWithTeamsSourceAdministration';
 import {
     presentQualifiedConnectedAccountTarget,
     type QualifiedConnectedAccountTargetPresentation,
 } from '@/sync/domains/connectedServices/qualifiedConnectedAccountTargetPresentation';
-import {
-    ConnectedServiceSegmentedShell,
-    type ConnectedServiceDetailSegment,
-} from '@/components/settings/connectedServices/detail/ConnectedServiceSegmentedShell';
-import {
-    QualifiedPoolDetailView,
-    type QualifiedPoolDetailMutations,
-} from '../pools/QualifiedPoolDetailView';
-import { QualifiedPoolsList } from '../pools/QualifiedPoolsList';
+import { QualifiedPoolDetail } from '../pools/QualifiedPoolDetail';
+import { QualifiedPoolDraft } from '../pools/QualifiedPoolDraftView';
+import type { QualifiedPoolDetailMutations } from '../pools/QualifiedPoolDetailView';
 import type {
     UseQualifiedConnectedAccountGroupsResult,
 } from '@/hooks/server/connectedServices/useQualifiedConnectedAccountGroups';
@@ -56,16 +36,12 @@ import {
     buildConnectedAccountSettingsRoute,
     type ConnectedAccountSettingsRouteFocus,
 } from '@/sync/domains/connectedServices/connectedAccountSettingsRoute';
-import { t } from '@/text';
-import { Icon } from '@/components/ui/icons/Icon';
+import { getPreferredLanguage, t } from '@/text';
+import { resolveConnectedAccountModeTitle } from '../model/resolveConnectedAccountModeTitle';
 import {
     isConnectedServiceRuntimeCooldownError,
     resolveConnectedServiceRuntimeCooldownOverrideBody,
 } from '../connectedServiceSettingsErrors';
-import {
-    isQualifiedConnectedAccountLegacyOperationSupported,
-    type QualifiedConnectedAccountUiLegacyPeerClass,
-} from '@/sync/domains/connectedServices/qualifiedConnectedAccountUiSource';
 import { resolveProjectedLocalizedText } from '@/components/plugins/surfaces/resolvePluginDisplayString';
 import { teamsDirectoryShareCredentialPath } from '@/components/settings/teams/teamsRoutes';
 
@@ -73,19 +49,6 @@ export type ConnectedAccountServiceProfile = QualifiedConnectedAccountProfileV4;
 
 /** Stable empty fallback so an absent `accountLabels` prop does not churn memos. */
 const EMPTY_ACCOUNT_LABELS: Readonly<Record<string, string>> = Object.freeze({});
-
-/**
- * Kebab actions that start or destroy a credential operation. This screen runs
- * ONE authentication/revocation attempt at a time and has no re-entrancy guard
- * of its own, so they stay disabled while one is in flight — the read-only
- * drill-in and the purely local label edit do not. The ids are the canonical
- * row-action builder's; the coupling is pinned by this screen's own test.
- */
-const BUSY_GATED_ACCOUNT_ACTION_IDS: ReadonlySet<string> = new Set([
-    'replace-token',
-    'reconnect',
-    'disconnect',
-]);
 
 const EMPTY_GROUPS: UseQualifiedConnectedAccountGroupsResult = {
     status: 'unsupported',
@@ -106,11 +69,14 @@ const EMPTY_GROUPS: UseQualifiedConnectedAccountGroupsResult = {
 /** Single-row screen for a focus that no longer resolves to a live entity. */
 function FocusedScreenNotice(props: Readonly<{
     testID: string;
+    /** The service the missing or loading account or pool belongs to: the page's one title. */
+    pageTitle: string;
     title: string;
     subtitle?: string;
 }>) {
     return (
-        <ItemList testID={props.testID}>
+        <ItemList testID={props.testID} presentation="page">
+            <SettingsPageHeader title={props.pageTitle} alwaysShowTitle />
             <ItemGroup>
                 <Item
                     testID={`${props.testID}:row`}
@@ -125,16 +91,15 @@ function FocusedScreenNotice(props: Readonly<{
 }
 
 /**
- * The three screens the single `connected-services/account` route renders,
+ * The focused screens the single `connected-services/account` route renders,
  * selected by its route focus:
  *
- * - no focus: the service detail (Accounts | Pools segmented shell);
  * - `account`: that account's own detail screen;
- * - `group`: that pool's own detail screen.
+ * - `group`: that pool's own detail screen;
+ * - `newPool`: a pool draft.
  *
  * Drilling in NAVIGATES (a real stack entry with back), so selection lives in
- * the URL rather than in local state. The two focused screens own their own
- * `ItemList`; the unfocused service detail renders into the route's list.
+ * the URL rather than in local state. Each focused screen owns its own list.
  */
 export const ConnectedAccountServiceContent = React.memo(function ConnectedAccountServiceContent(props: Readonly<{
     serverId?: string;
@@ -144,45 +109,26 @@ export const ConnectedAccountServiceContent = React.memo(function ConnectedAccou
     quotaResetSupported?: boolean;
     service: QualifiedConnectedAccountRef['service'];
     legacyServiceId?: ConnectedServiceId | null;
-    /**
-     * Peer class of the resolved legacy transport, projected ONCE by the route
-     * owner. Absent for a v4 peer (or before the peer resolves); this screen must
-     * not re-derive it, because guessing one is how a legacy capability answer
-     * silently becomes wrong for the other peer class.
-    */
-    legacyPeerClass?: QualifiedConnectedAccountUiLegacyPeerClass | null;
     focus?: ConnectedAccountSettingsRouteFocus | null;
     modes: readonly PluginConnectedAccountAuthenticationModeV2[];
     accounts: readonly ConnectedAccountServiceProfile[];
     serviceConfigurationStatusByModeId?: ConnectedAccountServiceConfigurationStatusByModeId;
     accountLabels?: Readonly<Record<string, string | undefined>>;
-    defaultAccountId?: string | null;
     groups?: UseQualifiedConnectedAccountGroupsResult;
-    quotaSnapshots?: ReadonlyArray<
-        ConnectedServiceQuotaSnapshotV1 | QualifiedConnectedAccountQuotaSnapshotV4
-    >;
-    quotaEnabledMemberCount?: number;
-    quotaLoadingMemberCount?: number;
     busy: boolean;
-    onEditLabel?(account: QualifiedConnectedAccountRef): void;
-    onToggleDefault?(account: QualifiedConnectedAccountRef): void;
+    /** The account detail's in-place rename (lab D2). */
+    onRenameAccount?(account: QualifiedConnectedAccountRef, label: string): void;
     onConfigureAccount?(account: QualifiedConnectedAccountRef): void;
     onConfigureService?(modeId: string): void;
-    onBeginConnect?(input: Readonly<{
-        service: QualifiedConnectedAccountRef['service'];
-        modeId: string;
-    }>): void;
     canReconnectAccount?(account: ConnectedAccountServiceProfile): boolean;
     onBeginReconnect?(account: QualifiedConnectedAccountRef): void;
-    /** Service-list disconnect affordance; its caller owns the confirmation. */
-    onRevoke?(account: QualifiedConnectedAccountRef): void;
     /**
      * Disconnect for the account detail screen, which owns (and has already
      * shown) the confirmation. Resolves to whether the account was revoked.
      */
     onDisconnectAccount?(account: QualifiedConnectedAccountRef): Promise<boolean>;
 }>) {
-    const { theme } = useUnistyles();
+    const locale = getPreferredLanguage();
     const router = useRouter();
     const groups = props.groups ?? EMPTY_GROUPS;
     const accountLabels = props.accountLabels ?? EMPTY_ACCOUNT_LABELS;
@@ -199,20 +145,6 @@ export const ConnectedAccountServiceContent = React.memo(function ConnectedAccou
             props.service.pluginId,
         ],
     );
-    /**
-     * Presentation order for the accounts LIST only: worst health first, then a
-     * stable id order inside a health band. Pool membership and the focused
-     * account lookup keep the source order they were given.
-     */
-    const sortedAccounts = React.useMemo(() => [...accounts].sort((a, b) => {
-        const rank = compareAccountHealthSeverity(
-            deriveAccountHealth({ status: a.status, capacityPct: null }),
-            deriveAccountHealth({ status: b.status, capacityPct: null }),
-        );
-        return rank !== 0 ? rank : a.ref.accountId.localeCompare(b.ref.accountId);
-    }), [accounts]);
-    const [activeSegment, setActiveSegment] =
-        React.useState<ConnectedServiceDetailSegment>('accounts');
     // Pools are an optional server capability: a live transport is not permission
     // to show them. The server bit decides here exactly as it does on every other
     // connected-services surface, and every pool affordance below reads this flag.
@@ -229,16 +161,6 @@ export const ConnectedAccountServiceContent = React.memo(function ConnectedAccou
     const focusedGroup = focus?.kind === 'group'
         ? groups.groups.find((candidate) => candidate.ref.groupId === focus.groupId) ?? null
         : null;
-    const legacyQuotaSupported = props.legacyServiceId
-        && props.legacyPeerClass
-        ? isQualifiedConnectedAccountLegacyOperationSupported({
-            service: props.service,
-            legacyServiceId: props.legacyServiceId,
-            peerClass: props.legacyPeerClass,
-            operation: 'quota_read',
-        })
-        : false;
-
     /** Drill into an account or a pool as a real stack entry. */
     const openFocus = React.useCallback((next: ConnectedAccountSettingsRouteFocus) => {
         router.push(buildConnectedAccountSettingsRoute(service, next));
@@ -257,25 +179,12 @@ export const ConnectedAccountServiceContent = React.memo(function ConnectedAccou
         router.replace(buildConnectedAccountSettingsRoute(service));
     }, [router, service]);
 
-    const createGroup = React.useCallback(async () => {
-        const displayNameResult = await Modal.prompt(
-            t('connectedServices.detail.groupActions.createTitle'),
-            t('connectedServices.detail.groupActions.createSubtitle'),
-            {
-                placeholder: t('connectedServices.detail.groupActions.displayNamePlaceholder'),
-                confirmText: t('common.create'),
-                cancelText: t('common.cancel'),
-            },
-        );
-        const displayName = typeof displayNameResult === 'string'
-            ? displayNameResult.trim()
-            : '';
-        if (!displayName) return;
+    const [creatingPool, setCreatingPool] = React.useState(false);
+    /** Creates the drafted pool with its members (threading each returned group), then opens it. */
+    const createPoolFromDraft = React.useCallback(async (draft: Readonly<{ displayName: string; accountIds: readonly string[] }>) => {
         const groupId = deriveConnectedServiceAuthGroupIdFromName({
-            name: displayName,
-            existingGroupIds: groups.groups.map(
-                (group) => group.ref.groupId,
-            ),
+            name: draft.displayName,
+            existingGroupIds: groups.groups.map((group) => group.ref.groupId),
         });
         if (!groupId) {
             await Modal.alert(
@@ -284,12 +193,22 @@ export const ConnectedAccountServiceContent = React.memo(function ConnectedAccou
             );
             return;
         }
-        const created = await groups.create({
-            groupId,
-            displayName,
-        });
-        if (created) openFocus({ kind: 'group', groupId: created.ref.groupId });
-    }, [groups, openFocus]);
+        setCreatingPool(true);
+        try {
+            let current = await groups.create({ groupId, displayName: draft.displayName });
+            if (!current) return;
+            for (const accountId of draft.accountIds) {
+                const account = accounts.find((candidate) => candidate.ref.accountId === accountId);
+                if (!account) continue;
+                const next = await groups.addMember({ group: current, account: account.ref });
+                if (!next) break;
+                current = next;
+            }
+            router.replace(buildConnectedAccountSettingsRoute(service, { kind: 'group', groupId: current.ref.groupId }));
+        } finally {
+            setCreatingPool(false);
+        }
+    }, [accounts, groups, router, service]);
 
     /**
      * The pool detail's mutation surface. Two decisions stay with this owner
@@ -331,34 +250,7 @@ export const ConnectedAccountServiceContent = React.memo(function ConnectedAccou
             if (deleted) leaveFocusedScreen();
             return deleted;
         },
-    }), [groups, leaveFocusedScreen]);
-
-    /**
-     * Pool membership chips per account, so an account row shows which pools it
-     * belongs to without opening the Pools segment. They are part of the pools
-     * feature: a transport that still answers with groups must not leak them onto
-     * the accounts list once pools are unavailable here.
-     */
-    const poolLabelsByAccountId = React.useMemo(() => {
-        const byAccountId: Record<string, string[]> = {};
-        for (const group of poolsAvailable ? groups.groups : []) {
-            const groupLabel = presentQualifiedConnectedAccountTarget({
-                target: {
-                    kind: 'group',
-                    service: group.ref.service,
-                    groupId: group.ref.groupId,
-                },
-                accounts,
-                groups: groups.groups,
-                labelsByKey: EMPTY_ACCOUNT_LABELS,
-                serviceTitle: props.title,
-            }).primaryLabel;
-            for (const member of group.members) {
-                (byAccountId[member.ref.accountId] ??= []).push(groupLabel);
-            }
-        }
-        return byAccountId;
-    }, [accounts, groups.groups, poolsAvailable, props.title]);
+    }), [groups, leaveFocusedScreen, locale]);
 
     /**
      * Human identity for an account, through the canonical qualified-target
@@ -380,27 +272,6 @@ export const ConnectedAccountServiceContent = React.memo(function ConnectedAccou
     });
 
     /**
-     * Which credential-replacement affordance the row builder should offer.
-     *
-     * dev's projection leaves `kind` optional, so it is derived from the
-     * account's authentication mode when this descriptor snapshot knows it: a
-     * manual (credential-entry) mode replaces a stored token, an authorization
-     * flow re-runs a sign-in. An account bound to a mode id this snapshot does
-     * not carry still re-runs its flow — reachability is decided by
-     * `canReconnect`, not by the descriptor — so it reads as an authorization
-     * account.
-     */
-    const resolveAccountCredentialKind = (
-        account: ConnectedAccountServiceProfile,
-    ): ConnectedServiceAccountKind => {
-        if (account.kind) return account.kind;
-        const mode = props.modes.find(
-            (candidate) => candidate.id === account.authenticationModeId,
-        );
-        return mode?.kind === 'manual' ? 'token' : 'oauth';
-    };
-
-    /**
      * Reconnect is unreachable for an account whose public authentication mode
      * is gone (nothing left to re-run) or when the peer cannot accept it.
      */
@@ -414,17 +285,42 @@ export const ConnectedAccountServiceContent = React.memo(function ConnectedAccou
         ),
     );
 
+    if (focus?.kind === 'newPool') {
+        if (!poolsAvailable) {
+            // Pools are a server capability; a draft that could never be created is not offered.
+            return (
+                <FocusedScreenNotice
+                    pageTitle={props.title}
+                    testID="connected-services-pool-draft:unavailable"
+                    title={groups.status === 'loading' ? t('common.loading') : t('common.unavailable')}
+                />
+            );
+        }
+        return (
+            <QualifiedPoolDraft
+                serviceLabel={props.title}
+                accounts={accounts}
+                accountLabels={accountLabels}
+                creating={creatingPool}
+                onCreate={(draft) => { void createPoolFromDraft(draft); }}
+                onDiscard={leaveFocusedScreen}
+            />
+        );
+    }
+
     if (focus?.kind === 'group') {
         const shareServerId = props.serverId;
         const group = focusedGroup;
         if (!group) {
             return groups.status === 'loading' ? (
                 <FocusedScreenNotice
+                    pageTitle={props.title}
                     testID="connected-services-pool-detail:loading"
                     title={t('common.loading')}
                 />
             ) : (
                 <FocusedScreenNotice
+                    pageTitle={props.title}
                     testID="connected-services-pool-detail:missing"
                     title={t('connectedServices.detail.groupDetail.missingTitle')}
                     subtitle={t('connectedServices.detail.groupDetail.missingBody', {
@@ -435,7 +331,7 @@ export const ConnectedAccountServiceContent = React.memo(function ConnectedAccou
             );
         }
         return (
-            <QualifiedPoolDetailView
+            <QualifiedPoolDetail
                 group={group}
                 accounts={accounts}
                 accountLabels={accountLabels}
@@ -445,9 +341,6 @@ export const ConnectedAccountServiceContent = React.memo(function ConnectedAccou
                 autoQuotaResetEnabled={autoQuotaResetEnabled && props.quotaResetSupported === true}
                 autoDisablePlanInvalidEnabled={autoDisablePlanInvalidEnabled}
                 quotaLimitSelectionEnabled={quotaLimitSelectionEnabled}
-                quotaSnapshots={props.quotaSnapshots ?? []}
-                quotaEnabledMemberCount={props.quotaEnabledMemberCount}
-                quotaLoadingMemberCount={props.quotaLoadingMemberCount}
                 fallbackDisabledSubtitle={
                     t('connectedServices.detail.groupActions.accountFallbackDisabled')
                 }
@@ -478,6 +371,7 @@ export const ConnectedAccountServiceContent = React.memo(function ConnectedAccou
         if (!account) {
             return (
                 <FocusedScreenNotice
+                    pageTitle={props.title}
                     testID="qualified-account-detail:missing"
                     title={t('connectedServices.detail.alerts.unknownProfileTitle')}
                     subtitle={t('connectedServices.detail.alerts.unknownProfileBody', {
@@ -489,27 +383,53 @@ export const ConnectedAccountServiceContent = React.memo(function ConnectedAccou
         }
         const accountIsRevisioned =
             account.revisionSemantics === 'revisioned';
+        const authenticationMode = props.modes.find((mode) => mode.id === account.authenticationModeId) ?? null;
         return (
-            <QualifiedAccountDetailView
+            <QualifiedAccountDetail
                 account={account.ref}
                 serviceLabel={props.title}
+                legacyServiceId={props.legacyServiceId ?? null}
                 presentation={resolveAccountIdentity(account)}
                 providerEmail={account.providerIdentity?.email ?? null}
                 providerAccountId={account.providerIdentity?.accountId ?? null}
                 // RAW status: the view owns the recognized-status gate.
                 status={account.status}
-                isDefault={props.defaultAccountId === account.ref.accountId}
+                authenticationModeTitle={(() => {
+                    const mode = props.modes.find((candidate) => candidate.id === account.authenticationModeId);
+                    if (!mode) return null;
+                    return mode.kind === 'oauthDeviceCode'
+                        ? t('connectedServicesSettings.detailSignedInWithCode')
+                        : mode.kind === 'manual'
+                            ? t('connectedServicesSettings.detailAddedWithKey')
+                            : t('connectedServicesSettings.detailSignedInWithBrowser');
+                })()}
+                lastUsedAt={account.lastUsedAt ?? null}
+                configurationDisabled={props.busy}
+                {...(accountIsRevisioned && authenticationMode?.configuration?.scope === 'account' && props.onConfigureAccount ? {
+                    onConfigureAccount: () => props.onConfigureAccount?.(account.ref),
+                    accountConfigurationBlocked: isConnectedAccountConfigurationBlocked({
+                        account,
+                        authenticationMode,
+                        serviceConfigurationStatusByModeId: props.serviceConfigurationStatusByModeId,
+                    }),
+                } : {})}
+                serviceConfigurations={props.onConfigureService ? props.modes.filter((mode) => mode.configuration?.scope === 'service').map((mode) => ({
+                    modeId: mode.id,
+                    title: resolveConnectedAccountModeTitle(mode, props.localize),
+                    blocked: isConnectedAccountServiceConfigurationBlocked(props.serviceConfigurationStatusByModeId, mode.id),
+                    onConfigure: () => props.onConfigureService?.(mode.id),
+                })) : undefined}
                 // Pools apply only when this service has a pool source at all;
                 // an empty array still renders the section with its empty state.
                 {...(poolsAvailable ? {
                     groups: groups.groups,
                     onOpenPool: (groupId: string) => openFocus({ kind: 'group', groupId }),
                 } : {})}
-                {...(accountIsRevisioned && props.onToggleDefault ? {
-                    onToggleDefault: () => props.onToggleDefault?.(account.ref),
-                } : {})}
-                {...(accountIsRevisioned && props.onEditLabel ? {
-                    onEditLabel: () => props.onEditLabel?.(account.ref),
+                {...(accountIsRevisioned && props.onRenameAccount ? {
+                    rename: {
+                        currentLabel: accountLabels[account.ref.accountId] ?? resolveAccountIdentity(account).primaryLabel,
+                        onRename: (label: string) => props.onRenameAccount?.(account.ref, label),
+                    },
                 } : {})}
                 {...(shareServerId && props.teamCredentialResourcesEnabled === true ? {
                     sharedWithTeamsAdministration: <SharedWithTeamsForSource
@@ -537,218 +457,6 @@ export const ConnectedAccountServiceContent = React.memo(function ConnectedAccou
         );
     }
 
-    /**
-     * Quota compatibility is independent of the V4-only pool client: released
-     * V2/V3 quota peers retain their own account-block read surface, while
-     * groups themselves are only ever selected through V4.
-     */
-    const legacyBlockServiceId = legacyQuotaSupported
-        && props.legacyServiceId
-        ? props.legacyServiceId
-        : null;
-
-    const accountsContent = (
-        <>
-            <ItemGroup title={props.title} columns={2}>
-                {sortedAccounts.length === 0 ? (
-                    <EmptyState
-                        testID="connected-accounts:empty"
-                        icon={<Icon
-                            name="key"
-                            size={29}
-                            color={theme.colors.text.secondary}
-                        />}
-                        title={t('connectedServices.detail.profiles.empty')}
-                    />
-                ) : sortedAccounts.map((account) => {
-                    const authenticationMode = props.modes.find(
-                        (mode) => mode.id === account.authenticationModeId,
-                    );
-                    const configurationBlocked = isConnectedAccountConfigurationBlocked({
-                        account,
-                        authenticationMode: authenticationMode ?? null,
-                        serviceConfigurationStatusByModeId:
-                            props.serviceConfigurationStatusByModeId,
-                    });
-                    const identity = resolveAccountIdentity(account);
-                    const reconnectable = canReconnect(account);
-                    const accountIsRevisioned =
-                        account.revisionSemantics === 'revisioned';
-                    const configurationSupported = Boolean(
-                        accountIsRevisioned
-                        && props.onConfigureAccount
-                        && account.authenticationModeId
-                        && props.modes.some((mode) => (
-                            mode.id === account.authenticationModeId
-                            && mode.configuration?.scope === 'account'
-                        )),
-                    );
-                    // Row-level affordances live in the block's kebab menu — ONE
-                    // child per account. They used to be sibling `Item` rows,
-                    // which broke the 1:1 child/entity assumption the grid
-                    // layout relies on and buried the account under its actions.
-                    //
-                    // The set, order, icons, and status gating come from the
-                    // canonical row-action builder; this screen only supplies the
-                    // handlers it is permitted to run, so an action the peer or
-                    // the controller does not allow is ABSENT rather than
-                    // disabled. dev's single reconnect handler re-runs whichever
-                    // flow the account's mode owns, so it fills both the token
-                    // and authorization slots the builder gates by kind.
-                    const actions: ItemAction[] = buildConnectedServiceAccountRowActions({
-                        kind: resolveAccountCredentialKind(account),
-                        onOpen: () => openFocus({
-                            kind: 'account',
-                            accountId: account.ref.accountId,
-                        }),
-                        ...(accountIsRevisioned && props.onEditLabel ? {
-                            onEditLabel: () => props.onEditLabel?.(account.ref),
-                        } : {}),
-                        ...(reconnectable ? {
-                            onReplaceToken: () => props.onBeginReconnect?.(account.ref),
-                            onReconnect: () => props.onBeginReconnect?.(account.ref),
-                        } : {}),
-                        ...(accountIsRevisioned && props.onRevoke ? {
-                            onDisconnect: () => props.onRevoke?.(account.ref),
-                        } : {}),
-                    }).map((action) => (
-                        props.busy && BUSY_GATED_ACCOUNT_ACTION_IDS.has(action.id)
-                            ? { ...action, disabled: true }
-                            : action
-                    ));
-                    if (configurationSupported) {
-                        // Account-scoped plugin configuration has no slot in the
-                        // shared builder (it exists only in dev's plugin-driven
-                        // auth model), so it is appended to the same kebab.
-                        actions.push({
-                            id: 'configure',
-                            title: t('connectedServices.account.configurationTitle'),
-                            icon: 'sliders-horizontal',
-                            disabled: props.busy,
-                            onPress: () => props.onConfigureAccount?.(account.ref),
-                        });
-                    }
-                    const identityLabel = [
-                        identity.secondaryLabel,
-                        configurationBlocked ? t('common.blocked') : null,
-                    ].filter((value): value is string => Boolean(value)).join(' · ') || null;
-                    const blockProps = {
-                        testID: `connected-account:${account.ref.accountId}`,
-                        title: identity.primaryLabel,
-                        identityLabel,
-                        // RAW status: the block owns the fail-open usage gate.
-                        status: account.status,
-                        isDefault: props.defaultAccountId === account.ref.accountId,
-                        onToggleDefault: accountIsRevisioned
-                            && props.onToggleDefault
-                            ? () => props.onToggleDefault?.(account.ref)
-                            : undefined,
-                        poolLabels: poolLabelsByAccountId[account.ref.accountId],
-                        actions,
-                    } as const;
-                    // Quota compatibility remains independent of the V4-only
-                    // pool source: released legacy quota peers use their legacy
-                    // block while every group operation is qualified V4.
-                    return legacyBlockServiceId ? (
-                        <AccountBlock
-                            key={account.ref.accountId}
-                            serviceId={legacyBlockServiceId}
-                            profileId={account.ref.accountId}
-                            {...blockProps}
-                        />
-                    ) : (
-                        <QualifiedAccountBlock
-                            key={account.ref.accountId}
-                            account={account.ref}
-                            {...blockProps}
-                        />
-                    );
-                })}
-            </ItemGroup>
-            {/*
-              * SERVICE-level actions only: connect a new account through each
-              * public mode, and configure the service. Per-account actions live
-              * in that account's own kebab, never as rows down here.
-              */}
-            {(
-                props.onBeginConnect
-                || props.onConfigureService
-            ) ? (
-                <ItemGroup title={t('connectedServices.detail.actionsGroupTitle')}>
-                {props.onBeginConnect ? props.modes.map((mode) => (
-                    <Item
-                        key={mode.id}
-                        testID={`connected-account-mode:${mode.id}`}
-                        title={resolveProjectedLocalizedText(mode.title, props.localize) || mode.id}
-                        icon={<Icon
-                            name="plus-circle"
-                            size={20}
-                            color={theme.colors.accent.blue}
-                        />}
-                        disabled={props.busy}
-                        onPress={() => props.onBeginConnect?.({
-                            service: props.service,
-                            modeId: mode.id,
-                        })}
-                    />
-                )) : null}
-                {props.onConfigureService ? props.modes
-                    .filter((mode) =>
-                        mode.configuration?.scope === 'service')
-                    .map((mode) => (
-                        <Item
-                            key={`configure:${mode.id}`}
-                            testID={`connected-service-configuration-settings:${mode.id}`}
-                            title={t('connectedServices.account.configurationTitle')}
-                            detail={[
-                                resolveProjectedLocalizedText(mode.title, props.localize) || mode.id,
-                                isConnectedAccountServiceConfigurationBlocked(
-                                    props.serviceConfigurationStatusByModeId,
-                                    mode.id,
-                                ) ? t('common.blocked') : null,
-                            ].filter(
-                                (value): value is string => Boolean(value),
-                            ).join(' · ')}
-                            icon={<Icon
-                                name="sliders-horizontal"
-                                size={20}
-                                color={theme.colors.accent.blue}
-                            />}
-                            disabled={props.busy}
-                            onPress={() =>
-                                props.onConfigureService?.(mode.id)}
-                        />
-                    )) : null}
-                </ItemGroup>
-            ) : null}
-        </>
-    );
-
-    const poolsContent = (
-        <QualifiedPoolsList
-            groups={groups.groups}
-            accounts={accounts}
-            serviceLabel={props.title}
-            accountLabels={accountLabels}
-            status={groups.status}
-            poolConfigurationSupported={poolsAvailable}
-            onOpenPool={(groupId) => openFocus({ kind: 'group', groupId })}
-            onCreatePool={() => {
-                void createGroup();
-            }}
-            onRetryLoad={() => {
-                void groups.refresh();
-            }}
-        />
-    );
-
-    return (
-        <ConnectedServiceSegmentedShell
-            activeSegment={activeSegment}
-            onSelectSegment={setActiveSegment}
-            poolsAvailable={poolsAvailable}
-            accountsContent={accountsContent}
-            poolsContent={poolsContent}
-        />
-    );
+    // Service-only ingress is translated to the Collection before this controller mounts.
+    return null;
 });

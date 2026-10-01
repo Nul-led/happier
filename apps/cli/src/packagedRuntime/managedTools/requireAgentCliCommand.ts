@@ -1,24 +1,30 @@
 import { legacyCustomAcpCompat } from '@happier-dev/agents';
 import { readAgentCatalogSnapshot } from '@/agent/catalog/snapshot';
+import { resolveAgentCliOverrideEnvKey } from '@happier-dev/cli-common/agents/resolution';
 
 import { readAgentCliOverrideForRuntime, resolveAgentCliCommandForRuntime } from './agentCliResolution';
 
-export function resolveAgentCliRuntimeSpecForLookupId(agentId: string) {
+export type AgentCliResolutionOptions = Readonly<{
+  processEnv?: NodeJS.ProcessEnv;
+  catalogSnapshot?: ReturnType<typeof readAgentCatalogSnapshot>;
+}>;
+
+export function resolveAgentCliRuntimeSpecForLookupId(agentId: string, opts: AgentCliResolutionOptions = {}) {
   if (legacyCustomAcpCompat.isLegacyCustomAcpAgentId(agentId)) {
     return legacyCustomAcpCompat.getLegacyCustomAcpAgentCliRuntimeSpec();
   }
-  const runtimeSpec = readAgentCatalogSnapshot().agentDefinitionsById.get(agentId)?.runtimeSpec;
+  const runtimeSpec = (opts.catalogSnapshot ?? readAgentCatalogSnapshot()).agentDefinitionsById.get(agentId)?.runtimeSpec;
   if (runtimeSpec) return runtimeSpec;
   throw new Error(`Missing agent CLI runtime metadata for '${agentId}'`);
 }
 
 export function buildMissingAgentCliCommandErrorMessage(
   agentId: string,
-  opts: Readonly<{ processEnv?: NodeJS.ProcessEnv }> = {},
+  opts: AgentCliResolutionOptions = {},
 ): string {
   const processEnv = opts.processEnv ?? process.env;
-  const runtimeSpec = resolveAgentCliRuntimeSpecForLookupId(agentId);
-  const envKey = `HAPPIER_${agentId.toUpperCase()}_PATH`;
+  const runtimeSpec = resolveAgentCliRuntimeSpecForLookupId(agentId, opts);
+  const envKey = resolveAgentCliOverrideEnvKey(runtimeSpec.id);
   if (readAgentCliOverrideForRuntime(runtimeSpec, processEnv)) {
     return (
       `${capitalize(agentId)} CLI (${agentId}) is unavailable because ${envKey} is set ` +
@@ -33,9 +39,9 @@ export function buildMissingAgentCliCommandErrorMessage(
 
 export function requireAgentCliCommand(
   agentId: string,
-  opts: Readonly<{ processEnv?: NodeJS.ProcessEnv }> = {},
+  opts: AgentCliResolutionOptions = {},
 ): string {
-  const resolved = resolveAgentCliCommandForRuntime(resolveAgentCliRuntimeSpecForLookupId(agentId), {
+  const resolved = resolveAgentCliCommandForRuntime(resolveAgentCliRuntimeSpecForLookupId(agentId, opts), {
     processEnv: opts.processEnv,
   });
   if (resolved) return resolved.command;

@@ -16,7 +16,7 @@ const selection: SessionModelSelectionV1 = {
   v: 1,
   updatedAt: 1,
   ref: {
-    agentTargetKey: 'backend:codex',
+    agentTargetKey: 'agent:happier.agent.codex/codex',
     providerConnectionId: connectionId,
     modelId: 'vendor/model',
   },
@@ -64,7 +64,7 @@ function attempt(
       observationAuthorizationFingerprint: 'observation:v1:one',
       binding: {
         v: 1,
-        agentTargetKey: 'backend:codex',
+        agentTargetKey: 'agent:happier.agent.codex/codex',
         selection: {
           connectionId,
           model: { id: 'vendor/model', name: 'Vendor Model' },
@@ -132,6 +132,24 @@ function base(overrides: Record<string, unknown> = {}) {
 }
 
 describe('prepareProviderLaunch', () => {
+  it('enforces caller model and permission constraints before native or automatic launch', async () => {
+    const nativeSelection = { ...selection, ref: { ...selection.ref, providerConnectionId: null } };
+    const constraints = { models: [nativeSelection.ref], permissionModes: ['default' as const] };
+    await expect(prepareProviderLaunch(base({ selection: undefined, callerInputConstraints: constraints })))
+      .resolves.toMatchObject({ ok: false, error: { code: 'model_not_granted' } });
+    await expect(prepareProviderLaunch(base({
+      selection: { ...nativeSelection, ref: { ...nativeSelection.ref, modelId: 'other' } },
+      callerInputConstraints: constraints,
+    }))).resolves.toMatchObject({ ok: false, error: { code: 'model_not_granted' } });
+    await expect(prepareProviderLaunch(base({
+      selection: nativeSelection, permissionMode: 'bypassPermissions', callerInputConstraints: constraints,
+    }))).resolves.toMatchObject({ ok: false, error: { code: 'permission_mode_not_granted' } });
+    await expect(prepareProviderLaunch(base({ selection: nativeSelection, callerInputConstraints: constraints })))
+      .resolves.toEqual({ ok: true, kind: 'native' });
+    await expect(prepareProviderLaunch(base({ selection: undefined })))
+      .resolves.toEqual({ ok: true, kind: 'native' });
+  });
+
   it('returns native launches without touching Provider prerequisites or authorization', async () => {
     const input = base({ selection: { ...selection, ref: { ...selection.ref, providerConnectionId: null } } });
     await expect(prepareProviderLaunch(input)).resolves.toEqual({ ok: true, kind: 'native' });
@@ -161,7 +179,7 @@ describe('prepareProviderLaunch', () => {
     expect(result).toMatchObject({
       ok: true,
       kind: 'provider',
-      agentTargetKey: 'backend:codex',
+      agentTargetKey: 'agent:happier.agent.codex/codex',
       connectedServices: {
         v: 2,
         bindingsByServiceId: { github: expect.anything() },
@@ -169,12 +187,12 @@ describe('prepareProviderLaunch', () => {
       suppressedConnectedServiceIds: ['openai-codex'],
     });
     expect(input.resolvePrerequisites).toHaveBeenCalledWith(expect.objectContaining({
-      agentTargetKey: 'backend:codex',
+      agentTargetKey: 'agent:happier.agent.codex/codex',
       connectionId,
       modelId: 'vendor/model',
     }));
     expect(input.createAuthorizationAttempt).toHaveBeenCalledWith(expect.objectContaining({
-      agentTargetKey: 'backend:codex',
+      agentTargetKey: 'agent:happier.agent.codex/codex',
       machineId: 'machine-a',
       agentId: 'codex',
       selection,
@@ -194,16 +212,16 @@ describe('prepareProviderLaunch', () => {
     await expect(prepareProviderLaunch(input)).resolves.toMatchObject({
       ok: true,
       kind: 'provider',
-      agentTargetKey: 'backend:codex',
+      agentTargetKey: 'agent:happier.agent.codex/codex',
     });
     expect(input.createAuthorizationAttempt).toHaveBeenCalledWith(
       expect.objectContaining({
-        agentTargetKey: 'backend:codex',
+        agentTargetKey: 'agent:happier.agent.codex/codex',
         selection: {
           ...predecessorSelection,
           ref: {
             ...predecessorSelection.ref,
-            agentTargetKey: 'backend:codex',
+            agentTargetKey: 'agent:happier.agent.codex/codex',
           },
         },
       }),

@@ -38,6 +38,31 @@ function createEnablement(snapshot: CliServerFeaturesSnapshot | undefined) {
 }
 
 describe('Lane 10 Action feature availability', () => {
+  it('keeps scoped Session and Machine Actions available without advertising Account operations', () => {
+    const snapshot = readySnapshot({
+      sessions: { enabled: true, board: { enabled: true }, conversations: { enabled: true } },
+      sharing: { session: { enabled: true } },
+    });
+    const policy = {
+      actionSettingsProvider: createMcpActionSettingsProvider({ accountSettings: null }),
+      surface: 'agent' as const,
+      hasAuthenticatedRuntime: true,
+      readServerFeaturesSnapshot: () => snapshot,
+      env: {},
+    };
+    const restricted = createMcpActionEnablementWithServerFeatureAvailability({
+      ...policy,
+      authorityScope: 'session',
+    });
+    expect(restricted('machines.list')).toBe(false);
+    expect(restricted('session.board.get')).toBe(true);
+    expect(restricted('session.discussion.list')).toBe(true);
+    // Transcript reads are Machine-placed, but the exact Session read remains
+    // a supported runtime capability. Scope is not a Session-only allowlist.
+    expect(restricted('session.transcript.get')).toBe(true);
+    expect(createMcpActionEnablementWithServerFeatureAvailability(policy)('machines.list')).toBe(true);
+  });
+
   it('fails closed for false, missing, and malformed exact-Home feature bits', () => {
     expect(createEnablement(readySnapshot({
       teams: { enabled: true, credentialResources: { enabled: true } },

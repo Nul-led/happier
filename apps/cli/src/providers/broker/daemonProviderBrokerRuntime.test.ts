@@ -34,6 +34,7 @@ import {
 } from './teamCredentialBrokerSourceOwner';
 import {
   createPrivateProviderBrokerStreamLifetime,
+  revalidateExternalProviderBrokerAuthorization,
   resolveRunnerCredentialSelectionCurrentness,
   startDaemonProviderBrokerRuntime,
 } from './daemonProviderBrokerRuntime';
@@ -48,6 +49,8 @@ const authority = {
     teamId: 'team-1',
     resourceId: 'resource-1',
     sourceRevision: 'source-revision-7',
+    brokerPlacementFingerprint: 'c'.repeat(64),
+    initiatorTokenEpoch: 0,
     initiator: { accountId: 'worker-account', machineId: 'worker-machine', endpointId: 'a'.repeat(64) },
     target: { custodianAccountId: 'custodian-account', machineId: 'broker-machine', endpointId: 'b'.repeat(64) },
     consumer: { kind: 'session' as const, sessionId: 'session-1' },
@@ -331,6 +334,20 @@ async function requestThroughExternalApplicationTarget(input: Readonly<{
   });
 }
 
+describe('revalidateExternalProviderBrokerAuthorization', () => {
+  it('keeps transient Home refusals distinct from operation authority loss', () => {
+    expect(revalidateExternalProviderBrokerAuthorization({ ok: true })).toBe(true);
+    expect(revalidateExternalProviderBrokerAuthorization({
+      ok: false,
+      reasonCode: 'resource_forbidden',
+    })).toBe(false);
+    expect(() => revalidateExternalProviderBrokerAuthorization({
+      ok: false,
+      reasonCode: 'resource_unavailable',
+    })).toThrow('external broker authority unavailable');
+  });
+});
+
 describe('startDaemonProviderBrokerRuntime', () => {
   it('records one failed terminal fact when source acquisition is lost after external admission', async () => {
     const binding = {
@@ -340,6 +357,8 @@ describe('startDaemonProviderBrokerRuntime', () => {
       resourceId: 'resource-1',
       requestId: 'request-1',
       externalApiKeyId: '550e8400-e29b-41d4-a716-446655440000',
+      operationId: '550e8400-e29b-41d4-a716-446655440001',
+      brokerPlacementFingerprint: 'c'.repeat(64),
       assignedAccountId: 'worker-account',
       assignedTeamMembershipId: 'membership-1',
     };
@@ -379,6 +398,7 @@ describe('startDaemonProviderBrokerRuntime', () => {
         operation: {
           kind: 'external_api_key' as const,
           externalApiKeyId: binding.externalApiKeyId,
+          operationId: binding.operationId,
           assignedAccountId: binding.assignedAccountId,
           assignedTeamMembershipId: binding.assignedTeamMembershipId,
         },
@@ -439,7 +459,10 @@ describe('startDaemonProviderBrokerRuntime', () => {
     });
   });
 
-  it('retires the exact retained external-key claim when fresh Home admission denies it', async () => {
+  it.each([
+    ['resource_unavailable', false],
+    ['resource_forbidden', true],
+  ] as const)('retires retained external custody only for known authority loss: %s', async (reasonCode, retires) => {
     const binding = {
       v: 1 as const,
       kind: 'external_api_key' as const,
@@ -447,6 +470,8 @@ describe('startDaemonProviderBrokerRuntime', () => {
       resourceId: 'resource-1',
       requestId: 'request-revoked',
       externalApiKeyId: '550e8400-e29b-41d4-a716-446655440000',
+      operationId: '550e8400-e29b-41d4-a716-446655440001',
+      brokerPlacementFingerprint: 'c'.repeat(64),
       assignedAccountId: 'worker-account',
       assignedTeamMembershipId: 'membership-1',
     };
@@ -470,7 +495,7 @@ describe('startDaemonProviderBrokerRuntime', () => {
       }),
       admitExternalRequest: async () => ({
         ok: false as const,
-        reasonCode: 'resource_unavailable' as const,
+        reasonCode,
       }),
       recordExternalTerminalUsage: vi.fn(),
       retireExternalApiKey,
@@ -509,10 +534,15 @@ describe('startDaemonProviderBrokerRuntime', () => {
     });
 
     expect(response).toContain('HTTP/1.1 403 Forbidden');
-    expect(retireExternalApiKey).toHaveBeenCalledWith({
-      externalApiKeyId: binding.externalApiKeyId,
-      application: authority.payload.application,
-    });
+    if (retires) {
+      expect(retireExternalApiKey).toHaveBeenCalledWith({
+        externalApiKeyId: binding.externalApiKeyId,
+        operationId: binding.operationId,
+        application: authority.payload.application,
+      });
+    } else {
+      expect(retireExternalApiKey).not.toHaveBeenCalled();
+    }
   });
 
   it('streams a Connected Account request through Home admission, canonical source custody, and Provider dispatch', async () => {

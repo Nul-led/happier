@@ -139,13 +139,12 @@ export const ActionOperationDetailModal = React.memo(function ActionOperationDet
         props.setChrome?.({
             kind: 'card',
             title: operation?.snapshot.title ?? t('inbox.actionOperations.unavailableTitle'),
-            subtitle: operation ? operation.snapshot.actionId : undefined,
             testID: 'action-operation-detail',
             titleTestID: 'action-operation-detail-heading',
             dimensions: { size: 'dialog' },
         });
         return () => props.setChrome?.(null);
-    }, [operation?.snapshot.actionId, operation?.snapshot.title, props.setChrome]);
+    }, [operation?.snapshot.title, props.setChrome]);
 
     React.useEffect(() => {
         if (operation && isActionOperationTerminal(operation.snapshot.state)) {

@@ -20,8 +20,10 @@ vi.mock('react-native-unistyles', () => ({
         theme: {
             colors: {
                 input: { text: 'text', background: 'background', placeholder: 'placeholder' },
-                border: { default: 'border' },
+                border: { default: 'border', strong: 'border-strong' },
                 text: { primary: 'primary', secondary: 'secondary' },
+                surface: { base: 'surface' },
+                state: { danger: { foreground: 'danger' } },
             },
         },
     }),
@@ -31,6 +33,11 @@ vi.mock('@/text', () => ({ t: (key: string) => key }));
 vi.mock('@/components/ui/lists/ItemGroup', () => ({
     ItemGroup: (props: Record<string, unknown> & { children?: React.ReactNode }) =>
         React.createElement('ItemGroup', props, props.children),
+}));
+vi.mock('@/components/ui/lists/Item', () => ({
+    // The row stand-in keeps its control mounted so the field inside it can be exercised.
+    Item: (props: Record<string, unknown> & { rightElement?: React.ReactNode }) =>
+        React.createElement('Item', props, props.rightElement),
 }));
 vi.mock('@/components/ui/buttons/RoundButton', () => ({
     RoundButton: (props: Record<string, unknown>) => React.createElement('RoundButton', props),
@@ -73,8 +80,8 @@ describe('ConnectedAccountManualForm', () => {
             />,
         )).tree;
 
-        const identity = tree.find((node) => node.props.testID === 'connected-account-manual:identity');
-        const token = tree.find((node) => node.props.testID === 'connected-account-manual:token');
+        const identity = tree.find((node) => node.type === ('TextInput' as never) && node.props.testID === 'connected-account-manual:identity');
+        const token = tree.find((node) => node.type === ('TextInput' as never) && node.props.testID === 'connected-account-manual:token');
 
         expect(identity.props.value).toBe('');
         expect(token.props.value).toBe('');
@@ -113,17 +120,17 @@ describe('ConnectedAccountManualForm', () => {
         );
 
         expect(onSubmit).not.toHaveBeenCalled();
-        expect(tree.findByType('ItemGroup').props.footer).toBe('common.error');
+        expect(tree.findByType('ItemGroup').props.description).toBe('common.error');
         const token = tree.find(
-            (node) => node.props.testID === 'connected-account-manual:token',
+            (node) => node.type === ('TextInput' as never) && node.props.testID === 'connected-account-manual:token',
         );
         expect(token.props.accessibilityLabel).toBe('API token: common.error');
         expect(token.props.accessibilityHint).toBe('common.error');
         const error = tree.find(
-            (node) => node.props.testID === 'connected-account-manual:token:error',
+            (node) => node.props.testID === 'connected-account-manual:token.error',
         );
         expect(error.props.accessibilityRole).toBe('alert');
-        expect(error.props.accessibilityLiveRegion).toBe('assertive');
+        expect(error.props.accessibilityLiveRegion).toBe('polite');
     });
 
     it('registers a dirty manual secret draft with the shared shell-navigation guard', async () => {
@@ -139,7 +146,7 @@ describe('ConnectedAccountManualForm', () => {
 
         await act(async () => {
             tree.find(
-                (node) => node.props.testID === 'connected-account-manual:token',
+                (node) => node.type === ('TextInput' as never) && node.props.testID === 'connected-account-manual:token',
             ).props.onChangeText('secret-token');
         });
 
@@ -160,7 +167,7 @@ describe('ConnectedAccountManualForm', () => {
 
         await act(async () => {
             screen.tree.find(
-                (node) => node.props.testID === 'connected-account-manual:token',
+                (node) => node.type === ('TextInput' as never) && node.props.testID === 'connected-account-manual:token',
             ).props.onChangeText('secret-token');
         });
         const refreshedFields = fields.map((field) => (
@@ -178,7 +185,7 @@ describe('ConnectedAccountManualForm', () => {
         });
 
         expect(screen.tree.find(
-            (node) => node.props.testID === 'connected-account-manual:token',
+            (node) => node.type === ('TextInput' as never) && node.props.testID === 'connected-account-manual:token',
         ).props.value).toBe('');
         const { getActiveUnsavedChangesGuard } = await import('@/utils/navigation/runGuardedNavigation');
         expect(getActiveUnsavedChangesGuard()?.isDirtyRef.current ?? false).toBe(false);

@@ -18,7 +18,7 @@ vi.mock('@/sync/runtime/orchestration/serverScopedRpc/serverScopedMachineLiveStr
     ) => testState.resolveSocket(...args),
 }));
 
-function fakeSocket(disconnect: () => void): ServerScopedMachineLiveStreamRelaySocket {
+function fakeSocket(disconnect: () => Promise<void>): ServerScopedMachineLiveStreamRelaySocket {
     return {
         scopeUserId: 'user_1',
         machineId: 'daemon_1',
@@ -39,7 +39,7 @@ describe('useSimulatorLiveStreamRelaySocket', () => {
 
     it('resolves the relay socket when the feature is enabled and a machine id is present', async () => {
         testState.useFeatureDecision.mockReturnValue({ state: 'enabled' });
-        const disconnect = vi.fn();
+        const disconnect = vi.fn(async () => {});
         testState.resolveSocket.mockResolvedValue(fakeSocket(disconnect));
         const mod = await import('./useSimulatorLiveStreamRelaySocket');
 

@@ -1,18 +1,29 @@
-import type {
-    WorkflowInvocationLifecycleV1,
-    WorkflowRunStateV1,
+import {
+    WORKFLOW_ATTENTION_INVOCATION_LIFECYCLES_V1,
+    type WorkflowInvocationLifecycleV1,
+    type WorkflowRunStateV1,
+    type WorkflowRunInvocationIndexV1,
 } from '@happier-dev/protocol/workflows/workflowProgressV1';
 
 import type { IconName } from '@/components/ui/icons/Icon';
 import type { StatusPillVariant } from '@/components/ui/status/StatusPill';
+import {
+    isTerminalWorkflowInvocationLifecycle,
+    isTerminalWorkflowRunState,
+    resolveWorkStatusTone,
+    WORK_STATUS_PILL_VARIANT,
+} from '@/components/work/status/resolveWorkStatusTone';
 import { t } from '@/text';
+
+export { isTerminalWorkflowRunState };
 
 /**
  * The one neutral presenter for the managed Workflow invocation lifecycle.
  *
  * Parent Run state and per-invocation lifecycle are two different closed
  * contracts (UX §3.4). This module owns the second one only, and it owns it
- * completely: label, semantic colour and the visual marker are decided here so
+ * completely: label and visual marker live here, while semantic tone delegates
+ * to the shared Work presenter so
  * Run detail, Flow and the Workflows collection cannot drift apart or render
  * every lifecycle identically.
  *
@@ -33,9 +44,7 @@ import { t } from '@/text';
  */
 
 /** The lifecycles the server's `attention: 'required'` predicate treats as actionable. */
-export const WORKFLOW_ATTENTION_LIFECYCLES: readonly WorkflowInvocationLifecycleV1[] = [
-    'waiting_for_approval', 'needs_attention', 'cancel_requested', 'outcome_uncertain',
-];
+export const WORKFLOW_ATTENTION_LIFECYCLES: readonly WorkflowInvocationLifecycleV1[] = WORKFLOW_ATTENTION_INVOCATION_LIFECYCLES_V1;
 
 /**
  * What leads the status.
@@ -60,9 +69,7 @@ export type WorkflowLifecyclePresentation = Readonly<{
 }>;
 
 type WorkflowLifecycleShape = Readonly<{
-    variant: StatusPillVariant;
     marker: WorkflowLifecycleMarker;
-    terminal: boolean;
 }>;
 
 const ACTIVITY: WorkflowLifecycleMarker = { kind: 'activity' };
@@ -72,38 +79,42 @@ function icon(name: IconName): WorkflowLifecycleMarker {
 }
 
 /**
- * The complete 13-value table. It is a record rather than a switch so a
+ * The complete marker table. It is a record rather than a switch so a
  * Protocol addition fails to compile here — at the one owner — instead of
  * silently falling through to a neutral circle in three screens.
  */
 const WORKFLOW_LIFECYCLE_SHAPES: Readonly<Record<WorkflowInvocationLifecycleV1, WorkflowLifecycleShape>> = {
-    pending: { variant: 'info', marker: icon('clock'), terminal: false },
-    waiting_for_capacity: { variant: 'info', marker: icon('hourglass'), terminal: false },
-    admitting: { variant: 'info', marker: ACTIVITY, terminal: false },
-    running: { variant: 'success', marker: ACTIVITY, terminal: false },
-    waiting_for_approval: { variant: 'warning', marker: icon('hand'), terminal: false },
-    needs_attention: { variant: 'warning', marker: icon('warning-circle'), terminal: false },
-    completed: { variant: 'success', marker: icon('check-circle'), terminal: true },
-    failed: { variant: 'danger', marker: icon('x-circle'), terminal: true },
-    skipped: { variant: 'neutral', marker: icon('minus-circle'), terminal: true },
+    pending: { marker: icon('clock') },
+    waiting_for_capacity: { marker: icon('hourglass') },
+    admitting: { marker: ACTIVITY },
+    running: { marker: ACTIVITY },
+    waiting_for_approval: { marker: icon('hand') },
+    waiting_for_review: { marker: icon('hand') },
+    needs_attention: { marker: icon('warning-circle') },
+    completed: { marker: icon('check-circle') },
+    failed: { marker: icon('x-circle') },
+    skipped: { marker: icon('minus-circle') },
     // Stopping is not stopped: a durable stop request is not proof the work ended.
-    cancel_requested: { variant: 'info', marker: icon('stop-circle'), terminal: false },
-    cancelled: { variant: 'neutral', marker: icon('stop'), terminal: true },
-    outcome_uncertain: { variant: 'warning', marker: icon('question'), terminal: false },
-    superseded: { variant: 'neutral', marker: icon('arrow-clockwise'), terminal: true },
+    cancel_requested: { marker: icon('stop-circle') },
+    cancelled: { marker: icon('stop') },
+    outcome_uncertain: { marker: icon('question') },
+    superseded: { marker: icon('arrow-clockwise') },
 };
 
 export function describeWorkflowInvocationLifecycle(
     lifecycle: WorkflowInvocationLifecycleV1,
 ): WorkflowLifecyclePresentation {
     const shape = WORKFLOW_LIFECYCLE_SHAPES[lifecycle];
+    const label = t(`workflows.invocationState.${lifecycle}`);
+    const attention = WORKFLOW_ATTENTION_LIFECYCLES.includes(lifecycle);
+    const status = resolveWorkStatusTone({ kind: 'workflow_step', facts: { lifecycle, word: label, inAttentionWindow: attention } });
     return {
         lifecycle,
-        label: t(`workflows.invocationState.${lifecycle}`),
-        variant: shape.variant,
+        label: status.word,
+        variant: WORK_STATUS_PILL_VARIANT[status.tone],
         marker: shape.marker,
-        attention: WORKFLOW_ATTENTION_LIFECYCLES.includes(lifecycle),
-        terminal: shape.terminal,
+        attention,
+        terminal: isTerminalWorkflowInvocationLifecycle(lifecycle),
     };
 }
 
@@ -112,7 +123,7 @@ export function describeWorkflowInvocationLifecycle(
  *
  * It lives beside the invocation table rather than merged into it so both stay
  * exhaustive and neither can be used where the other belongs. Callers that
- * compose a terminal outcome sentence ("Done with failures") pass their own
+ * compose a terminal outcome sentence ("Completed with failures") pass their own
  * label; this owner never invents a terminal state the server did not report.
  */
 export type WorkflowRunStatePresentation = Readonly<{
@@ -123,43 +134,36 @@ export type WorkflowRunStatePresentation = Readonly<{
     terminal: boolean;
 }>;
 
-const TERMINAL_RUN_STATES: ReadonlySet<WorkflowRunStateV1> = new Set([
-    'succeeded', 'failed', 'cancelled', 'outcome_uncertain',
-    'expired', 'missed', 'dispatch_failed', 'skipped',
-]);
-
-export function isTerminalWorkflowRunState(state: WorkflowRunStateV1): boolean {
-    return TERMINAL_RUN_STATES.has(state);
-}
-
 const WORKFLOW_RUN_STATE_SHAPES: Readonly<Record<
     WorkflowRunStateV1,
-    Readonly<{ variant: StatusPillVariant; marker: WorkflowLifecycleMarker }>
+    Readonly<{ marker: WorkflowLifecycleMarker }>
 >> = {
-    queued: { variant: 'info', marker: icon('clock') },
-    claimed: { variant: 'info', marker: ACTIVITY },
-    running: { variant: 'success', marker: ACTIVITY },
-    succeeded: { variant: 'success', marker: icon('check-circle') },
-    failed: { variant: 'danger', marker: icon('x-circle') },
-    cancelled: { variant: 'neutral', marker: icon('stop') },
-    pause_requested: { variant: 'info', marker: icon('pause-circle') },
-    paused: { variant: 'neutral', marker: icon('pause-circle') },
-    interrupted: { variant: 'warning', marker: icon('warning-circle') },
-    expired: { variant: 'warning', marker: icon('hourglass') },
-    dispatch_failed: { variant: 'danger', marker: icon('warning') },
-    skipped: { variant: 'neutral', marker: icon('minus-circle') },
-    missed: { variant: 'warning', marker: icon('minus-circle') },
-    outcome_uncertain: { variant: 'warning', marker: icon('question') },
+    queued: { marker: icon('clock') },
+    claimed: { marker: ACTIVITY },
+    running: { marker: ACTIVITY },
+    succeeded: { marker: icon('check-circle') },
+    failed: { marker: icon('x-circle') },
+    cancelled: { marker: icon('stop') },
+    pause_requested: { marker: icon('pause-circle') },
+    paused: { marker: icon('pause-circle') },
+    interrupted: { marker: icon('warning-circle') },
+    waiting_for_review: { marker: icon('hand') },
+    expired: { marker: icon('hourglass') },
+    dispatch_failed: { marker: icon('warning') },
+    skipped: { marker: icon('minus-circle') },
+    missed: { marker: icon('minus-circle') },
+    outcome_uncertain: { marker: icon('question') },
 };
 
 export function describeWorkflowRunState(state: WorkflowRunStateV1): WorkflowRunStatePresentation {
     const shape = WORKFLOW_RUN_STATE_SHAPES[state];
+    const status = resolveWorkStatusTone({ kind: 'workflow_run', facts: { state, word: t(`workflows.runState.${state}`) } });
     return {
         state,
-        label: t(`workflows.runState.${state}`),
-        variant: shape.variant,
+        label: status.word,
+        variant: WORK_STATUS_PILL_VARIANT[status.tone],
         marker: shape.marker,
-        terminal: TERMINAL_RUN_STATES.has(state),
+        terminal: isTerminalWorkflowRunState(state),
     };
 }
 
@@ -184,24 +188,47 @@ export function describeWorkflowInvocationAttempt(attempt: string): Readonly<{
     };
 }
 
-/** Real child coverage read from loaded rows; `superseded` attempts never double-count a step. */
+/** Classification comes from the frozen definition/opened runtime structure owner. */
+export type WorkflowInvocationCoverageKind = 'executable' | 'structural' | 'unknown';
+
+/** Observed leaf counts are not totals until the read and classification are complete. */
 export type WorkflowRunCoverage = Readonly<{
-    completed: number;
-    failed: number;
-    attention: number;
+    observedLeafCounts: Readonly<{ completed: number; failed: number; attention: number }>;
+    coverage: 'partial' | 'complete';
+    knownFailure: boolean;
 }>;
 
 export function summarizeWorkflowInvocationCoverage(
-    invocations: readonly Readonly<{ lifecycle: WorkflowInvocationLifecycleV1 }>[],
+    invocations: readonly Pick<WorkflowRunInvocationIndexV1, 'id' | 'parentRecordId' | 'memberOrdinal' | 'attempt' | 'lifecycle'>[],
+    evidence: Readonly<{
+        kindsByInvocationId: ReadonlyMap<string, WorkflowInvocationCoverageKind>;
+        historyComplete: boolean;
+        runState?: WorkflowRunStateV1;
+        knownFailure?: boolean;
+    }>,
 ): WorkflowRunCoverage {
+    const currentBySlot = new Map<string, (typeof invocations)[number]>();
+    for (const invocation of invocations) {
+        const slot = JSON.stringify([invocation.parentRecordId, invocation.memberOrdinal]);
+        const current = currentBySlot.get(slot);
+        if (current === undefined || BigInt(invocation.attempt) > BigInt(current.attempt)) {
+            currentBySlot.set(slot, invocation);
+        }
+    }
     let completed = 0;
     let failed = 0;
     let attention = 0;
-    for (const invocation of invocations) {
+    let coverage: WorkflowRunCoverage['coverage'] = evidence.historyComplete ? 'complete' : 'partial';
+    let knownFailure = evidence.knownFailure === true || evidence.runState === 'failed';
+    for (const invocation of currentBySlot.values()) {
         if (invocation.lifecycle === 'superseded') continue;
+        if (invocation.lifecycle === 'failed') knownFailure = true;
+        const kind = evidence.kindsByInvocationId.get(invocation.id) ?? 'unknown';
+        if (kind === 'unknown') coverage = 'partial';
+        if (kind !== 'executable') continue;
         if (invocation.lifecycle === 'completed') completed += 1;
         if (invocation.lifecycle === 'failed') failed += 1;
         if (WORKFLOW_ATTENTION_LIFECYCLES.includes(invocation.lifecycle)) attention += 1;
     }
-    return { completed, failed, attention };
+    return { observedLeafCounts: { completed, failed, attention }, coverage, knownFailure };
 }

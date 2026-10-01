@@ -1,10 +1,7 @@
 import * as React from 'react';
-import { View } from 'react-native';
-import { useUnistyles } from 'react-native-unistyles';
 
-import { Item } from '@/components/ui/lists/Item';
+import { AttentionBanner } from '@/components/ui/lists/AttentionBanner';
 import { t } from '@/text';
-import { Icon } from '@/components/ui/icons/Icon';
 
 import type { PluginReadOnlySnapshotReason } from './model/pluginMarketplaceModel';
 
@@ -24,33 +21,26 @@ function resolveNoticeSubtitle(reason: PluginReadOnlySnapshotReason): string {
     return t('settingsPlugins.readOnlySnapshot');
 }
 
+/**
+ * The plugin page's read-only notice: the plugin copy for why the list is read-only, shown through the
+ * one tinted page notice (`AttentionBanner`) with Retry as its action when a failed read can be retried.
+ */
 export const PluginReadOnlySnapshotNotice = React.memo(function PluginReadOnlySnapshotNotice(props: Readonly<{
     testID: string;
     reason: PluginReadOnlySnapshotReason;
     onRetry?: () => void;
 }>) {
-    const { theme } = useUnistyles();
-    const subtitle = resolveNoticeSubtitle(props.reason);
+    const refreshing = props.reason === 'refreshing';
     // Only failed reads from a reachable machine can be retried here.
     const onRetry = props.reason === 'projectionUnavailable' || props.reason === 'installationUnavailable' ? props.onRetry : undefined;
-
     return (
-        <View
+        <AttentionBanner
             testID={props.testID}
-            accessible={!onRetry}
+            tone={refreshing ? 'neutral' : 'warning'}
+            title={t(refreshing ? 'common.loading' : 'common.unavailable')}
+            description={resolveNoticeSubtitle(props.reason)}
             accessibilityLiveRegion="polite"
-            {...(onRetry ? {} : { accessibilityLabel: subtitle })}
-        >
-            <Item
-                testID={onRetry ? `${props.testID}-retry` : undefined}
-                title={t(props.reason === 'refreshing' ? 'common.loading' : 'common.unavailable')}
-                subtitle={subtitle}
-                subtitleLines={0}
-                icon={<Icon name={props.reason === 'refreshing' ? 'arrow-clockwise' : 'cloud-slash'} size={29} color={theme.colors.text.secondary} />}
-                showChevron={false}
-                mode={onRetry ? 'interactive' : 'info'}
-                {...(onRetry ? { detail: t('common.retry'), onPress: onRetry, accessibilityLabel: `${subtitle} ${t('common.retry')}` } : {})}
-            />
-        </View>
+            action={onRetry ? { label: t('common.retry'), onPress: onRetry, testID: `${props.testID}-retry` } : null}
+        />
     );
 });

@@ -11,14 +11,22 @@ type Palette = Readonly<{
     }>;
 }>;
 
+const MINIATURE_BAR_HEIGHT = 14;
+/** Today's (soft) radii at miniature scale, kept for tiles that do not preview a radius scale. */
+const DEFAULT_MINIATURE_RADIUS = 5;
+
 /**
- * A miniature of the app shell painted from a theme's own tokens (sidebar, canvas, text lines,
- * a message bubble and the composer), so the tile shows what the theme looks like rather than naming it.
+ * A miniature of a Happier window painted from a theme's own tokens, so the tile shows what the theme
+ * looks like rather than naming it. This is an illustrative app shell, not a session preview.
  * Static: no subscriptions, no runtime theme reads. Pass any resolved theme (a base theme or a theme
  * profile resolved with `resolveThemeProfile`).
  */
-export function ThemePalettePreview(props: Readonly<{ palette: Palette }>) {
+export function ThemePalettePreview(props: Readonly<{
+    palette: Palette;
+}>) {
     const c = props.palette.colors;
+    const bubbleRadius = DEFAULT_MINIATURE_RADIUS;
+    const composerRadius = DEFAULT_MINIATURE_RADIUS;
     const line = (width: `${number}%`, color: string, marginTop = 5) => (
         <View style={{ height: 5, borderRadius: 3, width, backgroundColor: color, marginTop }} />
     );
@@ -33,8 +41,8 @@ export function ThemePalettePreview(props: Readonly<{ palette: Palette }>) {
             <View style={{ flex: 1, paddingHorizontal: 8, paddingTop: 7 }}>
                 {line('55%', c.border.strong, 0)}
                 {line('85%', c.surface.elevated)}
-                <View style={{ height: 14, width: '60%', alignSelf: 'flex-end', marginTop: 6, borderRadius: 5, backgroundColor: c.surface.elevated }} />
-                <View style={{ position: 'absolute', left: 8, right: 8, bottom: 7, height: 14, borderRadius: 5, backgroundColor: c.surface.base, borderWidth: 1, borderColor: c.border.default }} />
+                <View style={{ height: MINIATURE_BAR_HEIGHT, width: '60%', alignSelf: 'flex-end', marginTop: 6, borderRadius: bubbleRadius, backgroundColor: c.surface.elevated }} />
+                <View style={{ position: 'absolute', left: 8, right: 8, bottom: 7, height: MINIATURE_BAR_HEIGHT, borderRadius: composerRadius, backgroundColor: c.surface.base, borderWidth: 1, borderColor: c.border.default }} />
             </View>
         </View>
     );

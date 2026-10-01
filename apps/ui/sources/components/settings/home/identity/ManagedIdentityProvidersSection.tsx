@@ -1,10 +1,13 @@
 import * as React from 'react';
-import { useRouter } from 'expo-router';
+import { useRouter } from '@/components/appShell/workspace/destinationRoute';
 import type { ManagedIdentityProviderV1 } from '@happier-dev/protocol';
 
 import { ActivitySpinner } from '@/components/ui/feedback/ActivitySpinner';
 import { Item } from '@/components/ui/lists/Item';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
+import { SectionActionButton } from '@/components/ui/lists/SectionActionButton';
+import { SettingAnchor, SettingSection } from '@/components/settings/shell/SettingRow';
+import { HOME_SIGN_IN_PROVIDERS_SETTINGS } from '../signInProviders/homeSignInProvidersSettings';
 import { t } from '@/text';
 
 import type { HomeAdministrationContext } from '../governance/homeAdministrationContext';
@@ -24,22 +27,31 @@ export function managedIdentityProviderStatus(provider: ManagedIdentityProviderV
 }
 
 export const ManagedIdentityProvidersSection = React.memo(function ManagedIdentityProvidersSection(
-    props: Readonly<{ context: HomeAdministrationContext }>,
+    props: Readonly<{
+        context: HomeAdministrationContext;
+        /** Read-only rows the deployment itself provides (its OIDC file, WorkOS), after the Home's own. */
+        deploymentRows?: React.ReactNode;
+    }>,
 ) {
     const router = useRouter();
-    const { state, refresh } = useManagedIdentityProviders(props.context.scope);
+    const { state, refresh } = useManagedIdentityProviders(
+        props.context.scope,
+        { kind: 'home' },
+        props.context.requestApproval,
+    );
 
     if (state.kind === 'loading') {
         return (
-            <ItemGroup title={t('identityAdministration.homeConnections')}>
+            <SettingSection section={HOME_SIGN_IN_PROVIDERS_SETTINGS.sectionRefs.homeConnections}><ItemGroup title={t('identityAdministration.homeConnections')}>
                 <Item title={t('common.loading')} leftElement={<ActivitySpinner />} showChevron={false} />
-            </ItemGroup>
+                {props.deploymentRows}
+            </ItemGroup></SettingSection>
         );
     }
 
     if (state.kind === 'unavailable') {
         return (
-            <ItemGroup title={t('identityAdministration.homeConnections')} footer={state.failure.retryable ? t('teams.unavailable.offline') : t('identityAdministration.error')}>
+            <SettingSection section={HOME_SIGN_IN_PROVIDERS_SETTINGS.sectionRefs.homeConnections}><ItemGroup title={t('identityAdministration.homeConnections')} description={state.failure.retryable ? t('teams.unavailable.offline') : t('identityAdministration.error')}>
                 <Item
                     testID="home-identity-providers-unavailable"
                     title={t('identityAdministration.error')}
@@ -47,20 +59,31 @@ export const ManagedIdentityProvidersSection = React.memo(function ManagedIdenti
                     onPress={state.failure.retryable ? refresh : undefined}
                     showChevron={false}
                 />
-            </ItemGroup>
+                {props.deploymentRows}
+            </ItemGroup></SettingSection>
         );
     }
 
+    const mayAdd = props.context.mutationsAvailable && !state.refreshing && !state.stale;
     return (
-        <ItemGroup
+        <SettingAnchor setting={HOME_SIGN_IN_PROVIDERS_SETTINGS.settings.homeConnections}><ItemGroup
             title={t('identityAdministration.homeConnections')}
-            footer={state.stale
+            action={(
+                <SettingAnchor setting={HOME_SIGN_IN_PROVIDERS_SETTINGS.settings.addProvider}><SectionActionButton
+                    testID="home-identity-provider-add"
+                    icon="plus"
+                    title={t('identityAdministration.add')}
+                    disabled={!mayAdd}
+                    onPress={() => router.push(homeAdministrationIdentityProviderCreatePath(props.context.scope.serverId))}
+                /></SettingAnchor>
+            )}
+            description={state.stale
                 ? t('homeGovernance.offlineNotice')
                 : state.unreadableCount > 0
                     ? t('identityAdministration.unreadable')
                     : t('identityAdministration.subtitle')}
         >
-            {state.items.length === 0 ? (
+            {state.items.length === 0 && !props.deploymentRows ? (
                 <Item testID="home-identity-providers-empty" title={t('identityAdministration.empty')} showChevron={false} />
             ) : state.items.map((provider) => (
                 <Item
@@ -77,15 +100,7 @@ export const ManagedIdentityProvidersSection = React.memo(function ManagedIdenti
                     ))}
                 />
             ))}
-            <Item
-                testID="home-identity-provider-add"
-                title={t('identityAdministration.add')}
-                disabled={!props.context.mutationsAvailable || state.refreshing || state.stale}
-                onPress={props.context.mutationsAvailable && !state.refreshing && !state.stale
-                    ? () => router.push(homeAdministrationIdentityProviderCreatePath(props.context.scope.serverId))
-                    : undefined}
-                showChevron={false}
-            />
-        </ItemGroup>
+            {props.deploymentRows}
+        </ItemGroup></SettingAnchor>
     );
 });

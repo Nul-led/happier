@@ -11,6 +11,7 @@ import {
 
 const pathnameState = vi.hoisted(() => ({ value: '/settings/appearance' }));
 const navigateSpy = vi.hoisted(() => vi.fn());
+const dismissToSpy = vi.hoisted(() => vi.fn());
 
 const theme = { colors: { chrome: { header: { foreground: '#111111' } } } };
 
@@ -26,9 +27,10 @@ vi.mock('react-native-unistyles', () => ({
 }));
 vi.mock('expo-router', () => ({
     usePathname: () => pathnameState.value,
-    useRouter: () => ({ navigate: navigateSpy, back: () => {} }),
+    useRouter: () => ({ navigate: navigateSpy, dismissTo: dismissToSpy, back: () => {} }),
 }));
 vi.mock('@/text', () => ({ t: (key: string) => key }));
+vi.mock('@react-navigation/native', async () => (await import('@/dev/testkit/mocks/reactNavigation')).createReactNavigationNativeMock());
 
 function findByTestId(root: ReactTestInstance, testID: string): ReactTestInstance | null {
     return root.findAll((node) => node.props?.testID === testID)[0] ?? null;
@@ -47,6 +49,7 @@ describe('SettingsModalFloatingControls', () => {
     beforeEach(() => {
         pathnameState.value = '/settings/appearance';
         navigateSpy.mockReset();
+        dismissToSpy.mockReset();
         clearActiveUnsavedChangesGuard();
     });
 
@@ -58,7 +61,7 @@ describe('SettingsModalFloatingControls', () => {
         expect(findByTestId(tree.root, 'settings-modal-back')).toBeNull();
     });
 
-    it('shows a back button on sub-screens that navigates to the parent', async () => {
+    it('shows a back button on sub-screens that returns to the parent', async () => {
         pathnameState.value = '/settings/appearance/themes';
         const tree = await renderControls();
         const back = findByTestId(tree.root, 'settings-modal-back');
@@ -68,7 +71,7 @@ describe('SettingsModalFloatingControls', () => {
             (back!.props.onPress as () => void)();
         });
 
-        expect(navigateSpy).toHaveBeenCalledWith('/settings/appearance');
+        expect(dismissToSpy).toHaveBeenCalledWith('/settings/appearance');
     });
 
     it('keeps the current settings screen when its active unsaved-changes guard chooses keep editing', async () => {
@@ -91,6 +94,44 @@ describe('SettingsModalFloatingControls', () => {
 
         expect(requestDecision).toHaveBeenCalledTimes(1);
         expect(navigateSpy).not.toHaveBeenCalled();
+        expect(dismissToSpy).not.toHaveBeenCalled();
+    });
+
+    it('moves the back control into a list-detail section that hosts it, and hides it where the list is beside the detail', async () => {
+        const { SettingsFloatingControlsHost } = await import('./SettingsModalFloatingControls');
+        const render = (split: boolean) => React.createElement(
+            SettingsFloatingControlsHost,
+            {
+                enabled: true,
+                children: React.createElement('View', { testID: 'detail-pane' },
+                    React.createElement(SettingsFloatingControlsHost, {
+                        enabled: split,
+                        collectionRootPathname: '/settings/agents',
+                        children: null,
+                    })),
+            },
+        );
+
+        // The route mock is not reactive, so each route renders a fresh tree.
+        const renderAt = async (pathname: string, split: boolean) => {
+            pathnameState.value = pathname;
+            let tree!: ReactTestRenderer;
+            await act(async () => {
+                tree = create(render(split));
+            });
+            return tree;
+        };
+
+        // The agent list is beside the detail: no back control over it, and none in the pane.
+        expect(findByTestId((await renderAt('/settings/agents/claude', true)).root, 'settings-modal-back')).toBeNull();
+
+        const deeper = await renderAt('/settings/agents/claude/models', true);
+        const paneBack = findByTestId(deeper.root, 'settings-modal-back');
+        expect(paneBack).toBeTruthy();
+        expect(findByTestId(deeper.root, 'detail-pane')?.findAll((node) => node === paneBack)).toHaveLength(1);
+
+        // Stacked: the section does not host the control, so the shell shows it.
+        expect(findByTestId((await renderAt('/settings/agents/claude', false)).root, 'settings-modal-back')).toBeTruthy();
     });
 
     it('never renders a close icon (the modal dismisses via backdrop/gesture)', async () => {

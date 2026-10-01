@@ -13,6 +13,8 @@ export type HomeRowMenuAction = 'switch' | 'switch-tab' | 'switch-device' | 'ren
 export function resolveHomeRowActions(params: Readonly<{
     isCurrent: boolean;
     isDeviceDefault: boolean;
+    /** The Home has no name of its own (`resolveHomeDisplayName(profile) === null`). */
+    isUnnamed: boolean;
     isWeb: boolean;
     routineScope: ServerSelectionScope;
     summaryKind: HomeConnectionSummary['kind'];
@@ -27,12 +29,16 @@ export function resolveHomeRowActions(params: Readonly<{
                 : 'switch';
 
     const menu: HomeRowMenuAction[] = [];
+    // A Home known only by its address is invited to be named first ("Name this Home"); the row keeps
+    // its one inline action, so naming never squeezes the Home's name.
+    if (params.isUnnamed) menu.push('rename');
     if (!params.isCurrent && primary !== 'switch') menu.push('switch');
     // Where switching already moves the whole device, switching only this window is the extra choice.
     if (!params.isCurrent && params.isWeb && params.routineScope !== 'tab') menu.push('switch-tab');
     // Where switching moves only this tab, making a Home the device default is the extra choice.
     if (params.routineScope === 'tab' && !params.isDeviceDefault) menu.push('switch-device');
-    menu.push('rename', 'remove');
+    if (!params.isUnnamed) menu.push('rename');
+    menu.push('remove');
     return { primary, menu };
 }
 

@@ -2,11 +2,12 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdirSync, writeFileSync, chmodSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { detectCliSnapshotOnDaemonPath } from './cliSnapshot';
+import { detectCliSnapshotOnDaemonPath, probeAgentCliForInstall } from './cliSnapshot';
 import { resolveAgentCliManagedCommandPath } from '@/packagedRuntime/managedTools/agentCliResolution';
 import { applyEnvValues, restoreEnvValues, snapshotEnvValues } from '@/testkit/env/envSnapshot';
 import { resolveSystemJavaScriptRuntimeBinary, writeExecutableShimSync } from '@/testkit/fs/executableShim';
 import { createTempDirSync, removeTempDirSync } from '@/testkit/fs/tempDir';
+import { projectPath } from '@/projectPath';
 
 const SCOPED_ENV_KEYS = [
   'HOME',
@@ -26,6 +27,8 @@ const SCOPED_ENV_KEYS = [
   'HAPPIER_CLI_SNAPSHOT_PROBE_TIMEOUT_MS',
   'ANTHROPIC_API_KEY',
   'OPENAI_API_KEY',
+  'CODEX_API_KEY',
+  'HAPPIER_ANTIGRAVITY_PATH',
 ] as const;
 
 type ScopedEnvKey = (typeof SCOPED_ENV_KEYS)[number];
@@ -74,11 +77,71 @@ describe('detectCliSnapshotOnDaemonPath', () => {
     setEnv('HAPPIER_OHMYPI_PATH', undefined);
     setEnv('HAPPIER_OPENCODE_PATH', undefined);
     setEnv('HAPPIER_CLI_SNAPSHOT_PROBE_TIMEOUT_MS', undefined);
+    setEnv('CODEX_API_KEY', undefined);
+    setEnv('HAPPIER_ANTIGRAVITY_PATH', undefined);
   });
 
   afterEach(() => {
     restoreEnvValues(envBaseline);
     if (workDir) removeTempDirSync(workDir);
+  });
+
+  it.each([
+    { output: 'exit 1', installed: false, version: undefined },
+    { output: 'echo 1.2.3\nexit 1', installed: false, version: '1.2.3' },
+    { output: 'echo development', installed: true, version: undefined },
+    { output: process.platform === 'win32'
+      ? 'if "%1"=="--version" (echo 1.2.3 & exit /b 1)\r\necho 2.3.4'
+      : 'if [ "$1" = "--version" ]; then echo 1.2.3; exit 1; fi\necho 2.3.4', installed: true, version: '2.3.4' },
+  ])('probes own CLI execution independently of version parsing: $output', async ({ output, installed, version }) => {
+    const command = makeExecutableShim({ dir: workDir, name: 'fixture-agent', stdout: output });
+    const entry = await probeAgentCliForInstall({
+      runtimeSpec: {
+        id: 'fixture-agent', title: 'Fixture agent', binaryName: 'fixture-agent',
+        sourcePreferenceDefault: 'system-first', managedInstall: null,
+        manualInstallKind: 'none', manualInstallRecipes: null, acceptsJavaScriptFileOverride: false,
+      },
+      env: { ...process.env, HAPPIER_FIXTURE_AGENT_PATH: command },
+    });
+    expect(entry.installed).toBe(installed);
+    expect(entry.version).toBe(version);
+  });
+
+  it('does not count a resolved CLI that fails to run as installed', async () => {
+    const codexPath = makeExecutableShim({
+      dir: workDir,
+      name: 'codex-broken',
+      stdout: 'exit 1',
+    });
+    setEnv('HAPPIER_CODEX_PATH', codexPath);
+    const snapshot = await detectCliSnapshotOnDaemonPath({ requestedCliNames: ['codex'] });
+    expect(snapshot.clis.codex.installed).toBe(false);
+  });
+
+  it('invalidates native sign-in facts when a manifest-declared env key changes', async () => {
+    const codexPath = makeExecutableShim({
+      dir: workDir,
+      name: 'codex-auth',
+      stdout: process.platform === 'win32'
+        ? 'if "%1"=="--version" (echo 1.2.3 & exit /b 0)\r\nexit /b 1'
+        : 'if [ "$1" = "--version" ]; then echo 1.2.3; exit 0; fi\nexit 1',
+    });
+    setEnv('HAPPIER_CODEX_PATH', codexPath);
+    setEnv('OPENAI_API_KEY', undefined);
+    const initial = await detectCliSnapshotOnDaemonPath({ includeLoginStatus: true, requestedCliNames: ['codex'] });
+    expect(initial.clis.codex.isLoggedIn).toBe(false);
+    setEnv('CODEX_API_KEY', 'test-key');
+    const updated = await detectCliSnapshotOnDaemonPath({ includeLoginStatus: true, requestedCliNames: ['codex'] });
+    expect(updated.clis.codex.isLoggedIn).toBe(true);
+    expect(updated.clis.codex.signIn).toMatchObject({ status: 'signedIn', loginSupport: 'login_terminal' });
+  });
+
+  it('counts a successfully running CLI as installed even when its version is unknown', async () => {
+    const codexPath = makeExecutableShim({ dir: workDir, name: 'codex-development', stdout: 'echo development' });
+    setEnv('HAPPIER_CODEX_PATH', codexPath);
+    const snapshot = await detectCliSnapshotOnDaemonPath({ requestedCliNames: ['codex'] });
+    expect(snapshot.clis.codex.installed).toBe(true);
+    expect(snapshot.clis.codex.version ?? null).toBeNull();
   });
 
   it.skipIf(process.platform === 'win32')(
@@ -464,7 +527,7 @@ describe('detectCliSnapshotOnDaemonPath', () => {
   );
 
   it.skipIf(process.platform === 'win32')(
-    'detects JS-backed system CLIs inside compiled bun bundles when node is available on PATH',
+    'fails closed for JS-backed system CLIs in compiled bundles when only PATH node exists',
     async () => {
       const binDir = join(workDir, 'bin');
       mkdirSync(binDir, { recursive: true });
@@ -488,20 +551,23 @@ describe('detectCliSnapshotOnDaemonPath', () => {
       const originalBunDescriptor = Object.getOwnPropertyDescriptor(process.versions, 'bun');
       Object.defineProperty(process, 'execPath', {
         configurable: true,
-        value: '/Applications/Happier.app/Contents/MacOS/happier',
+        // Keep genuine bundled metadata at its source root while simulating
+        // the packaged executable's inability to act as a Node runtime.
+        value: join(projectPath(), 'happier'),
       });
       Object.defineProperty(process.versions, 'bun', {
         configurable: true,
         value: '1.2.23',
       });
       setEnv('PATH', binDir);
+      setEnv('HAPPIER_JS_RUNTIME_PATH', undefined);
+      setEnv('HAPPIER_MANAGED_NODE_BIN', undefined);
+      setEnv('HAPPIER_NODE_PATH', undefined);
 
       try {
         const snapshot = await detectCliSnapshotOnDaemonPath({ requestedCliNames: ['codex'], bypassCache: true });
-        expect(snapshot.clis.codex.available).toBe(true);
-        expect(snapshot.clis.codex.resolvedPath).toBe(codexPath);
-        expect(snapshot.clis.codex.resolvedCommand).toBe(`'${nodePath}' '${codexPath}'`);
-        expect(snapshot.clis.codex.version).toBe('0.200.0');
+        expect(snapshot.clis.codex.available).toBe(false);
+        expect(snapshot.clis.codex.resolvedPath).toBeUndefined();
       } finally {
         Object.defineProperty(process, 'execPath', {
           configurable: true,

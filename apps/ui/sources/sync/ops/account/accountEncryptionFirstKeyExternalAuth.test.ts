@@ -16,6 +16,8 @@ import { deriveAccountSigningPublicKey } from '@/auth/flows/challenge';
 import { buildContentKeyBinding } from '@/auth/oauth/contentKeyBinding';
 import { encodeBase64 } from '@/encryption/base64';
 import { HappyError } from '@/utils/errors/errors';
+import { createAuthoringMemoryCipher } from '@/sync/encryption/authoringMemoryEncryption';
+import { resolveAccountScopedCryptoMaterialFromCredentials } from '@/sync/domains/connectedServices/resolveAccountScopedCryptoMaterialFromCredentials';
 
 const mocks = vi.hoisted(() => ({
     clearPending: vi.fn(async () => true),
@@ -29,6 +31,7 @@ const mocks = vi.hoisted(() => ({
     readExactAttempt: vi.fn(),
     acknowledgeSessionDrafts: vi.fn(),
     reconfigureSessionDraftRepository: vi.fn(),
+    reconfigureAuthoringMemory: vi.fn(),
     endpointFetch: vi.fn(),
     createServerFetchAtEndpoint: vi.fn(),
     fetchHomeAuthEntry: vi.fn(),
@@ -55,6 +58,7 @@ vi.mock('@/sync/sync', () => ({
     sync: {
         reconfigureSessionDraftRepositoryForAccountMode:
             mocks.reconfigureSessionDraftRepository,
+        reconfigureAuthoringMemoryForAccountMode: mocks.reconfigureAuthoringMemory,
     },
 }));
 
@@ -294,6 +298,7 @@ beforeEach(() => {
     mocks.readExactAttempt.mockReset();
     mocks.acknowledgeSessionDrafts.mockReset();
     mocks.reconfigureSessionDraftRepository.mockReset();
+    mocks.reconfigureAuthoringMemory.mockReset();
     mocks.endpointFetch.mockReset();
     mocks.createServerFetchAtEndpoint.mockReset();
     mocks.createServerFetchAtEndpoint.mockReturnValue(
@@ -1635,8 +1640,20 @@ describe('first Account key external auth', () => {
         expect(mocks.clearPending).toHaveBeenCalledTimes(1);
     });
 
-    it('strictly resumes the exact OAuth request and removes the continuation after success', async () => {
+    it.each([false, true])('strictly resumes the exact OAuth request and removes the continuation after success (authoring memory: %s)', async (withMemory) => {
         const fixture = await createFixture();
+        if (withMemory) {
+            const content = createAuthoringMemoryCipher({ mode: 'e2ee',
+                material: resolveAccountScopedCryptoMaterialFromCredentials(fixture.proposedCredentials),
+                randomBytes: (length) => new Uint8Array(length),
+            }).seal('lastUsedProfile', 'profile-a');
+            fixture.request = AccountEncryptionMigrateRequestSchema.parse({ ...fixture.request,
+                authoringMemory: { items: [{ key: 'lastUsedProfile', expectedRevision: 3, content }] },
+            });
+            mocks.migrate.mockResolvedValue({ success: true, mode: 'e2ee', accountVersion: 9, settingsVersion: 4,
+                authoringMemory: { rows: [{ key: 'lastUsedProfile', revision: 4, content }] },
+            });
+        }
         const requestDigest =
             createAccountEncryptionMigrateRequestBindingDigestV1({
                 request: fixture.request,
@@ -1676,6 +1693,13 @@ describe('first Account key external auth', () => {
             });
 
         expect(result.returnTo).toBe('/settings/account');
+        if (withMemory) {
+            expect(result.migration.authoringMemory).toEqual({ rows: [{ key: 'lastUsedProfile', revision: 4,
+                content: fixture.request.authoringMemory!.items[0]!.content,
+            }] });
+            expect(mocks.reconfigureAuthoringMemory).toHaveBeenCalledWith(fixture.proposedCredentials, 'e2ee');
+            expect(mocks.reconfigureSessionDraftRepository).not.toHaveBeenCalled();
+        }
         expect(mocks.setPending).toHaveBeenCalledWith(
             expect.objectContaining({
                 provider: 'github',
@@ -1831,6 +1855,50 @@ describe('first Account key external auth', () => {
         ).toBeLessThan(
             persistCredentials.mock.invocationCallOrder[0]!,
         );
+    });
+
+    it('does not persist replacement credentials after the settings scope retires', async () => {
+        const fixture = await createFixture();
+        const requestDigest =
+            createAccountEncryptionMigrateRequestBindingDigestV1({
+                request: fixture.request,
+                accountId: fixture.accountId,
+                sourceMode: 'plain',
+            });
+        mocks.readPending.mockResolvedValue({
+            serverMismatch: false,
+            value: {
+                provider: 'github',
+                proof: 'proof',
+                secret: fixture.proposedCredentials.secret,
+                serverId: 'server-a',
+                serverUrl: 'https://server-a.example.test',
+                returnTo: '/settings/account',
+                accountEncryptionFirstKey: {
+                    accountId: fixture.accountId,
+                    requestDigest,
+                    requestJson: JSON.stringify(fixture.request),
+                    createdAt: Date.now(),
+                    expiresAt: Date.now() + 10 * 60 * 1000,
+                },
+            },
+        });
+        const persistCredentials = vi.fn(async () => ({ kind: 'completed' as const }));
+
+        await expect(
+            resumeAccountEncryptionFirstKeyExternalAuth({
+                provider: 'github',
+                pending: 'oauth-pending',
+                target: {
+                    serverId: 'server-a',
+                    serverUrl: 'https://server-a.example.test',
+                },
+                currentCredentials: fixture.currentCredentials,
+                persistCredentials,
+                scopeGuard: { isCurrent: () => false },
+            }),
+        ).rejects.toThrow('account_encryption_scope_changed');
+        expect(persistCredentials).not.toHaveBeenCalled();
     });
 
     it('fails closed and clears pending state on a wrong provider without posting or persisting', async () => {

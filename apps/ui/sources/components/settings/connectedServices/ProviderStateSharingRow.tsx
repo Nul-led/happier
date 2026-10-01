@@ -1,11 +1,10 @@
 import * as React from 'react';
-import { useUnistyles } from 'react-native-unistyles';
 
-import { DropdownMenu, type DropdownMenuItem } from '@/components/ui/forms/dropdown/DropdownMenu';
 import { Switch } from '@/components/ui/forms/Switch';
 import { Item } from '@/components/ui/lists/Item';
+import { SegmentedChoiceItem, type SegmentedChoiceOption } from '@/components/ui/lists/SegmentedChoiceItem';
 import { Modal } from '@/modal';
-import { t } from '@/text';
+import { getPreferredLanguage, t } from '@/text';
 import type { AgentCore } from '@happier-dev/agents';
 import type { AgentId } from '@/agents/catalog/catalog';
 import type {
@@ -14,7 +13,6 @@ import type {
     ConnectedServicesProviderStateSharingSettingsV1,
 } from '@happier-dev/protocol';
 import { resolveConnectedServicesProviderStateSharingPolicyV1 } from '@happier-dev/protocol';
-import { Icon } from '@/components/ui/icons/Icon';
 
 const UNSUPPORTED_PROVIDER_STATE_SHARING_CAPABILITY: ConnectedServicesProviderStateSharingCapability = {
     config: {
@@ -54,36 +52,23 @@ function resolveUnavailableReasonLabel(
     return t('connectedServices.providerStateSharing.unavailable.notImplemented');
 }
 
-function buildConfigModeOptions(params: Readonly<{
-    supportedModes: ReadonlyArray<ConnectedServicesProviderConfigSharingModeV1>;
-    colors: Readonly<{
-        blue: string;
-        indigo: string;
-        secondary: string;
-    }>;
-}>): readonly DropdownMenuItem[] {
-    const supportedModes = new Set(params.supportedModes);
+/** The three configuration-sharing modes as short, always-visible choices with their consequence. */
+export function buildProviderConfigModeChoices(): ReadonlyArray<SegmentedChoiceOption<ConnectedServicesProviderConfigSharingModeV1>> {
     return [
         {
             id: 'linked',
-            title: t('connectedServices.providerStateSharing.configLinkedTitle'),
-            subtitle: t('connectedServices.providerStateSharing.configLinkedSubtitle'),
-            icon: <Icon name="link" size={20} color={params.colors.blue} />,
-            disabled: !supportedModes.has('linked'),
+            label: t('connectedServicesSettings.configLinkedShort'),
+            description: t('connectedServices.providerStateSharing.configLinkedSubtitle'),
         },
         {
             id: 'copied',
-            title: t('connectedServices.providerStateSharing.configCopiedTitle'),
-            subtitle: t('connectedServices.providerStateSharing.configCopiedSubtitle'),
-            icon: <Icon name="copy" size={20} color={params.colors.indigo} />,
-            disabled: !supportedModes.has('copied'),
+            label: t('connectedServicesSettings.configCopiedShort'),
+            description: t('connectedServices.providerStateSharing.configCopiedSubtitle'),
         },
         {
             id: 'isolated',
-            title: t('connectedServices.providerStateSharing.configIsolatedTitle'),
-            subtitle: t('connectedServices.providerStateSharing.configIsolatedSubtitle'),
-            icon: <Icon name="lock" size={20} color={params.colors.secondary} />,
-            disabled: !supportedModes.has('isolated'),
+            label: t('connectedServicesSettings.configIsolatedShort'),
+            description: t('connectedServices.providerStateSharing.configIsolatedSubtitle'),
         },
     ];
 }
@@ -95,10 +80,9 @@ export function ProviderStateSharingRows({
     settings,
     setSettings,
 }: ProviderStateSharingRowsProps) {
-    const { theme } = useUnistyles();
+    const locale = getPreferredLanguage();
     const resolvedCapability = capability ?? UNSUPPORTED_PROVIDER_STATE_SHARING_CAPABILITY;
     const policy = resolveConnectedServicesProviderStateSharingPolicyV1(settings, agentId);
-    const [configMenuOpen, setConfigMenuOpen] = React.useState(false);
     const configDisabled = !resolvedCapability.config.supported;
     const stateDisabled = !resolvedCapability.state.supported || !resolvedCapability.state.modes.includes('shared');
     const stateShared = policy.stateMode === 'shared' && !stateDisabled;
@@ -133,23 +117,12 @@ export function ProviderStateSharingRows({
     }, [agentId, setSettings, settings]);
 
     const configModeOptions = React.useMemo(
-        () => buildConfigModeOptions({
-            supportedModes: resolvedCapability.config.modes,
-            colors: {
-                blue: theme.colors.accent.blue,
-                indigo: theme.colors.accent.indigo,
-                secondary: theme.colors.text.secondary,
-            },
-        }),
-        [
-            resolvedCapability.config.modes,
-            theme.colors.accent.blue,
-            theme.colors.accent.indigo,
-            theme.colors.text.secondary,
-        ],
+        () => buildProviderConfigModeChoices()
+            .filter((option) => resolvedCapability.config.modes.includes(option.id)),
+        [locale, resolvedCapability.config.modes],
     );
 
-    const setConfigMode = React.useCallback((itemId: string) => {
+    const setConfigMode = React.useCallback((itemId: ConnectedServicesProviderConfigSharingModeV1) => {
         if (configDisabled) return;
         if (itemId !== 'linked' && itemId !== 'copied' && itemId !== 'isolated') return;
         if (!resolvedCapability.config.modes.includes(itemId)) return;
@@ -177,6 +150,7 @@ export function ProviderStateSharingRows({
     }, [
         acknowledgedSharedStatePrivacy,
         agentTitle,
+        locale,
         resolvedCapability.state.sharedStatePrivacyRiskAcknowledgementRequired,
         stateDisabled,
         writeOverride,
@@ -184,34 +158,31 @@ export function ProviderStateSharingRows({
 
     return (
         <>
-            <DropdownMenu
-                open={configMenuOpen}
-                onOpenChange={setConfigMenuOpen}
-                variant="selectable"
-                search={false}
-                selectedId={policy.configMode}
-                showCategoryTitles={false}
-                matchTriggerWidth={true}
-                connectToTrigger={true}
-                rowKind="item"
-                itemTrigger={{
-                    title: t('connectedServices.providerStateSharing.agentConfigTitle', { agent: agentTitle }),
-                    subtitle: configDisabled
+            {configDisabled || configModeOptions.length < 2 ? (
+                <Item
+                    testID={`connected-services-provider-state-sharing-agent-${agentId}-config`}
+                    title={t('connectedServices.providerStateSharing.configTitle')}
+                    subtitle={configDisabled
                         ? resolveUnavailableReasonLabel(resolvedCapability.config.unavailableReason)
-                        : undefined,
-                    icon: <Icon name="sliders-horizontal" size={20} color={theme.colors.accent.blue} />,
-                    showSelectedSubtitle: !configDisabled,
-                    itemProps: {
-                        testID: `connected-services-provider-state-sharing-agent-${agentId}-config`,
-                        disabled: configDisabled,
-                    },
-                }}
-                items={configModeOptions}
-                onSelect={setConfigMode}
-            />
+                        : configModeOptions[0]?.description}
+                    disabled={configDisabled}
+                    mode="info"
+                    showChevron={false}
+                />
+            ) : (
+                <SegmentedChoiceItem<ConnectedServicesProviderConfigSharingModeV1>
+                    testID={`connected-services-provider-state-sharing-agent-${agentId}-config`}
+                    testIDPrefix={`connected-services-provider-state-sharing-agent-${agentId}-config`}
+                    title={t('connectedServices.providerStateSharing.configTitle')}
+                    options={configModeOptions}
+                    subtitleLines={0}
+                    value={policy.configMode}
+                    onChange={setConfigMode}
+                />
+            )}
             <Item
                 testID={`connected-services-provider-state-sharing-agent-${agentId}-state`}
-                title={t('connectedServices.providerStateSharing.agentStateTitle', { agent: agentTitle })}
+                title={t('connectedServices.providerStateSharing.stateTitle')}
                 subtitle={
                     stateDisabled
                         ? resolveUnavailableReasonLabel(resolvedCapability.state.unavailableReason)
@@ -219,11 +190,9 @@ export function ProviderStateSharingRows({
                             ? t('connectedServices.providerStateSharing.stateEnabledSubtitle')
                             : t('connectedServices.providerStateSharing.stateDisabledSubtitle')
                 }
-                icon={<Icon name="stack" size={20} color={theme.colors.accent.blue} />}
                 disabled={stateDisabled}
                 rightElement={(
                     <Switch
-                        compact
                         disabled={stateDisabled}
                         value={stateShared}
                         onValueChange={setStateShared}

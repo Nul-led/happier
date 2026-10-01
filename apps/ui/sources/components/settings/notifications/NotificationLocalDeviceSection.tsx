@@ -1,13 +1,11 @@
 import * as React from 'react';
 
-import { useUnistyles } from 'react-native-unistyles';
-
 import { Switch } from '@/components/ui/forms/Switch';
-import { Item } from '@/components/ui/lists/Item';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
 import type { LocalSettings } from '@/sync/domains/settings/localSettings';
 import { t } from '@/text';
-import { Icon } from '@/components/ui/icons/Icon';
+import { SettingRow } from '@/components/settings/shell/SettingRow';
+import { NOTIFICATIONS_SETTINGS } from '@/components/settings/notifications/notificationsSettings';
 
 type NotificationLocalDeviceSectionProps = Readonly<{
     localSettings: LocalSettings;
@@ -18,7 +16,6 @@ export function NotificationLocalDeviceSection({
     localSettings,
     setLocalSetting,
 }: NotificationLocalDeviceSectionProps): React.ReactElement {
-    const { theme } = useUnistyles();
     const deviceOverrides = localSettings.attentionDeviceOverridesV1;
     const localNotifications = deviceOverrides.localNotifications;
     const disabled = deviceOverrides.enabled === false || localNotifications.enabled === false;
@@ -50,13 +47,11 @@ export function NotificationLocalDeviceSection({
     return (
         <ItemGroup
             title={t('settingsNotifications.local.title')}
-            footer={t('settingsNotifications.local.footer')}
+            description={t('settingsNotifications.local.footer')}
         >
-            <Item
+            <SettingRow
                 testID="settings-notifications-local-enabled"
-                title={t('common.enabled')}
-                subtitle={t('settingsNotifications.local.enabledSubtitle')}
-                icon={<Icon name="device-mobile" size={29} color={theme.colors.accent.blue} />}
+                setting={NOTIFICATIONS_SETTINGS.settings.localEnabled}
                 rightElement={(
                     <Switch
                         value={!disabled}
@@ -65,10 +60,8 @@ export function NotificationLocalDeviceSection({
                 )}
                 showChevron={false}
             />
-            <Item
-                title={t('settingsNotifications.local.readyTitle')}
-                subtitle={t('settingsNotifications.local.readySubtitle')}
-                icon={<Icon name="check-circle" size={29} color={theme.colors.state.success.foreground} />}
+            <SettingRow
+                setting={NOTIFICATIONS_SETTINGS.settings.ready}
                 rightElement={(
                     <Switch
                         value={localNotifications.events.ready !== false}
@@ -78,10 +71,8 @@ export function NotificationLocalDeviceSection({
                 )}
                 showChevron={false}
             />
-            <Item
-                title={t('settingsNotifications.local.readyPreviewTitle')}
-                subtitle={t('settingsNotifications.local.readyPreviewSubtitle')}
-                icon={<Icon name="chat-circle-dots" size={29} color={theme.colors.text.secondary} />}
+            <SettingRow
+                setting={NOTIFICATIONS_SETTINGS.settings.readyPreview}
                 rightElement={(
                     <Switch
                         value={localNotifications.previewBehavior !== 'status_only'}
@@ -93,10 +84,8 @@ export function NotificationLocalDeviceSection({
                 )}
                 showChevron={false}
             />
-            <Item
-                title={t('settingsNotifications.local.requestPreviewTitle')}
-                subtitle={t('settingsNotifications.local.requestPreviewSubtitle')}
-                icon={<Icon name="chat-circle-dots" size={29} color={theme.colors.text.secondary} />}
+            <SettingRow
+                setting={NOTIFICATIONS_SETTINGS.settings.requestPreview}
                 rightElement={(
                     <Switch
                         value={localNotifications.requestPreviewBehavior !== 'status_only'}
@@ -108,10 +97,8 @@ export function NotificationLocalDeviceSection({
                 )}
                 showChevron={false}
             />
-            <Item
-                title={t('settingsNotifications.local.permissionRequestsTitle')}
-                subtitle={t('settingsNotifications.local.permissionRequestsSubtitle')}
-                icon={<Icon name="hand" size={29} color={theme.colors.text.secondary} />}
+            <SettingRow
+                setting={NOTIFICATIONS_SETTINGS.settings.localPermissionRequests}
                 rightElement={(
                     <Switch
                         value={localNotifications.events.permission_request !== false}
@@ -121,10 +108,8 @@ export function NotificationLocalDeviceSection({
                 )}
                 showChevron={false}
             />
-            <Item
-                title={t('settingsNotifications.local.userActionsTitle')}
-                subtitle={t('settingsNotifications.local.userActionsSubtitle')}
-                icon={<Icon name="chat-dots" size={29} color={theme.colors.text.secondary} />}
+            <SettingRow
+                setting={NOTIFICATIONS_SETTINGS.settings.localUserActions}
                 rightElement={(
                     <Switch
                         value={localNotifications.events.user_action_request !== false}

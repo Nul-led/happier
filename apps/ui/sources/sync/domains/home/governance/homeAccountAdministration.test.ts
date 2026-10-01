@@ -19,6 +19,7 @@ function mutationCapabilities(
         disable: unavailable,
         reenable: unavailable,
         delete: unavailable,
+        signOutEverywhere: unavailable,
         ...overrides,
     };
 }
@@ -137,6 +138,35 @@ describe('resolveHomeAccountAdministrationActions', () => {
             mutationsAvailable: true,
         });
         expect(actions.setRole.state).toBe('available');
+    });
+
+    it('offers sign-out everywhere to an active person and withholds it once they are no longer active', () => {
+        const active = resolveHomeAccountAdministrationActions({
+            target: target('owner', 'active', 'acc_target', mutationCapabilities({
+                signOutEverywhere: { status: 'available' },
+                disable: { status: 'unavailable', reason: 'last_active_owner' },
+            })),
+            mutationsAvailable: true,
+        });
+        // Ending sessions changes no role, so last-owner protection does not withhold it.
+        expect(active.signOutEverywhere.state).toBe('available');
+        expect(active.disable).toEqual({ state: 'unavailable', reason: 'last_active_owner' });
+
+        const held = resolveHomeAccountAdministrationActions({
+            target: target('member', 'suspended', 'acc_target', mutationCapabilities({
+                signOutEverywhere: { status: 'unavailable', reason: 'target_not_active' },
+            })),
+            mutationsAvailable: true,
+        });
+        expect(held.signOutEverywhere.state).toBe('hidden');
+
+        const offline = resolveHomeAccountAdministrationActions({
+            target: target('member', 'active', 'acc_target', mutationCapabilities({
+                signOutEverywhere: { status: 'available' },
+            })),
+            mutationsAvailable: false,
+        });
+        expect(offline.signOutEverywhere).toEqual({ state: 'unavailable', reason: 'home_unreachable' });
     });
 
     it('offers Re-enable only for the reversible hold', () => {

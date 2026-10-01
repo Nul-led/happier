@@ -78,17 +78,22 @@ describe('ActionOperationDetailModal', () => {
         }] });
 
         const { ActionOperationDetailModal } = await import('./ActionOperationDetailModal');
+        const setChrome = vi.fn();
         const screen = await renderScreen(
             <ActionOperationDetailModal
                 serverId="home-a"
                 operationId="fork-operation"
                 onClose={vi.fn()}
-                setChrome={vi.fn()}
+                setChrome={setChrome}
             />,
         );
 
         expect(screen.getTextContent()).toContain('Stabilize CI and Nightly Releases');
         expect(screen.getTextContent()).not.toContain('session-1');
+        // The title band names the operation; the raw action id is never shown in it.
+        const chrome = setChrome.mock.calls.at(-1)?.[0];
+        expect(chrome?.title).toBe('Fork session');
+        expect(chrome?.subtitle).toBeUndefined();
     });
 
     it('renders the successful handoff cleanup warning and semantic phase', async () => {

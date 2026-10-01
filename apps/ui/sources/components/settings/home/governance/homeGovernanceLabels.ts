@@ -1,6 +1,7 @@
 import type {
     AccountStatusV1,
     HomeAdmissionModeV1,
+    HomeAuthenticationPolicyV1,
     HomeRoleV1,
     TeamCreationPolicyV1,
 } from '@happier-dev/protocol/home/governance';
@@ -28,9 +29,9 @@ type HomeUnresolvedReason = Extract<HomeAdministrationHomeEntry, { state: 'unres
 /**
  * How one Home is named to the person administering it.
  *
- * The app's one Home namer decides first (the name they chose, else "Personal Home" for this
- * device's own Home). Only a Home with no name falls back to what tells Homes apart — its saved
- * label or address — and the opaque id is used only when this device knows nothing else about it.
+ * The app's one Home label owner decides: the name they chose, else "Personal Home" for this
+ * device's own Home, else "Home on <host>" (an address is never shown as a name); the opaque id
+ * only when this device knows nothing else about it.
  */
 export function homeDisplayName(serverId: string): string {
     return resolveHomeDisplayLabel(getServerProfileById(serverId), serverId);
@@ -151,12 +152,17 @@ export function homeGovernanceFailureNotice(
  * Team, with the same typed ownership-transfer verdicts it gives an
  * administrator, so they are shown with the same words: the deletion was
  * answered, repeating it cannot succeed, and the actionable step is to make
- * someone else an owner first. Only an answer that carries no such verdict — a
- * request that never left, or one whose answer was lost — keeps the "not
+ * someone else an owner first. A known encryption-cleanup refusal instead
+ * explains that the same deletion can be retried. An answer without one of
+ * these typed verdicts — including a request that never left or whose answer
+ * was lost — keeps the "not
  * confirmed" notice, because that is the one case in which the deletion may
  * still have happened.
  */
 export function accountErasureFailureNotice(error: unknown): Readonly<{ title: string; body: string }> {
+    if (error instanceof HappyError && error.code === 'account_erasure_transition_cleanup_pending') {
+        return homeGovernanceFailureNotice({ kind: 'conflict', retryable: true, code: error.code });
+    }
     if (error instanceof HappyError
         && (error.code === 'home_owner_transfer_required' || error.code === 'team_owner_transfer_required')) {
         return homeGovernanceFailureNotice({ kind: 'conflict', retryable: false, code: error.code });
@@ -181,6 +187,12 @@ function homeGovernanceFailureBody(failure: HomeDomainFailure): string {
             return t('homeGovernance.errorAccountInactive');
         case 'home_policy_revision_conflict':
             return t('homeGovernance.revisionConflictBody');
+        case 'account_erasure_transition_cleanup_pending':
+            return t('homeGovernance.errorErasureTransitionCleanupPending');
+        case 'home_policy_widening_unconfirmed':
+            return t('homeGovernance.signInPolicy.errorWideningUnconfirmed');
+        case 'home_claim_refused':
+            return t('homeGovernance.claim.refused');
         default:
             break;
     }
@@ -219,6 +231,21 @@ export function teamCreationPolicyDescription(policy: TeamCreationPolicyV1): str
         case 'disabled':
             return t('homeGovernance.teamCreationDisabledDescription');
     }
+}
+
+export type HomeStoragePolicy = NonNullable<HomeAuthenticationPolicyV1['storagePolicy']>;
+
+export function homeStoragePolicyLabel(policy: HomeStoragePolicy): string {
+    switch (policy) {
+        case 'required_e2ee': return t('homeGovernance.signInPolicy.storageRequired');
+        case 'optional': return t('homeGovernance.signInPolicy.storageOptional');
+        case 'plaintext_only': return t('homeGovernance.signInPolicy.storagePlaintext');
+    }
+}
+
+/** An Account encryption mode as a short choice label ("E2EE", "Plain"). */
+export function homeAccountModeLabel(mode: 'e2ee' | 'plain'): string {
+    return mode === 'plain' ? t('homeGovernance.accountModePlain') : t('homeGovernance.signInPolicy.recommendedE2ee');
 }
 
 export function homeAdmissionModeLabel(mode: HomeAdmissionModeV1): string {

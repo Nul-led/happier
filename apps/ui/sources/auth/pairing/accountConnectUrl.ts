@@ -6,15 +6,6 @@ export type ParsedAccountConnectDeepLink = Readonly<{
 
 export const ACCOUNT_CONNECT_ROUTE_PARAM = 'accountConnectKey';
 
-export class LegacyAccountConnectUnavailableError extends Error {
-    readonly code = 'legacy_provisioning_unavailable' as const;
-
-    constructor() {
-        super('Legacy reverse account QR issuance is unavailable; use a canonical Home device QR');
-        this.name = 'LegacyAccountConnectUnavailableError';
-    }
-}
-
 function isValidAccountLinkTarget(url: URL): boolean {
     if (!isAcceptedHappierUrlProtocol(url.protocol)) return false;
 
@@ -41,11 +32,6 @@ export function parseAccountConnectDeepLink(rawLink: string): ParsedAccountConne
     if (!tail) return null;
 
     return { publicKeyB64Url: tail };
-}
-
-export function buildAccountConnectDeepLink(input: Readonly<{ publicKeyB64Url: string }>): string {
-    void input;
-    throw new LegacyAccountConnectUnavailableError();
 }
 
 export function buildAccountConnectRoutePath(input: Readonly<{ publicKeyB64Url: string }>): string {

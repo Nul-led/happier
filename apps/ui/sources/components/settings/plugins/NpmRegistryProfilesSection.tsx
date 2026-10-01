@@ -357,11 +357,10 @@ export function NpmRegistryProfilesSection({
     }, [marketplaceSourceMutationInFlight, onSetMarketplaceSourceProfile]);
 
     return (
-        <ItemGroup title={t('settingsPlugins.registriesTitle')} footer={t('settingsPlugins.registriesFooter')}>
+        <ItemGroup title={t('settingsPlugins.registriesTitle')} description={t('settingsPlugins.registriesFooter')}>
             <Item
                 testID="settings.plugins.registries.add"
                 title={t('settingsPlugins.registriesAdd')}
-                icon={<Icon name="plus-circle" size={29} color={theme.colors.accent.blue} />}
                 onPress={() => { void openProfileEditor(null); }}
                 disabled={!daemonOperationsAvailable || !targetSelection.canExecute || loading || busyProfileId !== null}
                 showChevron={false}
@@ -450,7 +449,6 @@ export function NpmRegistryProfilesSection({
                         title={profile.displayName}
                         subtitle={`${profile.origin} · ${status}`}
                         subtitleLines={0}
-                        icon={<Icon name="key" size={29} color={theme.colors.text.secondary} />}
                         mode="info"
                         showChevron={false}
                         // Progress belongs to the record being mutated, not to
@@ -514,7 +512,6 @@ export function NpmRegistryProfilesSection({
                                     ? `${boundProfile.displayName} · ${boundProfile.origin}`
                                     : source.registryProfileId ?? source.sourceUrl}
                                 subtitleLines={0}
-                                icon={<Icon name="globe" size={29} color={theme.colors.text.secondary} />}
                                 rightElement={(
                                     <Icon
                                         name={open ? 'caret-up' : 'caret-down'}

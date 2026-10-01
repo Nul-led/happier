@@ -350,7 +350,7 @@ function harness(options: Readonly<{
     NonNullable<ProviderConnectionServiceDeps['resolveManagedPurposeBindingIntent']>
   >(async ({ purpose, target }) => ({ purpose, target }));
   const compatibilitySummary = vi.fn((): DaemonProviderAgentCompatibilitySummaryV1[] => [{
-      agentTargetKey: 'backend:codex', agentName: 'Codex', status: 'experimental' as const,
+      agentTargetKey: 'agent:happier.agent.codex/codex', agentName: 'Codex', status: 'experimental' as const,
       reasons: ['compatibility_evidence_missing'],
   }]);
   const acquireCompatibilityProjection = vi.fn(() => ({
@@ -1582,7 +1582,7 @@ describe('provider connection service', () => {
             credentialSlotId: 'apiKey',
             label: 'Gateway',
           },
-          compatibility: [{ agentTargetKey: 'backend:codex', status: 'experimental' }],
+          compatibility: [{ agentTargetKey: 'agent:happier.agent.codex/codex', status: 'experimental' }],
           endpoints: [{ defaultBaseUrl: 'https://gateway.example/v1' }],
         }],
       });
@@ -2630,7 +2630,7 @@ describe('provider connection service', () => {
       connections: [{
         connectionId: 'pc_gateway', displayName: 'Work', contributionKey,
         probeCapability: 'none', manualModelPolicy: 'allowed', icon: 'sparkles-outline',
-        compatibility: [{ agentTargetKey: 'backend:codex', status: 'experimental' }],
+        compatibility: [{ agentTargetKey: 'agent:happier.agent.codex/codex', status: 'experimental' }],
         authorized: true, credential: { required: true, accountBound: true, boundMachineIds: [] },
         endpoints: [{
           endpointTemplateId: 'responses', protocol: 'openai-responses',

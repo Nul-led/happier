@@ -1,60 +1,54 @@
 import * as React from 'react';
-import { Pressable, View } from 'react-native';
+import { View } from 'react-native';
+import { useUnistyles } from 'react-native-unistyles';
+import { HappierPressable } from '@happier-dev/plugin-ui/presentation';
 
+import { ItemGroup } from '@/components/ui/lists/ItemGroup';
+import { SectionContentRow } from '@/components/ui/lists/SectionContentRow';
+import { SegmentedChoiceItem } from '@/components/ui/lists/SegmentedChoiceItem';
 import { Text } from '@/components/ui/text/Text';
+import { doWorkflowParallelBranchesUseSeparateConversations } from '@/sync/domains/workflows/workflowAuthoring';
+import type { WorkflowEditorDraft } from '@/sync/domains/workflows/workflowEditorDraft';
 import { t } from '@/text';
 
-import type { WorkflowBlock, WorkflowFailurePolicy } from '@happier-dev/protocol/workflows/workflowV1';
+import { updateWorkflowBlock } from '@happier-dev/protocol/workflows/workflowDefinitionEditV1';
+import { WORKFLOW_FAILURE_POLICIES, type WorkflowBlock, type WorkflowFailurePolicy } from '@happier-dev/protocol/workflows/workflowV1';
 
-import { WorkflowBlockActionsMenu, type WorkflowBlockAction } from './WorkflowBlockActionsMenu';
+import type { WorkflowBlockAction } from './WorkflowBlockActionsMenu';
+import { WorkflowBlockHeading } from './WorkflowBlockHeading';
+import { WorkflowContainerSummary } from './WorkflowContainerSummary';
 import { WorkflowNumberField } from './WorkflowNumberField';
-import { workflowEditorStyles } from './workflowEditorStyles';
+import { workflowEditorStyles, workflowPressFeedbackStyle } from './workflowEditorStyles';
 
 type ParallelBlock = Extract<WorkflowBlock, Readonly<{ kind: 'parallel' }>>;
 
-/**
- * Parallel-group composition: heading, the authored failure policy, the optional
- * per-container concurrency and one heading per branch.
- *
- * The group is an open structure with a rail and indentation, not another
- * rounded card wrapped around rounded step cards. Its body is supplied by the
- * caller so the same recursive block list renders every nesting level.
- */
+function failurePolicyLabel(policy: WorkflowFailurePolicy): string {
+    return policy === 'fail_stop' ? t('workflows.failurePolicy.failStop') : t('workflows.failurePolicy.collectOutcomes');
+}
 
+/**
+ * When a step fails: one of two short options, so a value choice whose
+ * consequence is the row description (04 §5.2's control table).
+ */
 export function WorkflowFailurePolicyControl(props: Readonly<{
     value: WorkflowFailurePolicy;
     onChange: (value: WorkflowFailurePolicy) => void;
     testID: string;
 }>): React.ReactElement {
     return (
-        <View style={workflowEditorStyles.metaRow}>
-            <Text style={workflowEditorStyles.metaText}>{t('workflows.failurePolicy.title')}</Text>
-            {(['fail_stop', 'collect_outcomes'] as const).map((policy) => (
-                <Pressable
-                    key={policy}
-                    testID={`${props.testID}-${policy}`}
-                    accessibilityRole="radio"
-                    accessibilityState={{ selected: props.value === policy }}
-                    accessibilityLabel={policy === 'fail_stop'
-                        ? t('workflows.failurePolicy.failStop')
-                        : t('workflows.failurePolicy.collectOutcomes')}
-                    accessibilityHint={policy === 'fail_stop'
-                        ? t('workflows.failurePolicy.failStopExplain')
-                        : t('workflows.failurePolicy.collectOutcomesExplain')}
-                    onPress={() => props.onChange(policy)}
-                    style={workflowEditorStyles.actionTarget}
-                >
-                    <Text style={props.value === policy
-                        ? workflowEditorStyles.metaAction
-                        : workflowEditorStyles.metaText}
-                    >
-                        {policy === 'fail_stop'
-                            ? t('workflows.failurePolicy.failStop')
-                            : t('workflows.failurePolicy.collectOutcomes')}
-                    </Text>
-                </Pressable>
-            ))}
-        </View>
+        <SegmentedChoiceItem<WorkflowFailurePolicy>
+            title={t('workflows.failurePolicy.title')}
+            value={props.value}
+            onChange={props.onChange}
+            testIDPrefix={props.testID}
+            options={WORKFLOW_FAILURE_POLICIES.map((policy) => ({
+                id: policy,
+                label: failurePolicyLabel(policy),
+                description: policy === 'fail_stop'
+                    ? t('workflows.failurePolicy.failStopExplain')
+                    : t('workflows.failurePolicy.collectOutcomesExplain'),
+            }))}
+        />
     );
 }
 
@@ -82,88 +76,156 @@ export function WorkflowMaxConcurrentControl(props: Readonly<{
     );
 }
 
+/** "Side by side · 2 lanes · Stop this group on failure · 3 at a time". */
+export function formatWorkflowGroupSentence(block: ParallelBlock): string {
+    const parts = [
+        t('workflows.page.inspector.lanes', { count: block.branches.length }),
+        failurePolicyLabel(block.failurePolicy),
+    ];
+    if (block.maxConcurrent !== undefined && Number.isFinite(block.maxConcurrent)) {
+        parts.push(t('workflows.page.inspector.atATime', { count: block.maxConcurrent }));
+    }
+    return parts.join(' · ');
+}
+
+/**
+ * A Side by side group's options (Step options for a container, 04 §5.2):
+ * when a step fails, how many lanes at once, and which conversation the lanes
+ * reach. Edits go through the draft owner; nothing here keeps a copy.
+ */
+export function WorkflowGroupOptions(props: Readonly<{
+    draft: WorkflowEditorDraft;
+    block: ParallelBlock;
+    onChange: (next: WorkflowEditorDraft) => void;
+    testIDPrefix: string;
+}>): React.ReactElement {
+    const { draft, block, onChange } = props;
+    const idPrefix = `${props.testIDPrefix}-parallel-${block.id}`;
+    const update = (next: (current: ParallelBlock) => ParallelBlock) => onChange(updateWorkflowBlock(
+        draft,
+        block.id,
+        (current) => (current.kind === 'parallel' ? next(current) : current),
+    ));
+    // True only when every step in the group actually runs a fresh
+    // conversation; under the shared default the lanes reach one conversation
+    // and take turns, so the group must not claim otherwise.
+    const separate = doWorkflowParallelBranchesUseSeparateConversations(draft, block);
+
+    return (
+        <ItemGroup title={t('workflows.page.inspector.options')}>
+            <WorkflowFailurePolicyControl
+                value={block.failurePolicy}
+                onChange={(failurePolicy) => update((current) => ({ ...current, failurePolicy }))}
+                testID={`${idPrefix}-failure-policy`}
+            />
+            <SectionContentRow testID={`${idPrefix}-max-concurrent-row`}>
+                <WorkflowMaxConcurrentControl
+                    label={t('workflows.loop.maxConcurrentBranches')}
+                    value={block.maxConcurrent}
+                    onChange={(maxConcurrent) => update((current) => {
+                        if (maxConcurrent !== undefined) return { ...current, maxConcurrent };
+                        const { maxConcurrent: _dropped, ...rest } = current;
+                        return rest;
+                    })}
+                    testID={`${idPrefix}-max-concurrent`}
+                />
+            </SectionContentRow>
+            <SectionContentRow testID={`${idPrefix}-conversation-row`}>
+                {separate ? (
+                    <Text testID={`${idPrefix}-separate-conversations`} style={workflowEditorStyles.groupSummary}>
+                        {t('workflows.conversation.branchesUseSeparate')}
+                    </Text>
+                ) : (
+                    <Text testID={`${idPrefix}-shared-conversation`} style={workflowEditorStyles.groupSummary}>
+                        {t('workflows.conversation.branchesShareAndTakeTurns')}
+                    </Text>
+                )}
+            </SectionContentRow>
+        </ItemGroup>
+    );
+}
+
+/**
+ * Side by side in the document: the heading, the group read as one sentence
+ * (pressing it opens the group's options), then one labelled lane per branch.
+ *
+ * The group is an open structure with a rail and indentation, not another
+ * rounded card wrapped around rounded step cards. Its lanes are supplied by
+ * the caller so the same recursive block list renders every nesting level.
+ */
 export function WorkflowGroupEditor(props: Readonly<{
     block: ParallelBlock;
     ordinal: number;
     actions: readonly WorkflowBlockAction[];
+    /** A reader's occurrence selector or state, in the heading line (04 §4.11). */
+    headingAccessory?: React.ReactNode;
     onSelect: () => void;
-    onChangeFailurePolicy: (value: WorkflowFailurePolicy) => void;
-    onChangeMaxConcurrent: (value: number | undefined) => void;
-    onAddBranch: () => void;
-    onRemoveBranch: (branchId: string) => void;
+    /** Opens the group's options; absent in a read-only document. */
+    onOpenOptions?: (anchorRef: React.RefObject<View | null>) => void;
+    onAddBranch?: () => void;
+    onRemoveBranch?: (branchId: string) => void;
     renderBranch: (branch: ParallelBlock['branches'][number], index: number) => React.ReactNode;
     testIDPrefix: string;
 }>): React.ReactElement {
+    const { theme } = useUnistyles();
     const displayName = `${t('workflows.editor.unnamedParallel')} ${props.ordinal}`;
+    const idPrefix = `${props.testIDPrefix}-parallel-${props.block.id}`;
+    const pressStyle = (state: Parameters<typeof workflowPressFeedbackStyle>[0]) => [
+        workflowEditorStyles.actionTarget,
+        workflowPressFeedbackStyle(state, theme.colors.border.focus),
+    ];
 
     return (
-        <View testID={`${props.testIDPrefix}-parallel-${props.block.id}`} style={workflowEditorStyles.blockBody}>
-            <View style={workflowEditorStyles.heading}>
-                <Text style={workflowEditorStyles.ordinal} accessibilityElementsHidden>
-                    {t('workflows.editor.stepOrdinal', { position: props.ordinal })}
-                </Text>
-                <Text
-                    testID={`${props.testIDPrefix}-parallel-${props.block.id}-label`}
-                    style={workflowEditorStyles.headingNameInput}
-                    onPress={props.onSelect}
-                >
-                    {displayName}
-                </Text>
-                <View style={workflowEditorStyles.headingActions}>
-                    <WorkflowBlockActionsMenu
-                        blockLabel={displayName}
-                        actions={props.actions}
-                        testID={`${props.testIDPrefix}-parallel-${props.block.id}-actions`}
-                    />
-                </View>
-            </View>
-
-            <WorkflowFailurePolicyControl
-                value={props.block.failurePolicy}
-                onChange={props.onChangeFailurePolicy}
-                testID={`${props.testIDPrefix}-parallel-${props.block.id}-failure-policy`}
+        <View testID={idPrefix} style={workflowEditorStyles.blockBody}>
+            <WorkflowBlockHeading
+                ordinal={props.ordinal}
+                displayName={displayName}
+                actions={props.actions}
+                accessory={props.headingAccessory}
+                onSelect={props.onSelect}
+                testID={`${idPrefix}-label`}
+                actionsTestID={`${idPrefix}-actions`}
             />
-            <WorkflowMaxConcurrentControl
-                label={t('workflows.loop.maxConcurrentBranches')}
-                value={props.block.maxConcurrent}
-                onChange={props.onChangeMaxConcurrent}
-                testID={`${props.testIDPrefix}-parallel-${props.block.id}-max-concurrent`}
+            <WorkflowContainerSummary
+                sentence={formatWorkflowGroupSentence(props.block)}
+                {...(props.onOpenOptions === undefined ? {} : { onOpenOptions: props.onOpenOptions })}
+                optionsLabel={t('workflows.page.inspector.options')}
+                testID={`${idPrefix}-summary`}
             />
 
             {props.block.branches.map((branch, index) => (
                 <View key={branch.id} accessibilityRole="none">
                     <View style={workflowEditorStyles.heading}>
-                        <Text
-                            testID={`${props.testIDPrefix}-parallel-${props.block.id}-branch-${branch.id}-label`}
-                            style={workflowEditorStyles.headingNameInput}
-                        >
+                        <Text testID={`${idPrefix}-branch-${branch.id}-label`} style={workflowEditorStyles.headingNameInput}>
                             {`${t('workflows.editor.branch')} ${index + 1}`}
                         </Text>
-                        {props.block.branches.length > 1 ? (
-                            <Pressable
-                                testID={`${props.testIDPrefix}-parallel-${props.block.id}-branch-${branch.id}-remove`}
+                        {props.onRemoveBranch !== undefined && props.block.branches.length > 1 ? (
+                            <HappierPressable
+                                testID={`${idPrefix}-branch-${branch.id}-remove`}
                                 accessibilityRole="button"
                                 accessibilityLabel={t('workflows.editor.remove')}
-                                onPress={() => props.onRemoveBranch(branch.id)}
-                                style={workflowEditorStyles.actionTarget}
+                                onPress={() => props.onRemoveBranch?.(branch.id)}
+                                style={pressStyle}
                             >
                                 <Text style={workflowEditorStyles.issueText}>{t('workflows.editor.remove')}</Text>
-                            </Pressable>
+                            </HappierPressable>
                         ) : null}
                     </View>
                     {props.renderBranch(branch, index)}
                 </View>
             ))}
 
-            <Pressable
-                testID={`${props.testIDPrefix}-parallel-${props.block.id}-add-branch`}
-                accessibilityRole="button"
-                accessibilityLabel={t('workflows.editor.addBranch')}
-                onPress={props.onAddBranch}
-                style={workflowEditorStyles.actionTarget}
-            >
-                <Text style={workflowEditorStyles.metaAction}>{t('workflows.editor.addBranch')}</Text>
-            </Pressable>
+            {props.onAddBranch === undefined ? null : (
+                <HappierPressable
+                    testID={`${idPrefix}-add-branch`}
+                    accessibilityRole="button"
+                    accessibilityLabel={t('workflows.editor.addBranch')}
+                    onPress={props.onAddBranch}
+                    style={pressStyle}
+                >
+                    <Text style={workflowEditorStyles.metaAction}>{t('workflows.editor.addBranch')}</Text>
+                </HappierPressable>
+            )}
         </View>
     );
 }

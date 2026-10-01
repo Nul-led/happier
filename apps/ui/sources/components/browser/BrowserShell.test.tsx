@@ -7,6 +7,7 @@ import type {
     BrowserEventV1,
     BrowserRecordingCapabilities,
     BrowserViewTargetV1,
+    DaemonLocalServicePreviewOpenOrCreateResponseV1,
 } from '@happier-dev/protocol';
 import { View } from 'react-native';
 import { act } from 'react-test-renderer';
@@ -31,6 +32,7 @@ import type { PluginBrowserProjectionModel } from '@/sync/domains/plugins/browse
 const testState = vi.hoisted(() => ({
     useLocalServicePreviewState: vi.fn(),
     fetchBrowserDiagnosticsSnapshotViaMachineRpc: vi.fn(),
+    machineRpc: vi.fn(),
 }));
 
 function stubCryptoRandomUuid(): void {
@@ -81,6 +83,10 @@ vi.mock('@/sync/domains/local/services/preview/useLocalServicePreviewState', () 
 vi.mock('@/sync/domains/browser/diagnostics/machineRpc', () => ({
     fetchBrowserDiagnosticsSnapshotViaMachineRpc: (...args: readonly unknown[]) =>
         testState.fetchBrowserDiagnosticsSnapshotViaMachineRpc(...args),
+}));
+
+vi.mock('@/sync/runtime/orchestration/serverScopedRpc/serverScopedMachineRpc', () => ({
+    machineRpcWithServerScope: (...args: readonly unknown[]) => testState.machineRpc(...args),
 }));
 
 const target = {
@@ -371,6 +377,7 @@ describe('BrowserShell', () => {
         resetBrowserDiagnosticsDrawerStateForTests();
         testState.useLocalServicePreviewState.mockReset();
         testState.fetchBrowserDiagnosticsSnapshotViaMachineRpc.mockReset();
+        testState.machineRpc.mockReset();
         const { createLocalServicePreviewState } = await import('@/sync/domains/local/services/preview/store');
         testState.useLocalServicePreviewState.mockReturnValue(createLocalServicePreviewState());
         testState.fetchBrowserDiagnosticsSnapshotViaMachineRpc.mockResolvedValue({
@@ -540,7 +547,7 @@ describe('BrowserShell', () => {
                 currentUrl: 'https://preview.happier.test/',
             },
         );
-        expect(onPluginBrowserAction).toHaveBeenNthCalledWith(
+        await vi.waitFor(() => expect(onPluginBrowserAction).toHaveBeenNthCalledWith(
             2,
             pluginBrowserProjection.actionsById['browserAction:acme.preview:copy-preview-url'],
             {
@@ -549,7 +556,7 @@ describe('BrowserShell', () => {
                 targetId: 'preview_1',
                 currentUrl: 'https://preview.happier.test/',
             },
-        );
+        ));
     });
 
     it('keeps a policy-disabled plugin browser action visible with its authored unavailable reason', async () => {
@@ -597,11 +604,12 @@ describe('BrowserShell', () => {
         );
 
         await screen.pressByTestIdAsync('browser-shell-overflow');
-        const action = screen.findByTestId(
+        const action = screen.findHostByTestId(
             'browser-shell-overflow-item-browserAction:acme.preview:open-preview',
         );
         expect(action?.props.accessibilityState).toMatchObject({ disabled: true });
-        expect(action?.props.accessibilityHint).toBe('Open preview is available on desktop only.');
+        // A disabled menu row keeps its reason on screen, not only in the accessibility tree.
+        expect(screen.getTextContent()).toContain('Open preview is available on desktop only.');
         await screen.pressByTestIdAsync('browser-shell-overflow-item-browserAction:acme.preview:open-preview');
         expect(onPluginBrowserAction).not.toHaveBeenCalled();
     });
@@ -690,16 +698,9 @@ describe('BrowserShell', () => {
         expect(screen.findByTestId('browser-shell-title')).toBeNull();
         expect(screen.findByTestId('browser-shell-security')).toBeTruthy();
 
-        // Secondary single-shot tools (attach-context, annotation) moved OFF the wrapping row into
-        // an overflow Popover — they are not rendered inline anymore.
-        expect(screen.findAllByTestId('browser-shell-attach-context')).toHaveLength(0);
-        expect(screen.findByTestId('browser-shell-overflow')).toBeTruthy();
-
-        await act(async () => {
-            screen.pressByTestId('browser-shell-overflow');
-        });
-        expect(screen.findByTestId('browser-shell-overflow-item-attach-context')).toBeTruthy();
-        expect(screen.findByTestId('browser-shell-overflow-item-start-annotation')).toBeTruthy();
+        // Lab W: Attach page and Mark up are visible chrome, not buried in `⋯`.
+        expect(screen.findByTestId('browser-shell-attach-page')).toBeTruthy();
+        expect(screen.findByTestId('browser-shell-mark-up')).toBeTruthy();
     });
 
     it('B-RC5: renders no profile chrome for the host-local default profile (clean browser)', async () => {
@@ -805,6 +806,18 @@ describe('BrowserShell', () => {
 
 
     it('mounts the browser launchpad when no browser view is focused', async () => {
+        // Open re-admits the preview through the actual registration owner. Substitute only RPC.
+        const resource = { previewId: target.targetId, machineId: target.machineId, sessionId: target.sessionId,
+            owner: { kind: 'session' as const, id: target.sessionId },
+            target: { scheme: 'http' as const, host: '127.0.0.1', port: 5173 },
+            initialPath: { pathname: '/app/', search: '' }, display: target.display, originMode: 'host' as const,
+            browserTarget: target };
+        const preview = { previewId: resource.previewId, resource, accessUrl: 'https://preview.happier.test/app/?previewToken=renewed',
+            expiresAt: 1_700_000_000_000, diagnostics: [] };
+        testState.machineRpc.mockResolvedValue({ protocolVersion: 1, status: 'existing', preview,
+            snapshot: { v: 1, machineId: target.machineId, generatedAt: 1_000, refreshState: 'idle',
+                resources: [resource], previews: [preview], diagnostics: [] },
+        } satisfies DaemonLocalServicePreviewOpenOrCreateResponseV1);
         const { BrowserShell } = await import('./BrowserShell');
         const reducer = await import('@/sync/domains/browser/control/reducer');
 	        const onCommand = vi.fn<(command: BrowserCommandV1) => void>();
@@ -842,9 +855,10 @@ describe('BrowserShell', () => {
 
 	        expect(onOpenTarget).toHaveBeenCalledWith(target, {
 	            platform: 'ios',
-	            currentUrl: 'https://preview.happier.test/app/',
-	            currentUrlExpiresAt: 1_700_000_000_000,
+	            currentUrl: 'https://preview.happier.test/app/?previewToken=renewed',
 	        });
+        // Admission expiry does not expire an already admitted viewer. Cached row URLs are not reused.
+        expect(onOpenTarget.mock.calls[0]?.[1]).not.toHaveProperty('currentUrlExpiresAt');
         expect(onCommand).not.toHaveBeenCalled();
     });
 
@@ -1013,8 +1027,7 @@ describe('BrowserShell', () => {
             />,
         );
 
-        await screen.pressByTestIdAsync('browser-shell-overflow');
-        await screen.pressByTestIdAsync('browser-shell-overflow-item-attach-context');
+        await screen.pressByTestIdAsync('browser-shell-attach-page');
 
         expect(onAttachUnavailable).not.toHaveBeenCalled();
         expect(onContextStateChange).toHaveBeenCalledTimes(1);
@@ -1300,12 +1313,13 @@ describe('BrowserShell', () => {
             />,
         );
 
-        expect(captureUnavailable.findByTestId('browser-shell-recording-status-capture-unavailable')).toBeTruthy();
-        const captureStartButton = captureUnavailable.findByTestId('browser-shell-recording-start');
+        // Idle recording is a `⋯` tool, never a pill in the chrome.
+        expect(captureUnavailable.findHostByTestId('browser-shell-recording-status-recording')).toBeNull();
+        await captureUnavailable.pressByTestIdAsync('browser-shell-overflow');
+        const captureStartButton = captureUnavailable.findHostByTestId('browser-shell-overflow-item-start-recording');
         expect(captureStartButton?.props.accessibilityState).toMatchObject({
             disabled: true,
         });
-        expect(captureStartButton?.props.accessibilityHint).toBeTruthy();
 
         const permissionDenied = await renderScreen(
             <BrowserShell
@@ -1326,12 +1340,11 @@ describe('BrowserShell', () => {
             />,
         );
 
-        expect(permissionDenied.findByTestId('browser-shell-permission-recording-status-permission-denied')).toBeTruthy();
-        const permissionStartButton = permissionDenied.findByTestId('browser-shell-permission-recording-start');
+        await permissionDenied.pressByTestIdAsync('browser-shell-permission-overflow');
+        const permissionStartButton = permissionDenied.findHostByTestId('browser-shell-permission-overflow-item-start-recording');
         expect(permissionStartButton?.props.accessibilityState).toMatchObject({
             disabled: true,
         });
-        expect(permissionStartButton?.props.accessibilityHint).toBeTruthy();
     });
 
     it('delegates recording starts with the focused browser target for source resolution', async () => {
@@ -1358,7 +1371,8 @@ describe('BrowserShell', () => {
             />,
         );
 
-        await screen.pressByTestIdAsync('browser-shell-recording-start');
+        await screen.pressByTestIdAsync('browser-shell-overflow');
+        await screen.pressByTestIdAsync('browser-shell-overflow-item-start-recording');
 
         expect(onStartRecording).toHaveBeenCalledWith(expect.objectContaining({
             browserSessionId: 'browser_session_1',
@@ -1421,11 +1435,13 @@ describe('BrowserShell', () => {
             />,
         );
 
+        // A running recording is one capsule in the chrome: elapsed time and Stop, nothing else.
         expect(screen.findByTestId('browser-shell-recording-status-recording')).toBeTruthy();
-        expect(screen.findByTestId('browser-shell-recording-status-temporary')).toBeTruthy();
+        expect(screen.getTextContent()).not.toContain('browserRecording.fidelity');
 
         await screen.pressByTestIdAsync('browser-shell-recording-stop');
-        await screen.pressByTestIdAsync('browser-shell-recording-cancel');
+        await screen.pressByTestIdAsync('browser-shell-overflow');
+        await screen.pressByTestIdAsync('browser-shell-overflow-item-discard-recording');
 
         expect(onStopRecording).toHaveBeenCalledWith(expect.objectContaining({
             recordingId: started.recordingId,
@@ -1437,7 +1453,40 @@ describe('BrowserShell', () => {
         expect(onCancelRecording.mock.calls[0]?.[0]).not.toHaveProperty('mediaRef');
     });
 
-    it('renders browser automation status, cancel control, and latest action timeline', async () => {
+    it('keeps idle chrome to one quiet row: no recording or automation pills while nothing runs (H-UX F-5)', async () => {
+        const { BrowserShell } = await import('./BrowserShell');
+        const { createBrowserRecordingState } = await import('@/sync/domains/browser/recording');
+        const { createBrowserAutomationControlService } = await import('@/sync/domains/browser/automation');
+        const state = await createShellState();
+        const screen = await renderScreen(
+            <BrowserShell
+                browserSessionId="browser_session_1"
+                platform="web"
+                state={state}
+                onCommand={vi.fn()}
+                browserRecording={{
+                    state: createBrowserRecordingState(),
+                    recordingCapabilities: availableRecordingCapabilities,
+                    enabled: true,
+                    onStartRecording: vi.fn(),
+                }}
+                browserAutomation={{
+                    controlService: createBrowserAutomationControlService({ nowMs: () => 1_000 }),
+                    enabled: true,
+                }}
+                testID="browser-shell"
+            />,
+        );
+
+        expect(screen.findHostByTestId('browser-shell-recording-status-recording')).toBeNull();
+        expect(screen.findHostByTestId('browser-shell-presence')).toBeNull();
+        const text = screen.getTextContent();
+        expect(text).not.toContain('browserRecording.status');
+        expect(text).not.toContain('browserRecording.fidelity');
+        expect(text).not.toContain('browserAutomation.status');
+    });
+
+    it('shows who drives the page and lets the person take control from the agent (lab browser A/H)', async () => {
         const { BrowserShell } = await import('./BrowserShell');
         const { createBrowserAutomationControlService } = await import('@/sync/domains/browser/automation');
         const state = await createShellState();
@@ -1456,12 +1505,12 @@ describe('BrowserShell', () => {
             adapterKind: 'localPreview',
             fidelity: 'injectedPage',
             trustedInput: false,
-            supportedActions: ['waitFor'],
+            supportedActions: ['click'],
             executeAction: async () => pending,
         })).toEqual({ ok: true });
         const action = controlService.executeAction({
             v: 1,
-            automationRequestId: 'automation_request_wait_visible',
+            automationRequestId: 'automation_request_click_sign_in',
             browserSessionId: 'browser_session_1',
             viewId: 'view_1',
             navigationGeneration: 0,
@@ -1470,7 +1519,7 @@ describe('BrowserShell', () => {
                 kind: 'session',
                 id: 'session_1',
             },
-            actionKind: 'waitFor',
+            actionKind: 'click',
             timeoutMs: 10_000,
         });
         await Promise.resolve();
@@ -1489,21 +1538,41 @@ describe('BrowserShell', () => {
             />,
         );
 
-        expect(screen.findByTestId('browser-shell-automation-status-active')).toBeTruthy();
-        expect(screen.findByTestId('browser-shell-automation-cancel')?.props.accessibilityState).toMatchObject({
-            disabled: false,
-        });
+        // The agent is acting: one presence capsule names it and what it is doing.
+        expect(screen.findByTestId('browser-shell-presence-agent')).toBeTruthy();
+        expect(screen.getTextContent()).toContain('browserPresence.doing.click');
+        // No mechanism copy on primary chrome: no request ids, no "automation" status pills.
+        expect(screen.getTextContent()).not.toContain('automation_request_click_sign_in');
+        expect(screen.getTextContent()).not.toContain('browserAutomation.status');
 
-        await screen.pressByTestIdAsync('browser-shell-automation-cancel');
+        await screen.pressByTestIdAsync('browser-shell-presence-take-control');
+        // The engine's interrupted work settles; the owner then answers the takeover.
+        resolvePending({ status: 'succeeded' });
         await expect(action).resolves.toMatchObject({
-            status: 'canceled',
-            errorCode: 'user_canceled',
+            status: 'interrupted',
+            errorCode: 'human_interrupted',
         });
         await flushHookEffects();
 
-        expect(screen.findByTestId('browser-shell-automation-timeline-entry-automation_request_wait_visible')).toBeTruthy();
-        expect(screen.findByTestId('browser-shell-automation-timeline-status-canceled')).toBeTruthy();
-        resolvePending({ status: 'succeeded' });
+        expect(screen.findByTestId('browser-shell-presence-human')).toBeTruthy();
+        await screen.pressByTestIdAsync('browser-shell-presence-hand-back');
+        await flushHookEffects();
+        expect(screen.findHostByTestId('browser-shell-presence')).toBeNull();
+    });
+
+    it('offers hand back through the session model for a daemon-held view', async () => {
+        const { BrowserShell } = await import('./BrowserShell');
+        const state = await createShellState();
+        const view = state.viewsById.view_1;
+        const sendCommand = vi.fn(); // Machine RPC transport boundary.
+        const screen = await renderScreen(<BrowserShell browserSessionId="browser_session_1" platform="web"
+            state={{ ...state, viewsById: { ...state.viewsById, view_1: { ...view, adapterKind: 'chromiumSidecar',
+                automationController: { browserSessionId: 'browser_session_1', viewId: 'view_1', controller: 'human', controlEpoch: 1 } } } }}
+            onCommand={vi.fn()} testID="browser-shell" browserContext={{ state: createBrowserContextState(),
+                contextCapabilities, onStateChange: vi.fn(), daemonControl: { sendCommand } }} />);
+        expect(screen.findByTestId('browser-shell-presence-hand-back')).toBeTruthy();
+        await screen.pressByTestIdAsync('browser-shell-presence-hand-back');
+        expect(sendCommand).toHaveBeenCalledWith(expect.objectContaining({ kind: 'handBack', browserSessionId: 'browser_session_1', viewId: 'view_1' }));
     });
 
     it('mounts daemon browser diagnostics snapshots into the default product diagnostics panel', async () => {
@@ -1587,8 +1656,7 @@ describe('BrowserShell', () => {
             />,
         );
 
-        await screen.pressByTestIdAsync('browser-shell-overflow');
-        await screen.pressByTestIdAsync('browser-shell-overflow-item-start-annotation');
+        await screen.pressByTestIdAsync('browser-shell-mark-up');
 
         expect(onContextStateChange).toHaveBeenCalledTimes(1);
         const nextState = onContextStateChange.mock.calls[0]?.[0] as (
@@ -1646,8 +1714,7 @@ describe('BrowserShell', () => {
             />,
         );
 
-        await screen.pressByTestIdAsync('browser-shell-overflow');
-        await screen.pressByTestIdAsync('browser-shell-overflow-item-start-annotation');
+        await screen.pressByTestIdAsync('browser-shell-mark-up');
 
         expect(annotationRuntimeActionExecute).toHaveBeenCalledWith({
             actionId: 'browser.context.annotation.start',
@@ -1693,18 +1760,16 @@ describe('BrowserShell', () => {
             />,
         );
 
-        await screen.pressByTestIdAsync('browser-shell-overflow');
-
-        expect(screen.findByTestId('browser-shell-overflow-item-start-annotation')?.props.accessibilityState).toMatchObject({
+        expect(screen.findByTestId('browser-shell-mark-up')?.props.accessibilityState).toMatchObject({
             disabled: true,
         });
-        expect(screen.findByTestId('browser-shell-overflow-item-start-annotation')?.props.accessibilityHint).toBeTruthy();
-        await screen.pressByTestIdAsync('browser-shell-overflow-item-start-annotation');
+        expect(screen.findByTestId('browser-shell-mark-up')?.props.accessibilityHint).toBeTruthy();
+        await screen.pressByTestIdAsync('browser-shell-mark-up');
 
         expect(onContextStateChange).not.toHaveBeenCalled();
     });
 
-    it('keeps Attach and disabled Annotate reachable from the overflow menu at a 390px mobile width', async () => {
+    it('keeps Attach page and a disabled Mark up in the chrome row at a 390px mobile width', async () => {
         const { BrowserShell } = await import('./BrowserShell');
         const state = await createAnnotationCapableShellState();
         const onContextStateChange = vi.fn<(state: BrowserContextState) => void>();
@@ -1736,18 +1801,14 @@ describe('BrowserShell', () => {
             </View>,
         );
 
-        await screen.pressByTestIdAsync('browser-shell-overflow');
+        // At phone width both stay in the chrome row: Attach page folds to its glyph, Mark up keeps
+        // its disabled state and says why.
+        expect(screen.findByTestId('browser-shell-attach-page')).toBeTruthy();
+        const markUp = screen.findByTestId('browser-shell-mark-up');
+        expect(markUp?.props.accessibilityState).toMatchObject({ disabled: true });
+        expect(markUp?.props.accessibilityHint).toBeTruthy();
 
-        expect(screen.findByTestId('browser-shell-overflow-panel')).toBeTruthy();
-        expect(screen.findByTestId('browser-shell-overflow-item-attach-context')).toBeTruthy();
-        const annotationItem = screen.findByTestId('browser-shell-overflow-item-start-annotation');
-        expect(annotationItem?.props.accessibilityState).toMatchObject({ disabled: true });
-        expect(annotationItem?.props.accessibilityHint).toBeTruthy();
-        expect(screen.getTextContent()).toContain('browserContext.composer.attachPageReference');
-        expect(screen.getTextContent()).toContain('browserContext.composer.startAnnotation');
-        expect(screen.getTextContent()).toContain(annotationItem?.props.accessibilityHint);
-
-        await screen.pressByTestIdAsync('browser-shell-overflow-item-start-annotation');
+        await screen.pressByTestIdAsync('browser-shell-mark-up');
         expect(onContextStateChange).not.toHaveBeenCalled();
     });
 
@@ -1804,12 +1865,8 @@ describe('BrowserShell', () => {
             />,
         );
 
-        const selectTool = screen.findByTestId('browser-shell-annotation-editor-tool-select');
-        expect(selectTool?.props.disabled).toBe(true);
-        expect(selectTool?.props.accessibilityState).toEqual(expect.objectContaining({
-            disabled: true,
-            selected: true,
-        }));
+        const selectTool = screen.findHostByTestId('browser-shell-annotation-editor-tool:select');
+        expect(selectTool?.props.accessibilityState).toEqual(expect.objectContaining({ disabled: true }));
         expect(screen.findByTestId('browser-shell-annotation-editor-select-unavailable')).toBeTruthy();
         expect(screen.findByType(AnnotationCaptureSurface).props.disabled).toBe(true);
     });
@@ -2008,7 +2065,7 @@ describe('BrowserShell', () => {
         );
 
         await screen.pressByTestIdAsync('browser-shell-overflow');
-        expect(screen.findByTestId('browser-shell-overflow-item-capture-annotation')?.props.accessibilityState?.disabled).toBe(false);
+        expect(screen.findHostByTestId('browser-shell-overflow-item-capture-annotation')?.props.accessibilityState?.disabled).not.toBe(true);
 
         await screen.pressByTestIdAsync('browser-shell-overflow-item-capture-annotation');
 

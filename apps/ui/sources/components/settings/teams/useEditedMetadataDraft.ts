@@ -17,6 +17,7 @@ import * as React from 'react';
 export type EditedMetadataDraft = Readonly<{
     name: string;
     description: string;
+    isDirty: boolean;
     setName: (next: string) => void;
     setDescription: (next: string) => void;
     /** The published values moved while this draft was edited. */
@@ -70,18 +71,23 @@ export function useEditedMetadataDraft(published: Readonly<{
     }, [publishedDescription, publishedName]);
 
     const commit = React.useCallback((next: Readonly<{ name: string; description: string }>) => {
+        // A save may normalize its submitted text, but edits made while that
+        // request was pending still belong to the person editing this draft.
+        setName((current) => current === name ? next.name : current);
+        setDescription((current) => current === description ? next.description : current);
         setBaseline(Object.freeze({ name: next.name, description: next.description }));
         setConflict(false);
-    }, []);
+    }, [description, name]);
 
     return React.useMemo(() => Object.freeze({
         name,
         description,
+        isDirty: name !== baseline.name || description !== baseline.description,
         setName,
         setDescription,
         conflict,
         acceptPublished,
         reset,
         commit,
-    }), [acceptPublished, commit, conflict, description, name, reset]);
+    }), [acceptPublished, baseline, commit, conflict, description, name, reset]);
 }

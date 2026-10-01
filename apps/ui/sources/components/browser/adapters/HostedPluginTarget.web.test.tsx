@@ -369,17 +369,27 @@ describe('HostedPluginTarget web', () => {
             );
 
             await act(async () => {
-                (globalThis as { window: { dispatchEvent: (event: MessageEvent) => void } }).window.dispatchEvent({
+                const copiedCapabilityEvent = new MessageEvent('message', {
                     origin: 'null',
                     data: ready,
-                    source: copiedCapabilitySource,
-                } as MessageEvent);
-                (globalThis as { window: { dispatchEvent: (event: MessageEvent) => void } }).window.dispatchEvent({
+                });
+                Object.defineProperty(copiedCapabilityEvent, 'source', {
+                    value: copiedCapabilitySource,
+                });
+                (globalThis as { window: { dispatchEvent: (event: MessageEvent) => void } }).window.dispatchEvent(
+                    copiedCapabilityEvent,
+                );
+                const mountedEvent = new MessageEvent('message', {
                     origin: 'null',
                     data: ready,
-                    source: mountedSource,
-                    ports: [documentPort],
-                } as MessageEvent);
+                });
+                Object.defineProperties(mountedEvent, {
+                    source: { value: mountedSource },
+                    ports: { value: [documentPort] },
+                });
+                (globalThis as { window: { dispatchEvent: (event: MessageEvent) => void } }).window.dispatchEvent(
+                    mountedEvent,
+                );
             });
 
             expect(onMessage).toHaveBeenCalledTimes(1);

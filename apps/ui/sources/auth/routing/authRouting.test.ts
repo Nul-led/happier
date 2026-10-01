@@ -46,6 +46,9 @@ describe('isPublicRouteForUnauthenticated', () => {
         { name: 'nested home index', segments: ['(app)', '(group)', 'index'], expected: true },
         { name: 'setup route', segments: ['setup'], expected: true },
         { name: 'nested setup route', segments: ['(app)', 'setup'], expected: true },
+        { name: 'legacy account-entry redirect', segments: ['(app)', 'setup', 'wizard'], expected: true },
+        { name: 'unrelated nested setup route stays private', segments: ['setup', 'other'], expected: false },
+        { name: 'nested legacy route stays private', segments: ['setup', 'wizard', 'other'], expected: false },
         { name: 'server route', segments: ['server'], expected: true },
         { name: 'nested server route', segments: ['(app)', 'server', 'saved'], expected: true },
         { name: 'restore route', segments: ['restore'], expected: true },
@@ -67,6 +70,8 @@ describe('isPublicRouteForUnauthenticated', () => {
         { name: 'nested Team invitation route stays private', segments: ['join', 'opaque-invitation', 'admin'], expected: false },
         { name: 'Team authentication entry route', segments: ['teams', 'team-1', 'sign-in'], expected: true },
         { name: 'grouped Team authentication entry route', segments: ['(app)', 'teams', 'team-1', 'sign-in'], expected: true },
+        { name: 'account-service sign-in return route', segments: ['(app)', 'homes', 'sign-in'], expected: true },
+        { name: 'other Homes routes stay private', segments: ['(app)', 'homes', 'add'], expected: false },
         { name: 'email verification landing', segments: ['auth', 'email', 'verify', 'opaque-bearer'], expected: true },
         { name: 'password reset landing', segments: ['auth', 'password', 'reset', 'opaque-bearer'], expected: true },
         { name: 'E2EE recovery-key password replacement', segments: ['auth', 'password', 'recover'], expected: true },
@@ -92,11 +97,15 @@ describe('isPublicRouteForUnauthenticated', () => {
             withDebugRouteEnv(undefined, () => {
                 expect(isPublicRouteForUnauthenticated(['(app)', 'dev', 'stage-dperf'])).toBe(true);
                 expect(isPublicRouteForUnauthenticated(['(app)', 'dev', 'terminal-qa'])).toBe(true);
+                expect(isPublicRouteForUnauthenticated(['(app)', 'dev', 'agent-setup'])).toBe(true);
+                // Only the exact fixture specimens: other dev screens read the signed-in account.
+                expect(isPublicRouteForUnauthenticated(['(app)', 'dev', 'logs'])).toBe(false);
             });
         });
 
         withDevBuild(false, () => {
             withDebugRouteEnv(undefined, () => {
+                expect(isPublicRouteForUnauthenticated(['(app)', 'dev', 'agent-setup'])).toBe(false);
                 expect(isPublicRouteForUnauthenticated(['(app)', 'dev', 'stage-dperf'])).toBe(false);
                 expect(isPublicRouteForUnauthenticated(['(app)', 'dev', 'terminal-qa'])).toBe(false);
             });

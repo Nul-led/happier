@@ -10,6 +10,8 @@ import { t } from '@/text';
 import { DevicePetSelector, type DetectedDevicePetSelectorItem, type LocalDevicePetSelectorItem } from '../DevicePetSelector';
 import type { CodexDetectionState, LocalPetImportDiagnostic } from './types';
 import { Icon } from '@/components/ui/icons/Icon';
+import { SettingAnchor } from '@/components/settings/shell/SettingRow';
+import { PETS_SETTINGS } from '@/components/settings/pets/petsSettings';
 
 type PetsLocalLibrarySectionProps = Readonly<{
     builtInPetRows: readonly BuiltInPetPackage[];
@@ -25,12 +27,11 @@ type PetsLocalLibrarySectionProps = Readonly<{
 }>;
 
 export function PetsLocalLibrarySection(props: PetsLocalLibrarySectionProps): React.ReactElement {
-    const { theme } = useUnistyles();
 
     return (
         <View testID="settings-pets-source-list">
             <View testID="settings-pets-local-library-list">
-                <ItemGroup title={t('settingsPets.localLibraryTitle')} footer={t('settingsPets.localLibraryFooter')}>
+                <ItemGroup title={t('settingsPets.localLibraryTitle')} description={t('settingsPets.localLibraryFooter')}>
                     <DevicePetSelector
                         builtInPets={props.builtInPetRows}
                         companionSizeScale={props.companionSizeScale}
@@ -41,16 +42,17 @@ export function PetsLocalLibrarySection(props: PetsLocalLibrarySectionProps): Re
                 </ItemGroup>
                 <View testID="settings-pets-codex-library-list">
                     <View testID="settings-pets-codex-detect-group">
-                        <ItemGroup>
-                            <Item
-                                testID="settings-pets-detect-codex-pets"
-                                title={t('settingsPets.detectCodexPetsTitle')}
-                                subtitle={t('settingsPets.detectCodexPetsSubtitle')}
-                                icon={<Icon name="magnifying-glass" size={24} color={theme.colors.accent.blue} />}
-                                detail={props.codexDetectionState === 'loading' ? t('common.scanning') : undefined}
-                                loading={props.codexDetectionState === 'loading'}
-                                onPress={props.onDiscoverPets}
-                            />
+                        <ItemGroup title={t('settingsPets.codexPetsTitle')} description={t('settingsPets.codexPetsDescription')}>
+                            <SettingAnchor setting={PETS_SETTINGS.settings.detectCodexPets}>
+                                <Item
+                                    testID="settings-pets-detect-codex-pets"
+                                    title={t(PETS_SETTINGS.settings.detectCodexPets.titleKey)}
+                                    subtitle={t('settingsPets.detectCodexPetsSubtitle')}
+                                    detail={props.codexDetectionState === 'loading' ? t('common.scanning') : undefined}
+                                    loading={props.codexDetectionState === 'loading'}
+                                    onPress={props.onDiscoverPets}
+                                />
+                            </SettingAnchor>
                         </ItemGroup>
                     </View>
                     <PetsDetectedCodexState
@@ -79,7 +81,7 @@ function PetsDetectedCodexState(props: Readonly<{
     if (props.detectedPetRowsCount > 0) {
         return (
             <View testID="settings-pets-detected-codex-pets-list">
-                <ItemGroup>
+                <ItemGroup title={t('settingsPets.detectedCodexPetsTitle')}>
                     <DevicePetSelector
                         builtInPets={[]}
                         companionSizeScale={props.companionSizeScale}
@@ -116,7 +118,6 @@ function PetsDetectedCodexState(props: Readonly<{
                     <Item
                         title={t('settingsPets.detectedCodexPetsEmptyTitle')}
                         subtitle={t('settingsPets.detectedCodexPetsEmptySubtitle')}
-                        icon={<Icon name="tray" size={24} color={theme.colors.text.secondary} />}
                         mode="info"
                     />
                 </ItemGroup>
@@ -161,7 +162,6 @@ function PetsDetectedCodexState(props: Readonly<{
                     <Item
                         title={t('settingsPets.detectedCodexPetsDaemonMismatchTitle')}
                         subtitle={t('settingsPets.detectedCodexPetsDaemonMismatchSubtitle')}
-                        icon={<Icon name="arrow-clockwise" size={24} color={theme.colors.state.danger.foreground} />}
                         mode="info"
                     />
                 </ItemGroup>

@@ -43,7 +43,7 @@ import {
     TeamIdentityConnectionRemovalPreflightV1Schema,
 } from '@happier-dev/protocol/teams';
 import {
-    getActionSpec,
+    type ActionExecuteFailure,
     homeDomainActionInputSchemaV1,
     homeDomainActionOutputSchemaV1,
     type HomeDomainActionIdV1,
@@ -52,10 +52,12 @@ import {
 
 import type { ServerAccountScope } from '@/sync/domains/scope/serverAccountScope';
 import { homeDomainFailureCode } from '@/sync/api/home/homeDomainActions';
+import type { HomeDomainFailure } from '@/sync/api/home/homeServerActionTransport';
 import { scopedHomeActionExecutor } from '@/sync/ops/actions/scopedHomeActionExecutor';
 import { classifyHomeActionOutcome } from '@/sync/ops/home/homeActionOutcome';
-import { isIdentityAdministrationFailureRetryable } from '@/components/settings/identity/identityAdministrationFailure';
+import { resolveApprovalSettledReadFailure, resolveIdentityAdministrationFailureRetryable } from '@/components/settings/identity/identityAdministrationFailure';
 import {
+    awaitActionApprovalResult,
     createHomeActionApprovalContinuation,
     type ActionApprovalRegistration,
 } from '@/components/approvals/actionApprovalContinuation';
@@ -136,18 +138,20 @@ export type TeamIdentityActionInput<TActionId extends TeamIdentityActionIdV1> =
     TeamIdentityActionInputMap[TActionId];
 export type TeamIdentityActionOutput<TActionId extends TeamIdentityActionIdV1> =
     TeamIdentityActionOutputMap[TActionId];
+export type TeamExternalGroupBindingActionOutput<TActionId extends TeamExternalGroupBindingActionIdV1> =
+    TeamExternalGroupBindingActionOutputMap[TActionId];
 
-type IdentityAdministrationExecuteOptions<TValue> = Readonly<{
+export type IdentityAdministrationExecuteOptions<TValue> = Readonly<{
     signal?: AbortSignal;
     onApprovalSucceeded?: (value: TValue) => void | Promise<void>;
-    onApprovalFailed?: (code: string) => void;
+    onApprovalFailed?: (code: string, failure?: ActionExecuteFailure) => void;
 }>;
 
 function approvalCallbacks<TValue>(
     options: IdentityAdministrationExecuteOptions<TValue> | undefined,
 ): Readonly<{
     onSucceeded?: (value: TValue) => void | Promise<void>;
-    onFailed?: (code: string) => void;
+    onFailed?: (code: string, failure?: ActionExecuteFailure) => void;
 }> | undefined {
     if (!options?.onApprovalSucceeded && !options?.onApprovalFailed) return undefined;
     return Object.freeze({
@@ -158,13 +162,35 @@ function approvalCallbacks<TValue>(
 
 export type IdentityAdministrationActionResult<TValue> =
     | Readonly<{ ok: true; value: TValue }>
-    | Readonly<{ ok: false; failure: Readonly<{ code: string; retryable: boolean }> }>
+    | Readonly<{ ok: false; failure: Readonly<{ code: string; retryable: boolean; domainFailure?: HomeDomainFailure }> }>
     | Readonly<{
         ok: false;
         approvalPending: true;
         artifactId: string;
         failure: Readonly<{ code: 'approval_pending'; retryable: false }>;
     }>;
+
+export type IdentityAdministrationReadResult<TValue> = Exclude<IdentityAdministrationActionResult<TValue>, { approvalPending: true }>;
+
+/**
+ * Keep a mounted read's ordinary Promise pending while its existing approval
+ * continuation owns the result. The read executes once; cancellation releases
+ * only this caller's interest, never the durable approval or its effect.
+ * Callers name `TValue`: contextually typing the `options` lambda parameter
+ * would otherwise fix it to `unknown` before the return type is inferred.
+ */
+export function executeIdentityAdministrationRead<TValue>(
+    execute: (options: IdentityAdministrationExecuteOptions<TValue>) => Promise<IdentityAdministrationActionResult<TValue>>,
+    signal?: AbortSignal,
+): Promise<IdentityAdministrationReadResult<TValue>> {
+    return awaitActionApprovalResult<TValue, IdentityAdministrationReadResult<TValue>>({
+        execute,
+        signal,
+        succeeded: (value) => ({ ok: true, value }),
+        aborted: () => ({ ok: false, failure: { code: 'aborted', retryable: false } }),
+        failed: (code, actionFailure) => ({ ok: false, failure: resolveApprovalSettledReadFailure(code, actionFailure) }),
+    });
+}
 
 export type IdentityAdministrationClient = Readonly<{
     execute: <TActionId extends TeamIdentityActionIdV1>(
@@ -195,7 +221,7 @@ export function createIdentityAdministrationClient(
         signal?: AbortSignal,
         approval?: Readonly<{
             onSucceeded?: (value: TValue) => void | Promise<void>;
-            onFailed?: (code: string) => void;
+            onFailed?: (code: string, failure?: ActionExecuteFailure) => void;
         }>,
     ): Promise<IdentityAdministrationActionResult<TValue>> => {
         const parsedInput = homeDomainActionInputSchemaV1(actionId).safeParse(input);
@@ -216,29 +242,19 @@ export function createIdentityAdministrationClient(
                 ok: false,
                 failure: {
                     code,
-                    // A named refusal carries the Home's own retryability and
-                    // that answer stands. OR-ing the client's name-shaped
-                    // fallback into it could only ever add retryability, so a
-                    // declared `retryable: false` could never survive a code
-                    // whose name merely sounds transient, and the Retry the
-                    // detail screen then offers can never succeed. The fallback
-                    // remains for transport outcomes the Home never classified.
-                    retryable: actionOutcome.failure.code !== null
-                        ? actionOutcome.failure.retryable
-                        : actionOutcome.failure.retryable || isIdentityAdministrationFailureRetryable(code),
+                    retryable: resolveIdentityAdministrationFailureRetryable(actionOutcome.failure, code),
+                    domainFailure: actionOutcome.failure,
                 },
             };
         }
 
         if (actionOutcome.kind === 'approval_pending') {
-            if (getActionSpec(actionId).sideEffectClass === 'read') {
-                return { ok: false, failure: { code: 'invalid_action_output', retryable: false } };
-            }
             const continuation = createHomeActionApprovalContinuation<TValue, typeof actionId>({
                 artifactId: actionOutcome.artifactId,
                 actionId,
                 scope,
                 expectedInput: parsedInput.data,
+                ...(signal ? { signal } : {}),
                 onSucceeded: async (value) => await approval?.onSucceeded?.(value),
                 ...(approval?.onFailed ? { onFailed: approval.onFailed } : {}),
             });

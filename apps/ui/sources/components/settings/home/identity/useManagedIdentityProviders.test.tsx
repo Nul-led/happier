@@ -6,9 +6,13 @@ import { publishHomeAccountChange } from '@/sync/runtime/orchestration/homeAccou
 
 const executeMock = vi.hoisted(() => vi.fn());
 
-vi.mock('./managedIdentityProviderClient', () => ({
-    createManagedIdentityProviderClient: () => ({ execute: executeMock }),
-}));
+vi.mock('./managedIdentityProviderClient', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('./managedIdentityProviderClient')>();
+    return {
+        ...actual,
+        createManagedIdentityProviderClient: () => ({ execute: executeMock }),
+    };
+});
 
 import { useManagedIdentityProviders } from './useManagedIdentityProviders';
 

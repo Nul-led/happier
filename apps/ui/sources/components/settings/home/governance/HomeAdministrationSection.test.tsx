@@ -1,4 +1,5 @@
 import * as React from 'react';
+import { Text } from 'react-native';
 import type { HomeGovernanceProjectionV1 } from '@happier-dev/protocol/home/governance';
 import { act } from 'react-test-renderer';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -33,6 +34,12 @@ import { installSettingsViewCommonModuleMocks } from '../../settingsViewTestHelp
 const routerPush = vi.hoisted(() => vi.fn());
 
 installSettingsViewCommonModuleMocks({
+    // A phone: the one place Overview lists the console's pages (elsewhere its sidebar or menu does).
+    reactNative: async () => {
+        const { createReactNativeWebMock } = await import('@/dev/testkit/mocks/reactNative');
+        const dimensions = () => ({ width: 390, height: 844, scale: 1, fontScale: 1 });
+        return createReactNativeWebMock({ useWindowDimensions: dimensions, Dimensions: { get: dimensions } });
+    },
     router: async () => ({
         useRouter: () => ({ push: routerPush, back: vi.fn() }),
         useNavigation: () => ({ setOptions: vi.fn() }),
@@ -53,10 +60,13 @@ function projection(overrides?: Partial<HomeGovernanceProjectionV1>): HomeGovern
 }
 
 async function renderOverview(serverId: string) {
+    const { HomeConsoleShell } = await import('./HomeConsoleNavigation');
     const { HomeAdministrationOverviewScreen } = await import('./HomeAdministrationOverviewScreen');
     const { resetHomeGovernanceEngineForTests } = await import('@/sync/engine/home/governance/homeGovernanceEngine');
     resetHomeGovernanceEngineForTests();
-    return renderScreen(<HomeAdministrationOverviewScreen serverId={serverId} />);
+    return renderScreen(
+        <HomeConsoleShell serverId={serverId} rail="console"><HomeAdministrationOverviewScreen serverId={serverId} /></HomeConsoleShell>,
+    );
 }
 
 beforeEach(async () => {
@@ -75,6 +85,14 @@ beforeEach(async () => {
 afterEach(() => {
     standardCleanup();
 });
+
+type RenderedNode = Readonly<{ children: ReadonlyArray<RenderedNode | string> }>;
+
+/** Every string rendered under the node carrying `testID`: what the person actually reads. */
+function textUnder(node: RenderedNode | null): string {
+    if (!node) return '';
+    return node.children.map((child) => (typeof child === 'string' ? child : textUnder(child))).join('|');
+}
 
 describe('HomeAdministrationSection', () => {
     it('keeps a pending Home Action reachable through its shared approval artifact', async () => {
@@ -188,7 +206,7 @@ describe('HomeAdministrationSection', () => {
         expect(collectRenderedTestIds(screen.tree.toJSON())).not.toContain('home-admin-unavailable-action');
     });
 
-    it('shows setup instructions for the typed ownerless-Home response without rendering administration data', async () => {
+    it('offers the code claim for the typed ownerless-Home response without rendering administration data', async () => {
         const home = await harness.addHome({ name: 'Home A', serverUrl: 'https://home-a.example' });
         harness.answer(home, GOVERNANCE_PATH, {
             status: 409,
@@ -197,13 +215,38 @@ describe('HomeAdministrationSection', () => {
 
         const screen = await renderOverview(home);
         await waitForHomeGovernance(() => {
-            expect(collectRenderedTestIds(screen.tree.toJSON())).toContain('home-admin-setup-required');
+            expect(collectRenderedTestIds(screen.tree.toJSON())).toContain('home-claim-empty');
         });
         const ids = collectRenderedTestIds(screen.tree.toJSON());
+        expect(ids).toContain('home-claim-code-input');
+        // Not this device's Personal Home: no hosting-desktop claim is offered.
+        expect(ids).not.toContain('home-claim-host');
         expect(ids).not.toContain('home-admin-viewer-role');
         expect(ids).not.toContain('home-admin-people');
         expect(ids).not.toContain('home-admin-policies');
-        expect(ids.some((id) => id.includes('claim'))).toBe(false);
+        // The page is about this Home and the one thing to do on it (lab `hcClaim-N`): its name, then the claim.
+        const header = textUnder(screen.findByTestId('home-admin-page-header'));
+        expect(header).toContain('Home A');
+        expect(header).toContain('homeGovernance.claim.pageDescription');
+        expect(header).not.toContain('homeGovernance.title');
+    });
+
+    it('names the ownerless Home on a phone too, where the navigation header already carries a title', async () => {
+        const home = await harness.addHome({ name: 'Home A', serverUrl: 'https://home-a.example' });
+        harness.answer(home, GOVERNANCE_PATH, { status: 409, body: { error: 'home_governance_setup_required' } });
+        const { NavigationTitleChromeProvider } = await import('@/components/ui/layout/navigationTitleChrome');
+        const { HomeAdministrationOverviewScreen } = await import('./HomeAdministrationOverviewScreen');
+        const { resetHomeGovernanceEngineForTests } = await import('@/sync/engine/home/governance/homeGovernanceEngine');
+        resetHomeGovernanceEngineForTests();
+
+        const screen = await renderScreen(
+            <NavigationTitleChromeProvider showsTitle><HomeAdministrationOverviewScreen serverId={home} /></NavigationTitleChromeProvider>,
+        );
+        await waitForHomeGovernance(() => {
+            expect(collectRenderedTestIds(screen.tree.toJSON())).toContain('home-claim-empty');
+        });
+        // Lab `hcClaim-P`: the phone header is the way back; the page is titled with the Home.
+        expect(textUnder(screen.findByTestId('home-admin-page-header'))).toContain('Home A');
     });
 
     it('reports a Home whose answer does not satisfy the contract as unavailable', async () => {
@@ -251,44 +294,86 @@ describe('HomeAdministrationSection', () => {
         expect(collectRenderedTestIds(screen.tree.toJSON())).toContain('home-admin-viewer-role');
     });
 
-    it('refreshes the exact ownerless Home after local setup without offering a claim action', async () => {
+    it('shows no warning while a Home that answered is refreshing, only a quiet updating note', async () => {
+        const home = await harness.addHome({
+            name: 'Home A',
+            serverUrl: 'https://home-a.example',
+            accountId: 'account-ada',
+        });
+        harness.answer(home, GOVERNANCE_PATH, { body: projection() });
+
+        // A page with the plain console header (the Overview renders its own entity header).
+        const { HomeAdministrationSection } = await import('./HomeAdministrationSection');
+        const { resetHomeGovernanceEngineForTests } = await import('@/sync/engine/home/governance/homeGovernanceEngine');
+        resetHomeGovernanceEngineForTests();
+        const screen = await renderScreen(
+            <HomeAdministrationSection serverId={home} title="Data">
+                {() => <Text testID="home-admin-test-page">page</Text>}
+            </HomeAdministrationSection>,
+        );
+        await vi.waitFor(() => {
+            expect(collectRenderedTestIds(screen.tree.toJSON())).toContain('home-admin-test-page');
+        }, { timeout: 15_000 });
+
+        // The next answer is held so the refresh stays in flight while the page is inspected.
+        let release!: () => void;
+        const held = new Promise<void>((resolve) => { release = resolve; });
+        harness.answer(home, GOVERNANCE_PATH, { body: projection(), respondAfter: held });
+        const { invalidateHomeGovernanceSnapshot } = await import('@/sync/store/home/governance/homeGovernanceSnapshots');
+        const { refreshHomeGovernanceSnapshot } = await import('@/sync/engine/home/governance/homeGovernanceEngine');
+        // An Account-change wake, then the refetch it causes, over a Home that answered.
+        let refresh!: Promise<void>;
+        act(() => {
+            invalidateHomeGovernanceSnapshot({ serverId: home, accountId: 'account-ada' });
+            refresh = refreshHomeGovernanceSnapshot({ serverId: home, accountId: 'account-ada' });
+        });
+
+        await vi.waitFor(() => {
+            expect(collectRenderedTestIds(screen.tree.toJSON())).toContain('home-admin-updating');
+        }, { timeout: 15_000 });
+        expect(collectRenderedTestIds(screen.tree.toJSON())).not.toContain('home-admin-stale');
+        expect(screen.getTextContent()).not.toContain('homeGovernance.staleNotice');
+        expect(collectRenderedTestIds(screen.tree.toJSON())).toContain('home-admin-test-page');
+        release();
+        await act(async () => { await refresh; });
+        await vi.waitFor(() => {
+            expect(collectRenderedTestIds(screen.tree.toJSON())).not.toContain('home-admin-updating');
+        }, { timeout: 15_000 });
+        // A cold import of the whole console runs close to the default case budget on this runner.
+    }, 180_000);
+
+    it('claims the exact ownerless Home it was opened for and becomes its console', async () => {
         const home = await harness.addHome({ name: 'Home A', serverUrl: 'https://home-a.example' });
         const otherHome = await harness.addHome({
             name: 'Home B',
             serverUrl: 'https://home-b.example',
             active: false,
         });
-        harness.answer(home, GOVERNANCE_PATH, {
-            body: projection({ setupState: 'setup_required', activeOwnerCount: 0 }),
-        });
+        harness.answer(home, GOVERNANCE_PATH, { status: 409, body: { error: 'home_governance_setup_required' } });
+        harness.answer(home, '/v1/home/governance/claim', { body: { status: 'claimed' } });
 
         const screen = await renderOverview(home);
         await waitForHomeGovernance(() => {
-            expect(collectRenderedTestIds(screen.tree.toJSON())).toContain('home-admin-setup-required');
+            expect(collectRenderedTestIds(screen.tree.toJSON())).toContain('home-claim-code-input');
         });
-        const ids = collectRenderedTestIds(screen.tree.toJSON());
-        expect(ids.some((id) => id.includes('claim'))).toBe(false);
 
-        // The operator assigned an owner outside this running server process.
         // Focus moves elsewhere while this Home's administration stays open.
         await act(async () => {
             await setActiveServerId(otherHome, { scope: 'device' });
         });
         expect(getActiveServerSnapshot().serverId).toBe(otherHome);
         harness.answer(home, GOVERNANCE_PATH, { body: projection() });
-        await waitForHomeGovernance(() => {
-            expect(collectRenderedTestIds(screen.tree.toJSON())).toContain('home-admin-setup-refresh');
+        await act(async () => {
+            screen.changeTextByTestId('home-claim-code-input', 'ABCD-EFGH-IJKL-MNOP-QRST-UVWX-YZ23-4567-ABCD-EFGH-IJKL-MNOP-QRST');
         });
-        const before = harness.requestsFor(GOVERNANCE_PATH).length;
-        await screen.pressByTestIdAsync('home-admin-setup-refresh');
+        await screen.pressByTestIdAsync('home-claim-submit');
 
         await waitForHomeGovernance(() => {
-            expect(collectRenderedTestIds(screen.tree.toJSON())).not.toContain('home-admin-setup-required');
+            expect(collectRenderedTestIds(screen.tree.toJSON())).not.toContain('home-claim-empty');
             expect(collectRenderedTestIds(screen.tree.toJSON())).toContain('home-admin-viewer-role');
         });
-        const refreshRequests = harness.requestsFor(GOVERNANCE_PATH).slice(before);
-        expect(refreshRequests.length).toBeGreaterThan(0);
-        expect(refreshRequests.every((request) => request.serverId === home)).toBe(true);
+        expect(harness.requestsFor('/v1/home/governance/claim').every((request) => request.serverId === home)).toBe(true);
+        expect(harness.requestsFor(GOVERNANCE_PATH).every((request) => request.serverId === home)).toBe(true);
     });
 
     it('opens Team administration for the exact Home it is administering', async () => {
@@ -297,27 +382,28 @@ describe('HomeAdministrationSection', () => {
 
         const screen = await renderOverview(home);
         await waitForHomeGovernance(() => {
-            expect(collectRenderedTestIds(screen.tree.toJSON())).toContain('home-admin-teams');
+            expect(collectRenderedTestIds(screen.tree.toJSON())).toContain('home-admin-teams-link');
         });
 
-        screen.pressByTestId('home-admin-teams');
+        screen.pressByTestId('home-admin-teams-link');
         // The Home's own id is in the destination, so this never resolves to the
         // focused Home or to the viewer's own membership list.
         expect(routerPush).toHaveBeenCalledWith(`/settings/home/${home}/teams`);
     });
 
-    it('states that Teams are off on this Home instead of offering the destination', async () => {
+    it('says Teams are off on this Home and still opens Teams, whose page states why', async () => {
         const home = await harness.addHome({ name: 'Home A', serverUrl: 'https://home-a.example' });
         harness.answer(home, GOVERNANCE_PATH, { body: projection({ teamsEnabled: false }) });
 
         const screen = await renderOverview(home);
         await waitForHomeGovernance(() => {
-            expect(collectRenderedTestIds(screen.tree.toJSON())).toContain('home-admin-teams');
+            expect(collectRenderedTestIds(screen.tree.toJSON())).toContain('home-admin-teams-link');
         });
 
-        const row = screen.findByTestId('home-admin-teams');
-        expect(row?.props?.onPress ?? row?.props?.onClick).toBeUndefined();
-        expect(routerPush).not.toHaveBeenCalled();
+        const teamsRow = screen.root.findAll((node) => node.props.testID === 'home-admin-teams-link' && typeof node.props.subtitle === 'string')[0];
+        expect(teamsRow?.props.subtitle).toBe('homeGovernance.teamsDisabled');
+        screen.pressByTestId('home-admin-teams-link');
+        expect(routerPush).toHaveBeenCalledWith(`/settings/home/${home}/teams`);
     });
 
     it('omits Team administration entirely from a viewer who may not govern Teams', async () => {
@@ -332,6 +418,51 @@ describe('HomeAdministrationSection', () => {
         await waitForHomeGovernance(() => {
             expect(collectRenderedTestIds(screen.tree.toJSON())).toContain('home-admin-viewer-role');
         });
-        expect(collectRenderedTestIds(screen.tree.toJSON())).not.toContain('home-admin-teams');
+        expect(collectRenderedTestIds(screen.tree.toJSON())).not.toContain('home-admin-teams-link');
+    });
+
+    it('offers Email, Features, Data and Activity to an admin who may read administration but not change Home settings', async () => {
+        const home = await harness.addHome({ name: 'Home A', serverUrl: 'https://home-a.example' });
+        harness.answer(home, GOVERNANCE_PATH, {
+            body: projection({
+                viewer: { accountId: 'account-ada', homeRole: 'admin', status: 'active' },
+                capabilities: { ...projection().capabilities, manageHomeSettings: false },
+            }),
+        });
+
+        const screen = await renderOverview(home);
+        await waitForHomeGovernance(() => {
+            expect(collectRenderedTestIds(screen.tree.toJSON())).toContain('home-admin-email-link');
+        });
+
+        screen.pressByTestId('home-admin-email-link');
+        screen.pressByTestId('home-admin-features-link');
+        screen.pressByTestId('home-admin-data-link');
+        screen.pressByTestId('home-admin-activity-link');
+        expect(routerPush.mock.calls).toEqual([
+            [`/settings/home/${home}/email`],
+            [`/settings/home/${home}/features`],
+            [`/settings/home/${home}/data`],
+            [`/settings/home/${home}/activity`],
+        ]);
+    });
+
+    it('omits Email and Activity from a viewer who may not read administration', async () => {
+        const home = await harness.addHome({ name: 'Home A', serverUrl: 'https://home-a.example' });
+        harness.answer(home, GOVERNANCE_PATH, {
+            body: projection({
+                capabilities: { ...projection().capabilities, viewAdministration: false, manageHomeSettings: false },
+            }),
+        });
+
+        const screen = await renderOverview(home);
+        await waitForHomeGovernance(() => {
+            expect(collectRenderedTestIds(screen.tree.toJSON())).toContain('home-admin-viewer-role');
+        });
+        const ids = collectRenderedTestIds(screen.tree.toJSON());
+        expect(ids).not.toContain('home-admin-email-link');
+        expect(ids).not.toContain('home-admin-features-link');
+        expect(ids).not.toContain('home-admin-data-link');
+        expect(ids).not.toContain('home-admin-activity-link');
     });
 });

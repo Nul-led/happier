@@ -68,7 +68,7 @@ const LocalRelayRuntimeControlSectionContent = React.memo(function LocalRelayRun
         <>
             <ItemGroup
                 title={t('settings.localRelayRuntime.title')}
-                footer={t('settings.localRelayRuntime.footer')}
+                description={t('settings.localRelayRuntime.footer')}
             >
                 <Item
                     testID="settings.localRelayRuntime.status"

@@ -8,6 +8,7 @@ import {
 } from "./daemonPatVerifier";
 
 const PAT = "hap_v1_2c67deea-5ae7-4706-9ad6-b5b992df1cba_daemon_pat_secret_should_never_be_cached_plaintext";
+const fullGrant = { v: 1 as const, actions: null, targets: null, approve: false, origins: [], models: null, permissionModes: null, create: null };
 
 function verifiedPat(overrides: Partial<Extract<DaemonPatVerification, { ok: true }>> = {}): DaemonPatVerification {
     return {
@@ -17,11 +18,20 @@ function verifiedPat(overrides: Partial<Extract<DaemonPatVerification, { ok: tru
         credentialId: "credential-a",
         expiresAt: null,
         authority: "account_automation",
+        grant: fullGrant,
         ...overrides,
     };
 }
 
 describe("createDaemonPatVerifier", () => {
+    it('retains the verified grant across introspection and cache hits', async () => {
+        const grant = { ...fullGrant, permissionModes: ['default' as const] };
+        const verify = createDaemonPatVerifier({
+            accountId: 'account-a', introspect: async () => verifiedPat({ grant }),
+        });
+        await expect(verify(PAT)).resolves.toMatchObject({ grant });
+        await expect(verify(PAT)).resolves.toMatchObject({ grant });
+    });
     it("uses the configured Account server on a miss, then serves a current positive cache hit without another call", async () => {
         let now = 0;
         const calls: string[] = [];

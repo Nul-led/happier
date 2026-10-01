@@ -6,15 +6,13 @@ type SettingsSystemSectionProps = Readonly<Pick<SettingsBelowFoldSectionsProps,
     | 'handleReportIssue'
     | 'onNavigate'
     | 'router'
-    | 'theme'
 >>;
 
-export function SettingsSystemSection({ handleReportIssue, onNavigate, router, theme }: SettingsSystemSectionProps) {
+export function SettingsSystemSection({ handleReportIssue, onNavigate, router }: SettingsSystemSectionProps) {
     return (
         <SettingsCatalogOverviewGroup
             groupId="groupSystem"
             router={router}
-            theme={theme}
             onNavigate={(route) => {
                 if (route === SETTINGS_ROUTES.reportIssue) {
                     void handleReportIssue();

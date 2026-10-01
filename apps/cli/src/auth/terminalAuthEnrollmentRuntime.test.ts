@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { HomeConnectionDescriptorV1Schema } from '@happier-dev/protocol';
+import { createNodeIrohHomeTunnelSession, type NodeIrohNativeModule } from '@happier-dev/iroh-native/node';
 import { join } from 'node:path';
 
 import { createEnvKeyScope } from '@/testkit/env/envScope';
@@ -18,28 +19,51 @@ const DESCRIPTOR = HomeConnectionDescriptorV1Schema.parse({
 });
 
 describe('acquireTerminalAuthEnrollmentRuntime', () => {
-  const envScope = createEnvKeyScope(['HAPPIER_HOME_DIR'] as const);
+  const envScope = createEnvKeyScope(['HAPPIER_HOME_DIR', 'HAPPIER_HOME_CARRIER_POLICY'] as const);
 
   afterEach(() => envScope.restore());
 
-  it('uses one installation endpoint-key path across independent terminal auth acquisitions', async () => {
+  it('uses the standard Home application endpoint without creating an Iroh session when Standard only is configured', async () => {
+    envScope.patch({ HAPPIER_HOME_CARRIER_POLICY: 'standard_only' });
+    const createSession = vi.fn();
+    const acquired = await acquireTerminalAuthEnrollmentRuntime(DESCRIPTOR, {
+      createSession,
+      classifyFailure: () => ({ fallbackAllowed: false }),
+    });
+
+    expect(acquired).toMatchObject({ ok: true, runtime: { carrier: 'https', runtimeOrigin: 'https://home.example.test' } });
+    expect(createSession).not.toHaveBeenCalled();
+  });
+
+  it('uses fresh Account-client identities for independent terminal auth acquisitions', async () => {
     const homeDir = join(process.cwd(), '.tmp-terminal-auth-identity');
     envScope.patch({ HAPPIER_HOME_DIR: homeDir });
-    const endpointKeyPaths: string[] = [];
-    const createSession = vi.fn(async ({ endpointKeyPath }: Readonly<{ endpointKeyPath: string }>) => {
-      endpointKeyPaths.push(endpointKeyPath);
-      return {
-        ensureHomeTunnel: async () => ({
-          homeServerIdentityId: DESCRIPTOR.homeServerIdentityId,
-          endpointId: 'a'.repeat(64),
-          runtimeOrigin: 'http://127.0.0.1:48123',
-          observedPath: 'relay' as const,
-          status: 'ready' as const,
-          release: async () => undefined,
-        }),
-        shutdown: async () => undefined,
-      };
-    });
+    // The native addon is the OS boundary; keep the real session owner underneath.
+    // Like the native manager, keyed endpoints share identity; keyless ones do not.
+    const origins = new Map<string, string>();
+    const activeOrigins = new Set<string>();
+    let nextEndpoint = 0;
+    const native = {
+      createEndpoint: async ({ keyPath }: Readonly<{ keyPath?: string }>) => {
+        const endpointHandle = keyPath ?? `helper-${++nextEndpoint}`;
+        const runtimeOrigin = origins.get(endpointHandle) ?? `http://127.0.0.1:${48123 + origins.size}`;
+        origins.set(endpointHandle, runtimeOrigin);
+        activeOrigins.add(runtimeOrigin);
+        return { endpointHandle, endpointId: 'b'.repeat(64) };
+      },
+      ensureHomeTunnel: async ({ endpointHandle }: Readonly<{ endpointHandle: string }>) => ({
+        tunnelId: `tunnel-${endpointHandle}`, endpointHandle,
+        homeServerIdentityId: DESCRIPTOR.homeServerIdentityId,
+        homeEndpointId: 'a'.repeat(64), runtimeOrigin: origins.get(endpointHandle)!, observedPath: 'relay' as const,
+      }),
+      releaseHomeTunnel: async () => undefined,
+      shutdownEndpoint: async ({ endpointHandle }: Readonly<{ endpointHandle: string }>) => {
+        activeOrigins.delete(origins.get(endpointHandle)!);
+      },
+    } as NodeIrohNativeModule;
+    const createSession = vi.fn(async (input: Readonly<{ keylessEndpoint: 'account_client' }>) =>
+      await createNodeIrohHomeTunnelSession({ ...input, native }),
+    );
     const deps = {
       createSession,
       classifyFailure: () => ({ fallbackAllowed: false }),
@@ -47,48 +71,16 @@ describe('acquireTerminalAuthEnrollmentRuntime', () => {
 
     const first = await acquireTerminalAuthEnrollmentRuntime(DESCRIPTOR, deps);
     if (!first.ok) throw new Error('expected first acquired runtime');
-    await first.close();
     const second = await acquireTerminalAuthEnrollmentRuntime(DESCRIPTOR, deps);
     if (!second.ok) throw new Error('expected second acquired runtime');
-    await second.close();
-
-    expect(endpointKeyPaths).toEqual([
-      join(homeDir, 'runtime', 'iroh', 'endpoint.key'),
-      join(homeDir, 'runtime', 'iroh', 'endpoint.key'),
-    ]);
-  });
-
-  it('uses an explicit request-scoped home for endpoint identity without reading the persistent CLI home', async () => {
-    const persistentHomeDir = join(process.cwd(), '.persistent-cli-home');
-    const requestHomeDir = join(process.cwd(), '.activation-local-runner-home');
-    envScope.patch({ HAPPIER_HOME_DIR: persistentHomeDir });
-    const shutdown = vi.fn(async () => undefined);
-    const createSession = vi.fn(async () => ({
-      ensureHomeTunnel: async () => ({
-        homeServerIdentityId: DESCRIPTOR.homeServerIdentityId,
-        endpointId: 'a'.repeat(64),
-        runtimeOrigin: 'http://127.0.0.1:48123',
-        observedPath: 'relay' as const,
-        status: 'ready' as const,
-        release: async () => undefined,
-      }),
-      shutdown,
-    }));
-
-    const acquired = await acquireTerminalAuthEnrollmentRuntime(DESCRIPTOR, {
-      createSession,
-      classifyFailure: () => ({ fallbackAllowed: false }),
-    }, undefined, { happyHomeDir: requestHomeDir });
-
-    expect(acquired.ok).toBe(true);
-    expect(createSession).toHaveBeenCalledWith({
-      endpointKeyPath: join(requestHomeDir, 'runtime', 'iroh', 'endpoint.key'),
-    });
-    expect(createSession).not.toHaveBeenCalledWith({
-      endpointKeyPath: expect.stringContaining(persistentHomeDir),
-    });
-    if (acquired.ok) await acquired.close();
-    expect(shutdown).toHaveBeenCalledOnce();
+    try {
+      expect(first.runtime.runtimeOrigin).not.toBe(second.runtime.runtimeOrigin);
+      await first.close();
+      expect(activeOrigins.has(second.runtime.runtimeOrigin)).toBe(true);
+    } finally {
+      await first.close();
+      await second.close();
+    }
   });
 
   it('projects an Iroh-first lease into an explicit authenticated enrollment runtime', async () => {

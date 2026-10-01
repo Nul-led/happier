@@ -1,12 +1,17 @@
 import * as React from 'react';
 
+import { View } from 'react-native';
 import { useUnistyles } from 'react-native-unistyles';
 
 import { Switch } from '@/components/ui/forms/Switch';
 import { Item } from '@/components/ui/lists/Item';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
-import { ItemRowActions } from '@/components/ui/lists/ItemRowActions';
+import { ExpandableItem } from '@/components/ui/lists/ExpandableItem';
+import { SectionContentRow } from '@/components/ui/lists/SectionContentRow';
+import { RoundButton } from '@/components/ui/buttons/RoundButton';
 import { Modal } from '@/modal';
+import { SettingAnchor } from '@/components/settings/shell/SettingRow';
+import { NOTIFICATIONS_SETTINGS } from '@/components/settings/notifications/notificationsSettings';
 import { t } from '@/text';
 import { Icon } from '@/components/ui/icons/Icon';
 import {
@@ -31,6 +36,8 @@ export function NotificationWebhooksSection({
     setWebhookChannels,
 }: NotificationWebhooksSectionProps): React.ReactElement {
     const { theme } = useUnistyles();
+    // A webhook's settings open in place; a newly added one opens so it can be configured.
+    const [expandedChannelId, setExpandedChannelId] = React.useState<string | null>(null);
 
     const promptWebhookUrl = React.useCallback(async (defaultValue?: string) => {
         const raw = await Modal.prompt(
@@ -86,10 +93,13 @@ export function NotificationWebhooksSection({
             return;
         }
 
-        setWebhookChannels(addWebhookNotificationChannel({
+        const nextChannels = addWebhookNotificationChannel({
             channels: webhookChannels,
             url,
-        }));
+        });
+        setWebhookChannels(nextChannels);
+        const added = nextChannels.find((channel) => !webhookChannels.some((existing) => existing.id === channel.id));
+        if (added) setExpandedChannelId(added.id);
     }, [promptWebhookUrl, setWebhookChannels, webhookChannels]);
 
     const handleEditWebhook = React.useCallback(async (channel: WebhookNotificationChannelV1) => {
@@ -156,200 +166,174 @@ export function NotificationWebhooksSection({
         }));
     }, [setWebhookChannels, webhookChannels]);
 
+    const renderTopicSwitch = (
+        channel: WebhookNotificationChannelV1,
+        titleKey: 'readyTitle' | 'readyPreviewTitle' | 'requestPreviewTitle' | 'permissionRequestsTitle' | 'userActionsTitle',
+        subtitleKey: 'readySubtitle' | 'readyPreviewSubtitle' | 'requestPreviewSubtitle' | 'permissionRequestsSubtitle' | 'userActionsSubtitle',
+        value: boolean,
+        disabled: boolean,
+        patch: (enabled: boolean) => Partial<WebhookNotificationChannelV1>,
+    ) => (
+        <Item
+            key={titleKey}
+            testID={`settings-notifications-webhook-${channel.id}-${titleKey}`}
+            title={t(`settingsNotifications.webhooks.${titleKey}`)}
+            subtitle={t(`settingsNotifications.webhooks.${subtitleKey}`)}
+            rightElement={(
+                <Switch
+                    value={value}
+                    disabled={disabled}
+                    onValueChange={(next) => setWebhookChannels(updateNotificationChannelById({
+                        channels: webhookChannels,
+                        channelId: channel.id,
+                        patch: patch(Boolean(next)),
+                    }))}
+                />
+            )}
+            showChevron={false}
+        />
+    );
+
     return (
         <ItemGroup
             title={t('settingsNotifications.webhooks.title')}
-            footer={t('settingsNotifications.webhooks.footer')}
+            description={t('settingsNotifications.webhooks.footer')}
+            action={(
+                <SettingAnchor setting={NOTIFICATIONS_SETTINGS.settings.addWebhook}>
+                    <RoundButton
+                        testID="settings-notifications-add-webhook"
+                        size="small"
+                        display="inverted"
+                        title={t(NOTIFICATIONS_SETTINGS.settings.addWebhook.titleKey)}
+                        leading={<Icon name="plus" size={14} color={theme.colors.text.secondary} />}
+                        onPress={() => { void handleAddWebhook(); }}
+                    />
+                </SettingAnchor>
+            )}
         >
-            <Item
-                testID="settings-notifications-add-webhook"
-                title={t('settingsNotifications.webhooks.addTitle')}
-                subtitle={t('settingsNotifications.webhooks.addSubtitle')}
-                icon={<Icon name="plus-circle" size={29} color={theme.colors.accent.blue} />}
-                onPress={() => { void handleAddWebhook(); }}
-                showChevron={false}
-            />
             {webhookChannels.length === 0 ? (
                 <Item
                     title={t('settingsNotifications.webhooks.emptyTitle')}
                     subtitle={t('settingsNotifications.webhooks.emptySubtitle')}
-                    icon={<Icon name="link" size={29} color={theme.colors.text.secondary} />}
+                    subtitleLines={0}
+                    mode="info"
                     showChevron={false}
                 />
             ) : (
-                webhookChannels.map((channel) => (
-                    <React.Fragment key={channel.id}>
-                        <Item
-                            testID={`settings-notifications-webhook-${channel.id}`}
-                            title={channel.url}
-                            subtitle={channel.enabled
-                                ? t('settingsNotifications.webhooks.enabledSubtitle')
-                                : t('settingsNotifications.webhooks.disabledSubtitle')}
-                            icon={<Icon name="link" size={29} color={theme.colors.accent.blue} />}
-                            rightElement={(
-                                <ItemRowActions
+                webhookChannels.map((channel) => {
+                    const channelEnabled = channel.enabled !== false;
+                    const secretConfigured = hasConfiguredSecretStringValue(channel.signingSecret);
+                    return (
+                        <ExpandableItem
+                            key={channel.id}
+                            testID={`settings-notifications-webhook-${channel.id}-row`}
+                            expanded={expandedChannelId === channel.id}
+                            onExpandedChange={(next) => setExpandedChannelId(next ? channel.id : null)}
+                            header={({ headerProps }) => (
+                                <Item
+                                    {...headerProps}
+                                    testID={`settings-notifications-webhook-${channel.id}`}
                                     title={channel.url}
-                                    compactActionIds={['edit', 'delete']}
-                                    actions={[
-                                        {
-                                            id: 'edit',
-                                            title: t('common.edit'),
-                                            icon: 'pencil',
-                                            onPress: () => { void handleEditWebhook(channel); },
-                                        },
-                                        {
-                                            id: 'delete',
-                                            title: t('common.delete'),
-                                            icon: 'trash',
-                                            destructive: true,
-                                            onPress: () => { void handleDeleteWebhook(channel); },
-                                        },
-                                    ]}
+                                    subtitle={channelEnabled
+                                        ? t('settingsNotifications.webhooks.enabledSubtitle')
+                                        : t('settingsNotifications.webhooks.disabledSubtitle')}
                                 />
                             )}
-                            showChevron={false}
-                        />
-                        <Item
-                            title={t('settingsNotifications.webhooks.enabledTitle')}
-                            subtitle={t('settingsNotifications.webhooks.channelEnabledSubtitle')}
-                            icon={<Icon name="bell" size={29} color={theme.colors.text.secondary} />}
-                            rightElement={(
-                                <Switch
-                                    value={channel.enabled !== false}
-                                    onValueChange={(value) => setWebhookChannels(updateNotificationChannelById({
-                                        channels: webhookChannels,
-                                        channelId: channel.id,
-                                        patch: { enabled: Boolean(value) },
-                                    }))}
-                                />
-                            )}
-                            showChevron={false}
-                        />
-                        <Item
-                            title={t('settingsNotifications.webhooks.signingSecretTitle')}
-                            subtitle={hasConfiguredSecretStringValue(channel.signingSecret)
-                                ? t('settingsNotifications.webhooks.signingSecretConfiguredSubtitle')
-                                : t('settingsNotifications.webhooks.signingSecretEmptySubtitle')}
-                            icon={<Icon name="key" size={29} color={theme.colors.text.secondary} />}
-                            onPress={() => { void handleSetWebhookSigningSecret(channel); }}
-                            rightElement={hasConfiguredSecretStringValue(channel.signingSecret) ? (
-                                <ItemRowActions
-                                    title={t('settingsNotifications.webhooks.signingSecretTitle')}
-                                    compactActionIds={['clear-signing-secret']}
-                                    actions={[
-                                        {
-                                            id: 'clear-signing-secret',
-                                            title: t('settingsNotifications.webhooks.signingSecretClearAction'),
-                                            icon: 'x-circle',
-                                            onPress: () => { void handleClearWebhookSigningSecret(channel); },
-                                        },
-                                    ]}
-                                />
-                            ) : undefined}
-                            showChevron={false}
-                        />
-                        <Item
-                            title={t('settingsNotifications.webhooks.readyTitle')}
-                            subtitle={t('settingsNotifications.webhooks.readySubtitle')}
-                            icon={<Icon name="check-circle" size={29} color={theme.colors.state.success.foreground} />}
-                            rightElement={(
-                                <Switch
-                                    value={channel.topics.ready !== false}
-                                    disabled={channel.enabled === false}
-                                    onValueChange={(value) => setWebhookChannels(updateNotificationChannelById({
-                                        channels: webhookChannels,
-                                        channelId: channel.id,
-                                        patch: {
-                                            topics: {
-                                                ...channel.topics,
-                                                ready: Boolean(value),
-                                            },
-                                        },
-                                    }))}
-                                />
-                            )}
-                            showChevron={false}
-                        />
-                        <Item
-                            title={t('settingsNotifications.webhooks.readyPreviewTitle')}
-                            subtitle={t('settingsNotifications.webhooks.readyPreviewSubtitle')}
-                            icon={<Icon name="chat-circle-dots" size={29} color={theme.colors.text.secondary} />}
-                            rightElement={(
-                                <Switch
-                                    value={channel.readyIncludeMessageText !== false}
-                                    disabled={channel.enabled === false || channel.topics.ready === false}
-                                    onValueChange={(value) => setWebhookChannels(updateNotificationChannelById({
-                                        channels: webhookChannels,
-                                        channelId: channel.id,
-                                        patch: { readyIncludeMessageText: Boolean(value) },
-                                    }))}
-                                />
-                            )}
-                            showChevron={false}
-                        />
-                        <Item
-                            title={t('settingsNotifications.webhooks.requestPreviewTitle')}
-                            subtitle={t('settingsNotifications.webhooks.requestPreviewSubtitle')}
-                            icon={<Icon name="chat-circle-dots" size={29} color={theme.colors.text.secondary} />}
-                            rightElement={(
-                                <Switch
-                                    value={channel.requestIncludeMessageText === true}
-                                    disabled={channel.enabled === false || (channel.topics.permissionRequest === false && channel.topics.userActionRequest === false)}
-                                    onValueChange={(value) => setWebhookChannels(updateNotificationChannelById({
-                                        channels: webhookChannels,
-                                        channelId: channel.id,
-                                        patch: { requestIncludeMessageText: Boolean(value) },
-                                    }))}
-                                />
-                            )}
-                            showChevron={false}
-                        />
-                        <Item
-                            title={t('settingsNotifications.webhooks.permissionRequestsTitle')}
-                            subtitle={t('settingsNotifications.webhooks.permissionRequestsSubtitle')}
-                            icon={<Icon name="hand" size={29} color={theme.colors.text.secondary} />}
-                            rightElement={(
-                                <Switch
-                                    value={channel.topics.permissionRequest !== false}
-                                    disabled={channel.enabled === false}
-                                    onValueChange={(value) => setWebhookChannels(updateNotificationChannelById({
-                                        channels: webhookChannels,
-                                        channelId: channel.id,
-                                        patch: {
-                                            topics: {
-                                                ...channel.topics,
-                                                permissionRequest: Boolean(value),
-                                            },
-                                        },
-                                    }))}
-                                />
-                            )}
-                            showChevron={false}
-                        />
-                        <Item
-                            title={t('settingsNotifications.webhooks.userActionsTitle')}
-                            subtitle={t('settingsNotifications.webhooks.userActionsSubtitle')}
-                            icon={<Icon name="chat-dots" size={29} color={theme.colors.text.secondary} />}
-                            rightElement={(
-                                <Switch
-                                    value={channel.topics.userActionRequest !== false}
-                                    disabled={channel.enabled === false}
-                                    onValueChange={(value) => setWebhookChannels(updateNotificationChannelById({
-                                        channels: webhookChannels,
-                                        channelId: channel.id,
-                                        patch: {
-                                            topics: {
-                                                ...channel.topics,
-                                                userActionRequest: Boolean(value),
-                                            },
-                                        },
-                                    }))}
-                                />
-                            )}
-                            showChevron={false}
-                        />
-                    </React.Fragment>
-                ))
+                        >
+                            <Item
+                                testID={`settings-notifications-webhook-${channel.id}-enabled`}
+                                title={t('settingsNotifications.webhooks.enabledTitle')}
+                                subtitle={t('settingsNotifications.webhooks.channelEnabledSubtitle')}
+                                rightElement={(
+                                    <Switch
+                                        value={channelEnabled}
+                                        onValueChange={(value) => setWebhookChannels(updateNotificationChannelById({
+                                            channels: webhookChannels,
+                                            channelId: channel.id,
+                                            patch: { enabled: Boolean(value) },
+                                        }))}
+                                    />
+                                )}
+                                showChevron={false}
+                            />
+                            <Item
+                                title={t('settingsNotifications.webhooks.urlPromptTitle')}
+                                subtitle={channel.url}
+                                showChevron={false}
+                                rightElement={(
+                                    <RoundButton
+                                        testID={`settings-notifications-webhook-${channel.id}-edit`}
+                                        size="small"
+                                        display="inverted"
+                                        title={t('common.edit')}
+                                        onPress={() => { void handleEditWebhook(channel); }}
+                                    />
+                                )}
+                            />
+                            <Item
+                                testID={`settings-notifications-webhook-${channel.id}-signing-secret`}
+                                title={t('settingsNotifications.webhooks.signingSecretTitle')}
+                                subtitle={secretConfigured
+                                    ? t('settingsNotifications.webhooks.signingSecretConfiguredSubtitle')
+                                    : t('settingsNotifications.webhooks.signingSecretEmptySubtitle')}
+                                showChevron={false}
+                                rightElement={(
+                                    <View style={{ flexDirection: 'row', gap: 8 }}>
+                                        {secretConfigured ? (
+                                            <RoundButton
+                                                testID={`settings-notifications-webhook-${channel.id}-clear-secret`}
+                                                size="small"
+                                                display="inverted"
+                                                title={t('settingsNotifications.webhooks.signingSecretClearAction')}
+                                                onPress={() => { void handleClearWebhookSigningSecret(channel); }}
+                                            />
+                                        ) : null}
+                                        <RoundButton
+                                            testID={`settings-notifications-webhook-${channel.id}-set-secret`}
+                                            size="small"
+                                            display="secondary"
+                                            title={secretConfigured
+                                                ? t('settingsNotifications.webhooks.signingSecretReplaceAction')
+                                                : t('settingsNotifications.webhooks.signingSecretAddAction')}
+                                            onPress={() => { void handleSetWebhookSigningSecret(channel); }}
+                                        />
+                                    </View>
+                                )}
+                            />
+                            {renderTopicSwitch(channel, 'readyTitle', 'readySubtitle',
+                                channel.topics.ready !== false,
+                                !channelEnabled,
+                                (enabled) => ({ topics: { ...channel.topics, ready: enabled } }))}
+                            {renderTopicSwitch(channel, 'readyPreviewTitle', 'readyPreviewSubtitle',
+                                channel.readyIncludeMessageText !== false,
+                                !channelEnabled || channel.topics.ready === false,
+                                (enabled) => ({ readyIncludeMessageText: enabled }))}
+                            {renderTopicSwitch(channel, 'requestPreviewTitle', 'requestPreviewSubtitle',
+                                channel.requestIncludeMessageText === true,
+                                !channelEnabled || (channel.topics.permissionRequest === false && channel.topics.userActionRequest === false),
+                                (enabled) => ({ requestIncludeMessageText: enabled }))}
+                            {renderTopicSwitch(channel, 'permissionRequestsTitle', 'permissionRequestsSubtitle',
+                                channel.topics.permissionRequest !== false,
+                                !channelEnabled,
+                                (enabled) => ({ topics: { ...channel.topics, permissionRequest: enabled } }))}
+                            {renderTopicSwitch(channel, 'userActionsTitle', 'userActionsSubtitle',
+                                channel.topics.userActionRequest !== false,
+                                !channelEnabled,
+                                (enabled) => ({ topics: { ...channel.topics, userActionRequest: enabled } }))}
+                            <SectionContentRow showDivider={false}>
+                                <View style={{ flexDirection: 'row', justifyContent: 'flex-end' }}>
+                                    <RoundButton
+                                        testID={`settings-notifications-webhook-${channel.id}-delete`}
+                                        size="small"
+                                        display="destructive"
+                                        title={t('settingsNotifications.webhooks.deleteTitle')}
+                                        onPress={() => { void handleDeleteWebhook(channel); }}
+                                    />
+                                </View>
+                            </SectionContentRow>
+                        </ExpandableItem>
+                    );
+                })
             )}
         </ItemGroup>
     );

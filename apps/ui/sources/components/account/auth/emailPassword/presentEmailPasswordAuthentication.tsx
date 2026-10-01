@@ -48,7 +48,8 @@ const EmailPasswordAuthModalHost = React.memo(function EmailPasswordAuthModalHos
         <EmailPasswordAuthPanel
             {...panelProps}
             onAuthenticated={async (outcome) => {
-                await onAuthenticated(outcome);
+                const completion = await onAuthenticated(outcome);
+                if (completion === 'retired') return;
                 if (!reachExactHome) {
                     onClose();
                     return;

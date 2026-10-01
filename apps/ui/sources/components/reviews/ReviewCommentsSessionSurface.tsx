@@ -11,10 +11,14 @@ import type {
     ReviewCommentStateV1,
     ReviewCommentTransitionResponseV1,
     ReviewCommentV1,
+    ReviewCommentScopeV1,
 } from '@happier-dev/protocol';
+import { REVIEW_FINDINGS_VERIFY_AND_FIX_INSTRUCTIONS_V1, renderReviewFindingsForVerifyV1 } from '@happier-dev/protocol';
 import { Text } from '@/components/ui/text/Text';
 import { Modal } from '@/modal';
 import { t } from '@/text';
+import { sync } from '@/sync/sync';
+import { randomUUID } from '@/platform/randomUUID';
 import type {
     PluginPermissionGrant,
     PluginPermissionPendingGrantRequest,
@@ -26,6 +30,11 @@ import {
 import type { PluginPermissionGrantActions } from '@/sync/domains/plugins/permissions/actions';
 import { createReviewCommentsActions } from '@/sync/domains/reviews/comments/actions';
 import type { ReviewCommentUiActionExecutor } from '@/sync/domains/reviews/comments/api';
+import { serverAccountScopeKeySuffix, type ServerAccountScope } from '@/sync/domains/scope/serverAccountScope';
+import {
+    recordReviewCommentWrites,
+    subscribeReviewCommentWrites,
+} from '@/sync/domains/reviews/comments/reviewRunComments';
 import { selectReviewComments } from '@/sync/domains/reviews/comments/selectors';
 import {
     applyReviewCommentList,
@@ -36,7 +45,7 @@ import {
 import { ReviewCommentDirectWriteGrantSheet } from './ReviewCommentDirectWriteGrantSheet';
 import { ReviewCommentsHeaderButton } from './ReviewCommentsHeaderButton';
 import { ReviewCommentsHistoryView } from './ReviewCommentsHistoryView';
-import { resolveReviewCommentBodyPromptDefault } from './content';
+import { resolveReviewCommentBodyPromptDefault, resolveReviewCommentSnapshot } from './content';
 import {
     ReviewCommentsPanel,
     type ReviewCommentBulkTransitionInput,
@@ -63,7 +72,10 @@ const HISTORY_REVIEW_COMMENT_STATES: readonly ReviewCommentStateV1[] = [
 const REVIEW_COMMENT_UI_MUTATION_PREFIX = 'review-comment-ui';
 
 export type ReviewCommentsSessionSurfaceProps = Readonly<{
+    /** The exact Home/Account owning this panel's executor and confirmed writes. */
+    scope?: ServerAccountScope;
     projectId?: string;
+    workspace?: ReviewCommentScopeV1['workspace'];
     workspaceId?: string;
     runId?: string;
     sessionId?: string;
@@ -82,7 +94,7 @@ export type ReviewCommentsSessionSurfaceProps = Readonly<{
 }>;
 
 function createReviewCommentClientMutationId(operation: string): string {
-    return `${REVIEW_COMMENT_UI_MUTATION_PREFIX}:${operation}:${Date.now()}`;
+    return `${REVIEW_COMMENT_UI_MUTATION_PREFIX}:${operation}:${randomUUID()}`;
 }
 
 function trimPromptValue(value: string | null): string | null {
@@ -101,6 +113,11 @@ function isReviewCommentActiveItem(comment: ReviewCommentV1): boolean {
 }
 
 export function ReviewCommentsSessionSurface(props: ReviewCommentsSessionSurfaceProps) {
+    // A Home/Account switch retires the entire prior view, including pending reads and mutations.
+    return <ScopedReviewCommentsSessionSurface key={props.scope ? serverAccountScopeKeySuffix(props.scope) : 'unscoped'} {...props} />;
+}
+
+function ScopedReviewCommentsSessionSurface(props: ReviewCommentsSessionSurfaceProps) {
     const { theme } = useUnistyles();
     const labels = React.useMemo(() => buildReviewCommentLabels(), []);
     const headerLabels = React.useMemo(() => buildReviewCommentsHeaderLabels(), []);
@@ -117,14 +134,14 @@ export function ReviewCommentsSessionSurface(props: ReviewCommentsSessionSurface
     );
 
     const loadComments = React.useCallback(async () => {
-        if (!props.projectId && !props.workspaceId && !props.sessionId && !props.runId) return;
+        if (!props.projectId && !props.workspace && !props.workspaceId && !props.sessionId && !props.runId) return;
         setIsRefreshing(true);
         setLoadFailed(false);
         try {
             const response = await actions.list({
-                projectId: props.projectId,
-                workspaceId: props.workspaceId,
-                sessionId: props.sessionId,
+                ...(props.sessionId ? { sessionId: props.sessionId }
+                    : props.workspace ? { workspace: props.workspace }
+                    : { projectId: props.projectId, workspaceId: props.workspaceId }),
                 runId: props.runId,
                 includeHistory: true,
                 limit: 100,
@@ -136,7 +153,7 @@ export function ReviewCommentsSessionSurface(props: ReviewCommentsSessionSurface
         } finally {
             setIsRefreshing(false);
         }
-    }, [actions, props.projectId, props.runId, props.sessionId, props.workspaceId]);
+    }, [actions, props.projectId, props.runId, props.sessionId, props.workspace, props.workspaceId]);
 
     React.useEffect(() => {
         if (!panelOpen) return;
@@ -200,7 +217,17 @@ export function ReviewCommentsSessionSurface(props: ReviewCommentsSessionSurface
     const upsertUpdatedComments = React.useCallback((comments: readonly ReviewCommentV1[]) => {
         if (comments.length === 0) return;
         setCommentsState((state) => comments.reduce(upsertReviewComment, state));
-    }, []);
+        if (props.scope) recordReviewCommentWrites(comments, props.scope);
+    }, [props.scope]);
+
+    // A comment shown here can be written elsewhere too (a review result's decision): follow the
+    // newer revision of a comment this panel already holds instead of showing it stale until a reload.
+    React.useEffect(() => props.scope ? subscribeReviewCommentWrites(props.scope, (comments) => {
+        setCommentsState((state) => comments.reduce((next, comment) => {
+            const held = next.byId[comment.id];
+            return held && held.serverRevision < comment.serverRevision ? upsertReviewComment(next, comment) : next;
+        }, state));
+    }) : undefined, [props.scope]);
 
     const toggleActiveStateFilter = React.useCallback((state: ReviewCommentStateV1) => {
         setSelectedActiveStates((current) => current.includes(state)
@@ -221,8 +248,11 @@ export function ReviewCommentsSessionSurface(props: ReviewCommentsSessionSurface
         if (!nextBody) return;
         const response = await actions.edit({
             commentId: comment.id,
+            projectId: comment.projectId,
+            workspace: comment.workspace,
             nextBody,
             expectedBodyVersion: comment.bodyVersion,
+            expectedServerRevision: comment.serverRevision,
             clientMutationId: createReviewCommentClientMutationId('edit'),
         }) as ReviewCommentEditResponseV1;
         upsertUpdatedComments([response.comment]);
@@ -234,17 +264,61 @@ export function ReviewCommentsSessionSurface(props: ReviewCommentsSessionSurface
     }>) => {
         const response = await actions.transition({
             commentId: input.comment.id,
+            projectId: input.comment.projectId,
+            workspace: input.comment.workspace,
             toState: input.toState,
             reason: t('files.reviewComments.durable.transitionReason'),
             expectedState: input.comment.state,
+            expectedServerRevision: input.comment.serverRevision,
             clientMutationId: createReviewCommentClientMutationId('transition'),
         }) as ReviewCommentTransitionResponseV1;
         upsertUpdatedComments([response.comment]);
     }, [actions, upsertUpdatedComments]);
 
+    const delegateComment = React.useCallback(async (original: ReviewCommentV1) => {
+        if (!props.sessionId) return;
+        const body = resolveReviewCommentBodyPromptDefault(original.body);
+        if (body === undefined) {
+            setLoadFailed(true);
+            return;
+        }
+        try {
+            let comment = original;
+            const transition = async (toState: ReviewCommentStateV1) => {
+                const response = await actions.transition({
+                    commentId: comment.id, projectId: comment.projectId, workspace: comment.workspace,
+                    toState, expectedState: comment.state, expectedServerRevision: comment.serverRevision,
+                    reason: t('files.reviewComments.durable.transitionReason'),
+                    clientMutationId: createReviewCommentClientMutationId('delegate'),
+                }) as ReviewCommentTransitionResponseV1;
+                comment = response.comment;
+                upsertUpdatedComments([comment]);
+            };
+            if (comment.state === 'proposed' || comment.state === 'pending_review') await transition('open');
+            if (comment.state !== 'delegated') await transition('delegated');
+            const snapshot = resolveReviewCommentSnapshot(comment.snapshot);
+            const text = `${REVIEW_FINDINGS_VERIFY_AND_FIX_INSTRUCTIONS_V1}\n\n${renderReviewFindingsForVerifyV1([{
+                id: comment.findingId ?? comment.id,
+                title: 'filePath' in comment.anchor ? comment.anchor.filePath : comment.id,
+                summary: body,
+                anchor: comment.anchor,
+                ...(snapshot ? { snapshot } : {}),
+                engineId: comment.engineId, flags: comment.flags, comment,
+            }])}`;
+            await sync.submitMessage(props.sessionId, text, t('files.reviewComments.durable.headerTitle'), undefined, {
+                callerSurface: 'review_comments_delegate',
+            });
+        } catch {
+            setLoadFailed(true);
+        }
+    }, [actions, props.sessionId, upsertUpdatedComments]);
+
     const redactComment = React.useCallback(async (comment: ReviewCommentV1) => {
         const response = await actions.redact({
             commentId: comment.id,
+            projectId: comment.projectId,
+            workspace: comment.workspace,
+            expectedServerRevision: comment.serverRevision,
             redactBody: true,
             clientMutationId: createReviewCommentClientMutationId('redact'),
         }) as ReviewCommentRedactResponseV1;
@@ -252,6 +326,8 @@ export function ReviewCommentsSessionSurface(props: ReviewCommentsSessionSurface
     }, [actions, upsertUpdatedComments]);
 
     const replyToComment = React.useCallback(async (input: Readonly<{ parentCommentId: string }>) => {
+        const parent = commentsState.byId[input.parentCommentId];
+        if (!parent) return;
         const body = trimPromptValue(await Modal.prompt(
             t('files.reviewComments.durable.replyPromptTitle'),
             t('files.reviewComments.durable.replyPromptBody'),
@@ -263,28 +339,45 @@ export function ReviewCommentsSessionSurface(props: ReviewCommentsSessionSurface
         if (!body) return;
         const response = await actions.reply({
             parentCommentId: input.parentCommentId,
+            projectId: parent.projectId,
+            workspace: parent.workspace,
+            expectedParentServerRevision: parent.serverRevision,
             body,
             clientMutationId: createReviewCommentClientMutationId('reply'),
         }) as ReviewCommentReplyResponseV1;
         upsertUpdatedComments([response.parent, response.comment]);
-    }, [actions, upsertUpdatedComments]);
+    }, [actions, commentsState.byId, upsertUpdatedComments]);
 
     const bulkTransition = React.useCallback(async (input: ReviewCommentBulkTransitionInput) => {
-        const response = await actions.bulkTransition({
-            commentIds: input.commentIds,
-            toState: input.toState,
-            reason: t('files.reviewComments.durable.bulkTransitionReason'),
-            clientMutationId: createReviewCommentClientMutationId('bulk-transition'),
-        }) as ReviewCommentBulkTransitionResponseV1;
-        upsertUpdatedComments(response.updated);
-        setBulkTransitionResult({
-            bulkActionId: response.bulkActionId,
-            failed: response.failed.map((failure) => ({
-                commentId: failure.commentId,
-                errorCode: failure.errorCode,
-            })),
-        });
-    }, [actions, upsertUpdatedComments]);
+        const groups = new Map<string, ReviewCommentV1[]>();
+        for (const id of input.commentIds) {
+            const comment = commentsState.byId[id];
+            if (!comment) continue;
+            const key = JSON.stringify([comment.projectId, comment.workspace, comment.state]);
+            const group = groups.get(key) ?? [];
+            group.push(comment);
+            groups.set(key, group);
+        }
+        const failed: ReviewCommentBulkTransitionResult['failed'][number][] = [];
+        let bulkActionId: string | undefined;
+        for (const group of groups.values()) {
+            const first = group[0];
+            if (!first) continue;
+            const response = await actions.bulkTransition({
+                projectId: first.projectId, workspace: first.workspace,
+                commentIds: group.map((comment) => comment.id),
+                expectedState: first.state,
+                expectedServerRevisions: Object.fromEntries(group.map((comment) => [comment.id, comment.serverRevision])),
+                toState: input.toState,
+                reason: t('files.reviewComments.durable.bulkTransitionReason'),
+                clientMutationId: createReviewCommentClientMutationId('bulk-transition'),
+            }) as ReviewCommentBulkTransitionResponseV1;
+            upsertUpdatedComments(response.updated);
+            bulkActionId = response.bulkActionId;
+            failed.push(...response.failed.map((failure) => ({ commentId: failure.commentId, errorCode: failure.errorCode })));
+        }
+        if (bulkActionId) setBulkTransitionResult({ bulkActionId, failed });
+    }, [actions, commentsState.byId, upsertUpdatedComments]);
 
     return (
         <View
@@ -377,6 +470,7 @@ export function ReviewCommentsSessionSurface(props: ReviewCommentsSessionSurface
                                 onEdit: (comment) => void editComment(comment),
                                 onTransition: (input) => void transitionComment(input),
                                 onRedact: (comment) => void redactComment(comment),
+                                ...(props.sessionId ? { onDelegate: (comment: ReviewCommentV1) => void delegateComment(comment) } : {}),
                             }}
                             onReply={(input) => void replyToComment(input)}
                             onBulkTransition={(input) => void bulkTransition(input)}

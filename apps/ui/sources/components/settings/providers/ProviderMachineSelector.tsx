@@ -1,10 +1,9 @@
 import * as React from 'react';
-import { useUnistyles } from 'react-native-unistyles';
 
 import { DropdownMenu, type DropdownMenuItem } from '@/components/ui/forms/dropdown/DropdownMenu';
 import { SafeIonicons } from '@/components/ui/icons/SafeIonicons';
 import { t } from '@/text';
-import { Icon } from '@/components/ui/icons/Icon';
+import { resolveMachineDisplayNames } from '@/utils/sessions/machineDisplayNames';
 
 type ProviderMachineOption = Readonly<{
     id: string;
@@ -17,13 +16,15 @@ export const ProviderMachineSelector = React.memo(function ProviderMachineSelect
     selectedId: string | null;
     onSelect: (machineId: string) => void;
 }>) {
-    const { theme } = useUnistyles();
     const [open, setOpen] = React.useState(false);
-    const items = React.useMemo<readonly DropdownMenuItem[]>(() => props.machines.map((machine) => ({
+    const items = React.useMemo<readonly DropdownMenuItem[]>(() => {
+        const names = resolveMachineDisplayNames(props.machines);
+        return props.machines.map((machine) => ({
         id: machine.id,
-        title: machine.metadata?.displayName || machine.metadata?.host || machine.id,
+        title: names.get(machine.id) ?? machine.id,
         subtitle: machine.active ? t('settingsProviders.detail.machineOnline') : t('settingsProviders.detail.machineOffline'),
-    })), [props.machines]);
+        }));
+    }, [props.machines]);
     if (items.length <= 1) return null;
     return (
         <DropdownMenu
@@ -37,7 +38,6 @@ export const ProviderMachineSelector = React.memo(function ProviderMachineSelect
             itemTrigger={{
                 title: t('settingsProviders.detail.targetMachine'),
                 subtitle: items.find((item) => item.id === props.selectedId)?.title,
-                icon: <Icon name="desktop" size={29} color={theme.colors.text.secondary} />,
                 showSelectedDetail: false,
                 showSelectedSubtitle: false,
             }}

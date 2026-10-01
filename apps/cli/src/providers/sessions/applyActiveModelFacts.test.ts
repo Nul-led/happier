@@ -28,7 +28,7 @@ describe('applyActiveModelFacts', () => {
   it('publishes an exact initial active model without replacing a newer durable intent', () => {
     const activeTarget = {
       selection: {
-        agentTargetKey: 'backend:qwen',
+        agentTargetKey: 'agent:happier.agent.qwen/qwen',
         providerConnectionId: null,
         modelId: 'active-model',
       },
@@ -39,7 +39,7 @@ describe('applyActiveModelFacts', () => {
       revalidateBeforeEffect: async () => true,
     } satisfies AuthorizedSessionModelTransitionTarget;
     const pendingSelection = {
-      agentTargetKey: 'backend:qwen',
+      agentTargetKey: 'agent:happier.agent.qwen/qwen',
       providerConnectionId: null,
       modelId: 'pending-model',
     } as const;
@@ -61,6 +61,7 @@ describe('applyActiveModelFacts', () => {
       sessionModelsV1: {
         v: 1,
         agentId: 'qwen',
+        updatedAt: 0,
         currentModelId: 'active-model',
         availableModels: [
           {
@@ -75,7 +76,7 @@ describe('applyActiveModelFacts', () => {
   it('replaces a stale model publisher identity with the current host agent', () => {
     const activeTarget = {
       selection: {
-        agentTargetKey: 'backend:qwen',
+        agentTargetKey: 'agent:happier.agent.qwen/qwen',
         providerConnectionId: null,
         modelId: 'active-model',
       },
@@ -104,6 +105,7 @@ describe('applyActiveModelFacts', () => {
     expect(applyActiveModelFacts(metadata, activeTarget, 'qwen')).toMatchObject({
       sessionModelsV1: {
         agentId: 'qwen',
+        updatedAt: 0,
         currentModelId: 'active-model',
         availableModels: [
           {
@@ -118,7 +120,7 @@ describe('applyActiveModelFacts', () => {
   it('publishes the producer-declared option override rule alongside the descriptor', () => {
     const activeTarget = {
       selection: {
-        agentTargetKey: 'backend:claude',
+        agentTargetKey: 'agent:happier.agent.claude/claude',
         providerConnectionId: ProviderConnectionIdSchema.parse('pc_work'),
         modelId: 'claude-opus-5',
       },
@@ -162,7 +164,7 @@ describe('applyActiveModelFacts', () => {
   it('publishes the complete authorized Provider model descriptor as active facts', () => {
     const activeTarget = {
       selection: {
-        agentTargetKey: 'backend:qwen',
+        agentTargetKey: 'agent:happier.agent.qwen/qwen',
         providerConnectionId: ProviderConnectionIdSchema.parse('pc_work'),
         modelId: 'provider-model',
       },
@@ -214,7 +216,7 @@ describe('applyActiveModelFacts', () => {
   it('removes stale optional facts omitted by the refreshed Provider descriptor', () => {
     const activeTarget = {
       selection: {
-        agentTargetKey: 'backend:qwen',
+        agentTargetKey: 'agent:happier.agent.qwen/qwen',
         providerConnectionId: ProviderConnectionIdSchema.parse('pc_work'),
         modelId: 'provider-model',
       },

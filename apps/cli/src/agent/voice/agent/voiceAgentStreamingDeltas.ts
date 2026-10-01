@@ -26,6 +26,7 @@ type VoiceStreamingOutputState = Readonly<{
   id: string;
   outputSeq: number;
   outputSegmentIndex: number;
+  onEventsChanged?: () => void;
 }>;
 
 type VoiceStreamingOutputPatch = (next: Readonly<{
@@ -79,6 +80,7 @@ export function flushVoiceAgentStreamingSpeech(
       outputSeq: stream.outputSeq + 1,
       outputSegmentIndex: stream.outputSegmentIndex + 1,
     });
+    stream.onEventsChanged?.();
   }
 }
 

@@ -1,6 +1,7 @@
 import * as React from 'react';
 import { Animated, Platform, View } from 'react-native';
-import { useLocalSearchParams } from 'expo-router';
+import { useLocalSearchParams } from '@/components/appShell/workspace/destinationRoute';
+import { useDestinationInstanceKey } from '@/components/appShell/workspace/DestinationInstanceHost';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 import { t } from '@/text';
@@ -9,6 +10,7 @@ import { usePopoverScrollSourceRef } from '@/components/ui/popover';
 import { useLayoutMaxWidth } from '@/components/ui/layout/layout';
 import { resolveItemGroupContentHorizontalInsetPx } from '@/components/ui/lists/itemGroupSpacing';
 import { PAGE_LIST_METRICS } from '@/components/ui/lists/pageListMetrics';
+import { ItemRevealContext } from '@/components/ui/lists/ItemRevealContext';
 import { useReducedMotionPreference } from '@/hooks/ui/useReducedMotionPreference';
 import { SETTING_ANCHOR_QUERY_PARAM, type SettingRef, type SettingsSectionRef } from '@/components/settings/catalog/settingDeclarations';
 
@@ -23,16 +25,21 @@ const REVEAL_DELAY_MS = 250;
  */
 const mountedRequestedAnchors = new Map<string, number>();
 
+function useAnchorRegistrationKey(anchor: string | null): string {
+    return JSON.stringify([useDestinationInstanceKey(), anchor]);
+}
+
 function useRegisterRequestedAnchor(anchor: string, isTarget: boolean) {
+    const registrationKey = useAnchorRegistrationKey(anchor);
     React.useEffect(() => {
         if (!isTarget) return;
-        mountedRequestedAnchors.set(anchor, (mountedRequestedAnchors.get(anchor) ?? 0) + 1);
+        mountedRequestedAnchors.set(registrationKey, (mountedRequestedAnchors.get(registrationKey) ?? 0) + 1);
         return () => {
-            const count = (mountedRequestedAnchors.get(anchor) ?? 1) - 1;
-            if (count > 0) mountedRequestedAnchors.set(anchor, count);
-            else mountedRequestedAnchors.delete(anchor);
+            const count = (mountedRequestedAnchors.get(registrationKey) ?? 1) - 1;
+            if (count > 0) mountedRequestedAnchors.set(registrationKey, count);
+            else mountedRequestedAnchors.delete(registrationKey);
         };
-    }, [anchor, isTarget]);
+    }, [registrationKey, isTarget]);
 }
 
 /**
@@ -120,8 +127,8 @@ export const SettingRow = React.memo(function SettingRow(props: SettingRowProps)
 
 /**
  * The anchor search asked this page to reveal (`?setting=<anchor>`), if any. Private to this module:
- * rows, sections and disclosures ask through `SettingAnchor`, `SettingSection` and
- * `useSettingRevealRequested`.
+ * rows and sections expose their reveal scope to disclosures. Route/virtualized owners may ask
+ * through `useSettingRevealRequested` when they must first bring an anchor into the rendered tree.
  */
 function useRequestedSettingAnchor(): string | null {
     const params: Readonly<Record<string, string | string[] | undefined>> = useLocalSearchParams();
@@ -130,8 +137,8 @@ function useRequestedSettingAnchor(): string | null {
 }
 
 /**
- * Whether search asked this page to reveal one of `settings`. A disclosure holding declared rows asks
- * this and opens itself, so the row's own reveal can reach it.
+ * Whether search asked this page to reveal one of `settings`. For route selection or virtualized
+ * scrolling; disclosures consume their enclosing anchor/section scope automatically.
  */
 export function useSettingRevealRequested(settings: readonly Pick<SettingRef, 'anchor'>[]): boolean {
     const requested = useRequestedSettingAnchor();
@@ -144,27 +151,50 @@ export function useSettingRevealRequested(settings: readonly Pick<SettingRef, 'a
  * briefly without animation. Wrap rows whose `Item` is built elsewhere (a `DropdownMenu` trigger) with
  * this, passing the declaration's `titleKey` as their title. `ItemGroup` injects `showDivider` into its
  * direct children, so it is forwarded to the wrapped row.
+ * For a disclosure whose rows are not mounted yet, `settings` declares only its reveal scope: it
+ * neither registers those rows as mounted nor adds a second scroll/highlight host.
  */
-export const SettingAnchor = React.memo(function SettingAnchor(props: Readonly<{
-    setting: SettingRef;
+type SettingAnchorProps = Readonly<{
     children: React.ReactElement;
     showDivider?: boolean;
-}>) {
-    const { setting } = props;
-    const isTarget = useRequestedSettingAnchor() === setting.anchor;
-    useRegisterRequestedAnchor(setting.anchor, isTarget);
-    const { hostRef, highlight } = useSettingReveal(isTarget, REVEAL_DELAY_MS);
+}> & (Readonly<{
+    setting: SettingRef;
+    settings?: never;
+}> | Readonly<{
+    /** A group that holds these settings, even while its disclosure has not mounted their rows. */
+    settings: readonly Pick<SettingRef, 'anchor'>[];
+    setting?: never;
+}>);
 
+export const SettingAnchor = React.memo(function SettingAnchor(props: SettingAnchorProps) {
+    const requested = useRequestedSettingAnchor();
     const child = props.showDivider === undefined
         ? props.children
         : React.cloneElement(props.children as React.ReactElement<{ showDivider?: boolean }>, { showDivider: props.showDivider });
+    const isTarget = requested !== null && (props.setting
+        ? props.setting.anchor === requested
+        : props.settings.some((setting) => setting.anchor === requested));
+    return <ItemRevealContext.Provider value={isTarget ? requested : null}>
+        {props.setting ? <SettingAnchorHost setting={props.setting} isTarget={isTarget}>{child}</SettingAnchorHost> : child}
+    </ItemRevealContext.Provider>;
+});
+
+function SettingAnchorHost(props: Readonly<{
+    setting: SettingRef;
+    isTarget: boolean;
+    children: React.ReactElement;
+}>) {
+    const { setting, isTarget } = props;
+    useRegisterRequestedAnchor(setting.anchor, isTarget);
+    const { hostRef, highlight } = useSettingReveal(isTarget, REVEAL_DELAY_MS);
+
     return (
         <View ref={hostRef} nativeID={`setting-${setting.anchor}`} style={styles.host}>
-            {child}
+            {props.children}
             {isTarget ? <RevealOverlay highlight={highlight} testID={`setting-reveal.${setting.anchor}`} /> : null}
         </View>
     );
-});
+}
 
 /**
  * Wraps a declared section (its `ItemGroup`). When search asks for one of the section's settings and
@@ -182,6 +212,7 @@ export const SettingSection = React.memo(function SettingSection(props: Readonly
     children: React.ReactNode;
 }>) {
     const requested = useRequestedSettingAnchor();
+    const registrationKey = useAnchorRegistrationKey(requested);
     const holdsRequested = requested !== null && (
         props.section.settingAnchors.includes(requested)
         || (props.answersFor ?? []).some((other) => other.settingAnchors.includes(requested))
@@ -194,9 +225,9 @@ export const SettingSection = React.memo(function SettingSection(props: Readonly
             return;
         }
         // Checked when the row itself would reveal, after the page's first layout.
-        const timer = setTimeout(() => setRowMissing(!mountedRequestedAnchors.has(requested)), REVEAL_DELAY_MS);
+        const timer = setTimeout(() => setRowMissing(!mountedRequestedAnchors.has(registrationKey)), REVEAL_DELAY_MS);
         return () => clearTimeout(timer);
-    }, [holdsRequested, requested]);
+    }, [holdsRequested, requested, registrationKey]);
 
     const { hostRef, highlight } = useSettingReveal(rowMissing, 0);
     // The section's column (as `ItemGroup` lays it out), so the mark follows its sheet edges.
@@ -204,7 +235,9 @@ export const SettingSection = React.memo(function SettingSection(props: Readonly
     return (
         <View style={styles.sectionWrapper}>
             <View ref={hostRef} nativeID={`setting-section-${props.section.id}`} style={[styles.sectionColumn, { maxWidth }]}>
-                {props.children}
+                <ItemRevealContext.Provider value={holdsRequested ? requested : null}>
+                    {props.children}
+                </ItemRevealContext.Provider>
                 {rowMissing ? <RevealOverlay highlight={highlight} testID={`setting-reveal.${props.section.id}`} shape="section" /> : null}
             </View>
         </View>

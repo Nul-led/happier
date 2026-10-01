@@ -1,16 +1,13 @@
 import * as React from 'react';
-import { useNavigation, useRouter } from 'expo-router';
-import { View } from 'react-native';
-import { StyleSheet, useUnistyles } from 'react-native-unistyles';
+import { useNavigation, useRouter } from '@/components/appShell/workspace/destinationRoute';
 
-import { ActivitySpinner } from '@/components/ui/feedback/ActivitySpinner';
 import { useActionApprovalContinuation } from '@/components/approvals/useActionApprovalContinuation';
-import { Icon } from '@/components/ui/icons/Icon';
-import { Item } from '@/components/ui/lists/Item';
-import { ItemGroup } from '@/components/ui/lists/ItemGroup';
+import { PageHeader } from '@/components/ui/layout/PageHeader';
+import { AttentionBanner } from '@/components/ui/lists/AttentionBanner';
 import { ItemList } from '@/components/ui/lists/ItemList';
+import { ListPresentationProvider } from '@/components/ui/lists/listPresentation';
+import { SurfaceStateCard } from '@/components/ui/surfaces/SurfaceStateCard';
 import { HomeCredentialUnreadableCard } from '@/components/sessions/access/UnboundSessionHomeScopeCard';
-import { Text } from '@/components/ui/text/Text';
 import { useTeamBinding } from '@/hooks/teams/useTeamBinding';
 import { serverAccountScopedTeamKey } from '@/sync/domains/teams/teamAddress';
 import { presentTeamEntryUnavailableReason } from '@/components/teams/entry/teamAuthenticationFailure';
@@ -18,43 +15,41 @@ import { teamSignInReturnPath } from '@/components/teams/entry/teamSignInHome';
 import { t } from '@/text';
 
 import type { TeamSectionContext } from './teamSectionContext';
+import { teamSettingsPath } from './teamsRoutes';
 
-const styles = StyleSheet.create((theme) => ({
-    centered: {
-        paddingVertical: 48,
-        paddingHorizontal: 24,
-        alignItems: 'center',
-        gap: 12,
-    },
-    centeredTitle: {
-        color: theme.colors.text.primary,
-        textAlign: 'center',
-    },
-    centeredBody: {
-        color: theme.colors.text.secondary,
-        textAlign: 'center',
-    },
-}));
+/**
+ * The page head of a Team destination: a sub-page names itself (`title`, `description`); an entity
+ * page (the Team itself, a member, a Group) renders its own identity header once the Team is known.
+ */
+export type TeamSectionHeader = Readonly<{
+    /** Sub-page title ("Members"). Also titles the page while the Team is still being read. */
+    title?: string;
+    /** One sentence saying what the page is for. */
+    description?: string;
+    /** An entity header built from the Team, replacing the title/description header once it exists. */
+    render?: (context: TeamSectionContext) => React.ReactNode;
+}>;
 
-const TeamMessage = React.memo(function TeamMessage(props: Readonly<{
+/**
+ * A condition that occupies the page because there is genuinely nothing else truthful to show.
+ * The page header stays above it, so the page does not change shape when the Team arrives.
+ */
+const TeamStateCard = React.memo(function TeamStateCard(props: Readonly<{
+    kind: 'loading' | 'unavailable' | 'error' | 'warning';
     title: string;
     body?: string;
-    busy?: boolean;
-    testID?: string;
+    action?: Readonly<{ label: string; onPress: () => void }>;
+    testID: string;
 }>) {
     return (
-        <View
-            style={styles.centered}
+        <SurfaceStateCard
             testID={props.testID}
-            accessible
-            accessibilityRole={props.busy ? 'progressbar' : 'alert'}
-            accessibilityLabel={[props.title, props.body].filter(Boolean).join('. ')}
-            accessibilityLiveRegion={props.busy ? 'polite' : 'assertive'}
-        >
-            {props.busy ? <ActivitySpinner /> : null}
-            <Text style={styles.centeredTitle}>{props.title}</Text>
-            {props.body ? <Text style={styles.centeredBody}>{props.body}</Text> : null}
-        </View>
+            kind={props.kind}
+            title={props.title}
+            reason={props.body}
+            action={props.action}
+            accessibilitySemantics={props.kind === 'loading' ? 'status' : 'alert'}
+        />
     );
 });
 
@@ -66,16 +61,35 @@ const TeamMessage = React.memo(function TeamMessage(props: Readonly<{
  * notice and the retry cannot drift between them. Sections receive the Team only
  * once it exists, so no section defends itself against a Home that has not
  * answered — and none of them re-derives whether a write may be offered.
+ *
+ * Every Team destination is a configuration page: the page header comes first in every state, then
+ * any condition banner (approval, stale, archived), then the destination's own sections.
  */
 export const TeamSection = React.memo(function TeamSection(props: Readonly<{
     serverId: string;
     teamId: string;
     /** Falls back to the Team's own name once the Home has answered. */
     title?: string;
-    presentation?: 'item-list' | 'virtualized-list';
+    /** The sub-page's purpose line. */
+    description?: string;
+    /** An entity header rendered from the Team once it exists (the Team overview). */
+    renderHeader?: (context: TeamSectionContext) => React.ReactNode;
+    /**
+     * The page is about something the child loads itself (a member, a Group): once the Team exists
+     * the child renders its own `PageHeader` first and then the condition banners it receives as
+     * the second argument of `children`, so the banners always sit under the page's identity.
+     */
+    childRendersHeader?: boolean;
+    /** The page itself offers restore (Settings), so the archived notice does not lead elsewhere. */
+    restoresHere?: boolean;
+    /**
+     * `embedded`: the section lives inside another surface (the Home console's Invite people dialog),
+     * which owns the title and the scroll container. Conditions render without a page header, the
+     * banners sit above the child, and the screen title is left alone.
+     */
+    presentation?: 'item-list' | 'virtualized-list' | 'embedded';
     children: (context: TeamSectionContext, header?: React.ReactNode) => React.ReactNode;
 }>) {
-    const { theme } = useUnistyles();
     const navigation = useNavigation();
     const router = useRouter();
     const binding = useTeamBinding(props.serverId, props.teamId);
@@ -98,48 +112,71 @@ export const TeamSection = React.memo(function TeamSection(props: Readonly<{
         onExecuted: approvalRefresh,
     });
 
-    const resolvedTitle = props.title
-        ?? (binding.kind === 'bound' && binding.state.kind === 'ready' ? binding.state.team.name : t('teams.title'));
+    const readyTeamName = binding.kind === 'bound' && binding.state.kind === 'ready' ? binding.state.team.name : null;
+    const resolvedTitle = props.title ?? readyTeamName ?? t('teams.title');
 
+    // An entity page (the Team, a member, a Group) names itself in its own header, and the
+    // collection layout leaves the phone header untitled for it (registry `headsItself`). Its
+    // condition states keep the page title for the same reason.
+    const headsItself = props.renderHeader !== undefined || props.childRendersHeader === true;
+    const embedded = props.presentation === 'embedded';
     React.useEffect(() => {
+        if (embedded) return;
         navigation.setOptions({ title: resolvedTitle });
-    }, [navigation, resolvedTitle]);
+    }, [embedded, navigation, resolvedTitle]);
+
+    const plainHeader = (
+        <PageHeader
+            testID="team-page-header"
+            title={resolvedTitle}
+            description={props.description}
+            alwaysShowTitle={headsItself}
+            meta={[
+                ...(readyTeamName && readyTeamName !== resolvedTitle ? [{ key: 'team', text: readyTeamName }] : []),
+                ...('homeName' in binding ? [{ key: 'home', icon: 'house' as const, text: binding.homeName }] : []),
+            ]}
+        />
+    );
+
+    // A page with nothing to show but its condition: the header, then the condition.
+    const conditionPage = (condition: React.ReactNode) => embedded ? condition : (
+        <ItemList presentation="page">
+            {plainHeader}
+            {condition}
+        </ItemList>
+    );
 
     if (binding.kind === 'resolving') {
-        return <TeamMessage title={t('teams.title')} busy testID="team-resolving" />;
+        return conditionPage(<TeamStateCard kind="loading" title={t('teams.loading')} testID="team-resolving" />);
     }
 
     if (binding.kind === 'invalid_address' || binding.kind === 'unknown_home') {
-        return (
-            <TeamMessage
-                title={t('teams.errors.notFound')}
-                testID="team-unknown-home"
-            />
+        return conditionPage(
+            <TeamStateCard kind="unavailable" title={t('teams.errors.notFound')} testID="team-unknown-home" />,
         );
     }
 
     if (binding.kind === 'signed_out') {
-        return (
-            <TeamMessage
+        return conditionPage(
+            <TeamStateCard
+                kind="unavailable"
                 title={t('homeGovernance.forbiddenTitle')}
                 body={t('homeGovernance.forbiddenBody')}
                 testID="team-signed-out"
-            />
+            />,
         );
     }
 
     if (binding.kind === 'credential_unreadable') {
-        return (
-            <ItemList>
-                <HomeCredentialUnreadableCard serverId={binding.serverId} testID="team-credential-unreadable" />
-            </ItemList>
+        return conditionPage(
+            <HomeCredentialUnreadableCard serverId={binding.serverId} testID="team-credential-unreadable" />,
         );
     }
 
     const { state, homeName, address, refresh } = binding;
 
     if (state.kind === 'unobserved' || state.kind === 'loading') {
-        return <TeamMessage title={t('teams.title')} busy testID="team-loading" />;
+        return conditionPage(<TeamStateCard kind="loading" title={t('teams.loading')} testID="team-loading" />);
     }
 
     if (state.kind === 'unavailable' && state.error.code === 'team_authentication_required') {
@@ -148,25 +185,20 @@ export const TeamSection = React.memo(function TeamSection(props: Readonly<{
         // exact-Home Team entry for this route's own Home (L03/02 §8.2), never a
         // generic denial and never an automatic retry of the refused read.
         const presentation = presentTeamEntryUnavailableReason('sso_required');
-        return (
-            <ItemList>
-                <TeamMessage
-                    title={presentation?.title ?? t('homeGovernance.forbiddenTitle')}
-                    body={presentation?.body}
-                    testID="team-authentication-required"
-                />
-                <ItemGroup>
-                    <Item
-                        testID="team-sign-in"
-                        title={t('teams.entry.signInToTeam')}
-                        icon={<Icon name="sign-in" size={29} color={theme.colors.text.secondary} />}
-                        onPress={() => router.push(teamSignInReturnPath({
-                            teamId: props.teamId,
-                            serverId: props.serverId,
-                        }))}
-                    />
-                </ItemGroup>
-            </ItemList>
+        return conditionPage(
+            <TeamStateCard
+                kind="warning"
+                title={presentation?.title ?? t('homeGovernance.forbiddenTitle')}
+                body={presentation?.body}
+                action={{
+                    label: t('teams.entry.signInToTeam'),
+                    onPress: () => router.push(teamSignInReturnPath({
+                        teamId: props.teamId,
+                        serverId: props.serverId,
+                    })),
+                }}
+                testID="team-authentication-required"
+            />,
         );
     }
 
@@ -176,29 +208,18 @@ export const TeamSection = React.memo(function TeamSection(props: Readonly<{
         // them is offered a retry that would ask the same question again.
         const denied = state.error.kind === 'forbidden' || state.error.kind === 'unauthorized';
         const unsupported = state.error.kind === 'unsupported';
-        return (
-            <ItemList>
-                <TeamMessage
-                    title={denied ? t('homeGovernance.forbiddenTitle') : t('teams.unavailable.title')}
-                    body={denied
-                        ? t('teams.errors.forbidden')
-                        : unsupported
-                            ? t('teams.unavailable.updateRequired')
-                            : t('teams.unavailable.offline')}
-                    testID="team-unavailable"
-                />
-                {state.retryable ? (
-                    <ItemGroup>
-                        <Item
-                            testID="team-retry"
-                            title={t('teams.unavailable.retry')}
-                            icon={<Icon name="arrow-clockwise" size={29} color={theme.colors.text.secondary} />}
-                            onPress={refresh}
-                            showChevron={false}
-                        />
-                    </ItemGroup>
-                ) : null}
-            </ItemList>
+        return conditionPage(
+            <TeamStateCard
+                kind={denied ? 'unavailable' : 'error'}
+                title={denied ? t('homeGovernance.forbiddenTitle') : t('teams.unavailable.title')}
+                body={denied
+                    ? t('teams.errors.forbidden')
+                    : unsupported
+                        ? t('teams.unavailable.updateRequired')
+                        : t('teams.unavailable.offline')}
+                action={state.retryable ? { label: t('teams.unavailable.retry'), onPress: refresh } : undefined}
+                testID="team-unavailable"
+            />,
         );
     }
 
@@ -217,67 +238,81 @@ export const TeamSection = React.memo(function TeamSection(props: Readonly<{
         requestApproval,
     };
 
+    // Restore lives in the Team's Settings; the archived notice leads there, except on Settings itself.
+    const canRestore = state.team.capabilities.restoreTeam
+        && state.mutationsAvailable
+        && props.restoresHere !== true;
+
     const header = (
         <>
+            {embedded || props.childRendersHeader ? null : props.renderHeader ? props.renderHeader(context) : plainHeader}
             {approvalId ? (
-                <ItemGroup>
-                    <Item
-                        testID="team-approval"
-                        title={t('approvals.title')}
-                        subtitle={approvalError
-                            ? t('approvals.loadError')
-                            : approvalLoading || approvalStatus === 'open' || approvalStatus === 'approved' || approvalStatus === 'executing'
-                                ? t('approvals.status.open')
-                                : t('approvals.details')}
-                        accessibilityLiveRegion={approvalError ? 'assertive' : 'polite'}
-                        onPress={() => router.push(`/inbox/approvals/${encodeURIComponent(approvalId)}?serverId=${encodeURIComponent(props.serverId)}`)}
-                        showChevron={false}
-                    />
-                </ItemGroup>
+                <AttentionBanner
+                    testID="team-approval"
+                    tone="neutral"
+                    title={t('approvals.title')}
+                    description={approvalError
+                        ? t('approvals.loadError')
+                        : approvalLoading || approvalStatus === 'open' || approvalStatus === 'approved' || approvalStatus === 'executing'
+                            ? t('approvals.status.open')
+                            : undefined}
+                    accessibilityLiveRegion={approvalError ? 'assertive' : 'polite'}
+                    action={{
+                        label: t('approvals.details'),
+                        onPress: () => router.push(`/inbox/approvals/${encodeURIComponent(approvalId)}?serverId=${encodeURIComponent(props.serverId)}`),
+                    }}
+                />
             ) : null}
             {state.stale ? (
-                <ItemGroup footer={t('teams.stale.label')}>
-                    <Item
-                        testID="team-stale"
-                        title={state.error ? t('teams.unavailable.offline') : t('teams.stale.label')}
-                        icon={<Icon name="warning" size={29} color={theme.colors.state.warning.foreground} />}
-                        detail={t('teams.unavailable.retry')}
-                        accessibilityLiveRegion="polite"
-                        onPress={refresh}
-                        showChevron={false}
-                    />
-                </ItemGroup>
+                <AttentionBanner
+                    testID="team-stale"
+                    title={state.error ? t('teams.unavailable.offline') : t('teams.stale.label')}
+                    description={state.error ? t('teams.stale.label') : undefined}
+                    accessibilityLiveRegion="polite"
+                    action={{ label: t('teams.unavailable.retry'), onPress: refresh }}
+                />
             ) : null}
 
             {state.archived ? (
-                <ItemGroup footer={t('teams.archive.readOnly')}>
-                    <Item
-                        testID="team-archived"
-                        title={t('teams.directory.archivedBadge')}
-                        subtitle={t('teams.archive.readOnly')}
-                        icon={<Icon name="warning" size={29} color={theme.colors.state.warning.foreground} />}
-                        showChevron={false}
-                    />
-                </ItemGroup>
+                <AttentionBanner
+                    testID="team-archived"
+                    tone="neutral"
+                    title={t('teams.directory.archivedBadge')}
+                    description={t('teams.archive.readOnly')}
+                    action={canRestore ? {
+                        label: t('teams.archive.openSettings'),
+                        onPress: () => router.push(teamSettingsPath(address)),
+                    } : null}
+                />
             ) : null}
-
         </>
     );
 
-    if (props.presentation === 'virtualized-list') {
+    if (embedded) {
         return (
             <React.Fragment key={scopeKey}>
-                {props.children(context, header)}
+                {header}
+                {props.children(context)}
             </React.Fragment>
         );
     }
 
+    if (props.presentation === 'virtualized-list') {
+        return (
+            <ListPresentationProvider value="page">
+                <React.Fragment key={scopeKey}>
+                    {props.children(context, header)}
+                </React.Fragment>
+            </ListPresentationProvider>
+        );
+    }
+
     return (
-        <ItemList>
-            {header}
+        <ItemList presentation="page">
+            {props.childRendersHeader ? null : header}
 
             <React.Fragment key={scopeKey}>
-                {props.children(context)}
+                {props.childRendersHeader ? props.children(context, header) : props.children(context)}
             </React.Fragment>
         </ItemList>
     );

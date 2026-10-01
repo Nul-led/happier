@@ -4,18 +4,11 @@ import type { ReactTestInstance } from 'react-test-renderer';
 import { ProviderConnectionIdSchema } from '@happier-dev/protocol';
 
 import {
-    createMachineAdministrationTargetSelectionFixture,
     findTestInstanceByTypeContainingText,
     renderScreen,
     standardCleanup,
 } from '@/dev/testkit';
 import { installSettingsViewCommonModuleMocks } from '../../settingsViewTestHelpers';
-
-vi.mock('@/components/settings/machines/MachineAdministrationTargetSelector', () => ({
-    MachineAdministrationTargetSelector: (props: Record<string, unknown>) => (
-        React.createElement('MachineAdministrationTargetSelector', props)
-    ),
-}));
 
 installSettingsViewCommonModuleMocks();
 
@@ -41,10 +34,10 @@ describe('BuiltInProviderAuthoringView', () => {
         const { BuiltInProviderAuthoringView } = await import('./BuiltInProviderAuthoringView');
         const screen = await renderScreen(
             <BuiltInProviderAuthoringView
-                targetSelection={createMachineAdministrationTargetSelectionFixture()}
                 machineId="machine-a"
                 currentMachineName="Mac"
                 providerName="Provider"
+                icon={null}
             provenance="external"
             previewCredential={null}
             endpointTemplates={[]}
@@ -63,6 +56,8 @@ describe('BuiltInProviderAuthoringView', () => {
             onEndpointChange={vi.fn()}
             onEnableAfterSavingChange={vi.fn()}
                 onSave={vi.fn()}
+                onOpenWebsite={vi.fn()}
+                onDiscard={vi.fn()}
             />,
         );
 
@@ -88,10 +83,10 @@ describe('BuiltInProviderAuthoringView', () => {
         const { BuiltInProviderAuthoringView } = await import('./BuiltInProviderAuthoringView');
         const screen = await renderScreen(
             <BuiltInProviderAuthoringView
-                targetSelection={createMachineAdministrationTargetSelectionFixture()}
                 machineId="machine-a"
                 currentMachineName="Mac"
                 providerName="Acme"
+                icon={null}
                 provenance="external"
                 previewCredential={null}
                 endpointTemplates={[
@@ -113,6 +108,8 @@ describe('BuiltInProviderAuthoringView', () => {
                 onEndpointChange={vi.fn()}
                 onEnableAfterSavingChange={vi.fn()}
                 onSave={vi.fn()}
+                onOpenWebsite={vi.fn()}
+                onDiscard={vi.fn()}
             />,
         );
 
@@ -131,10 +128,10 @@ describe('BuiltInProviderAuthoringView', () => {
         const { BuiltInProviderAuthoringView } = await import('./BuiltInProviderAuthoringView');
         const screen = await renderScreen(
             <BuiltInProviderAuthoringView
-                targetSelection={createMachineAdministrationTargetSelectionFixture()}
                 machineId="machine-a"
                 currentMachineName="Mac"
                 providerName="Provider"
+                icon={null}
                 provenance="external"
                 previewCredential={{ required: false }}
                 endpointTemplates={[]}
@@ -175,6 +172,8 @@ describe('BuiltInProviderAuthoringView', () => {
                 onEndpointChange={vi.fn()}
                 onEnableAfterSavingChange={vi.fn()}
                 onSave={vi.fn()}
+                onOpenWebsite={vi.fn()}
+                onDiscard={vi.fn()}
             />,
         );
 

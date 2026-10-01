@@ -1,11 +1,10 @@
 import * as React from 'react';
-import { Pressable, View } from 'react-native';
+import { View } from 'react-native';
 
 import { LiveStreamPlayer, type LiveStreamPlayerDisplayState } from '@/components/stream/LiveStreamPlayer';
 import { StreamStatusDot, resolveStreamStatusDotVariant } from '@/components/stream/StreamStatusDot';
 import { Text } from '@/components/ui/text/Text';
 import type { SimulatorPreviewStreamState } from '@/sync/domains/devices/simulator/types';
-import { t } from '@/text';
 import type {
     MachineLiveStreamControlSidebandV1,
     SimulatorDeviceResourceV1,
@@ -20,11 +19,6 @@ const CONNECTING_PHASES: ReadonlySet<LiveStreamPlayerDisplayState['phase']> = ne
     'reconnecting',
     'idle',
 ]);
-
-export type SimulatorStreamViewLeaseState = Readonly<{
-    state: 'none' | 'available' | 'held-by-me' | 'held-by-other' | 'expired';
-    holderLabel?: string;
-}>;
 
 export type SimulatorStreamViewControls = Readonly<{
     canWatch: boolean;
@@ -41,16 +35,12 @@ function resolveCaptureReason(resource: SimulatorDeviceResourceV1): string | und
 
 export function SimulatorStreamView(props: Readonly<{
     resource: SimulatorDeviceResourceV1;
-    playerState: LiveStreamPlayerDisplayState & Pick<SimulatorPreviewStreamState, 'avccChunks'>;
-    lease: SimulatorStreamViewLeaseState;
+    playerState: LiveStreamPlayerDisplayState & Pick<SimulatorPreviewStreamState, 'avccChunks' | 'onFrameDecoded'>;
     controls: SimulatorStreamViewControls;
-    onRequestKeyframe?: () => void;
-    onLowerQuality?: () => void;
     testID: string;
 }>): React.ReactElement {
     const captureReason = resolveCaptureReason(props.resource);
     const captureUnavailable = props.resource.capture.status === 'unavailable';
-    const readOnly = props.lease.state !== 'held-by-me' || !props.controls.canControl;
     const showUnavailable = captureUnavailable || !props.controls.canWatch;
     const unavailableReason = captureUnavailable
         ? captureReason
@@ -85,9 +75,6 @@ export function SimulatorStreamView(props: Readonly<{
                         {props.resource.displayName}
                     </Text>
                 </View>
-                <Text style={simulatorStreamStyles.metaText} testID={`${props.testID}-meta`}>
-                    {props.resource.platform}
-                </Text>
             </View>
             <View style={simulatorStreamStyles.body}>
                 {showUnavailable ? (
@@ -110,46 +97,12 @@ export function SimulatorStreamView(props: Readonly<{
                         // device produces its first frame.
                         key={props.resource.simulatorId}
                         avcc={props.playerState.avccChunks && props.playerState.avccChunks.length > 0
-                            ? { chunks: props.playerState.avccChunks }
+                            ? { chunks: props.playerState.avccChunks, onDecoded: props.playerState.onFrameDecoded }
                             : undefined}
-                        controls={{
-                            canRequestKeyframe: props.controls.canRequestKeyframe,
-                            canSetQuality: props.controls.canSetQuality,
-                        }}
-                        onLowerQuality={props.onLowerQuality}
-                        onRequestKeyframe={props.onRequestKeyframe}
                         state={props.playerState}
                         testID={`${props.testID}-player`}
                     />
                 )}
-            </View>
-            <View style={simulatorStreamStyles.toolbar}>
-                {readOnly ? (
-                    <View testID={`${props.testID}-readonly`} style={simulatorStreamStyles.readonlyBadge}>
-                        <Text style={simulatorStreamStyles.badgeText}>{t('streamPlayer.controls.readOnly')}</Text>
-                    </View>
-                ) : (
-                    <View style={simulatorStreamStyles.readonlyBadge}>
-                        <Text style={simulatorStreamStyles.badgeText}>{t('streamPlayer.controls.controlling')}</Text>
-                    </View>
-                )}
-                <Pressable
-                    accessibilityRole="button"
-                    accessibilityState={{ disabled: readOnly }}
-                    disabled={readOnly}
-                    style={[
-                        simulatorStreamStyles.controlState,
-                        readOnly ? simulatorStreamStyles.controlStateDisabled : null,
-                    ]}
-                    testID={`${props.testID}-control-state`}
-                >
-                    <Text style={[
-                        simulatorStreamStyles.badgeText,
-                        readOnly ? simulatorStreamStyles.badgeTextDisabled : null,
-                    ]}>
-                        {readOnly ? t('streamPlayer.controls.controlsUnavailable') : t('streamPlayer.controls.controlsAvailable')}
-                    </Text>
-                </Pressable>
             </View>
         </View>
     );

@@ -8,6 +8,8 @@ import { Item } from '@/components/ui/lists/Item';
 import type { Machine } from '@/sync/domains/state/storageTypes';
 import { t } from '@/text';
 import { Icon } from '@/components/ui/icons/Icon';
+import { getMachineDisplayName, resolveMachineDisplayNames } from '@/utils/sessions/machineDisplayNames';
+import { describeMachinePresenceLine } from '@/utils/sessions/machinePresenceLine';
 
 type BindingTargetType = McpServerBindingTargetV1['t'];
 type MachineScopedBindingTargetType = Exclude<BindingTargetType, 'allMachines'>;
@@ -15,7 +17,8 @@ type MachineScopedBindingTargetType = Exclude<BindingTargetType, 'allMachines'>;
 export function describeBindingTarget(target: McpServerBindingTargetV1, machines: readonly Machine[]): string {
     if (target.t === 'allMachines') return t('settings.mcpServersBindingTargetAllMachines');
     const machine = machines.find((m) => m.id === target.machineId) ?? null;
-    const machineLabel = machine?.metadata?.displayName || machine?.metadata?.host || target.machineId;
+    // A machine missing from the inventory has no name to show, so its id is the only truthful label.
+    const machineLabel = getMachineDisplayName(machine) ?? target.machineId;
     if (target.t === 'machine') return t('settings.mcpServersBindingTargetMachine', { machine: machineLabel });
     return t('settings.mcpServersBindingTargetWorkspace', { machine: machineLabel, path: target.workspaceRoot });
 }
@@ -55,10 +58,11 @@ export const McpBindingTargetFields = React.memo(function McpBindingTargetFields
     }, [theme.colors.text.secondary]);
 
     const machineItems = React.useMemo((): DropdownMenuItem[] => {
+        const names = resolveMachineDisplayNames(props.machines);
         return props.machines.map((machine) => ({
             id: machine.id,
-            title: machine.metadata?.displayName || machine.metadata?.host || machine.id,
-            subtitle: machine.id,
+            title: names.get(machine.id) ?? machine.id,
+            subtitle: describeMachinePresenceLine(machine).label,
             icon: <Icon name="laptop" size={20} color={theme.colors.text.secondary} />,
         }));
     }, [props.machines, theme.colors.text.secondary]);
@@ -92,7 +96,6 @@ export const McpBindingTargetFields = React.memo(function McpBindingTargetFields
                 itemTrigger={{
                     title: t('settings.mcpServersBindingTarget'),
                     subtitle: t('settings.mcpServersBindingTargetSubtitle'),
-                    icon: <Icon name="push-pin" size={29} color={theme.colors.accent.purple} />,
                 }}
                 rowKind="item"
                 connectToTrigger
@@ -119,7 +122,6 @@ export const McpBindingTargetFields = React.memo(function McpBindingTargetFields
                     itemTrigger={{
                         title: t('settings.mcpServersBindingMachine'),
                         subtitle: t('settings.mcpServersBindingMachineSubtitle'),
-                        icon: <Icon name="laptop" size={29} color={theme.colors.accent.indigo} />,
                     }}
                     rowKind="item"
                     connectToTrigger
@@ -131,7 +133,6 @@ export const McpBindingTargetFields = React.memo(function McpBindingTargetFields
                 <Item
                     title={t('settings.mcpServersBindingWorkspaceRootTitle')}
                     subtitle={props.target.workspaceRoot}
-                    icon={<Icon name="folder" size={29} color={theme.colors.accent.blue} />}
                     onPress={props.onOpenWorkspacePicker}
                 />
             ) : null}

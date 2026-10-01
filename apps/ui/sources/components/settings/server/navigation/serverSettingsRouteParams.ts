@@ -1,4 +1,8 @@
+import { normalizeInternalReturnPath } from '@/utils/path/routeUtils';
+
 type ParamValue = string | string[] | undefined;
+
+const HOME_RECOVERY_ROUTE = '/server' as const;
 
 function firstString(value: ParamValue): string {
     if (typeof value === 'string') return value;
@@ -46,37 +50,67 @@ export function parseServerSettingsRouteParams(params: Readonly<{
     source?: ParamValue;
     groupEditor?: ParamValue;
     groupServerIds?: ParamValue;
+    recoveryProfile?: ParamValue;
+    recoveryReturnTo?: ParamValue;
 }>): Readonly<{
     url: string | null;
     auto: boolean;
     source: 'notification' | null;
     groupEditor: boolean;
     initialGroupServerIds: readonly string[];
+    /** Exact saved Home addressed by the recovery action, never inferred from focus. */
+    recovery: Readonly<{ profileRef: string; returnTo: string }> | null;
 }> {
     const url = firstString(params.url).trim();
     const autoRaw = firstString(params.auto);
     const sourceRaw = firstString(params.source);
     const groupEditorRaw = firstString(params.groupEditor);
     const groupServerIdsRaw = firstString(params.groupServerIds);
+    const recoveryProfile = firstString(params.recoveryProfile).trim();
+    const recoveryReturnTo = normalizeInternalReturnPath(firstString(params.recoveryReturnTo))
+        ?? HOME_RECOVERY_ROUTE;
     return {
         url: url ? url : null,
         auto: autoRaw ? parseBoolean(autoRaw) : false,
         source: sourceRaw ? parseSource(sourceRaw) : null,
         groupEditor: groupEditorRaw ? parseBoolean(groupEditorRaw) : false,
         initialGroupServerIds: parseServerIds(groupServerIdsRaw),
+        recovery: recoveryProfile ? { profileRef: recoveryProfile, returnTo: recoveryReturnTo } : null,
+    };
+}
+
+/**
+ * Canonical full-screen Home recovery route. The saved profile is the exact
+ * authentication target; the invoking path is normalized before an external
+ * method is allowed to persist it as a return destination.
+ */
+export function buildHomeRecoveryHref(input: Readonly<{
+    profileRef: string;
+    returnTo: string;
+}>): Readonly<{
+    pathname: typeof HOME_RECOVERY_ROUTE;
+    params: Readonly<{ recoveryProfile: string; recoveryReturnTo: string }>;
+}> {
+    const profileRef = input.profileRef.trim();
+    if (!profileRef) throw new Error('Home recovery requires an exact saved profile');
+    return {
+        pathname: HOME_RECOVERY_ROUTE,
+        params: {
+            recoveryProfile: profileRef,
+            recoveryReturnTo: normalizeInternalReturnPath(input.returnTo) ?? HOME_RECOVERY_ROUTE,
+        },
     };
 }
 
 export function buildServerSettingsGroupEditorHref(input: Readonly<{
     initialGroupServerIds: readonly string[];
 }>): Readonly<{
-    pathname: '/settings/server';
-    params: Readonly<{ groupEditor: '1'; groupServerIds: string }>;
+    pathname: '/settings/server/groups/new';
+    params: Readonly<{ groupServerIds: string }>;
 }> {
     return {
-        pathname: '/settings/server',
+        pathname: '/settings/server/groups/new',
         params: {
-            groupEditor: '1',
             groupServerIds: JSON.stringify(normalizeServerIds(input.initialGroupServerIds)),
         },
     };

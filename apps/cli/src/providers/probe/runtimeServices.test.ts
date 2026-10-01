@@ -1,11 +1,15 @@
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import axios from 'axios';
+import * as persistence from '@/persistence';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   DEFAULT_PROVIDER_SETTINGS_V1,
   AccountSettingsSchema,
+  FeaturesResponseSchema,
+  sealSavedSecretResourceStoredContentV1,
   PROVIDER_ENDPOINT_SAFETY_LIMITS,
   ProviderConnectionIdSchema,
   ProviderContributionV1Schema,
@@ -17,6 +21,9 @@ import {
 import type { ResolvedProviderContribution } from '@/plugins/projection/registry/types';
 import { resolveProviderConnectionForMachine } from '@/providers/registry';
 import type { ProviderRuntimeStateStore } from '@/providers/runtimeState';
+import { getActiveAccountSettingsSnapshot, resetActiveAccountSettingsSnapshotForTests, setActiveAccountSettingsSnapshot } from '@/settings/accountSettings/activeAccountSettingsSnapshot';
+import { resolveAccountSettingsScopeKeyForToken } from '@/settings/accountSettings/accountSettingsScopeKey';
+import { hydrateSavedSecretCatalog } from '@/settings/secrets/hydrateSavedSecretCatalog';
 
 import { createRuntimeProviderServices } from './runtimeServices';
 import {
@@ -28,6 +35,9 @@ import { PROVIDER_HEALTH_REFRESH_TTL_MS } from './scheduler';
 const temporaryPaths: string[] = [];
 afterEach(async () => {
   vi.useRealTimers();
+  vi.restoreAllMocks();
+  vi.unstubAllGlobals();
+  resetActiveAccountSettingsSnapshotForTests();
   await Promise.all(temporaryPaths.splice(0).map((path) => rm(path, { recursive: true, force: true })));
 });
 
@@ -63,7 +73,7 @@ const contribution: ResolvedProviderContribution = {
 };
 const registry = { providersByContributionKey: new Map([[contributionKey, contribution]]) };
 
-function grantedSettings() {
+function grantedSettings(providerRegistry = registry) {
   const base = ProviderSettingsV1Schema.parse({
     ...DEFAULT_PROVIDER_SETTINGS_V1,
     connections: [{
@@ -78,7 +88,7 @@ function grantedSettings() {
     connectionId,
     machineId: 'machine-a',
     accountSettings: { providerSettingsV1: base },
-    registry,
+    registry: providerRegistry,
     dnsEvidenceByEndpointUrl: new Map([['https://models.example/v1', ['1.1.1.1']]]),
   });
   if (resolution.status !== 'resolved') throw new Error('Expected resolved connection');
@@ -94,6 +104,101 @@ function grantedSettings() {
 }
 
 describe('runtime provider services', () => {
+  it('refuses a newly revoked shared Provider credential on saved probe without an AccountChange', async () => {
+    const token = 'provider-probe-account';
+    const resourceId = 'provider-probe-resource';
+    const ref = `happier:shared-secret:v1:${resourceId}`;
+    const credentialRegistry = { providersByContributionKey: new Map([[contributionKey, {
+      ...contribution,
+      definition: ProviderContributionV1Schema.parse({
+        ...definition,
+        credential: {
+          kind: 'apiKey', slotId: 'apiKey', required: true,
+          transports: [{ id: 'bearer', protocols: ['openai-chat'], uses: ['probe'], destination: { kind: 'httpHeader', name: 'Authorization', format: 'bearer' } }],
+        },
+      }),
+    }]]) };
+    setActiveAccountSettingsSnapshot({
+      source: 'network', settings: AccountSettingsSchema.parse({ providerSettingsV1: {
+        ...grantedSettings(credentialRegistry),
+        secretBindingsByConnectionId: { [connectionId]: {
+          account: { apiKey: 'unselected-personal-secret' },
+          byMachineId: { 'machine-a': { apiKey: ref } },
+        } },
+      } }),
+      settingsVersion: 1, loadedAtMs: 1, settingsSecretsReadKeys: [], scopeKey: resolveAccountSettingsScopeKeyForToken(token),
+    });
+    const features = FeaturesResponseSchema.parse({ features: { teams: { enabled: true } }, capabilities: {} });
+    vi.spyOn(persistence, 'readStoredCredentials').mockResolvedValue({ token, encryption: null });
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify(features))));
+    const materialResponse = (revision: number, value: string) => ({ status: 200, data: { resources: [{
+      resourceId, encryptionMode: 'plain', recipientEnvelope: null,
+      storedContent: sealSavedSecretResourceStoredContentV1({
+        resourceId, mode: 'plain', content: { v: 1, name: 'Provider key', kind: 'apiKey', value },
+      }),
+      entry: {
+        ref, source: 'shared_resource', relationship: 'recipient', name: 'Provider key', kind: 'apiKey',
+        ownerAccountId: 'owner', revision, materialStatus: 'ready',
+        capabilities: { use: true, rename: false, rotate: false, manageAccess: false, delete: false },
+      },
+    }] } });
+    const get = vi.spyOn(axios, 'get').mockResolvedValue(materialResponse(1, 'revoked-value'));
+    await hydrateSavedSecretCatalog({ token, serverFeatures: features });
+    expect(getActiveAccountSettingsSnapshot()?.savedSecretResources).toMatchObject([{ resourceId, revision: 1 }]);
+    get.mockClear();
+    get.mockResolvedValue({ status: 200, data: { resources: [] } });
+    const transport = vi.fn(async (_request: ProviderProbeTransportRequest) => ({
+      status: 200, headers: { 'content-type': 'application/json' },
+      body: Buffer.from(JSON.stringify({ data: [{ id: 'probe-a' }] })),
+    }));
+    let state = createEmptyProviderRuntimeStateFileV1('machine-a');
+    const services = createRuntimeProviderServices({
+      machineId: 'machine-a', registry: credentialRegistry,
+      getAccountSettingsSnapshot: getActiveAccountSettingsSnapshot,
+      resolveAddresses: async () => ['1.1.1.1'], featureGate: { isEnabled: () => true },
+      client: createProviderProbeHttpClient({ resolveAddresses: async () => ['1.1.1.1'], transport }),
+      runtimeStore: {
+        path: '/virtual/provider-admission.json', read: async () => state,
+        update: async (transform) => state = await transform(state),
+        updateTransientEndpointHealth: async (transform) => { state = { ...state, endpointHealth: [...await transform(state.endpointHealth)] }; },
+      },
+    });
+
+    await expect(services.probe({ connectionId, machineId: 'machine-a' })).resolves.toMatchObject({
+      status: 'error', error: { code: 'provider_secret_missing' },
+    });
+    expect(transport).not.toHaveBeenCalled();
+    expect(getActiveAccountSettingsSnapshot()?.savedSecretResources).toEqual([]);
+    expect(get).toHaveBeenCalledTimes(1);
+
+    get.mockResolvedValue(materialResponse(2, 'restored-value'));
+    await expect(services.probe({ connectionId, machineId: 'machine-a' })).resolves.toMatchObject({ status: 'success' });
+    expect(transport).toHaveBeenLastCalledWith(expect.objectContaining({
+      headers: expect.objectContaining({ authorization: 'Bearer restored-value' }),
+    }));
+    expect(get).toHaveBeenCalledTimes(2);
+    get.mockResolvedValue(materialResponse(3, 'rotated-value'));
+    await expect(services.probe({ connectionId, machineId: 'machine-a' })).resolves.toMatchObject({ status: 'success' });
+    expect(transport).toHaveBeenLastCalledWith(expect.objectContaining({
+      headers: expect.objectContaining({ authorization: 'Bearer rotated-value' }),
+    }));
+    expect(get).toHaveBeenCalledTimes(3);
+    state = createEmptyProviderRuntimeStateFileV1('machine-a');
+    await expect(services.scheduleDemandRefresh({ connectionId, machineId: 'machine-a' }, 'picker_open')).resolves.toBeNull();
+    // Catalog and health are two requests in one admitted demand operation.
+    expect(get).toHaveBeenCalledTimes(4);
+    const current = getActiveAccountSettingsSnapshot()!;
+    get.mockImplementationOnce(async () => {
+      setActiveAccountSettingsSnapshot({ ...current, settingsVersion: current.settingsVersion + 1 });
+      return materialResponse(3, 'rotated-value');
+    });
+    transport.mockClear();
+    await expect(services.probe({ connectionId, machineId: 'machine-a' })).resolves.toMatchObject({
+      status: 'error', error: { code: 'provider_authorization_changed' },
+    });
+    expect(transport).not.toHaveBeenCalled();
+  });
+
   it('settles a picker read through the existing operation deadline when DNS never resolves', async () => {
     vi.useFakeTimers();
     try {
@@ -977,6 +1082,7 @@ describe('runtime provider services', () => {
       body: Buffer.from(JSON.stringify({ models: nativeModels }), 'utf8'),
     }));
     let observation = 0;
+    const accountSettings = AccountSettingsSchema.parse({ providerSettingsV1: settings });
     const services = createRuntimeProviderServices({
       machineId: 'machine-a',
       happyHomeDir,
@@ -984,7 +1090,7 @@ describe('runtime provider services', () => {
       featureGate: { isEnabled: () => true },
       resolveAddresses: async () => ['127.0.0.1'],
       getAccountSettingsSnapshot: () => ({
-        source: 'cache', settings: AccountSettingsSchema.parse({ providerSettingsV1: settings }),
+        source: 'cache', settings: accountSettings,
         settingsVersion: 1, loadedAtMs: 1, settingsSecretsReadKeys: [], scopeKey: 'account-a',
       }),
       client: createProviderProbeHttpClient({

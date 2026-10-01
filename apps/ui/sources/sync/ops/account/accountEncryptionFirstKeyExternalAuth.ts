@@ -76,6 +76,16 @@ type FirstKeyMigrationInput = Readonly<{
     request: AccountEncryptionMigrateRequest;
 }>;
 
+type AccountEncryptionScopeGuard = Readonly<{
+    isCurrent(): boolean;
+}>;
+
+function assertAccountEncryptionScopeCurrent(scopeGuard: AccountEncryptionScopeGuard | undefined): void {
+    if (scopeGuard && !scopeGuard.isCurrent()) {
+        throw new Error('account_encryption_scope_changed');
+    }
+}
+
 type FirstKeyStartResult =
     | Readonly<{
         kind: 'oauth';
@@ -373,6 +383,7 @@ export async function recoverAccountEncryptionFirstKeyRejectedCredential(
                 AccountEncryptionFirstKeyCredentialPersistenceOptions,
         ) => Promise<Readonly<{ kind: string }>>;
         target?: FirstKeyHomeTarget;
+        scopeGuard?: AccountEncryptionScopeGuard;
     }>,
 ): Promise<AccountEncryptionFirstKeyRejectedCredentialRecoveryResult> {
     const { recovery } = params;
@@ -457,18 +468,17 @@ export async function recoverAccountEncryptionFirstKeyRejectedCredential(
                 request: acquired.request,
             });
 
-            const persistence =
-                await params.persistCredentials(
-                    credentials,
-                    {
-                        firstKeyRecoveryAuthorization: {
-                            [firstKeyCredentialPersistenceBrand]:
-                                true,
-                            token,
-                        },
-                        target,
+            assertAccountEncryptionScopeCurrent(params.scopeGuard);
+            const persistence = await params.persistCredentials(
+                credentials,
+                {
+                    firstKeyRecoveryAuthorization: {
+                        [firstKeyCredentialPersistenceBrand]: true,
+                        token,
                     },
-                );
+                    target,
+                },
+            );
             if (persistence.kind !== 'completed') {
                 return { kind: 'recovery_failed' };
             }
@@ -1635,7 +1645,7 @@ async function submitAccountEncryptionFirstKeyMigration(
             ...params.request,
             externalAuthProof,
         });
-    if (!requestWithExternalAuth.sessionDrafts?.items.length) {
+    if (!requestWithExternalAuth.sessionDrafts?.items.length && !requestWithExternalAuth.authoringMemory?.items.length) {
         return await migrateAccountEncryptionMode(
             params.currentCredentials,
             requestWithExternalAuth,
@@ -1674,10 +1684,13 @@ async function submitAccountEncryptionFirstKeyMigration(
                 },
             ),
         activateTargetMode: () => {
-            sync.reconfigureSessionDraftRepositoryForAccountMode(
-                params.proposedCredentials,
-                'e2ee',
-            );
+            sync.reconfigureAuthoringMemoryForAccountMode(params.proposedCredentials, 'e2ee');
+            if (requestWithExternalAuth.sessionDrafts?.items.length) {
+                sync.reconfigureSessionDraftRepositoryForAccountMode(
+                    params.proposedCredentials,
+                    'e2ee',
+                );
+            }
         },
         acknowledgeSessionDrafts: async (records) => {
             if (!sessionDraftScope) {
@@ -1704,6 +1717,7 @@ export async function resumeAccountEncryptionFirstKeyExternalAuth(
             options:
                 AccountEncryptionFirstKeyCredentialPersistenceOptions,
         ) => Promise<Readonly<{ kind: string }>>;
+        scopeGuard?: AccountEncryptionScopeGuard;
     }>,
 ): Promise<Readonly<{
     returnTo: string;
@@ -1871,15 +1885,13 @@ export async function resumeAccountEncryptionFirstKeyExternalAuth(
             }
             throw error;
         }
-        const persistence =
-            await params.persistCredentials(
+        assertAccountEncryptionScopeCurrent(params.scopeGuard);
+        const persistence = await params.persistCredentials(
             proposedCredentials,
             {
                 firstKeyRecoveryAuthorization: {
-                    [firstKeyCredentialPersistenceBrand]:
-                        true,
-                    token:
-                        proposedCredentials.token,
+                    [firstKeyCredentialPersistenceBrand]: true,
+                    token: proposedCredentials.token,
                 },
                 target,
             },
@@ -1914,6 +1926,7 @@ export async function retryPendingAccountEncryptionFirstKeyExternalAuth(
             options:
                 AccountEncryptionFirstKeyCredentialPersistenceOptions,
         ) => Promise<Readonly<{ kind: string }>>;
+        scopeGuard?: AccountEncryptionScopeGuard;
     }>,
 ): Promise<Readonly<{
     returnTo: string;
@@ -1970,6 +1983,7 @@ export async function retryPendingAccountEncryptionFirstKeyExternalAuth(
         pending,
         currentCredentials: params.currentCredentials,
         persistCredentials: params.persistCredentials,
+        scopeGuard: params.scopeGuard,
         target: normalizeFirstKeyHomeTarget({
             serverId: state.serverId,
             serverUrl: state.serverUrl,

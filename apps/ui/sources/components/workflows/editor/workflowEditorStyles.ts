@@ -1,8 +1,10 @@
 import { Platform } from 'react-native';
 import { StyleSheet } from 'react-native-unistyles';
 
+import { focusRingStyle } from '@/components/ui/interactions/interactionFeedback';
 import { resolveMinimumInteractiveTargetSize } from '@/components/ui/interactiveTargetSize';
 import { Typography } from '@/constants/Typography';
+import type { HappierPressableStyleState } from '@happier-dev/plugin-ui/presentation';
 
 /**
  * Text-labelled authoring controls cannot declare a square the way
@@ -24,10 +26,16 @@ const MINIMUM_TARGET_SIZE = resolveMinimumInteractiveTargetSize(Platform.OS);
  * introduces no palette, font or spacing system of its own.
  */
 export const workflowEditorStyles = StyleSheet.create((theme) => ({
-    /** The real press frame for a text-labelled authoring control. */
+    /**
+     * The real press frame for a text-labelled authoring control. Its border is
+     * reserved (transparent) so the shared focus ring (`focusRingStyle`) can
+     * paint it without moving layout.
+     */
     actionTarget: {
         minHeight: MINIMUM_TARGET_SIZE,
         justifyContent: 'center',
+        borderWidth: 1,
+        borderColor: 'transparent',
     },
     blockList: {
         gap: theme.margins.lg,
@@ -67,6 +75,15 @@ export const workflowEditorStyles = StyleSheet.create((theme) => ({
         ...Typography.default('semiBold'),
         color: theme.colors.text.primary,
         flexShrink: 1,
+    },
+    /** The block name as the control that selects the block. */
+    headingButton: {
+        flexGrow: 1,
+        flexShrink: 1,
+        minWidth: 0,
+        alignItems: 'flex-start',
+        paddingHorizontal: theme.margins.xs,
+        borderRadius: theme.borderRadius.md,
     },
     headingNameInput: {
         ...Typography.default('semiBold'),
@@ -122,9 +139,39 @@ export const workflowEditorStyles = StyleSheet.create((theme) => ({
         alignItems: 'center',
         gap: theme.margins.sm,
     },
+    /** The quiet bordered "+ Add" control at the end of a block list (lab `S1`). */
+    addTrigger: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: theme.margins.xs,
+        paddingHorizontal: theme.margins.md,
+        borderRadius: theme.borderRadius.md,
+        borderColor: theme.colors.border.strong,
+    },
+    /** A square icon-only press frame (the block `⋯`). */
+    iconTarget: {
+        minWidth: MINIMUM_TARGET_SIZE,
+        alignItems: 'center',
+        borderRadius: theme.borderRadius.md,
+    },
+    /** The between-block inserter: a hairline with a centred (+), revealed on hover, focus or selection (04 §4.3). */
+    inserter: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: theme.margins.xs,
+        minHeight: 24,
+    },
+    inserterHidden: {
+        opacity: 0,
+    },
+    inserterLine: {
+        flex: 1,
+        height: StyleSheet.hairlineWidth,
+        backgroundColor: theme.colors.border.default,
+    },
     addLabel: {
         ...Typography.default('semiBold'),
-        color: theme.colors.button.secondary.tint,
+        color: theme.colors.text.primary,
     },
     menuSurface: {
         backgroundColor: theme.colors.surface.elevated,
@@ -147,11 +194,38 @@ export const workflowEditorStyles = StyleSheet.create((theme) => ({
         ...Typography.default('regular'),
         color: theme.colors.text.primary,
     },
+    /** One bound input of an Action or nested-workflow step: its label over its binding. */
+    containerSummaryAnchor: {
+        alignSelf: 'flex-start',
+    },
+    actionFieldRow: {
+        gap: theme.margins.xs,
+    },
+    actionFieldLabel: {
+        ...Typography.default('semiBold'),
+        color: theme.colors.text.secondary,
+    },
+    menuRowLabelDestructive: {
+        ...Typography.default('regular'),
+        color: theme.colors.text.destructive,
+    },
     inlineControl: {
         flexDirection: 'row',
         alignItems: 'center',
         gap: theme.margins.sm,
         paddingVertical: theme.margins.xs,
+    },
+    /**
+     * Contact feedback for a text-labelled authoring control, applied through
+     * its `HappierPressable` state callback (see {@link workflowPressFeedbackStyle}).
+     * The same surface roles `IconButton` uses: hover reinforces and press
+     * answers on contact. Focus appearance is not owned here.
+     */
+    pressHovered: {
+        backgroundColor: theme.colors.surface.selected,
+    },
+    pressPressed: {
+        backgroundColor: theme.colors.surface.pressed,
     },
     inlineValue: {
         ...Typography.default('regular'),
@@ -166,3 +240,19 @@ export const workflowEditorStyles = StyleSheet.create((theme) => ({
         minWidth: 72,
     },
 }));
+
+/**
+ * The feedback half of a text-labelled workflow control's `HappierPressable`
+ * style callback: `style={(state) => [base, workflowPressFeedbackStyle(state, theme.colors.border.focus)]}`.
+ *
+ * Detection is `HappierPressable`'s (its `focused` is already keyboard-only);
+ * the ring's appearance is the one shared owner `focusRingStyle`, painted on
+ * the border `actionTarget` reserves. This module draws no ring of its own.
+ */
+export function workflowPressFeedbackStyle(state: HappierPressableStyleState, focusColor: string) {
+    return [
+        state.hovered ? workflowEditorStyles.pressHovered : null,
+        state.pressed ? workflowEditorStyles.pressPressed : null,
+        focusRingStyle({ focused: state.focused, color: focusColor }),
+    ];
+}

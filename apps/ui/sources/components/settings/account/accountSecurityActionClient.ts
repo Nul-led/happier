@@ -2,7 +2,10 @@ import {
     AccountEmailChangeRequestResponseV1Schema,
     AccountPasswordMutationResponseV1Schema,
     AccountSecurityGetResponseV1Schema,
+    AccountTerminalPresentUserPolicySetResponseV1Schema,
     type ActionExecuteResult,
+    type AccountTerminalPresentUserPolicySetResponseV1,
+    type TerminalPresentUserPolicy,
     type AccountEmailChangeRequestResponseV1,
     type AccountPasswordMutationResponseV1,
     type AccountPasswordChangeRequestV1,
@@ -23,7 +26,8 @@ export type AccountSecurityActionId =
     | 'account.password.enroll'
     | 'account.password.change'
     | 'account.password.remove'
-    | 'account.email.change.request';
+    | 'account.email.change.request'
+    | 'account.security.terminalPresentUser.set';
 
 export type AccountSecurityActionClient = Readonly<{
     read(signal?: AbortSignal): Promise<AccountSecurityGetResponseV1>;
@@ -42,6 +46,8 @@ export type AccountSecurityActionClient = Readonly<{
     }>, signal?: AbortSignal): Promise<AccountPasswordMutationResponseV1>;
     removeE2eePassword(input: Extract<AccountPasswordRemoveRequestV1, Readonly<{ kind: 'e2ee' }>>, signal?: AbortSignal): Promise<AccountPasswordMutationResponseV1>;
     requestEmailChange(input: Readonly<{ email: string }>, signal?: AbortSignal): Promise<AccountEmailChangeRequestResponseV1>;
+    /** Whether the CLI and daemon may approve requests and change account settings (plan 01 R-CLI). */
+    setTerminalPresentUserPolicy(policy: TerminalPresentUserPolicy, signal?: AbortSignal): Promise<AccountTerminalPresentUserPolicySetResponseV1>;
 }>;
 
 function actionFailure(result: Extract<ActionExecuteResult, Readonly<{ ok: false }>>): HappyError {
@@ -168,5 +174,8 @@ export function createAccountSecurityActionClient(dependencies: Readonly<{
             v: 1,
             ...input,
         }, AccountEmailChangeRequestResponseV1Schema, signal),
+        setTerminalPresentUserPolicy: async (policy, signal) => await run(
+            'account.security.terminalPresentUser.set', { policy }, AccountTerminalPresentUserPolicySetResponseV1Schema, signal,
+        ),
     });
 }

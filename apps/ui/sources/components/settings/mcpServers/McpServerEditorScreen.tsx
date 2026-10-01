@@ -1,7 +1,7 @@
 import * as React from 'react';
-import { useLocalSearchParams, useNavigation, useRouter } from 'expo-router';
-import { Pressable } from 'react-native';
-import { useUnistyles } from 'react-native-unistyles';
+import { useLocalSearchParams, useNavigation, useRouter } from '@/components/appShell/workspace/destinationRoute';
+import { View } from 'react-native';
+import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 import {
     McpServerBindingV1Schema,
@@ -13,17 +13,19 @@ import {
 import { McpServerConfigureForm } from '@/components/settings/mcpServers/McpServerConfigureForm';
 import { McpServerImportJsonTab } from '@/components/settings/mcpServers/McpServerImportJsonTab';
 import { McpServerQuickInstallTab } from '@/components/settings/mcpServers/McpServerQuickInstallTab';
-import { McpSegmentedHeader } from '@/components/settings/mcpServers/McpSegmentedHeader';
 import { MachineAdministrationTargetSelector } from '@/components/settings/machines/MachineAdministrationTargetSelector';
-import { Item } from '@/components/ui/lists/Item';
+import { RoundButton } from '@/components/ui/buttons/RoundButton';
+import { PageHeader } from '@/components/ui/layout/PageHeader';
+import { PageHeaderMarkTile, PageHeaderMenu, type PageHeaderMenuAction } from '@/components/ui/layout/PageHeaderEntityParts';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
 import { ItemList } from '@/components/ui/lists/ItemList';
+import { SegmentedChoiceItem } from '@/components/ui/lists/SegmentedChoiceItem';
 import { Modal } from '@/modal';
 import { useSavedSecretsMutable } from '@/components/secrets/useSavedSecretsMutable';
 import { randomUUID } from '@/platform/randomUUID';
-import { useAllMachines, useSettingMutable } from '@/sync/domains/state/storage';
+import { useAllMachines, useSettingMutable, useSettingsVersion } from '@/sync/domains/state/storage';
 import { MACHINE_ADMINISTRATION_SELECTION_KEYS_V1 } from '@/sync/domains/machines/administration/selectionPreferences';
-import { machineAdministrationTargetsEqual } from '@/sync/domains/machines/administration/targetSelection';
+import { useMachineAdministrationExecutionTargetBinding } from '@/sync/domains/machines/administration/useExecutionTargetBinding';
 import { useMachineAdministrationTargetSelection } from '@/sync/domains/machines/administration/useTargetSelection';
 import { deleteMcpServerCatalogEntryV1, upsertMcpServerWithBindingsV1 } from '@/sync/domains/settings/mcpServers/mcpServerCrud';
 import {
@@ -42,6 +44,11 @@ import { promptUnsavedChangesAlert } from '@/utils/ui/promptUnsavedChangesAlert'
 import { useActiveUnsavedChangesGuard } from '@/utils/navigation/useActiveUnsavedChangesGuard';
 import { useUnsavedChangesBeforeRemoveGuard } from '@/utils/navigation/useUnsavedChangesBeforeRemoveGuard';
 import { Icon } from '@/components/ui/icons/Icon';
+
+import { MCP_COLLECTION_ROUTE, mcpServerDraftTitle, mcpServerRoute, recordMcpServerVisit } from './collection/mcpServerCollectionModel';
+import { resolveTransportIconName, resolveTransportLabel, summarizeBindings } from './mcpServerUi';
+
+type AddFlowTab = 'configure' | 'importJson' | 'quickInstall';
 
 type NavigationLike = Readonly<{
     setOptions?: (options: Readonly<Record<string, unknown>>) => void;
@@ -125,15 +132,10 @@ export const McpServerEditorScreen = React.memo(function McpServerEditorScreen()
     const administrationTargetSelection = useMachineAdministrationTargetSelection(
         MACHINE_ADMINISTRATION_SELECTION_KEYS_V1.mcpServers,
     );
-    const resolveFreshAdministrationTarget = React.useCallback(() => {
-        const expectedTarget = administrationTargetSelection.selectedTarget;
-        const resolved = administrationTargetSelection.resolveExecutionTarget();
-        return expectedTarget !== null
-            && resolved !== null
-            && machineAdministrationTargetsEqual(expectedTarget, resolved.target)
-            ? resolved
-            : null;
-    }, [administrationTargetSelection]);
+    const { resolveExactExecutionTarget } = useMachineAdministrationExecutionTargetBinding(administrationTargetSelection);
+    const resolveFreshAdministrationTarget = React.useCallback(() => (
+        resolveExactExecutionTarget(administrationTargetSelection.selectedTarget)
+    ), [administrationTargetSelection.selectedTarget, resolveExactExecutionTarget]);
 
     const {
         serverId: serverIdParam,
@@ -145,6 +147,8 @@ export const McpServerEditorScreen = React.memo(function McpServerEditorScreen()
     const presetId = typeof presetIdParam === 'string' && presetIdParam.trim() ? presetIdParam.trim() as McpQuickInstallPresetId : null;
 
     const [mcpSettingsRaw, setMcpSettings] = useSettingMutable('mcpServersSettingsV1');
+    // Null until the Account settings have loaded: until then a missing server may still arrive.
+    const settingsLoaded = useSettingsVersion() !== null;
     const normalizedSettings = React.useMemo(() => normalizeMcpServersSettingsV1(mcpSettingsRaw), [mcpSettingsRaw]);
     const writableMcpSettings = React.useMemo(
         () => readWritableMcpServersSettingsV1(mcpSettingsRaw),
@@ -163,9 +167,11 @@ export const McpServerEditorScreen = React.memo(function McpServerEditorScreen()
     }, [normalizedSettings, serverId]);
 
     const [draftServer, setDraftServer] = React.useState<McpServerCatalogEntryV1>(() => existingServer ?? createDraftServer(existingNames));
+    // A new server starts with a generated unique name; until the user names it, it is still unnamed.
+    const generatedNameRef = React.useRef(existingServer ? null : draftServer.name);
     const [draftBindings, setDraftBindings] = React.useState<McpServerBindingV1[]>(() => existingBindings);
     const [isDirty, setIsDirty] = React.useState(false);
-    const [activeTab, setActiveTab] = React.useState<'configure' | 'importJson' | 'quickInstall'>(() => {
+    const [activeTab, setActiveTab] = React.useState<AddFlowTab>(() => {
         if (serverId) return 'configure';
         if (addMode === 'import-json') return 'importJson';
         if (addMode === 'quick-install') return 'quickInstall';
@@ -247,7 +253,7 @@ export const McpServerEditorScreen = React.memo(function McpServerEditorScreen()
 
     const closeToMcpServersSettings = React.useCallback(() => {
         // `router.replace` expects the public route (group segments like `/(app)` are not valid here on web).
-        router.replace('/settings/mcp');
+        router.replace(MCP_COLLECTION_ROUTE);
     }, [router]);
 
     const commitDraft = React.useCallback((): boolean => {
@@ -281,15 +287,18 @@ export const McpServerEditorScreen = React.memo(function McpServerEditorScreen()
         }
     }, [draftBindings, draftServer, navigation, router, setMcpSettings, writableMcpSettings]);
 
-    const saveAndClose = React.useCallback(() => {
+    // Saving keeps the server open: a new one becomes the saved item selected in the collection.
+    const save = React.useCallback(() => {
         const didSave = commitDraft();
-        if (!didSave) return;
+        if (!didSave || serverId) return;
         ignoreBeforeRemoveRef.current = true;
-        closeToMcpServersSettings();
-    }, [closeToMcpServersSettings, commitDraft]);
+        router.replace(mcpServerRoute(draftServer.id) as never);
+    }, [commitDraft, draftServer.id, router, serverId]);
 
     const discardDraft = React.useCallback(() => {
-        setDraftServer(existingServer ?? createDraftServer(existingNames));
+        const next = existingServer ?? createDraftServer(existingNames);
+        if (!existingServer) generatedNameRef.current = next.name;
+        setDraftServer(next);
         setDraftBindings(existingBindings);
         setIsDirty(false);
     }, [existingBindings, existingNames, existingServer]);
@@ -307,7 +316,8 @@ export const McpServerEditorScreen = React.memo(function McpServerEditorScreen()
 
         const confirmed = await Modal.confirm(
             t('settings.mcpServersDeleteTitle'),
-            t('settings.mcpServersDeleteConfirm', { name: draftServer.name }),
+            // Name the saved server as the collection shows it, never an unsaved edit.
+            t('settings.mcpServersDeleteConfirm', { name: existingServer?.title || existingServer?.name || serverId }),
             { destructive: true, cancelText: t('common.cancel'), confirmText: t('common.delete') },
         );
         if (!confirmed) return;
@@ -316,7 +326,7 @@ export const McpServerEditorScreen = React.memo(function McpServerEditorScreen()
         setMcpSettings(next);
         ignoreBeforeRemoveRef.current = true;
         closeToMcpServersSettings();
-    }, [closeToMcpServersSettings, draftServer.name, serverId, setMcpSettings, writableMcpSettings]);
+    }, [closeToMcpServersSettings, existingServer, serverId, setMcpSettings, writableMcpSettings]);
 
     const handleImportJson = React.useCallback(() => {
         if (!writableMcpSettings) {
@@ -424,64 +434,98 @@ export const McpServerEditorScreen = React.memo(function McpServerEditorScreen()
         }), [commitDraft, discardDraft, requestUnsavedChangesDecision]),
     });
 
-    const renderHeaderRight = React.useCallback(() => {
-        if (activeTab !== 'configure') return null;
-        return (
-            <Pressable
-                onPress={saveAndClose}
-                disabled={!isDirty || saveDisabled}
-                accessibilityRole="button"
-                accessibilityLabel={t('common.save')}
-                hitSlop={12}
-                style={({ pressed }) => ({
-                    opacity: !isDirty || saveDisabled ? 0.35 : pressed ? 0.7 : 1,
-                    padding: 4,
-                })}
-            >
-                <Icon name="check" size={24} color={theme.colors.chrome.header.foreground} />
-            </Pressable>
-        );
-    }, [activeTab, isDirty, saveAndClose, saveDisabled, theme.colors.chrome.header.foreground]);
-
+    // The collection's draft row shows the new server's name as it is typed.
+    const isNew = !serverId;
+    const draftDisplayName = draftServer.title?.trim()
+        || (draftServer.name === generatedNameRef.current ? '' : draftServer.name.trim());
     React.useEffect(() => {
-        const setOptions = nav.setOptions;
-        if (typeof setOptions !== 'function') return;
-        setOptions({ headerRight: renderHeaderRight });
-    }, [nav.setOptions, renderHeaderRight]);
+        if (isNew) mcpServerDraftTitle.publish(draftDisplayName);
+    }, [draftDisplayName, isNew]);
+    React.useEffect(() => (isNew ? () => mcpServerDraftTitle.publish('') : undefined), [isNew]);
+    React.useEffect(() => {
+        if (serverId && existingServer) recordMcpServerVisit(serverId);
+    }, [existingServer, serverId]);
+
+    const menuActions = React.useMemo((): readonly PageHeaderMenuAction[] => [{
+        id: serverId ? 'delete' : 'discard',
+        title: serverId ? t('common.delete') : t('mcpSettings.discardDraft'),
+        testID: 'mcp.server.editor.secondaryAction',
+        onSelect: () => { void handleDeleteOrCancel(); },
+    }], [handleDeleteOrCancel, serverId]);
 
     if (serverId && !existingServer) {
+        if (!settingsLoaded) return null;
         return (
-            <ItemList>
-                <ItemGroup>
-                    <Item
-                        title={t('common.error')}
-                        subtitle={t('settings.mcpServersServerNotFound')}
-                        icon={<Icon name="warning-circle" size={29} color={theme.colors.state.danger.foreground} />}
-                        showChevron={false}
-                    />
-                </ItemGroup>
+            <ItemList presentation="page">
+                <PageHeader
+                    testID="mcp.server.editor.header"
+                    alwaysShowTitle
+                    title={serverId}
+                    description={t('settings.mcpServersServerNotFound')}
+                />
             </ItemList>
         );
     }
 
     const showAddFlowTabs = !serverId;
     const canExecuteAdministrationTarget = writableMcpSettings !== null && resolveFreshAdministrationTarget() !== null;
+    const title = activeTab === 'configure'
+        ? (draftDisplayName || t('mcpSettings.newServer'))
+        : t('mcpSettings.newServer');
+    const meta = existingServer ? [
+        { key: 'transport', text: resolveTransportLabel(existingServer.transport) },
+        { key: 'bindings', text: summarizeBindings(existingBindings, machines) },
+    ] : undefined;
 
     return (
-        <ItemList keyboardShouldPersistTaps="handled">
+        <ItemList keyboardShouldPersistTaps="handled" presentation="page">
+            <PageHeader
+                testID="mcp.server.editor.header"
+                alwaysShowTitle
+                title={title}
+                description={t('mcpSettings.serverPurpose')}
+                meta={meta}
+                leading={(
+                    <PageHeaderMarkTile appearance="glyph">
+                        <Icon name={resolveTransportIconName(draftServer.transport)} size={22} color={theme.colors.text.secondary} />
+                    </PageHeaderMarkTile>
+                )}
+                actions={(
+                    <View style={styles.headerActions}>
+                        <MachineAdministrationTargetSelector
+                            selection={administrationTargetSelection}
+                            presentation="chip"
+                            testIDPrefix="settings.mcpServers.administration.target"
+                        />
+                        {activeTab === 'configure' ? (
+                            <RoundButton
+                                testID="mcp.server.editor.save"
+                                size="small"
+                                title={t('common.save')}
+                                disabled={saveDisabled || (!isDirty && !isNew)}
+                                onPress={save}
+                            />
+                        ) : null}
+                        <PageHeaderMenu testID="mcp.server.editor.menu" actions={menuActions} />
+                    </View>
+                )}
+            />
+
             {showAddFlowTabs ? (
-                <McpSegmentedHeader
-                    title={t('settings.mcpServersAddServer')}
-                    subtitle={t('settings.mcpServersAddServerFlowSubtitle')}
-                    tabs={[
-                        { id: 'configure', label: t('settings.mcpServersAddFlowConfigureTitle') },
-                        { id: 'importJson', label: t('settings.mcpServersAddFlowImportJsonTitle') },
-                        { id: 'quickInstall', label: t('settings.mcpServersAddFlowQuickInstallTitle') },
-                    ]}
-                    activeTabId={activeTab}
-                    onSelectTab={setActiveTab}
-                    testIDPrefix="mcp.server.addFlow.tab"
-                />
+                <ItemGroup>
+                    <SegmentedChoiceItem<AddFlowTab>
+                        testID="mcp.server.addFlow"
+                        testIDPrefix="mcp.server.addFlow.tab"
+                        title={t('mcpSettings.addByTitle')}
+                        value={activeTab}
+                        options={[
+                            { id: 'configure', label: t('settings.mcpServersAddFlowConfigureTitle'), description: t('settings.mcpServersAddFlowConfigureSubtitle') },
+                            { id: 'importJson', label: t('settings.mcpServersAddFlowImportJsonTitle'), description: t('settings.mcpServersAddFlowImportJsonSubtitle') },
+                            { id: 'quickInstall', label: t('settings.mcpServersAddFlowQuickInstallTitle'), description: t('settings.mcpServersAddFlowQuickInstallSubtitle') },
+                        ]}
+                        onChange={setActiveTab}
+                    />
+                </ItemGroup>
             ) : null}
 
             {activeTab === 'configure' ? (
@@ -500,64 +544,56 @@ export const McpServerEditorScreen = React.memo(function McpServerEditorScreen()
                         setIsDirty(true);
                         setDraftBindings((current) => updater(current));
                     }}
-                    onSave={saveAndClose}
-                    onDelete={() => { void handleDeleteOrCancel(); }}
-                    saveDisabled={saveDisabled}
-                    isExistingServer={Boolean(serverId)}
                 />
             ) : null}
 
             {showAddFlowTabs && activeTab === 'importJson' ? (
-                <>
-                    <MachineAdministrationTargetSelector
-                        selection={administrationTargetSelection}
-                        testIDPrefix="settings.mcpServers.administration.target"
-                    />
-                    <McpServerImportJsonTab
-                        rawJson={importJsonText}
-                        onChangeRawJson={setImportJsonText}
-                        parseResult={importParseResult}
-                        canExecute={canExecuteAdministrationTarget}
-                        inputMappings={importInputMappings}
-                        onChangeInputMapping={(inputId, next) => setImportInputMappings((current) => ({ ...current, [inputId]: next }))}
-                        mappingIssues={importMappingIssues}
-                        onCancel={() => closeToMcpServersSettings()}
-                        onImport={handleImportJson}
-                    />
-                </>
+                <McpServerImportJsonTab
+                    rawJson={importJsonText}
+                    onChangeRawJson={setImportJsonText}
+                    parseResult={importParseResult}
+                    canExecute={canExecuteAdministrationTarget}
+                    inputMappings={importInputMappings}
+                    onChangeInputMapping={(inputId, next) => setImportInputMappings((current) => ({ ...current, [inputId]: next }))}
+                    mappingIssues={importMappingIssues}
+                    onCancel={() => closeToMcpServersSettings()}
+                    onImport={handleImportJson}
+                />
             ) : null}
 
             {showAddFlowTabs && activeTab === 'quickInstall' ? (
-                <>
-                    <MachineAdministrationTargetSelector
-                        selection={administrationTargetSelection}
-                        testIDPrefix="settings.mcpServers.administration.target"
-                    />
-                    <McpServerQuickInstallTab
-                        canExecute={canExecuteAdministrationTarget}
-                        selectedPresetIds={quickInstallPresetIds}
-                        onTogglePresetId={(presetId) => {
-                            setQuickInstallPresetIds((current) => (
-                                current.includes(presetId)
-                                    ? current.filter((value) => value !== presetId)
-                                    : [...current, presetId]
-                            ));
-                        }}
-                        inputMappingsByPreset={quickInstallInputMappingsByPreset}
-                        onChangeInputMapping={(presetId, inputId, next) =>
-                            setQuickInstallInputMappingsByPreset((current) => ({
-                                ...current,
-                                [presetId]: {
-                                    ...(current[presetId] ?? {}),
-                                    [inputId]: next,
-                                },
-                            }))}
-                        mappingIssuesByPreset={quickInstallMappingIssuesByPreset}
-                        onCancel={() => closeToMcpServersSettings()}
-                        onInstall={handleQuickInstall}
-                    />
-                </>
+                <McpServerQuickInstallTab
+                    canExecute={canExecuteAdministrationTarget}
+                    selectedPresetIds={quickInstallPresetIds}
+                    onTogglePresetId={(presetId) => {
+                        setQuickInstallPresetIds((current) => (
+                            current.includes(presetId)
+                                ? current.filter((value) => value !== presetId)
+                                : [...current, presetId]
+                        ));
+                    }}
+                    inputMappingsByPreset={quickInstallInputMappingsByPreset}
+                    onChangeInputMapping={(presetId, inputId, next) =>
+                        setQuickInstallInputMappingsByPreset((current) => ({
+                            ...current,
+                            [presetId]: {
+                                ...(current[presetId] ?? {}),
+                                [inputId]: next,
+                            },
+                        }))}
+                    mappingIssuesByPreset={quickInstallMappingIssuesByPreset}
+                    onCancel={() => closeToMcpServersSettings()}
+                    onInstall={handleQuickInstall}
+                />
             ) : null}
         </ItemList>
     );
 });
+
+const styles = StyleSheet.create(() => ({
+    headerActions: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 8,
+    },
+}));

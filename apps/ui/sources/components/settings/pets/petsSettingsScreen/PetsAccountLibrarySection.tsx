@@ -38,7 +38,7 @@ export function PetsAccountLibrarySection(props: PetsAccountLibrarySectionProps)
 
     return (
         <View testID="settings-pets-account-library-list">
-            <ItemGroup title={t('settingsPets.accountLibraryTitle')} footer={t('settingsPets.accountLibraryFooter')}>
+            <ItemGroup title={t('settingsPets.accountLibraryTitle')} description={t('settingsPets.accountLibraryFooter')}>
                 <DevicePetSelector
                     builtInPets={[]}
                     companionSizeScale={props.companionSizeScale}

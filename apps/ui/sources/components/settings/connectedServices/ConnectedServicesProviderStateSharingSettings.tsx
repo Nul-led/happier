@@ -1,14 +1,15 @@
 import * as React from 'react';
-import { useUnistyles } from 'react-native-unistyles';
 
 import { AGENT_IDS, getAgentCore, type AgentId } from '@/agents/catalog/catalog';
-import { DropdownMenu, type DropdownMenuItem } from '@/components/ui/forms/dropdown/DropdownMenu';
+import { SettingAnchor, SettingRow } from '@/components/settings/shell/SettingRow';
 import { Switch } from '@/components/ui/forms/Switch';
+import { ExpandableItem } from '@/components/ui/lists/ExpandableItem';
 import { Item } from '@/components/ui/lists/Item';
+import { SegmentedChoiceItem } from '@/components/ui/lists/SegmentedChoiceItem';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
 import { ItemList } from '@/components/ui/lists/ItemList';
 import { Modal } from '@/modal';
-import { t } from '@/text';
+import { getPreferredLanguage, t } from '@/text';
 import { useSettingMutable } from '@/sync/store/hooks';
 import {
     ConnectedServicesProviderStateSharingSettingsV1Schema,
@@ -16,7 +17,9 @@ import {
     type ConnectedServicesProviderStateSharingSettingsV1,
 } from '@happier-dev/protocol';
 
-import { ProviderStateSharingRows } from './ProviderStateSharingRow';
+import { buildProviderConfigModeChoices, ProviderStateSharingRows } from './ProviderStateSharingRow';
+import { CONNECTED_SERVICES_SETTINGS, CONNECTED_SERVICES_SHARING_SETTINGS } from './connectedServicesSettings';
+import { SettingsPageHeader } from '@/components/settings/shell/SettingsPageHeader';
 import { Icon } from '@/components/ui/icons/Icon';
 
 type ProviderConfigMode = ConnectedServicesProviderConfigSharingModeV1;
@@ -32,33 +35,10 @@ export function resolveProviderStateSharingAgentIds(
     });
 }
 
-function buildProviderConfigModeOptions(params: Readonly<{
-    colors: Readonly<{
-        blue: string;
-        indigo: string;
-        secondary: string;
-    }>;
-}>): readonly DropdownMenuItem[] {
-    return [
-        {
-            id: 'linked',
-            title: t('connectedServices.providerStateSharing.configLinkedTitle'),
-            subtitle: t('connectedServices.providerStateSharing.configLinkedSubtitle'),
-            icon: <Icon name="link" size={20} color={params.colors.blue} />,
-        },
-        {
-            id: 'copied',
-            title: t('connectedServices.providerStateSharing.configCopiedTitle'),
-            subtitle: t('connectedServices.providerStateSharing.configCopiedSubtitle'),
-            icon: <Icon name="copy" size={20} color={params.colors.indigo} />,
-        },
-        {
-            id: 'isolated',
-            title: t('connectedServices.providerStateSharing.configIsolatedTitle'),
-            subtitle: t('connectedServices.providerStateSharing.configIsolatedSubtitle'),
-            icon: <Icon name="lock" size={20} color={params.colors.secondary} />,
-        },
-    ];
+function resolveConfigModeShortLabel(mode: ProviderConfigMode): string {
+    if (mode === 'copied') return t('connectedServicesSettings.configCopiedShort');
+    if (mode === 'isolated') return t('connectedServicesSettings.configIsolatedShort');
+    return t('connectedServicesSettings.configLinkedShort');
 }
 
 function resolveSharedStatePrivacyRiskAgents(
@@ -80,22 +60,23 @@ function resolveSharedStatePrivacyRiskAgents(
     return entries;
 }
 
-export function ConnectedServicesProviderStateSharingDefaultsGroup(props: Readonly<{
+/**
+ * The default configuration and state sharing for connected-account sessions, as one disclosure in
+ * the "How accounts are used" section. Its closed state says what is shared; it opens by itself when
+ * search leads to one of its rows.
+ */
+export function ConnectedServicesProviderStateSharingDisclosure(props: Readonly<{
     settings: ConnectedServicesProviderStateSharingSettingsV1;
     setSettings: ProviderStateSharingSettingsWriter;
     onOpenBackendOverrides?: (() => void) | null;
     agentIds?: readonly AgentId[];
+    showDivider?: boolean;
 }>) {
-    const { theme } = useUnistyles();
     const agentIds = props.agentIds ?? resolveProviderStateSharingAgentIds();
-    const [openProviderConfigModeMenu, setOpenProviderConfigModeMenu] = React.useState(false);
-    const providerConfigModeOptions = React.useMemo(() => buildProviderConfigModeOptions({
-        colors: {
-            blue: theme.colors.accent.blue,
-            indigo: theme.colors.accent.indigo,
-            secondary: theme.colors.text.secondary,
-        },
-    }), [theme.colors.accent.blue, theme.colors.accent.indigo, theme.colors.text.secondary]);
+    const [expanded, setExpanded] = React.useState(false);
+    const locale = getPreferredLanguage();
+    const choices = React.useMemo(() => buildProviderConfigModeChoices(), [locale]);
+    const stateShared = props.settings.defaults.stateMode === 'shared';
 
     const setProviderConfigMode = React.useCallback((configMode: ProviderConfigMode) => {
         props.setSettings({
@@ -106,11 +87,6 @@ export function ConnectedServicesProviderStateSharingDefaultsGroup(props: Readon
             },
         });
     }, [props]);
-
-    const handleProviderConfigModeSelect = React.useCallback((itemId: string) => {
-        if (itemId !== 'linked' && itemId !== 'copied' && itemId !== 'isolated') return;
-        setProviderConfigMode(itemId);
-    }, [setProviderConfigMode]);
 
     const setProviderStateShared = React.useCallback(async (shared: boolean) => {
         const acknowledgedRisksByAgentId = { ...props.settings.acknowledgedRisksByAgentId };
@@ -146,61 +122,69 @@ export function ConnectedServicesProviderStateSharingDefaultsGroup(props: Readon
             },
             acknowledgedRisksByAgentId,
         });
-    }, [agentIds, props]);
+    }, [agentIds, locale, props]);
+
+    const summary = t('connectedServicesSettings.sharingSummary', {
+        config: resolveConfigModeShortLabel(props.settings.defaults.configMode),
+        state: stateShared
+            ? t('connectedServicesSettings.stateSharedShort')
+            : t('connectedServicesSettings.stateIsolatedShort'),
+    });
 
     return (
-        <ItemGroup
-            title={t('connectedServices.providerStateSharing.title')}
-            footer={t('connectedServices.providerStateSharing.footer')}
+        <SettingAnchor settings={CONNECTED_SERVICES_SHARING_SETTINGS}><ExpandableItem
+            testID="connected-services-provider-state-sharing"
+            expanded={expanded}
+            onExpandedChange={setExpanded}
+            showDivider={props.showDivider}
+            header={({ headerProps }) => (
+                <SettingAnchor setting={CONNECTED_SERVICES_SETTINGS.settings.sharing}>
+                    <Item
+                        {...headerProps}
+                        testID="connected-services-provider-state-sharing-toggle"
+                        title={t(CONNECTED_SERVICES_SETTINGS.settings.sharing.titleKey)}
+                        // Closed, the row says what is shared; open, it explains the boundary.
+                        subtitle={expanded ? t('connectedServices.providerStateSharing.footer') : summary}
+                        subtitleLines={0}
+                    />
+                </SettingAnchor>
+            )}
         >
-            <DropdownMenu
-                open={openProviderConfigModeMenu}
-                onOpenChange={setOpenProviderConfigModeMenu}
-                variant="selectable"
-                search={false}
-                selectedId={props.settings.defaults.configMode}
-                showCategoryTitles={false}
-                matchTriggerWidth={true}
-                connectToTrigger={true}
-                rowKind="item"
-                itemTrigger={{
-                    title: t('connectedServices.providerStateSharing.configTitle'),
-                    icon: <Icon name="sliders-horizontal" size={20} color={theme.colors.accent.blue} />,
-                    showSelectedSubtitle: true,
-                    itemProps: { testID: 'connected-services-provider-state-sharing-config-default' },
-                }}
-                items={providerConfigModeOptions}
-                onSelect={handleProviderConfigModeSelect}
-            />
-            <Item
+            <SettingAnchor setting={CONNECTED_SERVICES_SETTINGS.settings.sharingConfig}>
+                <SegmentedChoiceItem<ProviderConfigMode>
+                    testID="connected-services-provider-state-sharing-config-default"
+                    testIDPrefix="connected-services-provider-state-sharing-config-default"
+                    title={t(CONNECTED_SERVICES_SETTINGS.settings.sharingConfig.titleKey)}
+                    options={choices}
+                    subtitleLines={0}
+                    value={props.settings.defaults.configMode}
+                    onChange={setProviderConfigMode}
+                />
+            </SettingAnchor>
+            <SettingRow
+                setting={CONNECTED_SERVICES_SETTINGS.settings.sharingState}
                 testID="connected-services-provider-state-sharing-state-default"
-                title={t('connectedServices.providerStateSharing.stateTitle')}
-                subtitle={
-                    props.settings.defaults.stateMode === 'shared'
-                        ? t('connectedServices.providerStateSharing.stateEnabledSubtitle')
-                        : t('connectedServices.providerStateSharing.stateDisabledSubtitle')
-                }
-                icon={<Icon name="stack" size={20} color={theme.colors.accent.blue} />}
+                subtitle={stateShared
+                    ? t('connectedServices.providerStateSharing.stateEnabledSubtitle')
+                    : t('connectedServices.providerStateSharing.stateDisabledSubtitle')}
                 rightElement={(
                     <Switch
-                        compact
-                        value={props.settings.defaults.stateMode === 'shared'}
+                        value={stateShared}
                         onValueChange={setProviderStateShared}
                     />
                 )}
                 showChevron={false}
-                onPress={() => setProviderStateShared(props.settings.defaults.stateMode !== 'shared')}
+                onPress={() => setProviderStateShared(!stateShared)}
             />
             {props.onOpenBackendOverrides && agentIds.length > 0 ? (
-                <Item
+                <SettingRow
+                    setting={CONNECTED_SERVICES_SETTINGS.settings.sharingPerAgent}
                     testID="connected-services-provider-state-sharing-backend-overrides"
-                    title={t('connectedServices.providerStateSharing.title')}
-                    subtitle={t('connectedServices.providerStateSharing.footer')}
-                    icon={<Icon name="sliders-horizontal" size={20} color={theme.colors.text.secondary} />}
+                    icon={<Icon name="sliders-horizontal" />}
                     onPress={props.onOpenBackendOverrides}
                 />
             ) : null}
-        </ItemGroup>
+        </ExpandableItem></SettingAnchor>
     );
 }
 
@@ -244,7 +228,8 @@ export function ConnectedServicesProviderStateSharingSettingsView() {
     );
 
     return (
-        <ItemList>
+        <ItemList presentation="page">
+            <SettingsPageHeader description={t('connectedServicesSettings.perAgentPurpose')} />
             <ConnectedServicesProviderStateSharingBackendGroups
                 settings={normalizedProviderStateSharingSettings}
                 setSettings={setProviderStateSharingSettings}

@@ -1,4 +1,17 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import fastify from 'fastify';
+import { z } from 'zod';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import { accountSettingsParse, deriveSessionCreationTagV1, FeaturesResponseSchema, SessionCreationCorrespondenceV1Schema, SessionInputRequestSchema } from '@happier-dev/protocol';
+import { encrypt, decrypt, encodeBase64 } from '@/api/encryption';
+import { RpcHandlerManager } from '@/api/rpc/RpcHandlerManager';
+import { publishServerHttpRuntimeOrigin } from '@/api/client/serverHttpBaseUrl';
+import { installAxiosFastifyAdapter } from '@/testkit/http/axiosAdapter';
+import { createSessionRecordFixture, createAccountEncryptionCurrentnessFixture } from '@/testkit/backends/sessionFixtures';
+import { createTestMetadata } from '@/testkit/backends/sessionMetadata';
+import { createHappierMcpServer } from '@/mcp/createHappierMcpServer';
+import { resolveRunnerMcpServers } from '@/mcp/runtime/resolveRunnerMcpServers';
 
 const env = process.env;
 
@@ -7,23 +20,207 @@ const getTestServerBinding = () => ({
   serverUrl: 'https://test-home.example.test',
 } as const);
 
-describe('createHappierMcpServer', () => {
-  beforeEach(() => {
-    vi.resetModules();
-    process.env = { ...env };
-    delete process.env.HAPPIER_ACTIONS_SETTINGS_V1;
+function resetEnvironment() {
+  process.env = { ...env };
+  delete process.env.HAPPIER_ACTIONS_SETTINGS_V1;
+}
+
+function unmockCaseModules() {
+  vi.doUnmock('@modelcontextprotocol/sdk/server/mcp.js');
+  vi.doUnmock('@happier-dev/protocol');
+  vi.doUnmock('@/session/actions/createCliActionExecutorHarness');
+  vi.doUnmock('@/mcp/server/registerHappierMcpBuiltInTools');
+  vi.doUnmock('@/agent/tools/happierTools/dispatchBuiltInHappierTool');
+  vi.doUnmock('@/session/discussions/sessionDiscussionActionDeps');
+  vi.doUnmock('@/api/accountServerActionDeps');
+  vi.doUnmock('@/api/sessionFollowActionDeps');
+}
+
+describe('createHappierMcpServer real host admission', () => {
+  // These cases create fresh clients/transports and restore their HTTP adapter.
+  // No module mocks change between them. Load the real graph during collection,
+  // so compilation cannot outlive a test and overlap its HTTP adapter lifetime.
+  beforeEach(resetEnvironment);
+  afterEach(unmockCaseModules);
+
+  it.each([
+    ['plain', false, 1, 2], ['e2ee', false, 1, 2], ['plain', true, 1, 2], ['e2ee', true, 1, 2],
+    ['plain', false, 3, 0],
+  ] as const)('admits a %s cross-session send from the real MCP host (background run: %s; starter depth: %s; turn depth: %s)', async (mode, backgroundRun, starterDepth, turnDepth) => {
+    const origin = 'http://cross-session-home.test';
+    const app = fastify();
+    const restore = installAxiosFastifyAdapter({ app, origin });
+    const secret = new Uint8Array(32).fill(17);
+    const credentials = { token: 'cross-session-token', encryption: mode === 'plain' ? null : { type: 'legacy' as const, secret } };
+    const targetId = 'target-session-b';
+    const targetMetadata = {
+      sessionCreationCorrespondenceV1: SessionCreationCorrespondenceV1Schema.parse({
+        v: 1,
+        sessionCreationTag: deriveSessionCreationTagV1({
+          callerCreationNamespace: 'mcp-host-admission-test', creationKey: targetId,
+        }),
+        recipe: {
+          execution: { machineId: 'target-machine', directory: { kind: 'path', path: '/repo' } },
+          organization: { folderId: null, tagIds: [] },
+          agentTarget: { kind: 'agent', identity: { pluginId: 'happier.agent.codex', localId: 'codex' } },
+          modelSelection: null, profileId: null, requestedPermissionMode: null,
+          agentModeId: null, configuration: null, connectedServices: null,
+          mcpSelection: null, transcriptStorage: null, terminal: null,
+          agentSessionStartupInstructionsMarkerV1: null, checkout: null,
+        },
+      }),
+    };
+    const admitted: Parameters<NonNullable<import('@/api/session/sessionClient').ApiSessionClientOptions['machineAdmissionTransport']>>[0][] = [];
+    const features = { status: 'ready' as const, provenance: 'authenticated' as const, features: FeaturesResponseSchema.parse({ features: {}, capabilities: {} }) };
+    app.get('/v1/account/encryption/currentness', async () => createAccountEncryptionCurrentnessFixture({ mode }));
+    app.get('/v1/account/settings', async () => ({ settings: null, settingsVersion: 0 }));
+    app.get('/v2/sessions/:sessionId', async () => ({ session: createSessionRecordFixture({
+      id: targetId, active: true, encryptionMode: mode,
+      metadata: mode === 'plain' ? JSON.stringify(targetMetadata) : encodeBase64(encrypt(secret, 'legacy', targetMetadata)),
+    }) }));
+    app.get('/v1/projects', async () => ({ projects: [] }));
+    // Like ApiSessionClient, this carrier owns the transport on its prototype.
+    // Only HTTP and authenticated Machine admission are substituted boundaries.
+    class SessionCarrier {
+      sessionId = 'source-session-a';
+      rpcHandlerManager = new RpcHandlerManager({ scopePrefix: this.sessionId, encryptionMode: 'plain' });
+      updateMetadata() {}
+      getServerBinding() { return { serverId: 'cross-session-home', serverUrl: origin }; }
+      getServerFeaturesSnapshot() { return features; }
+      getPermissionMode() { return 'yolo' as const; }
+      getWorkDepth() { return starterDepth; }
+      getHostTurnWorkDepth(turnId: string) { return turnId === 'source-turn-a' ? turnDepth : undefined; }
+      getBackendTarget() { return { kind: 'backend', backendId: 'codex', sourceKind: 'built_in' } as const; }
+      getCurrentSessionLocation() { return { machineId: 'source-machine', path: '/repo' }; }
+      getActiveTurnPermissionWitness() { return { turnId: 'source-turn-a', causalPermissionAuthority: { kind: 'admittedSessionInputV1' as const, admittedPermissionCeiling: 'yolo' as const } }; }
+      getMachineAdmissionTransport() {
+        return async (request: typeof admitted[number]) => {
+          admitted.push(request);
+          return { status: 'accepted' as const, localId: request.localId };
+        };
+      }
+    }
+    const source = new SessionCarrier();
+    let stop: (() => void) | undefined;
+    const client = new Client({ name: 'cross-session-test', version: '1' }, { capabilities: {} });
+    // The real daemon has one active Home. Session reads resolve that process
+    // endpoint; the fixture must initialize it as well as the Session binding.
+    const releaseHome = publishServerHttpRuntimeOrigin(origin, 'https');
+    try {
+      const runtime = backgroundRun ? null : createHappierMcpServer(source, { credentials });
+      if (backgroundRun) {
+        const signal = new AbortController().signal;
+        const readRunWitness = (): import('@/plugins/runtime/invocation/services/types').AgentInvocationTurnAdmissionWitness => ({
+          inputId: 'run-input', turnId: 'run-turn', userMessageSeq: 1, userMessageSeqs: [1],
+          causalPermissionAuthority: { kind: 'admittedSessionInputV1', admittedPermissionCeiling: 'yolo' },
+        });
+        const binding = await resolveRunnerMcpServers({
+          session: source, credentials, accountSettings: accountSettingsParse({}),
+          machineId: 'source-machine', directory: '/repo', resolvedMcpServers: {},
+          executionRun: {
+            runId: 'background-run-a', workDepth: 4, cwd: '/repo', signal, isCurrent: () => true,
+            readActiveTurnAdmissionWitness: readRunWitness,
+            // Provider/runtime boundary: the Run owns its live occurrence and turn.
+            readCurrentRunOccurrence: () => ({
+              runId: 'background-run-a', sidechainId: 'run-sidechain', occurrenceId: 'run-occurrence',
+              runtimeLifetimeSignal: signal, isCurrent: () => true, readActiveTurnAdmissionWitness: readRunWitness,
+            }),
+          },
+        });
+        stop = binding.happierMcpServer.stop;
+        await client.connect(new StreamableHTTPClientTransport(new URL(binding.happierMcpServer.url)));
+      }
+      const args = { actionId: 'session.message.send', input: { sessionId: targetId, message: 'Hello from A', localId: 'u1-send' } };
+      const result = runtime
+        ? await runtime.executeTool({ toolName: 'action_execute', args })
+        : await client.callTool({ name: 'action_execute', arguments: args });
+      expect(JSON.stringify(result)).toContain('accepted');
+      expect(admitted).toHaveLength(1);
+      const request = admitted[0]!;
+      expect(request.targetMachineId).toBe('target-machine');
+      const content = request.content.t === 'plain' ? request.content.v : decrypt(secret, 'legacy', Uint8Array.from(Buffer.from(request.content.c, 'base64')));
+      // Protected admission facts travel inside the sealed record, not as a
+      // caller-controlled field on the Machine transport envelope.
+      const record = z.object({ meta: z.object({ happierInputRequestV1: SessionInputRequestSchema }) }).parse(content);
+      expect(record.meta.happierInputRequestV1.sourceSession).toMatchObject({
+        sourceSessionId: source.sessionId, sourceTurnId: backgroundRun ? 'run-turn' : 'source-turn-a',
+      });
+      expect(content).toMatchObject({
+        content: { type: 'text', text: 'Hello from A' },
+        meta: { happierProvenanceV1: {
+          v: 1, kind: 'happierSession', sourceSessionId: source.sessionId, via: 'mcp',
+          callerDepth: backgroundRun ? 4 : Math.max(starterDepth, turnDepth),
+        } },
+      });
+      const projects = runtime
+        ? await runtime.executeTool({ toolName: 'action_execute', args: { actionId: 'projects.list', input: {} } })
+        : await client.callTool({ name: 'action_execute', arguments: { actionId: 'projects.list', input: {} } });
+      expect(JSON.stringify(projects)).toContain('projects');
+      expect(JSON.stringify(projects)).not.toContain('action_disabled');
+      if (backgroundRun) {
+        const start = await client.callTool({ name: 'execution_run_start', arguments: {
+          intent: 'review', backendTarget: source.getBackendTarget(), instructions: 'Review the change',
+          permissionMode: 'read_only', retentionPolicy: 'ephemeral', runClass: 'bounded', ioMode: 'request_response',
+        } });
+        // Parent depth is 1, but this Run is at the limit (4): the real MCP ->
+        // Action -> admission path must not start a child at the parent's depth.
+        expect(JSON.stringify(start)).toContain('work_depth_exceeded');
+      }
+    } finally {
+      await client.close();
+      stop?.();
+      releaseHome();
+      restore();
+      await app.close();
+    }
   });
 
-  afterEach(() => {
-    vi.doUnmock('@modelcontextprotocol/sdk/server/mcp.js');
-    vi.doUnmock('@happier-dev/protocol');
-    vi.doUnmock('@/session/actions/createCliActionExecutorHarness');
-    vi.doUnmock('@/mcp/server/registerHappierMcpBuiltInTools');
-    vi.doUnmock('@/agent/tools/happierTools/dispatchBuiltInHappierTool');
-    vi.doUnmock('@/session/discussions/sessionDiscussionActionDeps');
-    vi.doUnmock('@/api/accountServerActionDeps');
-    vi.doUnmock('@/api/sessionFollowActionDeps');
+  it('refuses a child start from the exact host turn at depth four even when the Session started at zero', async () => {
+    const client = {
+      sessionId: 'depth-zero-session',
+      getServerBinding: getTestServerBinding,
+      rpcHandlerManager: new RpcHandlerManager({ scopePrefix: 'depth-zero-session', encryptionMode: 'plain' }),
+      updateMetadata: () => undefined,
+      getMetadataSnapshot: () => createTestMetadata({ path: '/repo', machineId: 'machine-a' }),
+      getCurrentSessionLocation: () => ({ path: '/repo', machineId: 'machine-a' }),
+      getBackendTarget: () => ({ kind: 'backend' as const, backendId: 'codex', sourceKind: 'built_in' as const }),
+      getPermissionMode: () => 'yolo' as const,
+      getWorkDepth: () => 0,
+      getHostTurnWorkDepth: (turnId: string) => turnId === 'depth-four-turn' ? 4 : undefined,
+      getActiveTurnPermissionWitness: () => ({
+        turnId: 'depth-four-turn',
+        causalPermissionAuthority: { kind: 'admittedSessionInputV1' as const, admittedPermissionCeiling: 'yolo' as const },
+      }),
+    } satisfies import('@/mcp/startHappyServer').HappyMcpSessionClient;
+    const runtime = createHappierMcpServer(client, {
+      credentials: null,
+      accountSettings: accountSettingsParse({ workDepthLimit: 4 }),
+    });
+    const result = await runtime.executeTool({
+      toolName: 'action_execute',
+      args: { actionId: 'execution.run.start', input: {
+        sessionId: client.sessionId,
+        intent: 'delegate',
+        backendTarget: client.getBackendTarget(),
+        instructions: 'Start another worker.',
+        permissionMode: 'read_only',
+        retentionPolicy: 'ephemeral',
+        runClass: 'bounded',
+        ioMode: 'request_response',
+      } },
+    });
+    expect(result).toMatchObject({ ok: false, errorCode: 'work_depth_exceeded' });
   });
+});
+
+describe('createHappierMcpServer', () => {
+  // These existing fixtures replace imported collaborators with per-case mocks.
+  // Keep their module isolation; unmocking alone cannot change cached imports.
+  beforeEach(() => {
+    vi.resetModules();
+    resetEnvironment();
+  });
+  afterEach(unmockCaseModules);
 
   it('wires Account-server, Pool, Follow, and Discussion owners into the authenticated in-session Agent host', async () => {
     const captured: { params?: Record<string, unknown>; overrides?: Record<string, unknown> } = {};

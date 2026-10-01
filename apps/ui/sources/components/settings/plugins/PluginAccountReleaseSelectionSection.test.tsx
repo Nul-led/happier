@@ -1,9 +1,21 @@
 import * as React from 'react';
 import { act } from 'react-test-renderer';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { PluginManifestV2Schema } from '@happier-dev/protocol';
 
 import { renderScreen, standardCleanup } from '@/dev/testkit';
 import { createPluginAccountAvailabilityReader } from '@/sync/domains/plugins/availability/reader';
+import { PluginAccountReleaseSelectionSection } from './PluginAccountReleaseSelectionSection';
+
+type RenderedScreen = Awaited<ReturnType<typeof renderScreen>>;
+
+// The row component itself: the outermost instance below the section that
+// carries the testID, so the assertions read the props this section hands the
+// real Item rather than the inner pressable the Item renders.
+function rowByTestId(screen: RenderedScreen, testID: string) {
+    return screen.findAllByTestId(testID)
+        .find((node) => node.type !== PluginAccountReleaseSelectionSection) ?? null;
+}
 
 function createHostedReader() {
     const pluginId = 'example.tasks';
@@ -17,9 +29,9 @@ function createHostedReader() {
                 intent: { pluginId, desiredVersion: '2.0.0', enabled: true, offlineUiHosting: 'enabled', writableCollections: [], revision: 'intent-1' },
                 release: {
                     ref: { pluginId, version: '2.0.0' }, archiveDigestSha256: `sha256:${'a'.repeat(64)}`,
-                    normalizedManifest: { schemaVersion: 2, id: pluginId, version: '2.0.0', displayName: 'Tasks', engines: { happier: '^1.0.0' }, runtime: { apiVersion: 1 }, contributes: {} },
+                    normalizedManifest: PluginManifestV2Schema.parse({ schemaVersion: 2, id: pluginId, version: '2.0.0', displayName: 'Tasks', engines: { happier: '^1.0.0' }, runtime: { apiVersion: 1 }, contributes: {} }),
                     collectionContracts: [],
-                    uiSlots: [{ contributionId: 'ui', tier: 'hostedWeb', platform: 'web', artifactDigest: `sha256:${'b'.repeat(64)}`, compatibility: { hostUiApiVersion: '1.0.0' } }],
+                    uiSlots: [{ contributionId: 'ui', artifactId: 'ui', tier: 'hostedWeb', platform: 'web', artifactDigest: `sha256:${'b'.repeat(64)}`, hostUiApiRange: '^1.0.0' }],
                     packageAssetArchive: { archiveDigestSha256: `sha256:${'c'.repeat(64)}`, resources: [] },
                 }, uiArtifacts: [], packageAssets: [],
             } }],
@@ -59,16 +71,6 @@ vi.mock('react-native-unistyles', async () => {
     const { createUnistylesMock } = await import('@/dev/testkit/mocks/unistyles');
     return createUnistylesMock();
 });
-
-vi.mock('@/components/ui/lists/Item', () => ({
-    Item: (props: Record<string, unknown>) => React.createElement('Item', props),
-}));
-
-vi.mock('@/components/ui/lists/ItemGroup', () => ({
-    ItemGroup: (props: React.PropsWithChildren) => React.createElement('ItemGroup', props, props.children),
-}));
-
-vi.mock('@/components/ui/icons/Icon', () => ({ Icon: 'Icon' }));
 
 vi.mock('@/text', async () => {
     const { createTextModuleMock } = await import('@/dev/testkit/mocks/text');
@@ -111,7 +113,7 @@ describe('PluginAccountReleaseSelectionSection', () => {
             />,
         );
 
-        const row = screen.findByTestId('settings.plugins.detail.example.tasks.accountRelease');
+        const row = rowByTestId(screen, 'settings.plugins.detail.example.tasks.accountRelease');
         expect(row?.props.title).toBe('settingsPlugins.accountReleaseSelection.entryTitle');
         expect(row?.props.destructive).not.toBe(true);
         expect(row?.props.disabled).toBe(false);
@@ -158,7 +160,7 @@ describe('PluginAccountReleaseSelectionSection', () => {
         );
 
         await act(async () => {
-            screen.findByTestId('plugin.release')?.props.onPress();
+            rowByTestId(screen, 'plugin.release')?.props.onPress();
             await Promise.resolve();
         });
 
@@ -180,16 +182,16 @@ describe('PluginAccountReleaseSelectionSection', () => {
             />,
         );
 
-        expect(screen.findByTestId('plugin.release.hosting')?.props.subtitle).toBe(
+        expect(rowByTestId(screen, 'plugin.release.hosting')?.props.subtitle).toBe(
             'settingsPlugins.accountReleaseSelection.hostedStatusReady',
         );
         await act(async () => {
-            screen.findByTestId('plugin.release.clearCache')?.props.onPress();
+            rowByTestId(screen, 'plugin.release.clearCache')?.props.onPress();
             await Promise.resolve();
         });
         expect(clearHostedArtifactCache).toHaveBeenCalledWith({ pluginId: 'example.tasks', reader });
         await act(async () => {
-            screen.findByTestId('plugin.release.removeHosted')?.props.onPress();
+            rowByTestId(screen, 'plugin.release.removeHosted')?.props.onPress();
             await Promise.resolve();
             await Promise.resolve();
         });
@@ -216,7 +218,7 @@ describe('PluginAccountReleaseSelectionSection', () => {
         );
 
         await act(async () => {
-            screen.findByTestId('plugin.release.hosting')?.props.onPress();
+            rowByTestId(screen, 'plugin.release.hosting')?.props.onPress();
             await Promise.resolve();
             await Promise.resolve();
         });
@@ -241,16 +243,13 @@ describe('PluginAccountReleaseSelectionSection', () => {
 
         // The Account-hosted archive outlives every machine installation, so
         // its status and removal must not depend on a current machine release.
-        expect(
-            screen.findAllByType('Item')
-                .some((item) => item.props.testID === 'plugin.release'),
-        ).toBe(false);
-        expect(screen.findByTestId('plugin.release.hosting')?.props.subtitle).toBe(
+        expect(rowByTestId(screen, 'plugin.release')).toBeNull();
+        expect(rowByTestId(screen, 'plugin.release.hosting')?.props.subtitle).toBe(
             'settingsPlugins.accountReleaseSelection.hostedStatusReady',
         );
-        expect(screen.findByTestId('plugin.release.removeHosted')).not.toBeNull();
+        expect(rowByTestId(screen, 'plugin.release.removeHosted')).not.toBeNull();
         await act(async () => {
-            screen.findByTestId('plugin.release.clearCache')?.props.onPress();
+            rowByTestId(screen, 'plugin.release.clearCache')?.props.onPress();
             await Promise.resolve();
         });
         expect(clearHostedArtifactCache).toHaveBeenCalledWith({ pluginId: 'example.tasks', reader });
@@ -270,6 +269,6 @@ describe('PluginAccountReleaseSelectionSection', () => {
             />,
         );
 
-        expect(screen.findAllByType('ItemGroup')).toHaveLength(0);
+        expect(screen.tree.toJSON()).toBeNull();
     });
 });

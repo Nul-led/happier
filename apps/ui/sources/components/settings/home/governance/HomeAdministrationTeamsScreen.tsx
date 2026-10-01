@@ -1,11 +1,11 @@
 import * as React from 'react';
-import { useRouter } from 'expo-router';
+import { useRouter } from '@/components/appShell/workspace/destinationRoute';
 import { Platform } from 'react-native';
 import { useUnistyles } from 'react-native-unistyles';
 
-import { Icon } from '@/components/ui/icons/Icon';
 import { Item } from '@/components/ui/lists/Item';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
+import { SectionActionButton } from '@/components/ui/lists/SectionActionButton';
 import { VirtualizedList } from '@/components/ui/lists/virtualized';
 import { TeamRow } from '@/components/settings/teams/TeamRow';
 import { teamDetailPath, teamsCreatePath } from '@/components/settings/teams/teamsRoutes';
@@ -13,6 +13,7 @@ import { useTeamsDirectory } from '@/hooks/teams/useTeamsDirectory';
 import { t } from '@/text';
 
 import { HomeAdministrationSection } from './HomeAdministrationSection';
+import { canInvitePeople, presentHomeInvitePeople } from './HomeInvitePeopleDialog';
 import type { HomeAdministrationContext } from './homeAdministrationContext';
 import { segmentHomeAdministrationRows } from './homeAdministrationVirtualizedSegments';
 
@@ -57,18 +58,25 @@ const HomeTeams = React.memo(function HomeTeams(
         scope: 'administered',
         serverIds,
         archived: 'archived',
+        // The explicit toggle is the user's request to read the archive. Once
+        // opened, the answer controls whether the affordance remains visible.
         enabled: enabled && showArchived,
     });
     const archivedRetryable = archived.unavailableHomes.some((home) => home.retryable);
     const archivedLoading = archived.kind === 'loading'
         && archived.unavailableHomes.some((home) => home.reason === 'loading');
+    const offerArchived = !showArchived
+        || archived.kind === 'loading'
+        || archived.archivedRows.length > 0
+        || archived.stale
+        || archived.unavailableHomes.some((home) => home.reason !== 'loading');
     const rows = React.useMemo<readonly HomeTeamsVirtualizedRow[]>(() => {
         const result: HomeTeamsVirtualizedRow[] = [];
         const add = (key: string, render: () => React.ReactElement) => result.push({ key, render });
 
         if (!teamsEnabled) {
             add('disabled', () => (
-                <ItemGroup footer={t('homeGovernance.teamsDisabled')}>
+                <ItemGroup description={t('homeGovernance.teamsDisabled')}>
                     <Item testID="home-teams-disabled" title={t('homeGovernance.teams')} subtitle={t('homeGovernance.teamsDisabled')} mode="info" showChevron={false} />
                 </ItemGroup>
             ));
@@ -76,37 +84,65 @@ const HomeTeams = React.memo(function HomeTeams(
         }
         if (!mayGovern) {
             add('forbidden', () => (
-                <ItemGroup footer={t('homeGovernance.forbiddenBody')}>
+                <ItemGroup description={t('homeGovernance.forbiddenBody')}>
                     <Item testID="home-teams-forbidden" title={t('homeGovernance.forbiddenTitle')} mode="info" showChevron={false} />
                 </ItemGroup>
             ));
             return result;
         }
 
-        if (context.projection.capabilities.createTeam) {
-            add('create', () => (
-                <ItemGroup>
-                    <Item
-                        testID="home-teams-create"
-                        title={t('teams.directory.newTeam')}
-                        onPress={() => router.push(teamsCreatePath({ administrationServerId: serverId }))}
-                    />
-                </ItemGroup>
-            ));
-        }
+        // Adding happens at the head of the Teams collection, in every state it can be in.
+        const createAction = context.projection.capabilities.createTeam ? (
+            <SectionActionButton
+                testID="home-teams-create"
+                icon="plus"
+                title={t('teams.directory.newTeam')}
+                onPress={() => router.push(teamsCreatePath({ administrationServerId: serverId }))}
+            />
+        ) : undefined;
 
-        if (directory.kind === 'loading' && directory.rows.length === 0) {
+        // Still loading only while the Home has not failed to answer; a failed first read is
+        // stated inside the section below instead of a spinner that never resolves.
+        const directoryRetryable = directory.unavailableHomes.some((home) => home.retryable);
+        if (
+            directory.kind === 'loading'
+            && directory.rows.length === 0
+            && directory.unavailableHomes.every((home) => home.reason === 'loading')
+        ) {
             add('loading', () => (
-                <ItemGroup>
+                <ItemGroup title={t('homeGovernance.teams')} action={createAction}>
                     <Item testID="home-teams-loading" title={t('homeGovernance.loading')} loading showChevron={false} />
                 </ItemGroup>
             ));
             return result;
         }
 
-        if (directory.rows.length === 0 && !directory.partial) {
+        if (directory.rows.length === 0 && directory.partial) {
+            // The Home could not list its Teams: the section and its create action stay, and the
+            // unknown list says so with its next action, never as an empty Home.
+            add('unavailable', () => (
+                <ItemGroup
+                    title={t('homeGovernance.teams')}
+                    description={t('homeGovernance.unavailableBody')}
+                    action={createAction}
+                >
+                    <Item
+                        testID={directoryRetryable ? 'home-teams-retry' : 'home-teams-unavailable'}
+                        title={directoryRetryable ? t('homeGovernance.retry') : t('homeGovernance.unavailableTitle')}
+                        mode={directoryRetryable ? 'interactive' : 'info'}
+                        onPress={directoryRetryable ? directory.refresh : undefined}
+                        accessibilityLiveRegion="polite"
+                        showChevron={false}
+                    />
+                </ItemGroup>
+            ));
+        } else if (directory.rows.length === 0) {
             add('empty', () => (
-                <ItemGroup footer={t('homeGovernance.manageTeamsSubtitle')}>
+                <ItemGroup
+                    title={t('homeGovernance.teams')}
+                    description={t('homeGovernance.manageTeamsSubtitle')}
+                    action={createAction}
+                >
                     <Item testID="home-teams-empty" title={t('homeGovernance.teamsEmpty')} mode="info" showChevron={false} />
                 </ItemGroup>
             ));
@@ -117,7 +153,8 @@ const HomeTeams = React.memo(function HomeTeams(
                 add(`active:${chunk[0]!.address.teamId}`, () => (
                     <ItemGroup
                         title={first ? t('homeGovernance.teams') : undefined}
-                        footer={last ? t('homeGovernance.manageTeamsSubtitle') : undefined}
+                        description={last ? t('homeGovernance.manageTeamsSubtitle') : undefined}
+                        action={first ? createAction : undefined}
                         virtualizedSegment={{ first, last }}
                     >
                         {chunk.map((row) => (
@@ -133,17 +170,19 @@ const HomeTeams = React.memo(function HomeTeams(
             }
         }
 
-        add('toggle-archived', () => (
-            <ItemGroup>
-                <Item
-                    testID="home-teams-toggle-archived"
-                    title={showArchived ? t('teams.directory.hideArchived') : t('teams.directory.showArchived')}
-                    accessibilityExpanded={showArchived}
-                    onPress={() => setShowArchived((current) => !current)}
-                    showChevron={false}
-                />
-            </ItemGroup>
-        ));
+        if (offerArchived) {
+            add('toggle-archived', () => (
+                <ItemGroup>
+                    <Item
+                        testID="home-teams-toggle-archived"
+                        title={showArchived ? t('teams.directory.hideArchived') : t('teams.directory.showArchived')}
+                        accessibilityExpanded={showArchived}
+                        onPress={() => setShowArchived((current) => !current)}
+                        showChevron={false}
+                    />
+                </ItemGroup>
+            ));
+        }
 
         if (showArchived) {
             if (archivedLoading && archived.archivedRows.length === 0) {
@@ -179,7 +218,6 @@ const HomeTeams = React.memo(function HomeTeams(
                             testID={archivedRetryable ? 'home-teams-archived-retry' : 'home-teams-archived-unavailable'}
                             title={archivedRetryable ? t('homeGovernance.retry') : t('homeGovernance.unavailableTitle')}
                             subtitle={t('homeGovernance.unavailableBody')}
-                            icon={archivedRetryable ? <Icon name="arrow-clockwise" size={29} color={theme.colors.text.secondary} /> : undefined}
                             mode={archivedRetryable ? 'interactive' : 'info'}
                             onPress={archivedRetryable ? archived.refresh : undefined}
                             accessibilityLiveRegion="assertive"
@@ -190,10 +228,10 @@ const HomeTeams = React.memo(function HomeTeams(
             }
         }
 
-        if (directory.partial) {
+        if (directory.partial && directory.rows.length > 0) {
             add('retry', () => (
-                <ItemGroup footer={t('homeGovernance.unavailableBody')}>
-                    <Item testID="home-teams-retry" title={t('homeGovernance.retry')} icon={<Icon name="arrow-clockwise" size={29} color={theme.colors.text.secondary} />} onPress={directory.refresh} showChevron={false} />
+                <ItemGroup description={t('homeGovernance.unavailableBody')}>
+                    <Item testID="home-teams-retry" title={t('homeGovernance.retry')} onPress={directory.refresh} showChevron={false} />
                 </ItemGroup>
             ));
         } else if (directory.hasMore) {
@@ -204,7 +242,7 @@ const HomeTeams = React.memo(function HomeTeams(
             ));
         }
         return result;
-    }, [archived, archivedLoading, archivedRetryable, context.projection.capabilities.createTeam, directory, mayGovern, router, serverId, showArchived, teamsEnabled, theme.colors.text.secondary]);
+    }, [archived, archivedLoading, archivedRetryable, context.projection.capabilities.createTeam, directory, mayGovern, offerArchived, router, serverId, showArchived, teamsEnabled, theme.colors.text.secondary]);
 
     const renderRow = React.useCallback(({ item }: Readonly<{ item: HomeTeamsVirtualizedRow }>) => item.render(), []);
 
@@ -217,7 +255,7 @@ const HomeTeams = React.memo(function HomeTeams(
             ListHeaderComponent={props.header == null ? null : <>{props.header}</>}
             style={{
                 flex: 1,
-                backgroundColor: theme.colors.background.canvas,
+                backgroundColor: theme.colors.surface.base,
                 ...(Platform.OS === 'web' ? { minHeight: 0 } : {}),
             }}
             contentContainerStyle={{ paddingBottom: Platform.OS === 'ios' ? 34 : 16 }}
@@ -238,7 +276,18 @@ export const HomeAdministrationTeamsScreen = React.memo(function HomeAdministrat
         <HomeAdministrationSection
             serverId={props.serverId}
             title={t('homeGovernance.teams')}
+            description={t('homeGovernance.pages.teams')}
             presentation="virtualized-list"
+            // Teams is where people are admitted, so Invite people is its primary (lab `hcTeams-A`).
+            pageActions={(context) => (canInvitePeople(context)
+                ? {
+                    primaryAction: {
+                        title: t('homeGovernance.invite.action'),
+                        testID: 'home-teams-invite',
+                        onPress: () => { presentHomeInvitePeople({ serverId: context.scope.serverId }); },
+                    },
+                }
+                : {})}
         >
             {(context, header) => <HomeTeams context={context} header={header} />}
         </HomeAdministrationSection>

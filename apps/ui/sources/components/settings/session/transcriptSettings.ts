@@ -7,11 +7,11 @@ export const TRANSCRIPT_SETTINGS = defineSettingsPage({
         layout: {
             titleKey: 'settingsSession.transcript.layoutTitle',
             settings: {
-                layoutPicker: {
+                layoutPicker: { storage: { scope: 'account', key: 'transcriptGroupingMode', access: 'read_write' },
                     titleKey: 'settingsSession.transcript.layoutPickerTitle',
                     keywordKeys: ['settingsSession.transcript.layout.linearTitle', 'settingsSession.transcript.layout.turnsTitle'],
                 },
-                messageTimestamps: { titleKey: 'settingsSession.transcript.messageTimestampsTitle' },
+                messageTimestamps: { storage: { scope: 'account', key: 'transcriptMessageTimestampDisplayMode', access: 'read_write' }, titleKey: 'settingsSession.transcript.messageTimestampsTitle' },
             },
         },
         thinking: {
@@ -21,35 +21,35 @@ export const TRANSCRIPT_SETTINGS = defineSettingsPage({
                     titleKey: 'settingsSession.thinking.displayModeTitle',
                     keywordKeys: ['settingsSessionPages.transcript.thinkingSummary', 'settingsSession.thinking.displayMode.toolTitle'],
                 },
-                inlineChrome: { titleKey: 'settingsSession.thinking.inlineChromeTitle', descriptionKey: 'settingsSession.thinking.inlineChromeSubtitle' },
+                inlineChrome: { storage: { scope: 'account', key: 'sessionThinkingInlineChrome', access: 'read_write' }, titleKey: 'settingsSession.thinking.inlineChromeTitle', descriptionKey: 'settingsSession.thinking.inlineChromeSubtitle' },
             },
         },
         toolRendering: {
             titleKey: 'settingsSessionPages.transcript.toolsSection',
             settings: {
-                timelineChrome: {
+                timelineChrome: { storage: { scope: 'account', key: 'toolViewTimelineChromeMode', access: 'read_write' },
                     titleKey: 'settingsSession.toolRendering.timelineChrome.title',
                     keywordKeys: ['settingsSession.toolRendering.timelineChrome.cardsTitle', 'settingsSession.toolRendering.timelineChrome.activityFeedTitle'],
                 },
-                toolCallsGroup: { titleKey: 'settingsSession.transcript.toolCallsGroupTitle', descriptionKey: 'settingsSession.transcript.toolCallsGroupSubtitle' },
-                toolCallsStrategy: { titleKey: 'settingsSession.transcript.advanced.toolCallsStrategyTitle' },
-                toolCallsCollapsedPreviewCount: { titleKey: 'settingsSession.transcript.advanced.toolCallsCollapsedPreviewCountTitle' },
-                toolCallsGroupBackground: { titleKey: 'settingsSession.transcript.toolCallsGroupBackgroundTitle', descriptionKey: 'settingsSession.transcript.toolCallsGroupBackgroundSubtitle' },
-                defaultToolDetailLevel: { titleKey: 'settingsSession.toolRendering.defaultToolDetailLevelTitle' },
-                expandedToolDetailLevel: { titleKey: 'settingsSession.toolRendering.expandedToolDetailLevelTitle' },
-                cardTapAction: { titleKey: 'settingsSession.toolRendering.cardTapActionTitle' },
-                defaultExpanded: { titleKey: 'settingsSession.toolRendering.activityFeed.defaultExpandedTitle', descriptionKey: 'settingsSession.toolRendering.activityFeed.defaultExpandedSubtitle' },
-                showDebugByDefault: { titleKey: 'settingsSession.toolRendering.showDebugByDefaultTitle', descriptionKey: 'settingsSession.toolRendering.showDebugByDefaultSubtitle' },
+                toolCallsGroup: { storage: { scope: 'account', key: 'transcriptGroupToolCalls', access: 'read_write' }, titleKey: 'settingsSession.transcript.toolCallsGroupTitle', descriptionKey: 'settingsSession.transcript.toolCallsGroupSubtitle' },
+                toolCallsStrategy: { storage: { scope: 'account', key: 'transcriptTurnToolCallsGroupStrategy', access: 'read_write' }, titleKey: 'settingsSession.transcript.advanced.toolCallsStrategyTitle' },
+                toolCallsCollapsedPreviewCount: { storage: { scope: 'account', key: 'transcriptToolCallsCollapsedPreviewCount', access: 'read_write' }, titleKey: 'settingsSession.transcript.advanced.toolCallsCollapsedPreviewCountTitle' },
+                toolCallsGroupBackground: { storage: { scope: 'account', key: 'transcriptToolCallsGroupShowBackground', access: 'read_write' }, titleKey: 'settingsSession.transcript.toolCallsGroupBackgroundTitle', descriptionKey: 'settingsSession.transcript.toolCallsGroupBackgroundSubtitle' },
+                defaultToolDetailLevel: { storage: { scope: 'account', key: 'toolViewDetailLevelDefault', access: 'read_write' }, titleKey: 'settingsSession.toolRendering.defaultToolDetailLevelTitle' },
+                expandedToolDetailLevel: { storage: { scope: 'account', key: 'toolViewExpandedDetailLevelDefault', access: 'read_write' }, titleKey: 'settingsSession.toolRendering.expandedToolDetailLevelTitle' },
+                cardTapAction: { storage: { scope: 'account', key: 'toolViewTapAction', access: 'read_write' }, titleKey: 'settingsSession.toolRendering.cardTapActionTitle' },
+                defaultExpanded: { storage: { scope: 'account', key: 'toolViewTimelineFeedDefaultExpanded', access: 'read_write' }, titleKey: 'settingsSession.toolRendering.activityFeed.defaultExpandedTitle', descriptionKey: 'settingsSession.toolRendering.activityFeed.defaultExpandedSubtitle' },
+                showDebugByDefault: { storage: { scope: 'account', key: 'toolViewShowDebugByDefault', access: 'read_write' }, titleKey: 'settingsSession.toolRendering.showDebugByDefaultTitle', descriptionKey: 'settingsSession.toolRendering.showDebugByDefaultSubtitle' },
                 toolDetailOverrides: { titleKey: 'settingsSession.toolDetailOverrides.title', descriptionKey: 'settingsSessionPages.transcript.toolOverridesDescription' },
             },
         },
         group: {
             titleKey: 'settingsSession.transcript.messageActions.groupTitle',
             settings: {
-                selectionEnabled: { titleKey: 'settingsSession.transcript.messageActions.selectionEnabled.title', descriptionKey: 'settingsSession.transcript.messageActions.selectionEnabled.subtitle' },
-                sendToSessionEnabled: { titleKey: 'settingsSession.transcript.messageActions.sendToSessionEnabled.title', descriptionKey: 'settingsSession.transcript.messageActions.sendToSessionEnabled.subtitle' },
-                sendToSessionTemplate: { titleKey: 'settingsSession.transcript.messageActions.template.title' },
-                bulkCopyFormat: {
+                selectionEnabled: { storage: { scope: 'account', key: 'transcriptMessageSelectionEnabled', access: 'read_write' }, titleKey: 'settingsSession.transcript.messageActions.selectionEnabled.title', descriptionKey: 'settingsSession.transcript.messageActions.selectionEnabled.subtitle' },
+                sendToSessionEnabled: { storage: { scope: 'account', key: 'transcriptMessageSendToSessionEnabled', access: 'read_write' }, titleKey: 'settingsSession.transcript.messageActions.sendToSessionEnabled.title', descriptionKey: 'settingsSession.transcript.messageActions.sendToSessionEnabled.subtitle' },
+                sendToSessionTemplate: { storage: { scope: 'account', key: 'transcriptMessageSendToSessionTemplate', access: 'read_write' }, titleKey: 'settingsSession.transcript.messageActions.template.title' },
+                bulkCopyFormat: { storage: { scope: 'account', key: 'transcriptBulkCopyFormat', access: 'read_write' },
                     titleKey: 'settingsSession.transcript.messageActions.bulkCopyFormat.title',
                     keywordKeys: ['settingsSessionPages.transcript.copyMarkdown', 'settingsSession.transcript.messageActions.bulkCopyFormat.plain'],
                 },
@@ -58,14 +58,14 @@ export const TRANSCRIPT_SETTINGS = defineSettingsPage({
         motion: {
             titleKey: 'settingsSession.transcript.motionTitle',
             settings: {
-                motionPicker: { titleKey: 'settingsSession.transcript.motionPickerTitle' },
+                motionPicker: { storage: { scope: 'account', key: 'transcriptMotionPreset', access: 'read_write' }, titleKey: 'settingsSession.transcript.motionPickerTitle' },
             },
         },
         scroll: {
             titleKey: 'settingsSession.transcript.scrollTitle',
             settings: {
-                scrollPin: { titleKey: 'settingsSession.transcript.scrollPinTitle', descriptionKey: 'settingsSession.transcript.scrollPinSubtitle' },
-                jumpToBottom: { titleKey: 'settingsSession.transcript.jumpToBottomTitle', descriptionKey: 'settingsSession.transcript.jumpToBottomSubtitle' },
+                scrollPin: { storage: { scope: 'account', key: 'transcriptScrollPinEnabled', access: 'read_write' }, titleKey: 'settingsSession.transcript.scrollPinTitle', descriptionKey: 'settingsSession.transcript.scrollPinSubtitle' },
+                jumpToBottom: { storage: { scope: 'account', key: 'transcriptScrollJumpToBottomEnabled', access: 'read_write' }, titleKey: 'settingsSession.transcript.jumpToBottomTitle', descriptionKey: 'settingsSession.transcript.jumpToBottomSubtitle' },
             },
         },
         advanced: {

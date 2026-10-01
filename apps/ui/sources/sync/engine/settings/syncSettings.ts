@@ -10,6 +10,7 @@ import { summarizeSettings, summarizeSettingsDelta, dbgSettings, isSettingsSyncD
 import {
     stripDerivedAccountSettingsProjections,
     stripLocalOnlyAccountSettings,
+    stripLegacyAuthoringMemorySettingsDelta,
 } from '@/sync/domains/settings/localOnlyAccountSettings';
 import {
     MIGRATED_SESSION_ORGANIZATION_ACCOUNT_SETTING_KEYS,
@@ -55,9 +56,11 @@ import {
     applyAccountSettingMutationV1,
     assertAccountWorkspaceSettingsTransition,
     AccountSettingsV2UpdateResponseSchema,
+    LEGACY_AUTHORING_MEMORY_SETTINGS_KEYS,
     sealAccountScopedBlobCiphertext,
     type AccountSettingMutationV1,
     type AccountSettingsStoredContentEnvelope,
+    type LegacyAuthoringMemorySettingsKey,
 } from '@happier-dev/protocol';
 import {
     readAccountSettingsBaseline,
@@ -169,11 +172,13 @@ export type SyncSettingsParams<TOneShotMutationValue = never> = {
     accountSettingsMutation?: AccountSettingMutationV1;
     /**
      * One explicit semantic mutation against one Account Settings version.
-     * Unlike immutable operations, this callback is never replayed after a
-     * version conflict; the canonical winner is refreshed and returned.
+     * By default the callback is never replayed after a version conflict;
+     * pure field-level intents may opt into the bounded CAS rebase below.
      */
     oneShotServerSettingsMutation?: Readonly<{
         expectedSettingsVersion: number;
+        /** Replay a deterministic field-level intent against the latest CAS winner. */
+        rebaseOnConflict?: boolean;
         mutate: (
             raw: Readonly<Record<string, unknown>>,
         ) => Readonly<{
@@ -192,6 +197,85 @@ export type SyncSettingsParams<TOneShotMutationValue = never> = {
         }>) => Promise<OneShotAccountSettingsPreparedCommitResult>;
     }>;
 };
+
+/** Destination-first authoring-memory import may retire only its exact source key. */
+export async function retireLegacyAuthoringMemoryKey(params: Readonly<{
+    credentials: AuthCredentials;
+    encryption: Encryption | null;
+    accountMode: 'plain' | 'e2ee';
+    settingsScope: AccountSettingsScope;
+    requestContext: NonNullable<SyncSettingsParams['requestContext']>;
+    key: LegacyAuthoringMemorySettingsKey;
+    expectedSettingsVersion: number;
+}>): Promise<OneShotAccountSettingsMutationResult<void>> {
+    if (!LEGACY_AUTHORING_MEMORY_SETTINGS_KEYS.includes(params.key)) {
+        throw new Error('Invalid authoring-memory retirement key');
+    }
+    if (!areAccountSettingsScopesEqual(params.settingsScope, params.requestContext.scope)) {
+        throw new Error('Account settings request scope does not match the settings scope');
+    }
+    if (!Number.isInteger(params.expectedSettingsVersion) || params.expectedSettingsVersion < 0) {
+        throw new Error('Authoring-memory retirement requires a valid expected version');
+    }
+    const request = (path: string, init?: RequestInit) => params.requestContext.request(path, init, { includeAuth: false });
+    const readBaseline = () => readAccountSettingsBaseline({
+        request, credentials: params.credentials, encryption: params.encryption, accountMode: params.accountMode,
+    });
+    const baseline = await readBaseline();
+    if (baseline.version !== params.expectedSettingsVersion) {
+        return { status: 'conflict', currentSettingsVersion: baseline.version };
+    }
+    if (!Object.prototype.hasOwnProperty.call(baseline.raw ?? {}, params.key)) {
+        return { status: 'applied', settingsVersion: baseline.version, value: undefined };
+    }
+    // No generic Settings normalization is allowed here: opaque siblings,
+    // including SecretString carriers, are outside this retirement's authority.
+    const raw = { ...baseline.raw };
+    delete raw[params.key];
+    if (baseline.api !== 'v2') throw new Error('Authoring-memory retirement requires Account Settings v2');
+    let content: AccountSettingsStoredContentEnvelope;
+    if (params.accountMode === 'plain') {
+        content = { t: 'plain', v: raw };
+    } else {
+        if (!params.encryption) throw new Error('Account settings encryption material is unavailable');
+        content = { t: 'encrypted', c: sealAccountScopedBlobCiphertext({
+            kind: 'account_settings',
+            material: { type: 'dataKey', machineKey: params.encryption.getContentPrivateKey() },
+            payload: raw,
+            randomBytes: getRandomBytes,
+        }) };
+    }
+    const recoverUnknownOutcome = async (): Promise<OneShotAccountSettingsMutationResult<void>> => {
+        try {
+            const readback = await readBaseline();
+            return { status: 'outcomeUnknown', lastKnownSettingsVersion: readback.version, safeSnapshotVersion: readback.version };
+        } catch {
+            return { status: 'outcomeUnknown', lastKnownSettingsVersion: baseline.version };
+        }
+    };
+    let response: Response;
+    let acknowledgement: unknown;
+    try {
+        response = await request('/v2/account/settings', {
+            method: 'POST',
+            headers: { Authorization: `Bearer ${params.credentials.token}`, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ content, expectedVersion: baseline.version }),
+        });
+        acknowledgement = await response.json();
+    } catch {
+        return recoverUnknownOutcome();
+    }
+    const parsed = AccountSettingsV2UpdateResponseSchema.safeParse(acknowledgement);
+    if (!parsed.success) return recoverUnknownOutcome();
+    if (parsed.data.success) {
+        if (!response.ok) return recoverUnknownOutcome();
+        return { status: 'applied', settingsVersion: parsed.data.version, value: undefined };
+    }
+    if (parsed.data.error === 'version-mismatch') {
+        return { status: 'conflict', currentSettingsVersion: parsed.data.currentVersion };
+    }
+    throw new Error(`Authoring-memory retirement rejected: ${parsed.data.error}`);
+}
 
 export async function syncSettings<TOneShotMutationValue = never>(
     params: SyncSettingsParams<TOneShotMutationValue>,
@@ -264,7 +348,7 @@ export async function syncSettings<TOneShotMutationValue = never>(
     const maxRetries = 3;
     let retryCount = 0;
     let lastVersionMismatch: { expectedVersion: number; currentVersion: number; pendingKeys: string[] } | null = null;
-    const pendingAccountSettings = stripLocalOnlyAccountSettings(pendingSettings) as Record<string, unknown>;
+    const pendingAccountSettings = stripLegacyAuthoringMemorySettingsDelta(stripLocalOnlyAccountSettings(pendingSettings)) as Record<string, unknown>;
     const pendingLegacySessionOrganizationSettings = pickMigratedSessionOrganizationSettings(pendingAccountSettings);
     const pendingServerSettings = stripMigratedSessionOrganizationSettings(pendingAccountSettings) as Partial<Settings>;
     let legacySessionOrganizationImportCompletedThisRun = false;
@@ -279,6 +363,10 @@ export async function syncSettings<TOneShotMutationValue = never>(
         const expected = params.oneShotServerSettingsMutation.expectedSettingsVersion;
         if (!Number.isInteger(expected) || expected < 0) {
             throw new Error('One-shot Account Settings mutation requires a valid expected version');
+        }
+        if (params.oneShotServerSettingsMutation.rebaseOnConflict === true
+            && params.oneShotServerSettingsMutation.commitPrepared) {
+            throw new Error('Prepared Account Settings mutations cannot be rebased after conflict');
         }
     }
 
@@ -713,7 +801,8 @@ export async function syncSettings<TOneShotMutationValue = never>(
         while (retryCount < maxRetries) {
             const version = baseline.version;
             if (params.oneShotServerSettingsMutation
-                && version !== params.oneShotServerSettingsMutation.expectedSettingsVersion) {
+                && version !== params.oneShotServerSettingsMutation.expectedSettingsVersion
+                && params.oneShotServerSettingsMutation.rebaseOnConflict !== true) {
                 applyRawSettingsProjection({
                     raw: baseline.raw,
                     version,
@@ -880,6 +969,16 @@ export async function syncSettings<TOneShotMutationValue = never>(
                 pendingLegacySessionOrganizationImported = await maybeImportLegacySessionOrganization(
                     mergePendingLegacySessionOrganizationSettings(baseline.raw),
                 ) || pendingLegacySessionOrganizationImported;
+                if (params.oneShotServerSettingsMutation?.rebaseOnConflict === true) {
+                    dbgSettings('syncSettings: one-shot version-mismatch rebase', {
+                        endpoint: settingsEndpointUrl,
+                        expectedVersion: version,
+                        currentVersion: data.currentVersion,
+                        pendingKeys: Object.keys(pendingServerSettings).sort(),
+                    });
+                    retryCount++;
+                    continue;
+                }
                 if (params.oneShotServerSettingsMutation) {
                     applyRawSettingsProjection({
                         raw: baseline.raw,

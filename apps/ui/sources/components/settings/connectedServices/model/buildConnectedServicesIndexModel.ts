@@ -5,6 +5,7 @@ import {
     type ConnectedServiceId,
     type PluginContributionIdentityV1,
     type QualifiedConnectedAccountGroupV4,
+    type QualifiedConnectedAccountPurposeBindingTargetV1,
     type QualifiedConnectedAccountProfileV4,
 } from '@happier-dev/protocol';
 
@@ -46,7 +47,33 @@ export type ConnectedServicesIndexAccount =
         status: unknown;
         legacyServiceId: ConnectedServiceId;
         identityLabel: string | null;
+        /** The released producer field selected above; ids need not look different from emails. */
+        identityLabelKind: 'email' | 'accountId' | null;
     }>;
+
+/**
+ * One agent that signs in through connected services: its name, the services its purposes declare,
+ * and its current default targets (from the one purpose-default owner).
+ */
+export type ConnectedServicesIndexAgentUse = Readonly<{
+    /** The agent's catalog id (its mark); absent only in callers that name agents by title alone. */
+    agentId?: string;
+    title: string;
+    services: readonly PluginContributionIdentityV1[];
+    defaults: readonly QualifiedConnectedAccountPurposeBindingTargetV1[];
+}>;
+
+/** Where a service sits on the page: with the agents' accounts, or with code hosts and tools. */
+export type ConnectedServicesIndexSection = 'agents' | 'tools';
+
+/** What one account does: the pools it is in (and whether each uses it now) and the agents it is the default for. */
+export type ConnectedServicesIndexAccountRoles = Readonly<{
+    pools: readonly Readonly<{ groupId: string; inUse: boolean }>[];
+    defaultFor: readonly string[];
+}>;
+
+/** A pool of the service, with the agents that use it by default. */
+export type ConnectedServicesIndexPool = QualifiedConnectedAccountGroupV4 & Readonly<{ defaultFor: readonly string[] }>;
 
 /** One service on the index: its identity, its accounts and its state. */
 export type ConnectedServicesIndexSheet = Readonly<{
@@ -69,6 +96,13 @@ export type ConnectedServicesIndexSheet = Readonly<{
     /** Bounded, product-safe state copy (blocked, unavailable, loading) or null when healthy. */
     statusLine: string | null;
     supportDetails: string | null;
+    /** The agents that sign in with this service, in catalog order; empty while that is unknown. */
+    usedBy: readonly string[];
+    /** The same agents' catalog ids, in the same order (their marks). */
+    usedByAgentIds: readonly string[];
+    section: ConnectedServicesIndexSection;
+    pools: readonly ConnectedServicesIndexPool[];
+    rolesByAccountId: Readonly<Record<string, ConnectedServicesIndexAccountRoles>>;
 }>;
 
 /** A service the user can add a first account to. */
@@ -77,6 +111,11 @@ export type ConnectedServicesIndexConnectable = Readonly<{
     service: PluginContributionIdentityV1;
     entry: ConnectedServiceRegistryEntry;
     label: string;
+    /** The agents that would sign in with it (G3: what your agents accept but you have not connected). */
+    usedBy: readonly string[];
+    /** The same agents' catalog ids, in the same order (their marks). */
+    usedByAgentIds: readonly string[];
+    section: ConnectedServicesIndexSection;
 }>;
 
 export type ConnectedServicesIndexModel = Readonly<{
@@ -134,10 +173,28 @@ export function buildConnectedServicesIndexModel(input: Readonly<{
     resolveFallbackEntry: (service: PluginContributionIdentityV1) => ConnectedServiceRegistryEntry | null;
     presentDiagnostics: (entry: ConnectedServiceRegistryEntry) => Readonly<{ primary: string | null; supportDetails: string | null }>;
     loadingLabel: string;
+    /**
+     * Which agents sign in with which services, and their defaults; `null` while unknown (no agent
+     * projection yet), in which case every service stays with the agent accounts.
+     */
+    agentUses?: readonly ConnectedServicesIndexAgentUse[] | null;
 }>): ConnectedServicesIndexModel {
     const sheets: ConnectedServicesIndexSheet[] = [];
     const connectable: ConnectedServicesIndexConnectable[] = [];
     const seen = new Set<string>();
+    const agentUses = input.agentUses ?? null;
+
+    const agentsUsing = (service: PluginContributionIdentityV1) => (agentUses ?? [])
+        .filter((agent) => agent.services.some((candidate) => sameService(candidate, service)));
+    const usedByOf = (service: PluginContributionIdentityV1): readonly string[] => agentsUsing(service).map((agent) => agent.title);
+    const usedByAgentIdsOf = (service: PluginContributionIdentityV1): readonly string[] => agentsUsing(service)
+        .flatMap((agent) => agent.agentId ? [agent.agentId] : []);
+    const sectionOf = (usedBy: readonly string[]): ConnectedServicesIndexSection => (
+        agentUses === null || usedBy.length > 0 ? 'agents' : 'tools'
+    );
+    const defaultsFor = (matches: (target: QualifiedConnectedAccountPurposeBindingTargetV1) => boolean): string[] => (agentUses ?? [])
+        .filter((agent) => agent.defaults.some(matches))
+        .map((agent) => agent.title);
 
     const buildSheet = (
         service: PluginContributionIdentityV1,
@@ -164,11 +221,14 @@ export function buildConnectedServicesIndexModel(input: Readonly<{
                 status: profile.status,
                 legacyServiceId,
                 identityLabel: profile.providerEmail ?? profile.providerAccountId ?? null,
+                identityLabelKind: profile.providerEmail != null ? 'email' as const
+                    : profile.providerAccountId != null ? 'accountId' as const : null,
             }));
         }
-        const groupCount = input.transport === 'advertised-v4'
-            ? input.qualifiedGroups.filter((group) => sameService(group.ref.service, service)).length
-            : 0;
+        const serviceGroups = input.transport === 'advertised-v4'
+            ? input.qualifiedGroups.filter((group) => sameService(group.ref.service, service))
+            : [];
+        const groupCount = serviceGroups.length;
         const diagnostics = entry && published
             ? input.presentDiagnostics(entry)
             : { primary: null, supportDetails: null };
@@ -206,6 +266,27 @@ export function buildConnectedServicesIndexModel(input: Readonly<{
                 })
                 : null;
         const sorted = sortAccounts(accounts);
+        const usedBy = usedByOf(service);
+        const pools = serviceGroups.map((group): ConnectedServicesIndexPool => ({
+            ...group,
+            defaultFor: defaultsFor((target) => target.kind === 'group'
+                && sameService(target.service, service)
+                && target.groupId === group.ref.groupId),
+        }));
+        const rolesByAccountId: Record<string, ConnectedServicesIndexAccountRoles> = {};
+        for (const account of sorted) {
+            rolesByAccountId[account.accountId] = {
+                pools: serviceGroups
+                    .filter((group) => group.members.some((member) => member.connectedAccountId === account.accountId))
+                    .map((group) => ({
+                        groupId: group.ref.groupId,
+                        inUse: group.activeConnectedAccountId === account.accountId,
+                    })),
+                defaultFor: defaultsFor((target) => target.kind === 'account'
+                    && sameService(target.account.service, service)
+                    && target.account.accountId === account.accountId),
+            };
+        }
         return {
             serviceKey,
             service,
@@ -224,6 +305,11 @@ export function buildConnectedServicesIndexModel(input: Readonly<{
             statusLine: diagnostics.primary
                 ?? (input.transport === 'indeterminate' ? input.loadingLabel : null),
             supportDetails: diagnostics.supportDetails,
+            usedBy,
+            usedByAgentIds: usedByAgentIdsOf(service),
+            section: sectionOf(usedBy),
+            pools,
+            rolesByAccountId,
         };
     };
 
@@ -234,7 +320,16 @@ export function buildConnectedServicesIndexModel(input: Readonly<{
         seen.add(serviceKey);
         const result = buildSheet(entry.service, entry, true);
         if (result === 'connectable') {
-            connectable.push({ serviceKey, service: entry.service, entry, label: input.resolveLabel(entry) });
+            const usedBy = usedByOf(entry.service);
+            connectable.push({
+                serviceKey,
+                service: entry.service,
+                entry,
+                label: input.resolveLabel(entry),
+                usedBy,
+                usedByAgentIds: usedByAgentIdsOf(entry.service),
+                section: sectionOf(usedBy),
+            });
         } else {
             sheets.push(result);
         }

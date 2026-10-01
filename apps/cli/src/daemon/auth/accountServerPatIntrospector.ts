@@ -76,6 +76,7 @@ export function createAccountServerPatIntrospector(
                 credentialId: parsed.data.credentialId,
                 expiresAt: parsed.data.expiresAt === null ? null : new Date(parsed.data.expiresAt),
                 authority: parsed.data.authority,
+                grant: parsed.data.grant,
             };
         } catch (error) {
             if (signal?.aborted) {

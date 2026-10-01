@@ -14,7 +14,7 @@ import {
     standardCleanup,
 } from '@/dev/testkit';
 import { installSettingsViewCommonModuleMocks } from '../settingsViewTestHelpers';
-import { getActiveUnsavedChangesGuard } from '@/utils/navigation/runGuardedNavigation';
+import { getActiveUnsavedChangesGuard, runGuardedNavigation } from '@/utils/navigation/runGuardedNavigation';
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -129,6 +129,8 @@ installSettingsViewCommonModuleMocks({
         }).module;
     },
     storage: async () => ({
+        // The page header reads the viewer's content-width preference.
+        useLocalSetting: () => undefined,
         useAllMachines: () => [{
             id: 'machine-a', active: true, revokedAt: null,
             metadata: { displayName: 'Mac' }, metadataVersion: 1, daemonState: null, daemonStateVersion: 1,
@@ -209,12 +211,12 @@ vi.mock('@/hooks/server/useFeatureDecision', () => ({
     },
 }));
 vi.mock('@/hooks/server/useActiveServerSnapshot', () => ({ useActiveServerSnapshot: () => ({ serverId: 'server-a' }) }));
-vi.mock('@/components/ui/forms/MachineSetupTextField', () => ({
-    MachineSetupTextField: React.forwardRef((props: Record<string, unknown>, ref) => {
+vi.mock('@/components/ui/forms/FieldTextInput', () => ({
+    FieldTextInput: React.forwardRef((props: Record<string, unknown>, ref) => {
         React.useImperativeHandle(ref, () => ({
-            focus: () => focusField(String(props.testID ?? props.label ?? 'unknown')),
+            focus: () => focusField(String(props.testID ?? props.accessibilityLabel ?? 'unknown')),
         }));
-        return React.createElement('MachineSetupTextField', props);
+        return React.createElement('FieldTextInput', props);
     }),
 }));
 vi.mock('@/components/ui/lists/Item', () => ({
@@ -229,6 +231,32 @@ vi.mock('@/components/ui/lists/ItemGroup', () => ({ ItemGroup: (props: React.Pro
 vi.mock('@/components/ui/lists/ItemList', () => ({ ItemList: (props: React.PropsWithChildren<Record<string, unknown>>) => React.createElement('ItemList', props, props.children) }));
 vi.mock('@/components/ui/icons/SafeIonicons', () => ({ SafeIonicons: () => null }));
 
+type RenderedScreen = Awaited<ReturnType<typeof renderScreen>>;
+
+/** The editor header's Test action with its result line, read as one control. */
+function findDraftTestRow(screen: RenderedScreen) {
+    const button = screen.findByTestId('settings-provider-authoring-test');
+    if (!button) return undefined;
+    const result = findComposite(screen, 'settings-provider-authoring-probe-result', 'text');
+    return {
+        props: {
+            onPress: button.props.onPress as (() => void) | undefined,
+            loading: Boolean(button.props.loading),
+            disabled: Boolean(button.props.disabled),
+            subtitle: (result?.props.text ?? null) as string | null,
+        },
+    };
+}
+
+/** One entry of the editor header's `⋯` menu, as a pressable row. */
+function findEditorMenuAction(screen: RenderedScreen, id: string) {
+    const actions = findComposite(screen, 'settings-provider-authoring-menu', 'actions')?.props.actions as
+        | Array<{ id: string; onSelect: () => unknown }>
+        | undefined;
+    const action = actions?.find((entry) => entry.id === id);
+    return action ? { props: { onPress: action.onSelect } } : undefined;
+}
+
 function findProviderExternalLink(
     screen: Awaited<ReturnType<typeof renderScreen>>,
     label: string,
@@ -238,6 +266,12 @@ function findProviderExternalLink(
         && node.props.accessibilityLabel === label
         && typeof node.props.onPress === 'function'
     )).at(-1);
+}
+
+
+/** The rendered component that carries `prop` for a test id (the host view under it carries none). */
+function findComposite(screen: { findAllByTestId: (testID: string) => Array<{ props: Record<string, any> }> }, testID: string, prop: string) {
+    return screen.findAllByTestId(testID).find((node) => node.props[prop] !== undefined) ?? null;
 }
 
 describe('ProviderConnectionAuthoringScreen', () => {
@@ -327,8 +361,8 @@ describe('ProviderConnectionAuthoringScreen', () => {
             <ProviderConnectionAuthoringScreen contributionKey="acme.plugin/boundary" />,
         );
 
-        expect(screen.findAllByType('ItemGroup').map((group) => group.props.title))
-            .toContain('Boundary provider');
+        expect(findComposite(screen, 'settings-provider-authoring-header', 'title')?.props.title)
+            .toBe('Boundary provider');
     });
 
     it('opens the projected API-key destination without mutating the Provider draft', async () => {
@@ -399,12 +433,10 @@ describe('ProviderConnectionAuthoringScreen', () => {
         const credentialRow = screen.findAllByType('Item').find(
             (item) => item.props.testID === 'settings-provider-authoring-api-key',
         );
-        expect(credentialRow?.props.disabled).toBe(true);
+        expect(credentialRow?.props.rightElement.props.disabled).toBe(true);
         expect(credentialRow?.props.onPress).toBeUndefined();
         expect(credentialRow?.props.subtitle).toBe('settingsProviders.local.accountScopeMismatchDescription');
-        const connect = screen.findAllByType('Item').find(
-            (item) => item.props.testID === 'settings-provider-authoring-connect',
-        );
+        const connect = screen.findByTestId('settings-provider-authoring-connect');
         expect(connect?.props.disabled).toBe(true);
         expect(modalShow).not.toHaveBeenCalled();
         expect(run).not.toHaveBeenCalled();
@@ -424,7 +456,7 @@ describe('ProviderConnectionAuthoringScreen', () => {
         await flushHookEffects();
 
         await React.act(async () => {
-            screen.findByTestId('settings-provider-authoring-api-key')?.props.onPress?.();
+            screen.findByTestId('settings-provider-authoring-api-key.choose')?.props.onPress?.();
         });
         const picker = modalShow.mock.calls.at(-1)?.[0] as {
             props?: { onSelectId?: (id: string | null) => void };
@@ -432,8 +464,7 @@ describe('ProviderConnectionAuthoringScreen', () => {
         await React.act(async () => {
             picker?.props?.onSelectId?.('happier:shared-secret:v1:provider-key');
         });
-        expect(screen.findByTestId('settings-provider-authoring-api-key')?.props.subtitle)
-            .toBe('settingsProviders.authoring.apiKeyDescription');
+        expect(screen.findByTestId('settings-provider-authoring-api-key.saved')).toBeNull();
     });
 
     it('refuses a selected Account A secret when the target switches to B before save dispatch', async () => {
@@ -463,17 +494,13 @@ describe('ProviderConnectionAuthoringScreen', () => {
         );
         await flushHookEffects();
         await React.act(async () => {
-            screen.findAllByType('Item').find(
-                (item) => item.props.testID === 'settings-provider-authoring-api-key',
-            )?.props.onPress?.();
+            screen.findByTestId('settings-provider-authoring-api-key.choose')?.props.onPress?.();
         });
         const picker = modalShow.mock.calls.at(-1)?.[0] as {
             props?: { onSelectId?: (id: string | null) => void };
         } | undefined;
         await React.act(async () => picker?.props?.onSelectId?.('secret-collision'));
-        const accountASave = screen.findAllByType('Item').find(
-            (item) => item.props.testID === 'settings-provider-authoring-connect',
-        )?.props.onPress;
+        const accountASave = screen.findByTestId('settings-provider-authoring-connect')?.props.onPress;
 
         await React.act(async () => {
             administrationTarget.controller.select('machine-a', 'srv_b');
@@ -484,7 +511,7 @@ describe('ProviderConnectionAuthoringScreen', () => {
         expect(run).not.toHaveBeenCalled();
         expect(screen.findAllByType('Item').find(
             (item) => item.props.testID === 'settings-provider-authoring-api-key',
-        )?.props.disabled).toBe(true);
+        )?.props.rightElement.props.disabled).toBe(true);
     });
 
     it('retires Account A authored authoring buffers when the active Account lifetime retires', async () => {
@@ -492,34 +519,32 @@ describe('ProviderConnectionAuthoringScreen', () => {
         const { ProviderConnectionAuthoringScreen } = await import('./ProviderConnectionAuthoringScreen');
         const screen = await renderScreen(<ProviderConnectionAuthoringScreen />);
         await flushHookEffects();
-        const nameField = () => screen.findAllByType('MachineSetupTextField')
-            .find((field) => field.props.label === 'settingsProviders.authoring.name');
-        const manualModelsField = () => screen.findAllByType('MachineSetupTextField')
-            .find((field) => field.props.label === 'settingsProviders.models.addFieldLabel');
+        const nameField = () => screen.findAllByType('FieldTextInput')
+            .find((field) => field.props.accessibilityLabel === 'settingsProviders.authoring.name');
+        const manualModelsField = () => screen.findAllByType('FieldTextInput')
+            .find((field) => field.props.accessibilityLabel === 'settingsProviders.models.addFieldLabel');
         await React.act(async () => {
             nameField()?.props.onChangeText('Account A gateway');
-            screen.findAllByType('MachineSetupTextField')
-                .find((field) => field.props.label === 'settingsProviders.authoring.baseUrl')
+            screen.findAllByType('FieldTextInput')
+                .find((field) => field.props.accessibilityLabel === 'settingsProviders.authoring.baseUrl')
                 ?.props.onChangeText('https://account-a.example/v1');
             manualModelsField()?.props.onChangeText('a/account-only-model');
         });
         expect(navigationPreventRemove.enabled).toBe(true);
         await React.act(async () => {
-            screen.findAllByType('Item').find(
-                (item) => item.props.title === 'settingsProviders.authoring.apiKey')?.props.onPress?.();
+            screen.findByTestId('settings-provider-authoring-api-key.choose')?.props.onPress?.();
         });
         expect(modalShow).toHaveBeenCalledTimes(1);
         // Captured while Account A is still current: even this stale callback
         // must never be able to save Account A's buffers into Account B.
-        const accountASave = screen.findAllByType('Item')
-            .find((item) => item.props.title === 'settingsProviders.authoring.save')?.props.onPress;
+        const accountASave = screen.findByTestId('settings-provider-authoring-save')?.props.onPress;
 
         await React.act(async () => { accountA.retire(); });
 
         expect(modalHide).toHaveBeenCalledWith('provider-secret-picker');
         expect(nameField()?.props.value).toBe('');
-        expect(screen.findAllByType('MachineSetupTextField')
-            .find((field) => field.props.label === 'settingsProviders.authoring.baseUrl')?.props.value).toBe('');
+        expect(screen.findAllByType('FieldTextInput')
+            .find((field) => field.props.accessibilityLabel === 'settingsProviders.authoring.baseUrl')?.props.value).toBe('');
         expect(manualModelsField()?.props.value).toBe('');
         // The guard stays truthful: retirement left no unsaved Account A work.
         expect(navigationPreventRemove.enabled).toBe(false);
@@ -534,8 +559,8 @@ describe('ProviderConnectionAuthoringScreen', () => {
         const screen = await renderScreen(<ProviderConnectionAuthoringScreen />);
         await flushHookEffects();
         await React.act(async () => {
-            screen.findAllByType('MachineSetupTextField')
-                .find((field) => field.props.label === 'settingsProviders.authoring.name')
+            screen.findAllByType('FieldTextInput')
+                .find((field) => field.props.accessibilityLabel === 'settingsProviders.authoring.name')
                 ?.props.onChangeText('Same Account gateway');
         });
 
@@ -544,8 +569,8 @@ describe('ProviderConnectionAuthoringScreen', () => {
         await screen.update(<ProviderConnectionAuthoringScreen displayName="continuity-render-1" />);
         await screen.update(<ProviderConnectionAuthoringScreen displayName="continuity-render-2" />);
 
-        expect(screen.findAllByType('MachineSetupTextField')
-            .find((field) => field.props.label === 'settingsProviders.authoring.name')?.props.value)
+        expect(screen.findAllByType('FieldTextInput')
+            .find((field) => field.props.accessibilityLabel === 'settingsProviders.authoring.name')?.props.value)
             .toBe('Same Account gateway');
         expect(navigationPreventRemove.enabled).toBe(true);
     });
@@ -554,11 +579,15 @@ describe('ProviderConnectionAuthoringScreen', () => {
         const accountA = accountLifetimeController.install('account-a');
         const { ProviderConnectionAuthoringScreen } = await import('./ProviderConnectionAuthoringScreen');
         const screen = await renderScreen(
-            <ProviderConnectionAuthoringScreen contributionKey="acme.plugin/ollama" />,
+            <ProviderConnectionAuthoringScreen
+                contributionKey="acme.plugin/ollama"
+                candidateId="discovery-candidate:v1:account-a"
+                displayName="Account A discovered provider"
+            />,
         );
         await flushHookEffects();
         await React.act(async () => {
-            screen.findAllByType('MachineSetupTextField')
+            screen.findAllByType('FieldTextInput')
                 .find((field) => field.props.testID === 'settings-provider-authoring-endpoint-chat')
                 ?.props.onChangeText('https://account-a.example/v1');
             await flushHookEffects({ cycles: 1, turns: 2 });
@@ -600,14 +629,11 @@ describe('ProviderConnectionAuthoringScreen', () => {
             <ProviderConnectionAuthoringScreen contributionKey="acme.plugin/ollama" />,
         );
         const titles = screen.findAllByType('Item').map((item) => item.props.title);
-        const websiteRow = screen.findAllByType('Item')
-            .find((item) => item.props.title === 'settingsProviders.links.providerWebsite');
 
-        expect(websiteRow?.props.accessibilityLabel).toBe('settingsProviders.links.providerWebsite');
-        expect(websiteRow?.props.onPress).toBeUndefined();
+        expect(findEditorMenuAction(screen, 'website')).toBeDefined();
         expect(titles).not.toContain('settingsProviders.links.getApiKey');
         await React.act(async () => {
-            await findProviderExternalLink(screen, 'settingsProviders.links.providerWebsite')?.props.onPress?.();
+            await findEditorMenuAction(screen, 'website')?.props.onPress?.();
             await Promise.resolve();
         });
 
@@ -719,13 +745,12 @@ describe('ProviderConnectionAuthoringScreen', () => {
         state.provenance = 'external';
         const { ProviderConnectionAuthoringScreen } = await import('./ProviderConnectionAuthoringScreen');
         const external = await renderScreen(<ProviderConnectionAuthoringScreen contributionKey="acme.plugin/ollama" />);
-        expect(external.findAllByType('Item').map((item) => item.props.title))
-            .toContain('settingsProviders.compatibility.experimental');
+        expect(findComposite(external, 'settings-provider-authoring-experimental', 'label')?.props.label)
+            .toBe('settingsProviders.compatibility.experimental');
 
         state.provenance = 'first_party';
         const bundled = await renderScreen(<ProviderConnectionAuthoringScreen contributionKey="acme.plugin/ollama" />);
-        expect(bundled.findAllByType('Item').map((item) => item.props.title))
-            .not.toContain('settingsProviders.compatibility.experimental');
+        expect(bundled.findByTestId('settings-provider-authoring-experimental')).toBeNull();
     });
 
     it('shows an API-key control for optional or required credential contributions', async () => {
@@ -742,8 +767,7 @@ describe('ProviderConnectionAuthoringScreen', () => {
         state.credential = { required: true };
         const { ProviderConnectionAuthoringScreen } = await import('./ProviderConnectionAuthoringScreen');
         const screen = await renderScreen(<ProviderConnectionAuthoringScreen contributionKey="acme.plugin/ollama" />);
-        const connect = screen.findAllByType('Item')
-            .find((item) => item.props.title === 'settingsProviders.authoring.connect');
+        const connect = screen.findByTestId('settings-provider-authoring-connect');
         await React.act(async () => { await connect?.props.onPress?.(); });
         expect(run).not.toHaveBeenCalled();
         expect(screen.findAllByType('Item').map((item) => item.props.title))
@@ -757,8 +781,7 @@ describe('ProviderConnectionAuthoringScreen', () => {
             .find((item) => item.props.title === 'settingsProviders.authoring.enableAfterSaving');
         expect(enable).toBeDefined();
         await React.act(async () => { enable?.props.rightElement.props.onValueChange(false); });
-        const connect = screen.findAllByType('Item')
-            .find((item) => item.props.title === 'settingsProviders.authoring.connect');
+        const connect = screen.findByTestId('settings-provider-authoring-connect');
         await React.act(async () => { await connect?.props.onPress?.(); });
         expect(run).toHaveBeenCalledWith(expect.objectContaining({
             action: 'createContribution',
@@ -781,8 +804,7 @@ describe('ProviderConnectionAuthoringScreen', () => {
         );
 
         await React.act(async () => {
-            await screen.findAllByType('Item')
-                .find((item) => item.props.title === 'settingsProviders.authoring.connect')?.props.onPress?.();
+            await screen.findByTestId('settings-provider-authoring-connect')?.props.onPress?.();
         });
 
         expect(screen.findByType(ProviderErrorItems.type).props.error)
@@ -853,8 +875,7 @@ describe('ProviderConnectionAuthoringScreen', () => {
             });
         const { ProviderConnectionAuthoringScreen } = await import('./ProviderConnectionAuthoringScreen');
         const screen = await renderScreen(<ProviderConnectionAuthoringScreen contributionKey="acme.plugin/ollama" />);
-        const connect = screen.findAllByType('Item')
-            .find((item) => item.props.title === 'settingsProviders.authoring.connect');
+        const connect = findComposite(screen, 'settings-provider-authoring-connect', 'title');
 
         expect(connect?.props.onPress).toBeUndefined();
         expect(run).not.toHaveBeenCalled();
@@ -873,7 +894,7 @@ describe('ProviderConnectionAuthoringScreen', () => {
         expect(rows.find((item) => item.props.title === 'openai-chat')?.props.subtitle)
             .toBe('http://127.0.0.1:22434/v1');
         await React.act(async () => {
-            await rows.find((item) => item.props.title === 'settingsProviders.authoring.connect')?.props.onPress?.();
+            await screen.findByTestId('settings-provider-authoring-connect')?.props.onPress?.();
         });
         expect(run).toHaveBeenCalledWith(expect.objectContaining({
             action: 'createContribution',
@@ -958,7 +979,7 @@ describe('ProviderConnectionAuthoringScreen', () => {
             <ProviderConnectionAuthoringScreen contributionKey={state.contributionKey} />,
         );
 
-        const fields = screen.findAllByType('MachineSetupTextField');
+        const fields = screen.findAllByType('FieldTextInput');
         const responses = fields.find((field) =>
             field.props.testID === 'settings-provider-authoring-endpoint-responses');
         const anthropic = fields.find((field) =>
@@ -985,8 +1006,7 @@ describe('ProviderConnectionAuthoringScreen', () => {
         }));
 
         await React.act(async () => {
-            await screen.findAllByType('Item')
-                .find((item) => item.props.title === 'settingsProviders.authoring.connect')
+            await screen.findByTestId('settings-provider-authoring-connect')
                 ?.props.onPress?.();
         });
         expect(run).toHaveBeenCalledWith(expect.objectContaining({
@@ -1014,7 +1034,7 @@ describe('ProviderConnectionAuthoringScreen', () => {
             'settingsProviders.authoring.protocol.openai-responses.title',
             'settingsProviders.authoring.protocol.openai-chat.title',
             'settingsProviders.authoring.protocol.anthropic.title',
-            'settingsProviders.models.add',
+            'settingsProviders.authoring.catalogTitle',
         ]));
         const advancedSwitchRows = screen.findAllByType('Item').filter((item) => (
             item.props.title === 'settingsProviders.authoring.endpointEnabled'
@@ -1040,17 +1060,16 @@ describe('ProviderConnectionAuthoringScreen', () => {
         await React.act(async () => {
             advanced?.props.rightElement.props.onValueChange(true);
         });
-        const fields = screen.findAllByType('MachineSetupTextField');
+        const fields = screen.findAllByType('FieldTextInput');
         await React.act(async () => {
-            fields.find((field) => field.props.label === 'settingsProviders.authoring.name')
+            fields.find((field) => field.props.accessibilityLabel === 'settingsProviders.authoring.name')
                 ?.props.onChangeText('Draft gateway');
-            fields.find((field) => field.props.label === 'settingsProviders.authoring.baseUrl')
+            fields.find((field) => field.props.accessibilityLabel === 'settingsProviders.authoring.baseUrl')
                 ?.props.onChangeText('http://127.0.0.1:38197');
-            fields.find((field) => field.props.label === 'settingsProviders.authoring.publicHeaders')
+            fields.find((field) => field.props.accessibilityLabel === 'settingsProviders.authoring.publicHeaders')
                 ?.props.onChangeText('Authorization: forbidden');
         });
-        const test = screen.findAllByType('Item')
-            .find((item) => item.props.title === 'settingsProviders.detail.testConnection');
+        const test = findDraftTestRow(screen);
         await React.act(async () => { await test?.props.onPress?.(); });
 
         expect(probeProviderDraft).not.toHaveBeenCalled();
@@ -1069,20 +1088,19 @@ describe('ProviderConnectionAuthoringScreen', () => {
         });
 
         expect(routerPush).not.toHaveBeenCalled();
-        expect(screen.findAllByType('MachineSetupTextField')
-            .find((field) => field.props.label === 'settingsProviders.authoring.name')?.props.value)
+        expect(screen.findAllByType('FieldTextInput')
+            .find((field) => field.props.accessibilityLabel === 'settingsProviders.authoring.name')?.props.value)
             .toBe('Draft gateway');
-        expect(screen.findAllByType('MachineSetupTextField')
-            .find((field) => field.props.label === 'settingsProviders.authoring.baseUrl')?.props.value)
+        expect(screen.findAllByType('FieldTextInput')
+            .find((field) => field.props.accessibilityLabel === 'settingsProviders.authoring.baseUrl')?.props.value)
             .toBe('http://127.0.0.1:38197');
-        expect(screen.findAllByType('MachineSetupTextField')
-            .find((field) => field.props.label === 'settingsProviders.authoring.publicHeaders')?.props.value)
+        expect(screen.findAllByType('FieldTextInput')
+            .find((field) => field.props.accessibilityLabel === 'settingsProviders.authoring.publicHeaders')?.props.value)
             .toBe('Authorization: forbidden');
         expect(screen.findAllByType('Item').map((item) => item.props.title))
             .not.toContain('settingsProviders.errors.actions.reviewConnection');
         expect(focusField).toHaveBeenCalledWith('settings-provider-authoring-base-url');
-        expect(typeof screen.findAllByType('Item')
-            .find((item) => item.props.title === 'settingsProviders.detail.testConnection')?.props.onPress)
+        expect(typeof findDraftTestRow(screen)?.props.onPress)
             .toBe('function');
     });
 
@@ -1098,18 +1116,17 @@ describe('ProviderConnectionAuthoringScreen', () => {
         const screen = await renderScreen(<ProviderConnectionAuthoringScreen />);
 
         await React.act(async () => {
-            const fields = screen.findAllByType('MachineSetupTextField');
-            fields.find((field) => field.props.label === 'settingsProviders.authoring.name')
+            const fields = screen.findAllByType('FieldTextInput');
+            fields.find((field) => field.props.accessibilityLabel === 'settingsProviders.authoring.name')
                 ?.props.onChangeText('Malformed-response draft');
-            fields.find((field) => field.props.label === 'settingsProviders.authoring.baseUrl')
+            fields.find((field) => field.props.accessibilityLabel === 'settingsProviders.authoring.baseUrl')
                 ?.props.onChangeText('https://gateway.example/v1');
             screen.findAllByType('Item')
                 .find((item) => item.props.title === 'settingsProviders.authoring.requiresApiKey')
                 ?.props.rightElement.props.onValueChange(false);
         });
         await React.act(async () => {
-            screen.findAllByType('Item')
-                .find((item) => item.props.title === 'settingsProviders.detail.testConnection')
+            findDraftTestRow(screen)
                 ?.props.onPress?.();
             await Promise.resolve();
         });
@@ -1121,11 +1138,11 @@ describe('ProviderConnectionAuthoringScreen', () => {
         });
 
         expect(routerPush).not.toHaveBeenCalled();
-        expect(screen.findAllByType('MachineSetupTextField')
-            .find((field) => field.props.label === 'settingsProviders.authoring.name')?.props.value)
+        expect(screen.findAllByType('FieldTextInput')
+            .find((field) => field.props.accessibilityLabel === 'settingsProviders.authoring.name')?.props.value)
             .toBe('Malformed-response draft');
-        expect(screen.findAllByType('MachineSetupTextField')
-            .find((field) => field.props.label === 'settingsProviders.authoring.baseUrl')?.props.value)
+        expect(screen.findAllByType('FieldTextInput')
+            .find((field) => field.props.accessibilityLabel === 'settingsProviders.authoring.baseUrl')?.props.value)
             .toBe('https://gateway.example/v1');
         expect(screen.findAllByType('Item').map((item) => item.props.title))
             .not.toContain('settingsProviders.errors.actions.reviewConnection');
@@ -1167,8 +1184,8 @@ describe('ProviderConnectionAuthoringScreen', () => {
         const { ProviderConnectionAuthoringScreen } = await import('./ProviderConnectionAuthoringScreen');
         const screen = await renderScreen(<ProviderConnectionAuthoringScreen />);
         await React.act(async () => {
-            screen.findAllByType('MachineSetupTextField')
-                .find((field) => field.props.label === 'settingsProviders.authoring.name')
+            screen.findAllByType('FieldTextInput')
+                .find((field) => field.props.accessibilityLabel === 'settingsProviders.authoring.name')
                 ?.props.onChangeText('Unsaved gateway');
         });
 
@@ -1204,6 +1221,62 @@ describe('ProviderConnectionAuthoringScreen', () => {
         expect(navigationDispatch).toHaveBeenCalledOnce();
         expect(navigationDispatch).toHaveBeenCalledWith(action);
         expect(run).not.toHaveBeenCalled();
+        expect(screen.findAllByType('FieldTextInput')
+            .find((field) => field.props.accessibilityLabel === 'settingsProviders.authoring.name')?.props.value).toBe('');
+        expect(navigationPreventRemove.enabled).toBe(false);
+    });
+
+    it.each(['custom', 'detected'] as const)('discards the mounted %s authoring draft when the shared machine selector changes target', async (kind) => {
+        administrationTarget.controller.setMachines([{ machineId: 'machine-a' }, { machineId: 'machine-b' }]);
+        const { ProviderConnectionAuthoringScreen } = await import('./ProviderConnectionAuthoringScreen');
+        const screen = await renderScreen(<ProviderConnectionAuthoringScreen {...(kind === 'detected' ? {
+            contributionKey: 'acme.plugin/ollama',
+            candidateId: 'discovery-candidate:v1:default',
+            displayName: 'Detected Ollama',
+        } : {})} />);
+        const nameField = () => screen.findAllByType('FieldTextInput')
+            .find((field) => field.props.accessibilityLabel === 'settingsProviders.authoring.name');
+        await React.act(async () => {
+            if (kind === 'custom') nameField()?.props.onChangeText('Discard this draft');
+            else screen.findAllByType('Item')
+                .find((item) => item.props.title === 'settingsProviders.authoring.enableAfterSaving')
+                ?.props.rightElement.props.onValueChange(false);
+        });
+        expect(getActiveUnsavedChangesGuard()?.isDirtyRef.current).toBe(true);
+        let navigationResult: true | Promise<boolean> = true;
+        await React.act(async () => {
+            navigationResult = runGuardedNavigation(() => { administrationTarget.controller.select('machine-b'); });
+            await flushHookEffects({ cycles: 1, turns: 2 });
+        });
+        const buttons = modalAlert.mock.calls.at(-1)?.[2] as Array<{ style?: string; onPress?: () => void }>;
+        await React.act(async () => {
+            buttons.find((button) => button.style === 'destructive')?.onPress?.();
+            await navigationResult;
+        });
+        if (kind === 'custom') expect(nameField()?.props.value).toBe('');
+        expect(getActiveUnsavedChangesGuard()?.isDirtyRef.current).toBe(false);
+        if (kind === 'detected') {
+            await React.act(async () => {
+                screen.findAllByType('Item')
+                    .find((item) => item.props.title === 'settingsProviders.authoring.enableAfterSaving')
+                    ?.props.rightElement.props.onValueChange(false);
+            });
+            await React.act(async () => {
+                navigationResult = runGuardedNavigation(() => { routerPush('/settings/providers/pc_other'); });
+                await flushHookEffects({ cycles: 1, turns: 2 });
+            });
+            const nextButtons = modalAlert.mock.calls.at(-1)?.[2] as Array<{ style?: string; onPress?: () => void }>;
+            await React.act(async () => {
+                nextButtons.find((button) => button.style === 'destructive')?.onPress?.();
+                await navigationResult;
+            });
+            expect(describeProviderConnections.mock.calls.at(-1)?.[0]).toMatchObject({
+                machineId: 'machine-b',
+                authoringPreview: { selectedCandidateId: null, displayName: null },
+            });
+            expect(getActiveUnsavedChangesGuard()?.isDirtyRef.current).toBe(false);
+        }
+        expect(run).not.toHaveBeenCalled();
     });
 
     it('keeps the required connection name visible, focusable, and continuous in advanced mode', async () => {
@@ -1211,20 +1284,19 @@ describe('ProviderConnectionAuthoringScreen', () => {
         const screen = await renderScreen(<ProviderConnectionAuthoringScreen />);
         const advanced = screen.findAllByType('Item')
             .find((item) => item.props.title === 'settingsProviders.authoring.advancedSetup');
-        const nameField = () => screen.findAllByType('MachineSetupTextField')
-            .find((field) => field.props.label === 'settingsProviders.authoring.name');
+        const nameField = () => screen.findAllByType('FieldTextInput')
+            .find((field) => field.props.accessibilityLabel === 'settingsProviders.authoring.name');
 
         await React.act(async () => { nameField()?.props.onChangeText('Company gateway'); });
         await React.act(async () => { advanced?.props.rightElement.props.onValueChange(true); });
 
         expect(nameField()?.props.value).toBe('Company gateway');
         await React.act(async () => { nameField()?.props.onChangeText(''); });
-        const save = screen.findAllByType('Item')
-            .find((item) => item.props.title === 'settingsProviders.authoring.save');
+        const save = screen.findByTestId('settings-provider-authoring-save');
         await React.act(async () => { await save?.props.onPress?.(); });
 
         expect(run).not.toHaveBeenCalled();
-        expect(nameField()?.props.errorText).toBeTruthy();
+        expect(nameField()?.props.error).toBeTruthy();
         expect(focusField).toHaveBeenCalledWith('settings-provider-authoring-name');
 
         await React.act(async () => { nameField()?.props.onChangeText('Recovered gateway'); });
@@ -1248,16 +1320,16 @@ describe('ProviderConnectionAuthoringScreen', () => {
     it('sends initial manual models inside the one create mutation', async () => {
         const { ProviderConnectionAuthoringScreen } = await import('./ProviderConnectionAuthoringScreen');
         const screen = await renderScreen(<ProviderConnectionAuthoringScreen />);
-        const fields = screen.findAllByType('MachineSetupTextField');
+        const fields = screen.findAllByType('FieldTextInput');
         await React.act(async () => {
-            fields.find((field) => field.props.label === 'settingsProviders.authoring.name')?.props.onChangeText('Anthropic bridge');
-            fields.find((field) => field.props.label === 'settingsProviders.authoring.baseUrl')?.props.onChangeText('https://gateway.example/anthropic');
-            fields.find((field) => field.props.label === 'settingsProviders.models.addFieldLabel')?.props.onChangeText('first/model\nsecond/model');
+            fields.find((field) => field.props.accessibilityLabel === 'settingsProviders.authoring.name')?.props.onChangeText('Anthropic bridge');
+            fields.find((field) => field.props.accessibilityLabel === 'settingsProviders.authoring.baseUrl')?.props.onChangeText('https://gateway.example/anthropic');
+            fields.find((field) => field.props.accessibilityLabel === 'settingsProviders.models.addFieldLabel')?.props.onChangeText('first/model\nsecond/model');
             screen.findAllByType('Item')
                 .find((item) => item.props.title === 'settingsProviders.authoring.requiresApiKey')
                 ?.props.rightElement.props.onValueChange(false);
         });
-        const save = screen.findAllByType('Item').find((item) => item.props.title === 'settingsProviders.authoring.save');
+        const save = screen.findByTestId('settings-provider-authoring-save');
         await React.act(async () => { await save?.props.onPress?.(); });
         expect(run).toHaveBeenCalledWith(expect.objectContaining({
             action: 'createCustom',
@@ -1270,17 +1342,16 @@ describe('ProviderConnectionAuthoringScreen', () => {
         const { ProviderConnectionAuthoringScreen } = await import('./ProviderConnectionAuthoringScreen');
         const { ProviderErrorItems } = await import('./ProviderErrorItems');
         const screen = await renderScreen(<ProviderConnectionAuthoringScreen />);
-        const fields = screen.findAllByType('MachineSetupTextField');
+        const fields = screen.findAllByType('FieldTextInput');
         await React.act(async () => {
-            fields.find((field) => field.props.label === 'settingsProviders.authoring.name')?.props.onChangeText('Gateway');
-            fields.find((field) => field.props.label === 'settingsProviders.authoring.baseUrl')?.props.onChangeText('https://gateway.example/v1');
+            fields.find((field) => field.props.accessibilityLabel === 'settingsProviders.authoring.name')?.props.onChangeText('Gateway');
+            fields.find((field) => field.props.accessibilityLabel === 'settingsProviders.authoring.baseUrl')?.props.onChangeText('https://gateway.example/v1');
             screen.findAllByType('Item')
                 .find((item) => item.props.title === 'settingsProviders.authoring.requiresApiKey')
                 ?.props.rightElement.props.onValueChange(false);
         });
         await React.act(async () => {
-            await screen.findAllByType('Item')
-                .find((item) => item.props.title === 'settingsProviders.authoring.save')?.props.onPress?.();
+            await screen.findByTestId('settings-provider-authoring-save')?.props.onPress?.();
         });
 
         expect(screen.findByType(ProviderErrorItems.type).props.error)
@@ -1310,23 +1381,23 @@ describe('ProviderConnectionAuthoringScreen', () => {
     it('blocks custom creation and marks rejected manual model lines inline', async () => {
         const { ProviderConnectionAuthoringScreen } = await import('./ProviderConnectionAuthoringScreen');
         const screen = await renderScreen(<ProviderConnectionAuthoringScreen />);
-        const fields = screen.findAllByType('MachineSetupTextField');
+        const fields = screen.findAllByType('FieldTextInput');
         await React.act(async () => {
-            fields.find((field) => field.props.label === 'settingsProviders.authoring.name')?.props.onChangeText('Gateway');
-            fields.find((field) => field.props.label === 'settingsProviders.authoring.baseUrl')?.props.onChangeText('https://gateway.example/v1');
-            fields.find((field) => field.props.label === 'settingsProviders.models.addFieldLabel')?.props.onChangeText('valid-model\nbad model');
+            fields.find((field) => field.props.accessibilityLabel === 'settingsProviders.authoring.name')?.props.onChangeText('Gateway');
+            fields.find((field) => field.props.accessibilityLabel === 'settingsProviders.authoring.baseUrl')?.props.onChangeText('https://gateway.example/v1');
+            fields.find((field) => field.props.accessibilityLabel === 'settingsProviders.models.addFieldLabel')?.props.onChangeText('valid-model\nbad model');
             screen.findAllByType('Item')
                 .find((item) => item.props.title === 'settingsProviders.authoring.requiresApiKey')
                 ?.props.rightElement.props.onValueChange(false);
         });
 
-        const save = screen.findAllByType('Item').find((item) => item.props.title === 'settingsProviders.authoring.save');
+        const save = screen.findByTestId('settings-provider-authoring-save');
         await React.act(async () => { await save?.props.onPress?.(); });
 
         expect(run).not.toHaveBeenCalled();
-        const manualModels = screen.findAllByType('MachineSetupTextField')
-            .find((field) => field.props.label === 'settingsProviders.models.addFieldLabel');
-        expect(manualModels?.props.errorText).toBeTruthy();
+        const manualModels = screen.findAllByType('FieldTextInput')
+            .find((field) => field.props.accessibilityLabel === 'settingsProviders.models.addFieldLabel');
+        expect(manualModels?.props.error).toBeTruthy();
         expect(focusField).toHaveBeenCalledWith('provider-manual-model-ids');
     });
 
@@ -1334,9 +1405,9 @@ describe('ProviderConnectionAuthoringScreen', () => {
         const { ProviderConnectionAuthoringScreen } = await import('./ProviderConnectionAuthoringScreen');
         const screen = await renderScreen(<ProviderConnectionAuthoringScreen />);
         await React.act(async () => {
-            const fields = screen.findAllByType('MachineSetupTextField');
-            fields.find((field) => field.props.label === 'settingsProviders.authoring.name')?.props.onChangeText('Local gateway');
-            fields.find((field) => field.props.label === 'settingsProviders.authoring.baseUrl')?.props.onChangeText('http://127.0.0.1:1234/v1');
+            const fields = screen.findAllByType('FieldTextInput');
+            fields.find((field) => field.props.accessibilityLabel === 'settingsProviders.authoring.name')?.props.onChangeText('Local gateway');
+            fields.find((field) => field.props.accessibilityLabel === 'settingsProviders.authoring.baseUrl')?.props.onChangeText('http://127.0.0.1:1234/v1');
             screen.findAllByType('Item')
                 .find((item) => item.props.title === 'settingsProviders.authoring.requiresApiKey')
                 ?.props.rightElement.props.onValueChange(false);
@@ -1349,7 +1420,7 @@ describe('ProviderConnectionAuthoringScreen', () => {
         const enable = screen.findAllByType('Item')
             .find((item) => item.props.title === 'settingsProviders.authoring.enableAfterSaving');
         await React.act(async () => { enable?.props.rightElement.props.onValueChange(false); });
-        const save = screen.findAllByType('Item').find((item) => item.props.title === 'settingsProviders.authoring.save');
+        const save = screen.findByTestId('settings-provider-authoring-save');
         await React.act(async () => { await save?.props.onPress?.(); });
         expect(run).toHaveBeenCalledWith(expect.objectContaining({ action: 'createCustom', enable: false }), 'save');
     });
@@ -1365,30 +1436,28 @@ describe('ProviderConnectionAuthoringScreen', () => {
         const requiresApiKey = screen.findAllByType('Item')
             .find((item) => item.props.title === 'settingsProviders.authoring.requiresApiKey');
         await React.act(async () => {
-            screen.findAllByType('MachineSetupTextField')
-                .find((field) => field.props.label === 'settingsProviders.authoring.name')
+            screen.findAllByType('FieldTextInput')
+                .find((field) => field.props.accessibilityLabel === 'settingsProviders.authoring.name')
                 ?.props.onChangeText('Gateway');
-            screen.findAllByType('MachineSetupTextField')
-                .find((field) => field.props.label === 'settingsProviders.authoring.baseUrl')
+            screen.findAllByType('FieldTextInput')
+                .find((field) => field.props.accessibilityLabel === 'settingsProviders.authoring.baseUrl')
                 ?.props.onChangeText('https://initial.example/v1');
             requiresApiKey?.props.rightElement.props.onValueChange(false);
             await new Promise((resolve) => setTimeout(resolve, 0));
         });
-        const test = screen.findAllByType('Item')
-            .find((item) => item.props.title === 'settingsProviders.detail.testConnection');
+        const test = findDraftTestRow(screen);
         await React.act(async () => { test?.props.onPress?.(); });
         await React.act(async () => {
-            screen.findAllByType('MachineSetupTextField')
-                .find((field) => field.props.label === 'settingsProviders.authoring.baseUrl')
+            screen.findAllByType('FieldTextInput')
+                .find((field) => field.props.accessibilityLabel === 'settingsProviders.authoring.baseUrl')
                 ?.props.onChangeText('https://changed.example/v1');
         });
         await React.act(async () => {
             resolveProbe?.({ status: 'success', models: [], requestFingerprint: 'probe-request:v1:late' });
             await Promise.resolve();
         });
-        const refreshedTest = screen.findAllByType('Item')
-            .find((item) => item.props.title === 'settingsProviders.detail.testConnection');
-        expect(refreshedTest?.props.subtitle).toBe('settingsProviders.detail.testDescription');
+        const refreshedTest = findDraftTestRow(screen);
+        expect(refreshedTest?.props.subtitle).toBeNull();
         expect(refreshedTest?.props.loading).toBe(false);
     });
 
@@ -1401,35 +1470,32 @@ describe('ProviderConnectionAuthoringScreen', () => {
         const requiresApiKey = screen.findAllByType('Item')
             .find((item) => item.props.title === 'settingsProviders.authoring.requiresApiKey');
         await React.act(async () => {
-            screen.findAllByType('MachineSetupTextField')
-                .find((field) => field.props.label === 'settingsProviders.authoring.name')
+            screen.findAllByType('FieldTextInput')
+                .find((field) => field.props.accessibilityLabel === 'settingsProviders.authoring.name')
                 ?.props.onChangeText('Gateway');
-            screen.findAllByType('MachineSetupTextField')
-                .find((field) => field.props.label === 'settingsProviders.authoring.baseUrl')
+            screen.findAllByType('FieldTextInput')
+                .find((field) => field.props.accessibilityLabel === 'settingsProviders.authoring.baseUrl')
                 ?.props.onChangeText('https://gateway.example/v1');
             requiresApiKey?.props.rightElement.props.onValueChange(false);
             await new Promise((resolve) => setTimeout(resolve, 0));
         });
-        const test = screen.findAllByType('Item')
-            .find((item) => item.props.title === 'settingsProviders.detail.testConnection');
+        const test = findDraftTestRow(screen);
         expect(typeof test?.props.onPress).toBe('function');
         await React.act(async () => {
             test?.props.onPress?.();
             await new Promise((resolve) => setTimeout(resolve, 0));
         });
         expect(probeProviderDraft).toHaveBeenCalledOnce();
-        expect(screen.findAllByType('Item')
-            .find((item) => item.props.title === 'settingsProviders.detail.testConnection')?.props.subtitle)
+        expect(findDraftTestRow(screen)?.props.subtitle)
             .toBe('settingsProviders.detail.testSucceeded');
 
         await React.act(async () => {
-            screen.findAllByType('MachineSetupTextField')
-                .find((field) => field.props.label === 'settingsProviders.authoring.name')
+            screen.findAllByType('FieldTextInput')
+                .find((field) => field.props.accessibilityLabel === 'settingsProviders.authoring.name')
                 ?.props.onChangeText('Renamed gateway');
         });
 
-        expect(screen.findAllByType('Item')
-            .find((item) => item.props.title === 'settingsProviders.detail.testConnection')?.props.subtitle)
+        expect(findDraftTestRow(screen)?.props.subtitle)
             .toBe('settingsProviders.detail.testSucceeded');
     });
 
@@ -1437,35 +1503,32 @@ describe('ProviderConnectionAuthoringScreen', () => {
         const { ProviderConnectionAuthoringScreen } = await import('./ProviderConnectionAuthoringScreen');
         const screen = await renderScreen(<ProviderConnectionAuthoringScreen />);
         await React.act(async () => {
-            const fields = screen.findAllByType('MachineSetupTextField');
-            fields.find((field) => field.props.label === 'settingsProviders.authoring.name')
+            const fields = screen.findAllByType('FieldTextInput');
+            fields.find((field) => field.props.accessibilityLabel === 'settingsProviders.authoring.name')
                 ?.props.onChangeText('Gateway');
-            fields.find((field) => field.props.label === 'settingsProviders.authoring.baseUrl')
+            fields.find((field) => field.props.accessibilityLabel === 'settingsProviders.authoring.baseUrl')
                 ?.props.onChangeText('https://gateway.example/v1');
             screen.findAllByType('Item')
                 .find((item) => item.props.title === 'settingsProviders.authoring.requiresApiKey')
                 ?.props.rightElement.props.onValueChange(false);
             await new Promise((resolve) => setTimeout(resolve, 0));
         });
-        const test = screen.findAllByType('Item')
-            .find((item) => item.props.title === 'settingsProviders.detail.testConnection');
+        const test = findDraftTestRow(screen);
         await React.act(async () => {
             test?.props.onPress?.();
             await new Promise((resolve) => setTimeout(resolve, 0));
         });
-        expect(screen.findAllByType('Item')
-            .find((item) => item.props.title === 'settingsProviders.detail.testConnection')?.props.subtitle)
+        expect(findDraftTestRow(screen)?.props.subtitle)
             .toBe('settingsProviders.detail.testSucceeded');
 
         await React.act(async () => {
-            screen.findAllByType('MachineSetupTextField')
-                .find((field) => field.props.label === 'settingsProviders.models.addFieldLabel')
+            screen.findAllByType('FieldTextInput')
+                .find((field) => field.props.accessibilityLabel === 'settingsProviders.models.addFieldLabel')
                 ?.props.onChangeText('model-after-success');
         });
 
-        expect(screen.findAllByType('Item')
-            .find((item) => item.props.title === 'settingsProviders.detail.testConnection')?.props.subtitle)
-            .toBe('settingsProviders.detail.testDescription');
+        expect(findDraftTestRow(screen)?.props.subtitle)
+            .toBeNull();
     });
 
     it('invalidates successful Test connection truth after the selected Saved Secret value rotates', async () => {
@@ -1480,27 +1543,23 @@ describe('ProviderConnectionAuthoringScreen', () => {
         const { ProviderConnectionAuthoringScreen } = await import('./ProviderConnectionAuthoringScreen');
         const screen = await renderScreen(<ProviderConnectionAuthoringScreen />);
         await React.act(async () => {
-            const fields = screen.findAllByType('MachineSetupTextField');
-            fields.find((field) => field.props.label === 'settingsProviders.authoring.name')
+            const fields = screen.findAllByType('FieldTextInput');
+            fields.find((field) => field.props.accessibilityLabel === 'settingsProviders.authoring.name')
                 ?.props.onChangeText('Gateway');
-            fields.find((field) => field.props.label === 'settingsProviders.authoring.baseUrl')
+            fields.find((field) => field.props.accessibilityLabel === 'settingsProviders.authoring.baseUrl')
                 ?.props.onChangeText('https://gateway.example/v1');
-            screen.findAllByType('Item')
-                .find((item) => item.props.title === 'settingsProviders.authoring.apiKey')
-                ?.props.onPress?.();
+            screen.findByTestId('settings-provider-authoring-api-key.choose')?.props.onPress?.();
         });
         const picker = modalShow.mock.calls.at(-1)?.[0] as { props?: { onSelectId?: (id: string | null) => void } } | undefined;
         await React.act(async () => {
             picker?.props?.onSelectId?.('secret-a');
         });
-        const test = screen.findAllByType('Item')
-            .find((item) => item.props.title === 'settingsProviders.detail.testConnection');
+        const test = findDraftTestRow(screen);
         await React.act(async () => {
             test?.props.onPress?.();
             await new Promise((resolve) => setTimeout(resolve, 0));
         });
-        expect(screen.findAllByType('Item')
-            .find((item) => item.props.title === 'settingsProviders.detail.testConnection')?.props.subtitle)
+        expect(findDraftTestRow(screen)?.props.subtitle)
             .toBe('settingsProviders.detail.testSucceeded');
 
         await React.act(async () => {
@@ -1512,9 +1571,8 @@ describe('ProviderConnectionAuthoringScreen', () => {
             savedSecretListeners.forEach((listener) => listener());
         });
 
-        expect(screen.findAllByType('Item')
-            .find((item) => item.props.title === 'settingsProviders.detail.testConnection')?.props.subtitle)
-            .toBe('settingsProviders.detail.testDescription');
+        expect(findDraftTestRow(screen)?.props.subtitle)
+            .toBeNull();
     });
 
     it('renders a thrown probe failure as typed retry recovery without invoking save', async () => {
@@ -1525,22 +1583,21 @@ describe('ProviderConnectionAuthoringScreen', () => {
         const screen = await renderScreen(<ProviderConnectionAuthoringScreen />);
 
         await React.act(async () => {
-            screen.findAllByType('MachineSetupTextField')
-                .find((field) => field.props.label === 'settingsProviders.authoring.name')
+            screen.findAllByType('FieldTextInput')
+                .find((field) => field.props.accessibilityLabel === 'settingsProviders.authoring.name')
                 ?.props.onChangeText('Retry gateway');
-            screen.findAllByType('MachineSetupTextField')
-                .find((field) => field.props.label === 'settingsProviders.authoring.baseUrl')
+            screen.findAllByType('FieldTextInput')
+                .find((field) => field.props.accessibilityLabel === 'settingsProviders.authoring.baseUrl')
                 ?.props.onChangeText('https://models.example/v1');
             await new Promise((resolve) => setTimeout(resolve, 0));
         });
-        const test = screen.findAllByType('Item')
-            .find((item) => item.props.title === 'settingsProviders.detail.testConnection');
+        const test = findDraftTestRow(screen);
         await React.act(async () => {
             test?.props.onPress?.();
             await new Promise((resolve) => setTimeout(resolve, 0));
         });
         expect(screen.findAllByType('Item').map((item) => item.props.title))
-            .toContain('settingsProviders.errors.machineUnavailableTitle');
+            .toContain('settingsProviders.errors.rpcResponseInvalidTitle');
         expect(screen.findAllByType('Item').map((item) => item.props.title))
             .toContain('settingsProviders.errors.actions.retry');
         expect(run).not.toHaveBeenCalled();

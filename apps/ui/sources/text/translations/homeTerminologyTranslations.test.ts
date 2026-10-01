@@ -16,7 +16,95 @@ import { zhHant } from './zh-Hant';
 const LOCALES = { ca, de, en, es, fr, it: itTranslations, ja, pl, pt, ru, zhHans, zhHant } as const;
 const REACHABILITY_LOCALES = { de, en, es, fr, it: itTranslations, ja, pl, pt, ru, zhHans } as const;
 
+const TRANSPORT_OR_SERVER_NOUN = /relay|relais|relé|relè|реле|ретрансл|リレー|中继|中繼|server|serveur|servidor|serwer|сервер|サーバー|服务器|伺服器/i;
+
+// Endpoint-facing copy whose English source says "Home": every locale must name the Home, never a relay/server.
+const HOME_ENDPOINT_COPY_KEYS = [
+    'server.enterServerUrl', 'server.notValidHappyServer', 'server.continueWithServer', 'server.resetServerDefault',
+    'server.validatingServer', 'server.serverReturnedError', 'server.failedToConnectToServer',
+    'server.currentlyUsingCustomServer', 'server.useThisServer', 'server.renameServer', 'server.renameServerPrompt',
+    'server.renameServerGroup', 'server.renameServerGroupPrompt', 'server.serverNamePlaceholder',
+    'server.cannotRenameCloud', 'server.removeServer', 'server.removeServerGroup', 'server.removeServerGroupConfirm',
+    'server.cannotRemoveCloud', 'server.signOutThisServer', 'server.signOutThisServerPrompt', 'server.switchToServer',
+    'server.addServerSubtitle', 'server.notificationAddServerHint', 'server.serverCount',
+    'server.useCanonicalServerUrlTitle', 'server.useCanonicalServerUrlBody', 'server.insecureHttpUrlTitle',
+    'server.addServerGroupTitle', 'server.addServerGroupSubtitle', 'server.serverGroupNamePlaceholder',
+    'server.serverGroupServersLabel', 'server.serverGroupMustHaveServer', 'welcome.serverIncompatibleTitle',
+    'setupOnboarding.changeRelay', 'setupOnboarding.relayCustomUrlTitle', 'setupOnboarding.relayCustomUrlSubtitle',
+    'setupOnboarding.savedRelaysTitle', 'setupOnboarding.removeRelayConfirmTitle', 'setupOnboarding.removeRelayConfirmBody',
+    'setupOnboarding.relayNameLabel', 'setupOnboarding.addAndUseRelay', 'setupOnboarding.changeRelayAction',
+    'setupOnboarding.continueToAuth', 'setupOnboarding.continueWithLocalRelayAction',
+    'setupOnboarding.confirmSwitchRelayTitle', 'setupOnboarding.confirmSwitchRelaySubtitle',
+    'setupOnboarding.confirmSwitchRelayKeepTitle', 'setupOnboarding.confirmSwitchRelayKeepSubtitle',
+    'setupOnboarding.confirmSwitchRelaySwitchTitle', 'setupOnboarding.confirmSwitchRelaySwitchSubtitle',
+    'setupOnboarding.confirmSwitchRelayWarning',
+    'setupOnboarding.thisComputerStages.useRelayAccountMismatchSubtitle',
+    'setupOnboarding.thisComputerStages.useRelayNeedsAuthSubtitle',
+    'setupOnboarding.thisComputerStages.useRelaySignedInSubtitle',
+    'setupOnboarding.thisComputerStages.useRelayMissingSubtitle',
+    'setupOnboarding.thisComputerStages.registerComputerReconnectSubtitle',
+] as const;
+
+// Leaves that name the Home product object: every locale keeps the English product noun, never a native noun.
+const HOME_PRODUCT_NOUN_KEYS = [
+    'personalHome.auth.signupClosed', 'personalHome.bootstrap.title', 'personalHome.bootstrap.checkingStatus',
+    'personalHome.bootstrap.ensuringHomeStatus', 'personalHome.bootstrap.preparingComputerStatus',
+    'personalHome.bootstrap.blockedStatus', 'personalHome.bootstrap.readyStatus',
+    'personalHome.bootstrap.profileRecoveryBody', 'personalHome.bootstrap.computerRecoveryBody',
+    'personalHome.bootstrap.existingRuntimeBody', 'personalHome.bootstrap.useExisting',
+    'personalHome.bootstrap.useExistingDetail', 'personalHome.bootstrap.useAnother', 'personalHome.bootstrap.useAnotherDetail',
+    'personalHome.bootstrap.blocked.runtime_unhealthy', 'personalHome.bootstrap.blocked.home_auth_invalid',
+    'personalHome.bootstrap.blocked.existing_runtime', 'personalHome.bootstrap.blocked.personal_home_erased',
+    'personalHome.bootstrap.blockedBody.personal_home_erased', 'personalHome.settings.defaultHomeLabel',
+    'personalHome.settings.summaryTitle', 'newSession.temporaryComputer.target.home', 'settingsAccount.currentHome',
+    'settingsNotifications.push.currentHome', 'settingsAccount.logoutSubtitle',
+] as const;
+
+const NATIVE_HOME_NOUN = /zuhause|maison|foyer|hogar|\bcas[ae]\b|\bllar|\bdom(u|em|ie)?\b|(^|[^а-яё])дом(а|ом|е|у)?([^а-яё]|$)|ホーム|之家|家庭/i;
+
+// Sign-in-service corridor copy that previously shipped as byte-identical English in every locale.
+const SIGN_IN_SERVICE_CORRIDOR_KEYS = [
+    'settingsAccount.accountServiceDiscoveryDescription',
+    'settingsAccount.accountServiceDiscoveringHomes', 'settingsAccount.accountServiceDiscoveryUnsupported',
+    'settingsAccount.accountServiceDiscoveryUnavailable', 'settingsAccount.accountServiceDiscoveryUnavailableDescription',
+    'settingsAccount.accountServiceHomesEmpty', 'settingsAccount.accountServiceConnectHome',
+    'settingsAccount.accountServiceRetryHomeConnection', 'settingsAccount.accountServiceHomeConnected',
+    'settingsAccount.accountServiceHomeApprovalRequired', 'settingsAccount.accountServiceHomeConnectionFailed',
+] as const;
+
+function renderLeaf(translations: object, path: string): string | undefined {
+    let node: unknown = translations;
+    for (const segment of path.split('.')) {
+        if (node === null || typeof node !== 'object') return undefined;
+        node = (node as Record<string, unknown>)[segment];
+    }
+    if (typeof node === 'string') return node;
+    if (typeof node === 'function') return String(node({ name: 'NAME', count: 2, provider: 'PROVIDER', host: 'HOST', home: 'HOME', serverUrl: 'URL' }));
+    return undefined;
+}
+
+function collectLeaves(node: unknown, path: string, out: Array<[string, string]>): Array<[string, string]> {
+    if (typeof node === 'string') out.push([path, node]);
+    else if (typeof node === 'function') out.push([path, renderLeaf({ leaf: node }, 'leaf') ?? '']);
+    else if (node !== null && typeof node === 'object') {
+        for (const [key, child] of Object.entries(node)) collectLeaves(child, path ? `${path}.${key}` : key, out);
+    }
+    return out;
+}
+
+// Feminine determiners before the Home product noun; es/ca/it treat Home as masculine.
+const FEMININE_HOME_DETERMINER = {
+    es: /\b(la|una|esta|esa|aquella|otra|nueva|nuestra|misma)\s+Home\b/i,
+    ca: /\b(la|una|aquesta|aquella|altra|nova|nostra|mateixa)\s+Home\b/i,
+    it: /\b(la|una|questa|quella|della|nella|alla|dalla|sulla|nuova|altra|nostra|stessa)\s+Home\b/i,
+} as const;
+
 describe('Home terminology translations', () => {
+    it('keeps the Home product noun distinct from the localized navigation label', () => {
+        expect(Object.entries(LOCALES).map(([locale, translations]) => [locale, translations.common.homeProductName]))
+            .toEqual(Object.keys(LOCALES).map((locale) => [locale, 'Home']));
+    });
+
     it('uses Home, not Relay, for ordinary Home profiles, groups, and daemon alignment', () => {
         const failures = Object.entries(LOCALES).flatMap(([locale, translations]) => {
             const { multiServerView, relayDrift } = translations.server;
@@ -29,17 +117,13 @@ describe('Home terminology translations', () => {
                 multiServerView.presentationTitle,
                 multiServerView.presentation.flatWithBadges,
                 multiServerView.presentation.groupedByServer,
-                relayDrift.bannerDifferentRelayTitle,
-                relayDrift.bannerDifferentRelayDescription({ activeRelayUrl: 'HOME_A', daemonRelayUrl: 'HOME_B' }),
-                relayDrift.bannerNeedsAuthTitle,
-                relayDrift.bannerNeedsAuthDescription({ activeRelayUrl: 'HOME_A' }),
-                relayDrift.bannerNotConfiguredTitle,
-                relayDrift.bannerNotConfiguredDescription({ activeRelayUrl: 'HOME_A' }),
-                relayDrift.bannerNotInstalledTitle,
-                relayDrift.bannerNotInstalledDescription({ activeRelayUrl: 'HOME_A' }),
-                relayDrift.bannerNotRunningTitle,
-                relayDrift.bannerNotRunningDescription({ activeRelayUrl: 'HOME_A' }),
-                relayDrift.repairAction,
+                translations.machine.thisComputer.title.daemon_url_mismatch,
+                translations.machine.thisComputer.description.daemon_url_mismatch({ home: 'HOME_A', daemonHome: 'HOME_B' }),
+                translations.machine.thisComputer.title.daemon_needs_auth,
+                translations.machine.thisComputer.description.daemon_needs_auth({ home: 'HOME_A' }),
+                translations.machine.thisComputer.title.daemon_not_configured,
+                translations.machine.thisComputer.description.daemon_not_configured({ home: 'HOME_A' }),
+                translations.machine.thisComputer.action.daemon_url_mismatch,
                 relayDrift.progressTitle,
                 relayDrift.progressStepConfigureRelay,
                 retention.relayCleanupSummary({ policies: 'POLICIES' }),
@@ -55,6 +139,38 @@ describe('Home terminology translations', () => {
         expect(failures).toEqual([]);
     });
 
+    it('names the Home, never a relay or server, wherever the English endpoint copy says Home', () => {
+        const failures = Object.entries(LOCALES).flatMap(([locale, translations]) => HOME_ENDPOINT_COPY_KEYS.flatMap((key) => {
+            const value = renderLeaf(translations, key);
+            return value === undefined || (TRANSPORT_OR_SERVER_NOUN.test(value) || !/Home/.test(value))
+                ? [`${locale}: ${key} = ${String(value)}`]
+                : [];
+        }));
+
+        expect(failures).toEqual([]);
+    });
+
+    it('keeps the English Home product noun wherever a leaf names the Home object', () => {
+        const failures = Object.entries(LOCALES).flatMap(([locale, translations]) => HOME_PRODUCT_NOUN_KEYS.flatMap((key) => {
+            const value = renderLeaf(translations, key);
+            return value === undefined || NATIVE_HOME_NOUN.test(value) || !/Home/.test(value)
+                ? [`${locale}: ${key} = ${String(value)}`]
+                : [];
+        }));
+
+        expect(failures).toEqual([]);
+    });
+
+    it('translates the sign-in-service corridor instead of shipping English copy', () => {
+        const failures = Object.entries(LOCALES).filter(([locale]) => locale !== 'en').flatMap(([locale, translations]) =>
+            SIGN_IN_SERVICE_CORRIDOR_KEYS.flatMap((key) => {
+                const value = renderLeaf(translations, key);
+                return value === undefined || value === renderLeaf(en, key) ? [`${locale}: ${key} = ${String(value)}`] : [];
+            }));
+
+        expect(failures).toEqual([]);
+    });
+
     it('describes Tailscale as the way to reach a Home, not a relay', () => {
         const failures = Object.entries(REACHABILITY_LOCALES).flatMap(([locale, translations]) => {
             const copy = translations.server.reachabilityRemediation.tailscale;
@@ -64,6 +180,47 @@ describe('Home terminology translations', () => {
                 ? [`${locale}: Tailscale remediation does not consistently identify the Home`]
                 : [];
         });
+
+        expect(failures).toEqual([]);
+    });
+    it('names Personal Home one way per locale across the Personal Home settings section', () => {
+        const failures = Object.entries(LOCALES).flatMap(([locale, translations]) => {
+            const productLabel = translations.personalHome.settings.summaryTitle;
+            if (productLabel === 'Personal Home') return [];
+            return collectLeaves(translations.personalHome.settings, 'personalHome.settings', [])
+                .filter(([, value]) => /Personal Home/.test(value))
+                .map(([key, value]) => `${locale}: ${key} = ${value} (label: ${productLabel})`);
+        });
+
+        expect(failures).toEqual([]);
+    });
+
+    it('keeps one tu register in the Portuguese Personal Home settings section', () => {
+        const formal = /\b(Reveja|Consulte|Tente|Guarde|Verifique|Escolha|Selecione|Aguarde|Mantenha|Use|Abra|Inicie)\b/;
+        const failures = collectLeaves(pt.personalHome.settings, 'personalHome.settings', [])
+            .filter(([, value]) => formal.test(value))
+            .map(([key, value]) => `${key} = ${value}`);
+
+        expect(failures).toEqual([]);
+    });
+
+    it('treats Home as masculine in Spanish, Catalan and Italian', () => {
+        const failures = (Object.keys(FEMININE_HOME_DETERMINER) as Array<keyof typeof FEMININE_HOME_DETERMINER>).flatMap((locale) =>
+            collectLeaves(LOCALES[locale], '', [])
+                .filter(([, value]) => FEMININE_HOME_DETERMINER[locale].test(value))
+                .map(([key, value]) => `${locale}: ${key} = ${value}`));
+
+        expect(failures).toEqual([]);
+    });
+
+    it('addresses French team sign-in and join readers with tu and one Team noun', () => {
+        const leaves = [
+            ...collectLeaves(fr.teams.entry, 'teams.entry', []),
+            ...collectLeaves(fr.teams.join, 'teams.join', []),
+        ];
+        const failures = leaves
+            .filter(([, value]) => /\b(vous|votre|vos)\b|\b\p{L}+ez\b|\bTeam\b/iu.test(value))
+            .map(([key, value]) => `${key} = ${value}`);
 
         expect(failures).toEqual([]);
     });

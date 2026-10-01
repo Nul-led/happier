@@ -21,7 +21,7 @@ function group(
         suppressedConnectedServiceIds: [],
         modelLoadAction,
         rows: Array.from({ length: modelCount }, (_, index) => ({
-            ref: { agentTargetKey: 'backend:codex', providerConnectionId: connectionId, modelId: modelIdForIndex(index) },
+            ref: { agentTargetKey: 'agent:happier.agent.codex/codex', providerConnectionId: connectionId, modelId: modelIdForIndex(index) },
             descriptor: { id: `model-${index}`, name: `Model ${index}` },
             sources: { manual: index === 0, static: index !== 0, probe: false },
             confidence: index === 0 ? 'manual' as const : 'verified_static' as const,
@@ -49,7 +49,7 @@ describe('ProviderModelManager', () => {
                 : row),
         }];
         const sections = buildProviderModelManagerSections({
-            scope: { kind: 'agent', agentTargetKey: 'backend:codex' },
+            scope: { kind: 'agent', agentTargetKey: 'agent:happier.agent.codex/codex' },
             nativeModels: [
                 { id: 'native-visible', name: 'Native Visible', hidden: false },
                 { id: 'native-hidden', name: 'Native Hidden', hidden: true },
@@ -86,7 +86,7 @@ describe('ProviderModelManager', () => {
 
     it('announces the action each model row will perform, including connection identity', () => {
         const sections = buildProviderModelManagerSections({
-            scope: { kind: 'agent', agentTargetKey: 'backend:codex' },
+            scope: { kind: 'agent', agentTargetKey: 'agent:happier.agent.codex/codex' },
             nativeModels: [
                 { id: 'native-visible', name: 'Native Visible', hidden: false },
                 { id: 'native-hidden', name: 'Native Hidden', hidden: true },
@@ -113,7 +113,7 @@ describe('ProviderModelManager', () => {
         const onRemoveManualModel = vi.fn();
         const onShowOnly = vi.fn();
         const hidden = buildProviderModelManagerSections({
-            scope: { kind: 'agent', agentTargetKey: 'backend:codex' },
+            scope: { kind: 'agent', agentTargetKey: 'agent:happier.agent.codex/codex' },
             nativeModels: [{ id: 'native-a', name: 'Native A', hidden: false }],
             groups: [group()], showHidden: false, onSetVisibility,
         });
@@ -142,7 +142,7 @@ describe('ProviderModelManager', () => {
         const onShowOnly = vi.fn();
         const onOpenConnection = vi.fn();
         const sections = buildProviderModelManagerSections({
-            scope: { kind: 'agent', agentTargetKey: 'backend:codex' },
+            scope: { kind: 'agent', agentTargetKey: 'agent:happier.agent.codex/codex' },
             nativeModels: [], groups: [group()], showHidden: true,
             onSetVisibility: () => {}, onShowOnly, onOpenConnection,
         });
@@ -166,7 +166,7 @@ describe('ProviderModelManager', () => {
 
     it('uses collision-safe option identities when connection and model ids contain delimiters', () => {
         const sections = buildProviderModelManagerSections({
-            scope: { kind: 'agent', agentTargetKey: 'backend:codex' },
+            scope: { kind: 'agent', agentTargetKey: 'agent:happier.agent.codex/codex' },
             nativeModels: [],
             groups: [
                 group(1, 'a:b', () => 'c'),
@@ -284,7 +284,7 @@ describe('ProviderModelManager', () => {
     it('builds one exact atomic visibility change set for show all, hide all, and show only', () => {
         const groups = [group(2, 'pc_a', (index) => index === 0 ? 'same' : 'other')];
         const input = {
-            scope: { kind: 'agent' as const, agentTargetKey: 'backend:codex' },
+            scope: { kind: 'agent' as const, agentTargetKey: 'agent:happier.agent.codex/codex' },
             nativeModels: [{ id: 'same', name: 'Native same', hidden: false }],
             groups,
         };
@@ -297,7 +297,7 @@ describe('ProviderModelManager', () => {
 
         const selected = {
             scope: 'agent' as const,
-            agentTargetKey: 'backend:codex',
+            agentTargetKey: 'agent:happier.agent.codex/codex',
             providerConnectionId: ProviderConnectionIdSchema.parse('pc_a'),
             modelId: 'same',
         };

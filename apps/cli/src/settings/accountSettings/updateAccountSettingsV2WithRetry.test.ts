@@ -17,6 +17,7 @@ import {
 
 import {
   updateAccountSettingsV2Once,
+  updateAccountSettingsV2OnceAgainstLatest,
   updateAccountSettingsV2WithRetry,
 } from './updateAccountSettingsV2WithRetry';
 import type { AccountSettingsCache } from './accountSettingsCache';
@@ -66,6 +67,102 @@ function mutableConfigurationForTest(): {
 }
 
 describe('updateAccountSettingsV2WithRetry', () => {
+  it('retires only a committed legacy authoring key at the observed exact version', async () => {
+    const raw = { lastUsedProfile: 'legacy', recentMachinePaths: [], futureSetting: { keep: true } };
+    const writes: Array<{ expectedVersion: number; content: AccountSettingsStoredContentEnvelope | null }> = [];
+    const deps = {
+      fetchSettings: async () => ({ content: { t: 'plain' as const, v: raw }, version: 4 }),
+      resolveAccountEncryptionMode: resolvePlainAccountEncryptionMode,
+      updateSettings: async (request: { expectedVersion: number; content: AccountSettingsStoredContentEnvelope | null }) => {
+        writes.push(request);
+        return { success: true as const, version: 5 };
+      },
+    };
+    const result = await updateAccountSettingsV2Once({
+      credentials: createTokenOnlyCredentialsStub(), expectedVersion: 4,
+      retireLegacyAuthoringMemoryKey: 'lastUsedProfile', mutate: (settings) => settings, deps,
+    });
+    expect(result.status).toBe('applied');
+    expect(writes[0]?.content).toEqual({ t: 'plain', v: { recentMachinePaths: [], futureSetting: { keep: true } } });
+    writes.length = 0;
+    const stale = await updateAccountSettingsV2Once({
+      credentials: createTokenOnlyCredentialsStub(), expectedVersion: 3,
+      retireLegacyAuthoringMemoryKey: 'lastUsedProfile', mutate: (settings) => settings, deps,
+    });
+    expect(stale.status).toBe('conflict');
+    expect(writes).toEqual([]);
+  });
+
+  it('settles the submitted sparse mutation without replaying preparation after a lost response', async () => {
+    let content: AccountSettingsStoredContentEnvelope = { t: 'plain', v: {} };
+    let version = 1;
+    let prepared = 0;
+    const result = await updateAccountSettingsV2WithRetry({
+      credentials: createTokenOnlyCredentialsStub(),
+      prepareMutation: () => {
+        prepared += 1;
+        return { operations: [{ op: 'set', key: 'rolesV1', value: { overrides: {} } }] };
+      },
+      deps: {
+        fetchSettings: async () => ({ content, version }),
+        resolveAccountEncryptionMode: resolvePlainAccountEncryptionMode,
+        updateSettings: async (request) => {
+          content = request.content!;
+          version += 1;
+          throw new Error('Response lost after commit');
+        },
+      },
+    });
+    expect(result).toMatchObject({ status: 'satisfied', version: 2 });
+    expect(prepared).toBe(1);
+  });
+
+  it('replays an explicitly prepared mutation against the conflicting Account winner', async () => {
+    const winner = { futureSetting: true, favoriteMachines: ['existing'] };
+    const writes: Array<{ expectedVersion: number; content: AccountSettingsStoredContentEnvelope | null }> = [];
+    const result = await updateAccountSettingsV2WithRetry({
+      credentials: createTokenOnlyCredentialsStub(),
+      prepareMutation: (raw) => ({ operations: [{ op: 'set', key: 'favoriteMachines', value:
+        [...accountSettingsParse(raw).favoriteMachines, 'new'] }] }),
+      deps: {
+        fetchSettings: async () => ({ content: { t: 'plain', v: {} }, version: 1 }),
+        resolveAccountEncryptionMode: resolvePlainAccountEncryptionMode,
+        updateSettings: async (request) => {
+          writes.push(request);
+          return writes.length === 1
+            ? { success: false, error: 'version-mismatch', currentVersion: 2, currentContent: { t: 'plain', v: winner } }
+            : { success: true, version: 3 };
+        },
+      },
+    });
+    expect(result).toMatchObject({ status: 'applied', version: 3 });
+    expect(writes.map((write) => write.expectedVersion)).toEqual([1, 2]);
+    const committed = writes[1]!.content;
+    if (committed?.t !== 'plain') throw new Error('Expected plain Account write');
+    expect(committed.v.futureSetting).toBe(true);
+    expect(committed.v.favoriteMachines).toEqual(['existing', 'new']);
+  });
+
+  it('preserves an explicitly prepared empty roles root while keeping other defaults absent', async () => {
+    const calls: Array<{ expectedVersion: number; content: AccountSettingsStoredContentEnvelope | null }> = [];
+    let prepared = 0;
+    const result = await updateAccountSettingsV2OnceAgainstLatest({
+      credentials: createTokenOnlyCredentialsStub(),
+      prepareMutation: async (raw) => {
+        prepared += 1;
+        expect(raw).toEqual({ customFutureField: 'retained' });
+        return { operations: [{ op: 'set', key: 'rolesV1', value: { overrides: {} } }] };
+      },
+      deps: {
+        fetchSettings: async () => ({ content: { t: 'plain', v: { customFutureField: 'retained' } }, version: 7 }),
+        resolveAccountEncryptionMode: resolvePlainAccountEncryptionMode,
+        updateSettings: async (request) => { calls.push(request); return { success: true, version: 8 }; },
+      },
+    });
+    expect(result).toMatchObject({ status: 'applied', version: 8 });
+    expect(prepared).toBe(1);
+    expect(calls).toEqual([{ expectedVersion: 7, content: { t: 'plain', v: { customFutureField: 'retained', rolesV1: { overrides: {} } } } }]);
+  });
   const originalServerUrl = configuration.serverUrl;
   const originalApiServerUrl = configuration.apiServerUrl;
   const originalPublicServerUrl = configuration.publicServerUrl;
@@ -944,6 +1041,49 @@ describe('updateAccountSettingsV2WithRetry', () => {
         updateSettings,
       },
     })).resolves.toMatchObject({ status: 'satisfied', version: 6 });
+    expect(updateSettings).toHaveBeenCalledTimes(1);
+    expect(fetchSettings).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([false, true])('confirms a retained-host reset only when readback cleared its development alias: %s', async (cleared) => {
+    const raw = {
+      sessionTmuxByMachineId: {
+        machine: { useTmux: false, terminalHost: 'herdr', sessionName: '', isolated: true, tmpDir: null },
+      },
+    };
+    let fetchCount = 0;
+    const resetRaw = {
+      sessionTmuxByMachineId: {
+        machine: { useTmux: false, sessionName: '', isolated: true, tmpDir: null },
+      },
+    };
+    const fetchSettings = vi.fn(async () => {
+      fetchCount += 1;
+      return {
+        content: { t: 'plain' as const, v: fetchCount > 1 && cleared ? resetRaw : raw },
+        version: fetchCount === 1 ? 5 : 6,
+      };
+    });
+    const updateSettings = vi.fn(async (): Promise<AccountSettingsV2UpdateResponse> => {
+      throw new Error('connection reset after request body');
+    });
+    const result = await updateAccountSettingsV2WithRetry({
+      credentials: createLegacyCredentialsStub(),
+      mutation: { operations: [{ op: 'reset', key: 'sessionTerminalHostByMachineId' }] },
+      deps: {
+        fetchSettings,
+        resolveAccountEncryptionMode: resolvePlainAccountEncryptionMode,
+        updateSettings,
+      },
+    });
+    if (cleared) {
+      expect(result.status).toBe('satisfied');
+      if (result.status !== 'satisfied') throw new Error('Expected confirmed reset');
+      expect(result.version).toBe(6);
+      expect(result.settings.sessionTerminalHostByMachineId).toEqual({});
+    } else {
+      expect(result).toEqual({ status: 'outcomeUnknown', lastKnownVersion: 6 });
+    }
     expect(updateSettings).toHaveBeenCalledTimes(1);
     expect(fetchSettings).toHaveBeenCalledTimes(2);
   });

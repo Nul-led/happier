@@ -13,7 +13,7 @@ describe('resolveSessionStartModelSelection', () => {
     })).toEqual({
       v: 1,
       updatedAt: 123,
-      ref: { agentTargetKey: 'backend:codex', providerConnectionId: 'pc_work', modelId: 'model-a' },
+      ref: { agentTargetKey: 'agent:happier.agent.codex/codex', providerConnectionId: 'pc_work', modelId: 'model-a' },
     });
   });
   it('preserves canonical provider identity and literal default for a built-in target', () => {
@@ -21,7 +21,7 @@ describe('resolveSessionStartModelSelection', () => {
       v: 1,
       updatedAt: 20,
       ref: {
-        agentTargetKey: 'backend:codex',
+        agentTargetKey: 'agent:happier.agent.codex/codex',
         providerConnectionId: 'pc_work',
         modelId: 'default',
       },
@@ -57,7 +57,7 @@ describe('resolveSessionStartModelSelection', () => {
       v: 1,
       updatedAt: 30,
       ref: {
-        agentTargetKey: 'backend:claude',
+        agentTargetKey: 'agent:happier.agent.claude/claude',
         providerConnectionId: 'pc_gateway',
         modelId: 'vendor/model',
       },
@@ -78,7 +78,7 @@ describe('resolveSessionStartModelSelection', () => {
       v: 1,
       updatedAt: 40,
       ref: {
-        agentTargetKey: 'backend:codex',
+        agentTargetKey: 'agent:happier.agent.codex/codex',
         providerConnectionId: null,
         modelId: 'native-model',
       },
@@ -93,7 +93,7 @@ describe('resolveSessionStartModelSelection', () => {
   it('uses a profile preference only when no explicit canonical or legacy model input exists', () => {
     const preferred = SessionModelSelectionV1Schema.parse({
       v: 1, updatedAt: 10,
-      ref: { agentTargetKey: 'backend:codex', providerConnectionId: 'pc_profile', modelId: 'profile-model' },
+      ref: { agentTargetKey: 'agent:happier.agent.codex/codex', providerConnectionId: 'pc_profile', modelId: 'profile-model' },
     });
     expect(resolveSessionStartModelSelection({
       backendTarget: { kind: 'backend', backendId: 'codex', sourceKind: 'built_in' },

@@ -41,8 +41,9 @@ function snapshotKindLabel(props: ReviewCommentSnapshotViewProps): string {
 }
 
 export function ReviewCommentSnapshotView(props: ReviewCommentSnapshotViewProps) {
-    const badges: string[] = [snapshotKindLabel(props)];
     const snapshot = resolveReviewCommentSnapshot(props.comment.snapshot);
+    if (snapshot?.kind === 'none') return null;
+    const badges: string[] = [snapshotKindLabel(props)];
     if (snapshot?.kind === 'text') {
         if (snapshot.truncated) badges.push(props.labels.truncated);
         if (snapshot.hasBidiControls) badges.push(props.labels.bidiControls);

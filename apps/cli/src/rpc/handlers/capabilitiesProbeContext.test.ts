@@ -74,7 +74,10 @@ describe('resolveProbeBackendContext', () => {
     });
   });
 
-  it('retains account settings for configured ACP SavedSecret probes', async () => {
+  it.each([
+    { kind: 'configuredAcpBackend', backendId: 'review-bot' },
+    { kind: 'backend', backendId: 'opencode', configuredBackendId: 'review-bot', sourceKind: 'configured' },
+  ])('retains configured ACP identity and SavedSecret settings for %j', async (inputTarget) => {
     const accountSettings = {
       secrets: [{
         id: 'secret-acp',
@@ -90,7 +93,7 @@ describe('resolveProbeBackendContext', () => {
 
     const context = await resolveProbeBackendContext({
       agentId: 'opencode',
-      backendTarget,
+      backendTarget: inputTarget,
     });
 
     expect(mocks.readStoredCredentials).toHaveBeenCalledOnce();

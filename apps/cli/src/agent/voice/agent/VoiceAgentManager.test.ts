@@ -131,7 +131,7 @@ function createMultiDeltaBackend(label: string, deltas: string[]): ExecutionRunH
 
 function createDelayedCompletionBackend(
   label: string,
-): VoiceTestRuntime<{ completeCurrentResponse: () => void }> {
+): VoiceTestRuntime<{ completeCurrentResponse: () => void; appendDelta: (text: string) => void }> {
   const sessionId = `s-${label}`;
   let lastPrompt = '';
   let resolveCurrent: (() => void) | null = null;
@@ -166,6 +166,9 @@ function createDelayedCompletionBackend(
     },
   });
   return Object.assign({}, runtime, {
+    appendDelta(text: string) {
+      runtime.emitMessage({ type: 'model-output', textDelta: text });
+    },
     completeCurrentResponse() {
       pendingComplete = true;
       resolveCurrent?.();
@@ -343,6 +346,88 @@ function createResponseTimeoutCaptureBackend(responseText = 'ok'): VoiceTestRunt
 }
 
 describe('VoiceAgentManager', () => {
+  it('holds an empty stream read until the owner appends events and aborts observation independently', async () => {
+    const backend = createDelayedCompletionBackend('push-read');
+    const manager = new VoiceAgentManager({ createBackend: () => backend });
+    try {
+      const started = await manager.start({
+        backendTarget: { kind: 'builtInAgent', agentId: 'claude' },
+        chatModelId: 'chat-model', commitModelId: 'commit-model',
+        permissionIntent: 'read-only', idleTtlSeconds: 60, initialContext: 'CTX',
+      });
+      const stream = await manager.startTurnStream({ voiceAgentId: started.voiceAgentId, userText: 'hello' });
+      const controller = new AbortController();
+      const request = { voiceAgentId: started.voiceAgentId, streamId: stream.streamId, cursor: 0, waitForEvents: true, signal: controller.signal };
+      let settled = false;
+      const abortedRead = manager.readTurnStream(request);
+      const pushedRead = manager.readTurnStream({ ...request, signal: new AbortController().signal });
+      void abortedRead.then(() => { settled = true; }, () => { settled = true; });
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(settled).toBe(false);
+      controller.abort(new Error('observation cancelled'));
+      await expect(abortedRead).rejects.toThrow('observation cancelled');
+      backend.appendDelta('Streaming words. '.repeat(40));
+      const page = await pushedRead;
+      expect(page.events).toEqual(expect.arrayContaining([expect.objectContaining({
+        t: 'voice_output', output: expect.objectContaining({ kind: 'speech_segment' }),
+      })]));
+      expect(page.done).toBe(false);
+      expect(page.nextCursor).toBe(page.events.length);
+      expect(page.streamId).toBe(stream.streamId);
+      const terminal = manager.readTurnStream({ ...request, cursor: page.nextCursor, signal: new AbortController().signal });
+      backend.completeCurrentResponse();
+      let finalPage = await terminal;
+      const remainingEvents = [...finalPage.events];
+      while (!finalPage.done) {
+        finalPage = await manager.readTurnStream({
+          ...request, cursor: finalPage.nextCursor, signal: new AbortController().signal,
+        });
+        remainingEvents.push(...finalPage.events);
+      }
+      expect(finalPage.streamId).toBe(stream.streamId);
+      expect(remainingEvents).toEqual(expect.arrayContaining([expect.objectContaining({
+        t: 'voice_output', output: expect.objectContaining({ kind: 'turn_final' }),
+      })]));
+    } finally {
+      await manager.dispose();
+    }
+  });
+  it.each(['stop', 'dispose'] as const)('settles a held stream read on %s while a completed turn handoff is still pending', async (retirement) => {
+    const backend = createDelayedCompletionBackend('held-terminal-handoff');
+    const manager = new VoiceAgentManager({ createBackend: () => backend });
+    let releaseHandoff!: () => void;
+    let handoffStarted!: () => void;
+    const handoff = new Promise<void>((resolve) => { releaseHandoff = resolve; });
+    const startedHandoff = new Promise<void>((resolve) => { handoffStarted = resolve; });
+    const started = await manager.start({
+      backendTarget: { kind: 'builtInAgent', agentId: 'claude' },
+      chatModelId: 'chat-model', commitModelId: 'commit-model',
+      permissionIntent: 'read-only', idleTtlSeconds: 60, initialContext: 'CTX',
+    });
+    const stream = await manager.startTurnStream({
+      voiceAgentId: started.voiceAgentId, userText: 'hello',
+      onTurnFinal: async () => { handoffStarted(); await handoff; },
+    });
+    backend.completeCurrentResponse();
+    await startedHandoff;
+    const read = manager.readTurnStream({ voiceAgentId: started.voiceAgentId, streamId: stream.streamId, cursor: 0, waitForEvents: true });
+    let settled = false;
+    void read.then(() => { settled = true; });
+    const retiring = retirement === 'stop' ? manager.stop({ voiceAgentId: started.voiceAgentId }) : manager.dispose();
+    try {
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(settled).toBe(true);
+      await expect(read).resolves.toMatchObject({ done: true, events: [] });
+    } finally {
+      releaseHandoff();
+      await retiring;
+      await manager.dispose();
+    }
+  });
+
   it('projects current idle and active-turn authority from the exact live Voice runtime', async () => {
     let active = false;
     const base = createTestExecutionRunHostRuntime({ runtimeId: 'voice-authority-session' });

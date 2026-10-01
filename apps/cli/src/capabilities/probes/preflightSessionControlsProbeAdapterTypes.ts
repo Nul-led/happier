@@ -1,3 +1,4 @@
+import type { RuntimeDescriptorV1 } from '@happier-dev/protocol';
 import type { BackendTargetRefV1 } from '@happier-dev/protocol';
 
 export type PreflightSessionControlsProbeFailureCacheStrategy = 'cooldown' | 'retry';
@@ -5,7 +6,10 @@ export type PreflightSessionControlsProbeKind = 'models' | 'modes' | 'configOpti
 
 export type PreflightSessionControlsProbeParams = Readonly<{
   backendTarget?: BackendTargetRefV1;
+  runtimeDescriptorV1?: RuntimeDescriptorV1;
+  runtimeKindOverride?: string;
   probeKind?: PreflightSessionControlsProbeKind;
+  bypassCache?: boolean;
   cwd: string;
   timeoutMs: number;
   accountSettings?: Readonly<Record<string, unknown>> | null;

@@ -50,7 +50,7 @@ describe('automationTemplateCodec', () => {
             v: 1,
             updatedAt: 123,
             ref: {
-                agentTargetKey: 'backend:codex',
+                agentTargetKey: 'agent:happier.agent.codex/codex',
                 providerConnectionId: 'pc_01J00000000000000000000000',
                 modelId: 'openai/gpt-5.5',
             },
@@ -72,7 +72,7 @@ describe('automationTemplateCodec', () => {
                 v: 1,
                 updatedAt: 123,
                 ref: {
-                    agentTargetKey: 'backend:codex',
+                    agentTargetKey: 'agent:happier.agent.codex/codex',
                     providerConnectionId: null,
                     modelId: 'gpt-5.5',
                 },

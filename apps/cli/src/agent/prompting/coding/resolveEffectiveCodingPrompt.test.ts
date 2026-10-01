@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 
-import { deriveBoxPublicKeyFromSeed, sealEncryptedDataKeyEnvelopeV1 } from '@happier-dev/protocol';
+import { BUILT_IN_ROLES_V1, accountSettingsParse, deriveBoxPublicKeyFromSeed, sealEncryptedDataKeyEnvelopeV1, renderSessionRoleBlockV1,
+  resolveRoleSelectionV1, snapshotSessionRolesAtSpawnV1 } from '@happier-dev/protocol';
+import { createSessionRoleContext } from '@/session/roles/sessionRoleContext';
 
 import { ARTIFACT_ENCRYPTION_MATERIAL_UNAVAILABLE } from '@/api/artifacts/accountArtifactStore';
 import { encodeBase64, encryptWithDataKey } from '@/api/encryption';
@@ -56,6 +58,58 @@ function createCredentials(): DataKeyCredentials {
 }
 
 describe('resolveEffectiveCodingPromptText', () => {
+  it('composes the first child prompt from its complete spawn role snapshot rather than changed Account instructions', async () => {
+    const selected = resolveRoleSelectionV1({ roleId: 'builder',
+      settingsOverrides: { builder: { roleId: 'builder', instructionsOverride: 'Accepted worker task.' } },
+      defaultEngine: { agentTargetKey: 'agent:happier.agent.codex/codex' } });
+    if (!selected.ok) throw new Error('Builder fixture must resolve');
+    const snapshot = snapshotSessionRolesAtSpawnV1({ leadSessionId: 'lead', sameAccount: false,
+      roles: { builder: selected.selection }, notes: 'Stay in the assigned files.' });
+    const context = createSessionRoleContext({
+      readMetadata: () => ({ work: { sessionRolesV1: { ...snapshot, roleId: 'builder' } } }),
+      readOrganization: async () => ({ reportsTo: { sessionId: 'lead' } }),
+      readRoleSources: async () => [],
+      readSettings: () => accountSettingsParse({ rolesV1: { overrides: {
+        builder: { roleId: 'builder', instructionsOverride: 'Changed Account instructions.' },
+      } } }),
+      readDefaultEngine: () => ({ agentTargetKey: 'agent:happier.agent.codex/codex' }),
+    });
+    const roleContext = await context.resolvePromptContext();
+    const result = await resolveEffectiveCodingPromptPlan({ settings: {}, profileId: null,
+      baseOverride: null, memoryRecallGuidanceEnabled: false, roleContext });
+    expect(result.text).toContain('Accepted worker task.');
+    expect(result.text).not.toContain('Changed Account instructions.');
+    expect(result.text).toContain('Stay in the assigned files.');
+    expect(result.plan.blocks.filter((block) => block.id === 'session.role_instructions')).toHaveLength(1);
+  });
+  it('composes host-resolved role instructions without Account credentials when no Artifact is selected', async () => {
+    const role = { ...BUILT_IN_ROLES_V1.scout, roleId: 'scout' };
+    const result = await resolveEffectiveCodingPromptPlan({ settings: {}, profileId: null,
+      baseOverride: null, memoryRecallGuidanceEnabled: false, roleContext: { role } });
+    expect(result.text).toContain(role.instructions);
+    expect(result.plan.blocks.filter((block) => block.id === 'session.role_instructions')).toHaveLength(1);
+  });
+  it('composes role, callable roles, notes, worker and caller startup content into the same session plan', async () => {
+    const roleContext = { role: { ...BUILT_IN_ROLES_V1.orchestrator, roleId: 'orchestrator' },
+      availableRoles: [{ ...BUILT_IN_ROLES_V1.builder, roleId: 'builder' }], notes: 'CURRENT_NOTES',
+      worker: { leadSessionId: 'lead', taskBoundary: 'TASK_BOUNDARY', memoryDocRef: { kind: 'doc' as const, artifactId: 'memory' } } };
+    const resolved = await resolveEffectiveCodingPromptPlan({ credentials: createCredentials(), settings: {}, profileId: null,
+      baseOverride: 'BASE', memoryRecallGuidanceEnabled: false, roleContext,
+      startupInstructions: { v: 1, id: 'voice.test', revision: 1, instructions: 'VOICE_CALLER_INSTRUCTIONS' },
+    });
+    expect(resolved.text).toContain(renderSessionRoleBlockV1(roleContext));
+    expect(resolved.text).toContain('Hands-off');
+    expect(resolved.text).toContain('session.spawn_new {"roleId":"builder"}');
+    expect(resolved.text).toContain('CURRENT_NOTES');
+    expect(resolved.text).toContain('TASK_BOUNDARY');
+    expect(resolved.text).toContain('VOICE_CALLER_INSTRUCTIONS');
+    expect(resolved.plan.blocks.filter((block) => block.id === 'session.role_instructions')).toHaveLength(1);
+    expect(resolved.plan.blocks.find((block) => block.id === 'caller.startup_instructions')?.scope).toBe('session');
+    const step = await resolveEffectiveCodingPromptPlan({ credentials: createCredentials(), settings: {}, profileId: null,
+      baseOverride: 'BASE', memoryRecallGuidanceEnabled: false, roleContext: { ...roleContext, originKind: 'run_step' },
+    });
+    expect(step.plan.blocks.some((block) => block.id === 'session.role_instructions')).toBe(false);
+  });
   it('fails typed before composing a prompt that selected a retained encrypted Artifact without key material', async () => {
     const artifactRecipientKey = new Uint8Array(32).fill(9);
     const credentials: StoredCredentials = {

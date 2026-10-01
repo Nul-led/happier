@@ -10,6 +10,8 @@ type ReminderState = Readonly<{
     dismissed: boolean | null;
     /** `null` until the server says whether it wants the reminder. */
     enabled: boolean | null;
+    /** Hub setup tiles on screen now; while any is, it carries the step and the banner steps aside. */
+    hubTiles: number;
 }>;
 
 function readEnabled(features: ReturnType<typeof getCachedReadyServerFeatures>): boolean | null {
@@ -28,6 +30,7 @@ function readState(): ReminderState {
         state = {
             dismissed: TokenStorage.getCachedRecoveryKeyReminderDismissed(),
             enabled: readEnabled(getCachedReadyServerFeatures()),
+            hubTiles: 0,
         };
     }
     return state;
@@ -62,9 +65,20 @@ async function markHandled(): Promise<void> {
     publish({ dismissed: true });
 }
 
+/**
+ * Where the step is offered. One message per state: the session-list banner (`banner`) shows only
+ * while no hub setup tile (`hubTile`) is on screen, as on phones and narrow layouts.
+ */
+export type RecoveryKeyReminderSurface = 'banner' | 'hubTile' | 'status';
+
 export type RecoveryKeyReminder = Readonly<{
     /** The key still needs saving: a legacy sign-in whose key was neither saved nor dismissed here. */
     needed: boolean;
+    /**
+     * The step as setup progress counts it: `pending` until saved or dismissed here, then `done`;
+     * `null` while it does not apply or this device has not read its answer yet.
+     */
+    step: 'pending' | 'done' | null;
     /** The secret to back up while `needed`. */
     secret: string | null;
     /** Saved: the key was backed up. */
@@ -78,19 +92,30 @@ export type RecoveryKeyReminder = Readonly<{
  * Saved or dismissed both count as done; the device remembers it. It reads the device flag and the
  * server's feature answer once per launch (no machine calls).
  */
-export function useRecoveryKeyReminder(): RecoveryKeyReminder {
+export function useRecoveryKeyReminder(options?: Readonly<{ surface?: RecoveryKeyReminderSurface }>): RecoveryKeyReminder {
+    const surface = options?.surface ?? 'status';
     const auth = useAuth();
     const current = React.useSyncExternalStore(subscribe, readState, readState);
     React.useEffect(() => {
         ensureLoaded();
     }, []);
+    React.useEffect(() => {
+        if (surface !== 'hubTile') return;
+        publish({ hubTiles: readState().hubTiles + 1 });
+        return () => publish({ hubTiles: readState().hubTiles - 1 });
+    }, [surface]);
     const credentials = auth.credentials;
     const legacy = auth.isAuthenticated && credentials != null && isLegacyAuthCredentials(credentials);
-    const needed = legacy && current.dismissed === false && current.enabled === true;
+    const needed = legacy && current.dismissed === false && current.enabled === true
+        && !(surface === 'banner' && current.hubTiles > 0);
+    const step = legacy && current.enabled === true && current.dismissed !== null
+        ? (current.dismissed ? 'done' : 'pending')
+        : null;
     return React.useMemo(() => ({
         needed,
+        step,
         secret: needed && credentials && isLegacyAuthCredentials(credentials) ? credentials.secret : null,
         markSaved: markHandled,
         dismiss: markHandled,
-    }), [credentials, needed]);
+    }), [credentials, needed, step]);
 }

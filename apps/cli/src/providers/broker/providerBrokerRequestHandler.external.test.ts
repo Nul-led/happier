@@ -9,6 +9,8 @@ const binding = {
   kind: 'external_api_key' as const,
   teamId: 'team-1', resourceId: 'resource-1', requestId: 'request-1',
   externalApiKeyId: '550e8400-e29b-41d4-a716-446655440000',
+  operationId: '550e8400-e29b-41d4-a716-446655440001',
+  brokerPlacementFingerprint: 'c'.repeat(64),
   assignedAccountId: 'account-1', assignedTeamMembershipId: 'membership-1',
 };
 const externalRequest = {
@@ -104,7 +106,7 @@ describe('Provider broker external authenticated context', () => {
     }));
     expect(access.request).toHaveBeenCalledWith(expect.objectContaining({ headers: { 'content-type': 'application/json' } }));
     expect(recordTerminal).toHaveBeenCalledOnce();
-    expect(recordTerminal).toHaveBeenCalledWith({ outcome: 'succeeded', actualModelId: null, tokens: null });
+    expect(recordTerminal).toHaveBeenCalledWith({ outcome: 'failed', actualModelId: null, tokens: null });
   });
 
   it.each([
@@ -232,6 +234,86 @@ describe('Provider broker external authenticated context', () => {
       actualModelId: 'gpt-5-2025-11-01',
       tokens: { input: 120, output: 45, reasoning: 30, cacheRead: 80, cacheWrite: 0, total: 165 },
     });
+  });
+
+  it.each([
+    {
+      name: 'in-band error',
+      ending: 'event: error\ndata: {"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}\n\n',
+      expected: { outcome: 'failed', actualModelId: null, tokens: null },
+    },
+    {
+      name: 'premature EOF', ending: '',
+      expected: { outcome: 'failed', actualModelId: null, tokens: null },
+    },
+    {
+      name: 'completed message without final usage',
+      ending: 'event: message_stop\ndata: {"type":"message_stop"}\n\n',
+      expected: { outcome: 'succeeded', actualModelId: 'claude-sonnet-4-6', tokens: null },
+    },
+    {
+      name: 'completed message with final usage',
+      ending: 'event: message_delta\ndata: {"type":"message_delta","usage":{"output_tokens":7}}\n\n'
+        + 'event: message_stop\ndata: {"type":"message_stop"}\n\n',
+      expected: {
+        outcome: 'succeeded', actualModelId: 'claude-sonnet-4-6',
+        tokens: { input: 25, output: 7, reasoning: 0, cacheRead: 0, cacheWrite: 0, total: 32 },
+      },
+    },
+  ])('preserves Anthropic bytes and truthful usage after $name', async ({ ending, expected }) => {
+    const terminalFacts: unknown[] = [];
+    let admissionCount = 0;
+    const sse = 'event: message_start\ndata: {"type":"message_start","message":{"model":"claude-sonnet-4-6",'
+      + '"stop_reason":null,"usage":{"input_tokens":25,"output_tokens":1}}}\n\n' + ending;
+    const handler = createProviderBrokerRequestHandler({
+      resolveTrustRoots: () => [], nowMs: Date.now,
+      resolveRequestPolicy: vi.fn(), admit: vi.fn(), createRequestId: () => 'unused',
+      resolveExternalRequestPolicy: async () => ({
+        kind: 'application' as const,
+        resourceRevision: 4,
+        policy: null,
+        modelCatalog: { models: [{ id: 'claude-sonnet-4-6' }], resolveCanonicalModelId: (id) => id },
+        application: {
+          agentTargetKey: 'agent:happier.agent.claude/claude',
+          implementationIdentity: { pluginId: 'happier.provider.cliproxyapi', localId: 'cliproxyapi' },
+          endpointTemplateId: 'cliproxyapi-anthropic', protocol: 'anthropic',
+        },
+      }),
+      // Home admission and the managed HTTP response are the system boundaries;
+      // the real request-policy and terminal observation owners run beneath them.
+      admitExternal: async () => {
+        admissionCount += 1;
+        return {
+          ok: true as const,
+          access: {
+            endpointUrl: () => 'http://127.0.0.1:1234',
+            request: async () => ({
+              ok: true, status: 200, statusText: 'OK',
+              headers: { 'content-type': 'text/event-stream' },
+              body: new ReadableStream<Uint8Array>({
+                start(controller) {
+                  controller.enqueue(new TextEncoder().encode(sse));
+                  controller.close();
+                },
+              }),
+            }),
+          },
+          terminalUsage: { record: async (fact) => { terminalFacts.push(fact); } },
+        };
+      },
+    });
+    const result = await handler({
+      context: { kind: 'external', binding },
+      carrierRequest: { ...externalRequest, route: 'messages', pathAndQuery: '/v1/messages', bodyBase64: 'e30=' },
+      request: {
+        pathAndQuery: '/v1/messages', method: 'POST',
+        body: new TextEncoder().encode('{"model":"claude-sonnet-4-6","max_tokens":16,"messages":[],"stream":true}'),
+      },
+    });
+    if (!result.ok) throw new Error('expected admitted Provider response');
+    expect(await new Response(result.response.body).text()).toBe(sse);
+    expect(admissionCount).toBe(1);
+    expect(terminalFacts).toEqual([expected]);
   });
 
   it('records one failed terminal fact when the admitted Provider response is lost', async () => {

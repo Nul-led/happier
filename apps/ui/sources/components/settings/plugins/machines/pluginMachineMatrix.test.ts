@@ -17,6 +17,7 @@ import type { PluginMachineMaterializationAdmission } from '@/sync/domains/plugi
 
 import {
     buildPluginMachineMatrix,
+    summarizePluginMachines,
     type PluginMachineMatrixCellStateV1,
     type PluginMachineMatrixV1,
 } from './pluginMachineMatrix';
@@ -290,6 +291,32 @@ describe('buildPluginMachineMatrix', () => {
         });
     });
 
+    it('says a plugin included with Happier is on every machine running Happier unless machines report it', () => {
+        const snapshots = [resolvedSnapshot({
+            serverIdentityId: 'srv_one',
+            machines: [machine({ id: 'machine-a', displayName: 'A' }), machine({ id: 'machine-b', displayName: 'B' })],
+        })];
+        const matrix = availableMatrix(buildPluginMachineMatrix({
+            // Daemons report no materialization for most bundled plugins: they ship inside Happier.
+            admission: admission([materialization({ pluginId: 'happier.channels', machineId: 'machine-a', sourceClass: 'bundledFirstParty' })]),
+            machineSnapshots: snapshots,
+            classifyRelease: () => MATCHED,
+            includedWithHappierPluginIds: new Set(['happier.claude', 'happier.channels']),
+            pluginId: 'happier.claude',
+        }));
+        expect(matrix.rows).toEqual([expect.objectContaining({ pluginId: 'happier.claude', includedWithHappier: true, cells: expect.any(Array) })]);
+
+        // Where machines do report it, their per-machine truth stands.
+        const reported = availableMatrix(buildPluginMachineMatrix({
+            admission: admission([materialization({ pluginId: 'happier.channels', machineId: 'machine-a', sourceClass: 'bundledFirstParty' })]),
+            machineSnapshots: snapshots,
+            classifyRelease: () => MATCHED,
+            includedWithHappierPluginIds: new Set(['happier.channels']),
+            pluginId: 'happier.channels',
+        }));
+        expect(reported.rows[0]?.includedWithHappier).toBe(false);
+    });
+
     it('never presents an unloaded Account projection as an Account-wide grid of absences', () => {
         const matrix = buildPluginMachineMatrix({
             admission: { kind: 'unavailable', code: 'account_availability_not_loaded' },
@@ -339,7 +366,6 @@ describe('buildPluginMachineMatrix', () => {
             admission: admission([], [{
                 serverIdentityId: 'srv_one',
                 machineId: 'machine-empty',
-                revision: 7,
                 materializations: [],
             }]),
             machineSnapshots: snapshots,
@@ -449,6 +475,7 @@ describe('buildPluginMachineMatrix', () => {
             'machineName',
             'observation',
             'observedAt',
+            'retained',
             'serverLabel',
             'state',
             'version',
@@ -456,5 +483,37 @@ describe('buildPluginMachineMatrix', () => {
         // A portable target or execution origin is an object; a display cell
         // that carries one could be handed straight to a mutation owner.
         expect(Object.values(cell!).filter((value) => typeof value === 'object' && value !== null)).toEqual([]);
+    });
+});
+
+describe('summarizePluginMachines', () => {
+    function oneRow(materializations: Parameters<typeof admission>[0], machines: ReturnType<typeof machine>[]) {
+        const matrix = availableMatrix(buildPluginMachineMatrix({
+            admission: admission(materializations),
+            machineSnapshots: [resolvedSnapshot({ serverIdentityId: 'srv_one', serverName: 'Server One', machines })],
+            classifyRelease: () => MATCHED,
+            pluginId: 'acme.plugin',
+        }));
+        return summarizePluginMachines(matrix.rows[0]!, matrix.machineCount);
+    }
+
+    it('counts where the plugin is current and lists only the exceptions, never the healthy, empty or unreported machines', () => {
+        const summary = oneRow(
+            [materialization({ machineId: 'm-a' }), materialization({ machineId: 'm-b' })],
+            [machine({ id: 'm-a', displayName: 'MacBook Pro' }), machine({ id: 'm-b', displayName: 'devbox' }), machine({ id: 'm-c', displayName: 'Studio' })],
+        );
+        expect(summary.currentCount).toBe(2);
+        expect(summary.total).toBe(3);
+        expect(summary.currentNames).toEqual(['MacBook Pro', 'devbox']);
+        expect(summary.exceptions).toEqual([]);
+    });
+
+    it('names a machine that left the Account generically instead of by its raw id', () => {
+        const summary = oneRow(
+            [materialization({ machineId: 'm-a' }), materialization({ machineId: 'machine-gone', version: '0.9.0' })],
+            [machine({ id: 'm-a', displayName: 'MacBook Pro' })],
+        );
+        expect(summary.exceptions).toHaveLength(1);
+        expect(summary.exceptions[0]).toMatchObject({ name: null, state: 'machineUnavailable', version: '0.9.0' });
     });
 });

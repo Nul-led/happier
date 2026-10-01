@@ -36,6 +36,10 @@ import { t } from '@/text';
 import { teamDetailPath } from '@/components/settings/teams/teamsRoutes';
 
 import { PasswordField } from './PasswordField';
+import { EmailPasswordAuthPanel } from './EmailPasswordAuthPanel';
+import { EmailPasswordSetupSteps } from './EmailPasswordSetupSteps';
+import { completeEmailPasswordAuthentication } from './completeEmailPasswordAuthentication';
+import { commitAccountServiceCreation } from '@/auth/accountDirectory/commitAccountServiceCreation';
 import {
     createEmailPasswordDraft,
     describeEmailPasswordFailure,
@@ -184,7 +188,16 @@ function LandingShell(props: Readonly<{ title: string; children: React.ReactNode
  * own transaction.
  */
 export const NativeAuthEmailVerifyScreen = React.memo(function NativeAuthEmailVerifyScreen(
-    props: Readonly<{ token: string | null; homeTarget: string | null }>,
+    props: Readonly<{
+        token: string | null;
+        homeTarget: string | null;
+        /**
+         * `account_service` when the mailbox is being proven to create an account-service
+         * sign-in (the link's `purpose`). Non-authoritative: creation re-checks everything on the
+         * server; it only decides which credential the new Account receives on this device.
+         */
+        purpose?: 'account_service' | null;
+    }>,
 ) {
     const auth = useAuth();
     const router = useRouter();
@@ -202,6 +215,7 @@ export const NativeAuthEmailVerifyScreen = React.memo(function NativeAuthEmailVe
     const [authenticationOpen, setAuthenticationOpen] = React.useState(false);
     const [authActions, setAuthActions] = React.useState<NativeAuthLandingActions | null | undefined>(undefined);
     const previewRead = useLandingReadRetry();
+    const authenticationRead = useLandingReadRetry();
     const destination = useExactHomeDestination({
         refreshAuth: auth.refreshFromActiveServer,
         onFocused: React.useCallback(() => router.replace('/'), [router]),
@@ -248,6 +262,7 @@ export const NativeAuthEmailVerifyScreen = React.memo(function NativeAuthEmailVe
     React.useEffect(() => {
         let active = true;
         const abortController = new AbortController();
+        setAuthActions(undefined);
         if (landingTarget.kind !== 'ready' || readyPreview === null) {
             setAuthActions(undefined);
             return () => {
@@ -296,7 +311,7 @@ export const NativeAuthEmailVerifyScreen = React.memo(function NativeAuthEmailVe
             active = false;
             abortController.abort();
         };
-    }, [verificationContinuation?.admission?.token, landingTarget, props.token, readyPreview?.continuation]);
+    }, [authenticationRead.attempt, verificationContinuation?.admission?.token, landingTarget, props.token, readyPreview?.continuation]);
 
     React.useEffect(() => {
         setProblem(null);
@@ -320,6 +335,60 @@ export const NativeAuthEmailVerifyScreen = React.memo(function NativeAuthEmailVe
             ...(verificationToken ? { verificationToken } : {}),
         }));
     }, [auth.refreshFromActiveServer, destination.continueThrough, landingTarget, router]);
+    if (state.kind === 'ready'
+        && state.preview.continuation === 'account_admission'
+        && admissionOpen
+        && props.token
+        && landingTarget.kind === 'ready'
+        && authActions?.provision
+        && authActions.provision.execution.kind === 'email_password'
+        && props.purpose === 'account_service'
+        && !verificationContinuation?.admission) {
+        const provision = authActions.provision.execution;
+        const resolved = resolveHomeAuthenticationTarget(landingTarget.target);
+        // ③ Password: the Account is created on this service and this device signs in to it as
+        // an account service (its Directory credential), not as a Home.
+        return resolved ? (
+            // The panel titles itself ("Create your account"); the page keeps the landing's own title so
+            // the two headings never repeat.
+            <LandingShell testID="native-auth-verify-account-service" title={t('settingsAccount.nativePassword.verifyTitle')}>
+                <EmailPasswordSetupSteps step="password" inset={false} />
+                <EmailPasswordAuthPanel
+                    target={resolved}
+                    recoveryTarget={props.homeTarget ?? ''}
+                    action="provision"
+                    mode={provision.mode}
+                    {...(provision.recommendedProvisionMode ? { recommendedProvisionMode: provision.recommendedProvisionMode } : {})}
+                    admission={{ kind: 'native_email_verification', token: props.token }}
+                    {...(verificationContinuation ? { initialEmail: verificationContinuation.normalizedEmail } : {})}
+                    credentialTarget="account_directory"
+                    onAuthenticated={async (outcome) => {
+                        if (verificationContinuation) clearNativeEmailVerificationContinuation(verificationContinuation);
+                        await completeEmailPasswordAuthentication({
+                            outcome,
+                            target: { serverUrl: resolved.canonicalServerUrl, serverId: landingTarget.serverId },
+                            // The key belongs to the account-service Account, not to any Home on this server.
+                            reminderTarget: { kind: 'account_service', serverIdentityId: resolved.serverIdentityId },
+                            loginWithCredentials: async (credentials) => (
+                                await commitAccountServiceCreation({
+                                    endpointUrl: resolved.endpointUrl,
+                                    serverIdentityId: resolved.serverIdentityId,
+                                    token: credentials.token,
+                                })
+                                    ? { kind: 'completed' as const }
+                                    : { kind: 'recovery_failed' as const }
+                            ),
+                            onCompleted: () => {
+                                setAdmissionOpen(false);
+                                router.replace('/settings/account');
+                            },
+                        });
+                    }}
+                    onBack={() => setAdmissionOpen(false)}
+                />
+            </LandingShell>
+        ) : null;
+    }
     if (state.kind === 'ready'
         && state.preview.continuation === 'account_admission'
         && admissionOpen
@@ -562,6 +631,9 @@ export const NativeAuthEmailVerifyScreen = React.memo(function NativeAuthEmailVe
                     : t('settingsAccount.nativePassword.verifyReturnToCreate')}
             </Text>
         )}
+        {authActions === null && landingTarget.kind === 'ready' ? (
+            <LandingRetryAction testID="native-auth-verify-retry-auth" onPress={authenticationRead.retry} />
+        ) : null}
         <WelcomeActionCard
             testID="native-auth-verify-return"
             title={t('settingsAccount.nativePassword.returnToSignIn')}
@@ -587,6 +659,7 @@ export const NativeAuthPasswordResetScreen = React.memo(function NativeAuthPassw
     const [authenticationOpen, setAuthenticationOpen] = React.useState(false);
     const [loginActions, setLoginActions] = React.useState<readonly HomeAuthenticationAction[] | null | undefined>(undefined);
     const previewRead = useLandingReadRetry();
+    const authenticationRead = useLandingReadRetry();
     const destination = useExactHomeDestination({
         refreshAuth: auth.refreshFromActiveServer,
         onFocused: React.useCallback(() => router.replace('/'), [router]),
@@ -627,6 +700,7 @@ export const NativeAuthPasswordResetScreen = React.memo(function NativeAuthPassw
     React.useEffect(() => {
         let active = true;
         const abortController = new AbortController();
+        setLoginActions(undefined);
         if (landingTarget.kind !== 'ready') {
             setLoginActions(undefined);
             return () => {
@@ -652,7 +726,7 @@ export const NativeAuthPasswordResetScreen = React.memo(function NativeAuthPassw
             active = false;
             abortController.abort();
         };
-    }, [landingTarget]);
+    }, [authenticationRead.attempt, landingTarget]);
 
     React.useEffect(() => {
         setDraft(createEmailPasswordDraft());
@@ -771,6 +845,9 @@ export const NativeAuthPasswordResetScreen = React.memo(function NativeAuthPassw
                         : t('settingsAccount.nativePassword.serverUnavailable')}
                 </Text>
             )}
+            {loginActions === null && landingTarget.kind === 'ready' ? (
+                <LandingRetryAction testID="native-auth-reset-retry-auth" onPress={authenticationRead.retry} />
+            ) : null}
         </LandingShell>;
     }
 

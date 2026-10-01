@@ -79,7 +79,7 @@ async function fetchPromptArtifactRecordFromApi(params: Readonly<{
 
 export async function resolveCliPromptStackSystemAppendBlocks(args: Readonly<{
   surface: 'coding' | 'voice';
-  credentials: StoredCredentials;
+  credentials?: StoredCredentials;
   settings: unknown;
   profileId?: string | null | undefined;
   cache?: Map<string, string | null>;
@@ -92,10 +92,10 @@ export async function resolveCliPromptStackSystemAppendBlocks(args: Readonly<{
   const cache = args.cache ?? new Map<string, string | null>();
   const fetchPromptArtifactRecord = args.fetchPromptArtifactRecord
     ? args.fetchPromptArtifactRecord
-    : async (artifactId: string) => await fetchPromptArtifactRecordFromApi({
-        credentials: args.credentials,
-        artifactId,
-      });
+    : async (artifactId: string) => {
+        if (!args.credentials) throw new ArtifactEncryptionMaterialUnavailableError();
+        return await fetchPromptArtifactRecordFromApi({ credentials: args.credentials, artifactId });
+      };
 
   return await resolvePromptStackSystemAppendBlocksV1({
     surface: args.surface,
@@ -119,7 +119,7 @@ export async function resolveCliPromptStackSystemAppendBlocks(args: Readonly<{
         cache.set(artifactId, body);
         return body;
       }
-      if (!args.credentials.encryption) {
+      if (!args.credentials?.encryption) {
         throw new ArtifactEncryptionMaterialUnavailableError();
       }
 

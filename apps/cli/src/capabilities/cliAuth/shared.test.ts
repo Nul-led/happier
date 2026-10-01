@@ -32,6 +32,23 @@ describe('runCliCommandBestEffort', () => {
     await Promise.all(tempDirs.splice(0).map((dir) => removeTempDir(dir).catch(() => undefined)));
   });
 
+  it('uses the supplied child environment for JavaScript runtime selection and credential unsets', async () => {
+    const dir = await createTempDir('happier-cli-auth-child-env-');
+    tempDirs.push(dir);
+    const scriptPath = join(dir, 'auth.js');
+    await writeFile(scriptPath,
+      "process.stdout.write(process.env.HAPPIER_AUTH_CHILD_KEY && !process.env.HAPPIER_PNPM_BIN ? 'logged_in' : 'logged_out');\n",
+      'utf8');
+    envScope.patch({ HAPPIER_JS_RUNTIME_PATH: join(dir, 'missing-runtime'), HAPPIER_PNPM_BIN: 'ambient-only' });
+    const result = await runCliCommandBestEffort({
+      resolvedPath: scriptPath, args: [], timeoutMs: 2_000,
+      processEnv: { ...process.env, HAPPIER_JS_RUNTIME_PATH: process.execPath,
+        HAPPIER_PNPM_BIN: undefined, HAPPIER_AUTH_CHILD_KEY: 'launch-key' },
+    });
+    expect(result).toMatchObject({ ok: true, stdout: 'logged_in', exitCode: 0 });
+    expect(process.env.HAPPIER_PNPM_BIN).toBe('ambient-only');
+  });
+
   it('executes JavaScript CLIs through the current runtime when PATH does not contain node', async () => {
     const dir = await createTempDir('happier-cli-auth-js-');
     tempDirs.push(dir);

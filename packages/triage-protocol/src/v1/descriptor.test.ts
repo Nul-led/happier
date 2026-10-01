@@ -88,3 +88,63 @@ describe('the V1 source descriptor', () => {
         expect(parsed.success).toBe(true);
     });
 });
+
+describe('per-kind detail tab declarations (r0.42)', () => {
+    const withTabs = (detailTabs: unknown) => ({
+        ...MINIMAL,
+        kinds: [{ ...MINIMAL.kinds[0], detailTabs }],
+    });
+
+    it('carries shared and source tabs per kind, in declared order', () => {
+        const admitted = admitTriageSourceDescriptorV1(withTabs([
+            { kind: 'shared', id: 'overview' },
+            { kind: 'shared', id: 'files' },
+            { kind: 'source', id: 'stack-trace', title: 'Stack trace' },
+        ]));
+
+        expect(admitted.ok).toBe(true);
+        expect(admitted.ok && admitted.descriptor.kinds[0]?.detailTabs).toEqual([
+            { kind: 'shared', id: 'overview' },
+            { kind: 'shared', id: 'files' },
+            { kind: 'source', id: 'stack-trace', title: 'Stack trace' },
+        ]);
+    });
+
+    it('keeps a kind with no declaration as the whole-detail source it was', () => {
+        const admitted = admitTriageSourceDescriptorV1(MINIMAL);
+        expect(admitted.ok && 'detailTabs' in admitted.descriptor.kinds[0]!).toBe(false);
+    });
+
+    it('rejects a shared id the vocabulary does not name', () => {
+        expect(admitTriageSourceDescriptorV1(withTabs([{ kind: 'shared', id: 'timeline' }])))
+            .toEqual({ ok: false, reason: 'invalid' });
+    });
+
+    it('refuses a tab id declared twice, or a source tab that reuses a shared id', () => {
+        expect(admitTriageSourceDescriptorV1(withTabs([
+            { kind: 'shared', id: 'overview' },
+            { kind: 'shared', id: 'overview' },
+        ]))).toEqual({ ok: false, reason: 'duplicateDetailTabId' });
+        expect(admitTriageSourceDescriptorV1(withTabs([
+            { kind: 'shared', id: 'overview' },
+            { kind: 'source', id: 'files', title: 'Files' },
+        ]))).toEqual({ ok: false, reason: 'duplicateDetailTabId' });
+    });
+});
+
+describe('the detail header actions panel (r0.42)', () => {
+    it('lets a kind declare that its write controls render in the detail header', () => {
+        const admitted = admitTriageSourceDescriptorV1({
+            ...MINIMAL,
+            kinds: [{ ...MINIMAL.kinds[0], detailTabs: [{ kind: 'shared', id: 'overview' }], detailActions: true }],
+        });
+        expect(admitted.ok && admitted.descriptor.kinds[0]?.detailActions).toBe(true);
+    });
+
+    it('reserves the header actions panel id from source tabs', () => {
+        expect(admitTriageSourceDescriptorV1({
+            ...MINIMAL,
+            kinds: [{ ...MINIMAL.kinds[0], detailTabs: [{ kind: 'source', id: 'actions', title: 'Actions' }] }],
+        })).toEqual({ ok: false, reason: 'duplicateDetailTabId' });
+    });
+});

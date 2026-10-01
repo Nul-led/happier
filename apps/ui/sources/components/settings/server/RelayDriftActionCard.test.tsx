@@ -76,9 +76,9 @@ describe('RelayDriftActionCard', () => {
             React.createElement(RelayDriftActionCard, {
                 banner: {
                     kind: 'warning',
-                    title: 'server.relayDrift.bannerDifferentRelayTitle',
-                    description: 'server.relayDrift.bannerDifferentRelayDescription',
-                    actionLabel: 'server.relayDrift.repairAction',
+                    title: 'machine.thisComputer.title.daemon_url_mismatch',
+                    description: 'machine.thisComputer.description.daemon_url_mismatch',
+                    actionLabel: 'machine.thisComputer.action.daemon_url_mismatch',
                     onPress: vi.fn(),
                     repairTaskSnapshot: createSnapshot(),
                     onCancelRepair: vi.fn(),
@@ -101,9 +101,9 @@ describe('RelayDriftActionCard', () => {
             React.createElement(RelayDriftActionCard, {
                 banner: {
                     kind: 'warning',
-                    title: 'server.relayDrift.bannerDifferentRelayTitle',
-                    description: 'server.relayDrift.bannerDifferentRelayDescription',
-                    actionLabel: 'server.relayDrift.repairAction',
+                    title: 'machine.thisComputer.title.daemon_url_mismatch',
+                    description: 'machine.thisComputer.description.daemon_url_mismatch',
+                    actionLabel: 'machine.thisComputer.action.daemon_url_mismatch',
                     actionDisabled: true,
                     actionHint: 'settings.systemTaskBridgeUnavailable',
                     onPress: vi.fn(),

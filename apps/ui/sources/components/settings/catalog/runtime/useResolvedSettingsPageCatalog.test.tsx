@@ -12,6 +12,7 @@ import {
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
 const pathnameState = vi.hoisted(() => ({ value: '/settings' }));
+const routeParamsState = vi.hoisted(() => ({ value: {} as Record<string, string | string[] | undefined> }));
 const featureGateState = vi.hoisted(() => ({
     enabled: (_featureId: string): boolean => true,
 }));
@@ -38,12 +39,22 @@ vi.mock('expo-router', async () => {
     const { createExpoRouterMock } = await import('@/dev/testkit/mocks/router');
     return createExpoRouterMock({
         pathname: () => pathnameState.value,
+        params: () => routeParamsState.value,
     }).module;
 });
 
+/** The viewer's language for page search words; other keys render as themselves. */
+const searchWordsState = vi.hoisted(() => ({ overrides: {} as Record<string, string> }));
+
 vi.mock('@/text', async () => {
     const { createTextModuleMock } = await import('@/dev/testkit/mocks/text');
-    return createTextModuleMock({ translate: (key) => key });
+    const { settingsSearchKeywordsTranslations } = await import('@/text/translations/settingsSearchKeywordsTranslations');
+    const english: Record<string, string> = settingsSearchKeywordsTranslations.en.settingsSearchKeywords;
+    return createTextModuleMock({
+        translate: (key) => searchWordsState.overrides[key]
+            ?? (key.startsWith('settingsSearchKeywords.') ? english[key.slice('settingsSearchKeywords.'.length)] : undefined)
+            ?? key,
+    });
 });
 
 vi.mock('react-native-unistyles', async () => {
@@ -151,6 +162,7 @@ describe('useResolvedSettingsPageCatalog', () => {
     afterEach(() => {
         vi.restoreAllMocks();
         pathnameState.value = '/settings';
+        routeParamsState.value = {};
         featureGateState.enabled = () => true;
         settingsState.useProfiles = false;
         settingsState.devModeEnabled = false;
@@ -195,6 +207,23 @@ describe('useResolvedSettingsPageCatalog', () => {
             expect(hook.getCurrent().catalog.search('teams')).toContainEqual({ id: 'teams', route: '/settings/teams' });
             expect(hook.getCurrent().catalog.activePageId).toBe('teams');
 
+            routeParamsState.value = { serverId: homeB.id, teamId: 'team-one', connectionId: 'connection-one', providerId: 'provider-one' };
+            pathnameState.value = `/settings/teams/${homeB.id}/team-one/authentication/connection-one/edit`;
+            await hook.rerender();
+            expect(hook.getCurrent().catalog.search('issuer')).toContainEqual(expect.objectContaining({
+                route: `${pathnameState.value}?providerId=provider-one&setting=teams.oidc.issuer`,
+                setting: expect.objectContaining({ anchor: 'teams.oidc.issuer' }),
+            }));
+            routeParamsState.value = { ...routeParamsState.value, serverId: homeA.id };
+            pathnameState.value = `/settings/teams/${homeA.id}/team-one/authentication/connection-one/edit`;
+            await hook.rerender();
+            expect(hook.getCurrent().catalog.search('issuer').some((result) => result.setting?.anchor === 'teams.oidc.issuer')).toBe(false);
+            // Route parameters left over from an editor never become a current entity.
+            pathnameState.value = '/settings';
+            await hook.rerender();
+            expect(hook.getCurrent().catalog.search('issuer').some((result) => result.setting?.anchor === 'teams.oidc.issuer')).toBe(false);
+            pathnameState.value = `/settings/teams/${homeB.id}/team-one`;
+
             await act(async () => await profiles.saveHomeViewState({
                 version: 1, groups: [], activeTargetKind: 'server', activeTargetId: homeA.id,
             }));
@@ -213,6 +242,47 @@ describe('useResolvedSettingsPageCatalog', () => {
             await profiles.removeServerProfile(homeA.id);
             await profiles.removeServerProfile(homeB.id);
             resetServerFeaturesClientForTests();
+        }
+    });
+
+    it('lists Teams unless the Home says this viewer is not shown it', async () => {
+        const { FeaturesResponseSchema } = await import('@happier-dev/protocol');
+        const profiles = await import('@/sync/domains/server/serverProfiles');
+        const { TokenStorage } = await import('@/auth/storage/tokenStorage');
+        const { primeServerFeaturesSnapshot, resetServerFeaturesClientForTests } = await import('@/sync/api/capabilities/serverFeaturesClient');
+        const eligibility = await import('@/sync/store/home/governance/homeGovernanceEligibilitySnapshots');
+        const { useResolvedSettingsPageCatalog } = await import('./useResolvedSettingsPageCatalog');
+        const priorView = profiles.loadHomeViewState();
+        const home = await profiles.upsertServerProfile({ name: 'Visibility Home', serverUrl: 'https://visibility.example' });
+        // Credential persistence is a device boundary; the scope, snapshot store and admission stay real.
+        vi.spyOn(TokenStorage, 'getCredentialsForServerUrl').mockImplementation(async (_url, options) => ({
+            token: `header.${Buffer.from(JSON.stringify({ sub: `viewer-${options?.serverId}` })).toString('base64')}.signature`,
+        }));
+        primeServerFeaturesSnapshot({
+            serverId: home.id,
+            snapshot: { status: 'ready', features: FeaturesResponseSchema.parse({ features: { teams: { enabled: true } }, capabilities: {} }) },
+        });
+        const answer = (showTeams: boolean) => act(async () => eligibility.applyHomeGovernanceEligibility({
+            scope: { serverId: home.id, accountId: `viewer-${home.id}` },
+            eligibility: { teamsEnabled: true, createTeam: false, createTeamForChosenAccount: false, showTeams },
+            observedAt: Date.now(),
+        }));
+        await profiles.saveHomeViewState({ version: 1, groups: [], activeTargetKind: 'server', activeTargetId: home.id });
+        featureGateState.enabled = () => false;
+        await answer(false);
+        const hook = await renderHook(() => useResolvedSettingsPageCatalog());
+        try {
+            await vi.waitFor(() => expect(flattenIds(hook.getCurrent().tree)).not.toContain('teams'));
+            expect(hook.getCurrent().search('teams').some((result) => result.id === 'teams')).toBe(false);
+
+            await answer(true);
+            await vi.waitFor(() => expect(flattenIds(hook.getCurrent().tree)).toContain('teams'));
+        } finally {
+            await hook.unmount();
+            if (priorView) await profiles.saveHomeViewState(priorView);
+            await profiles.removeServerProfile(home.id);
+            resetServerFeaturesClientForTests();
+            eligibility.resetHomeGovernanceEligibilitySnapshotsForTests();
         }
     });
 
@@ -268,8 +338,29 @@ describe('useResolvedSettingsPageCatalog', () => {
         try {
             await vi.waitFor(() => expect(hook.getCurrent().admission.admittedServerIds).toEqual([homeB.id]));
             expect(flattenIds(hook.getCurrent().catalog.tree)).toContain('homeAdministration');
-            expect(hook.getCurrent().catalog.search('governance')).toContainEqual({ id: 'homeAdministration', route: '/settings/home' });
+            // Entering from Settings says so, so one administrable Home opens its console directly.
+            expect(hook.getCurrent().catalog.search('governance')).toContainEqual({ id: 'homeAdministration', route: '/settings/home?entry=settings' });
             expect(hook.getCurrent().catalog.activePageId).toBe('homeAdministration');
+            pathnameState.value = '/settings/home';
+            await hook.rerender();
+            expect(hook.getCurrent().catalog.activePageId).toBe('homeAdministration');
+            pathnameState.value = `/settings/home/${homeB.id}/people`;
+            await hook.rerender();
+            routeParamsState.value = { serverId: homeB.id, providerId: 'provider-one' };
+            pathnameState.value = `/settings/home/${homeB.id}/policies/identity/provider-one/edit`;
+            await hook.rerender();
+            expect(hook.getCurrent().catalog.search('issuer')).toContainEqual(expect.objectContaining({
+                route: `${pathnameState.value}?setting=homeAdministration.oidc.issuer`,
+                setting: expect.objectContaining({ anchor: 'homeAdministration.oidc.issuer' }),
+            }));
+            // An unrelated Home's route never borrows these params or its display name.
+            pathnameState.value = `/settings/home/${homeA.id}/policies/identity/provider-one/edit`;
+            await hook.rerender();
+            expect(hook.getCurrent().catalog.search('issuer').some((result) => result.setting?.anchor === 'homeAdministration.oidc.issuer')).toBe(false);
+            routeParamsState.value = { serverId: homeA.id, providerId: 'provider-one' };
+            await hook.rerender();
+            // Admitting Home B does not admit fields on Home A, even with matching route params.
+            expect(hook.getCurrent().catalog.search('issuer').some((result) => result.setting?.anchor === 'homeAdministration.oidc.issuer')).toBe(false);
             await act(async () => await profiles.saveHomeViewState({
                 version: 1, groups: [], activeTargetKind: 'server', activeTargetId: homeA.id,
             }));
@@ -349,6 +440,25 @@ describe('useResolvedSettingsPageCatalog', () => {
         await disabledHook.unmount();
     });
 
+    it('offers the prompt registries and external assets pages only while their features are on', async () => {
+        const { useResolvedSettingsPageCatalog } = await import('./useResolvedSettingsPageCatalog');
+
+        featureGateState.enabled = (featureId: string) => featureId === 'prompts.library'
+            || featureId === 'prompts.skills.registries'
+            || featureId === 'prompts.assets.external';
+        const enabledHook = await renderHook(() => useResolvedSettingsPageCatalog());
+        expect(flattenIds(enabledHook.getCurrent().tree)).toEqual(expect.arrayContaining(['promptsRegistries', 'promptsAssets']));
+        await enabledHook.unmount();
+
+        featureGateState.enabled = (featureId: string) => featureId === 'prompts.library';
+        const disabledHook = await renderHook(() => useResolvedSettingsPageCatalog());
+        const ids = flattenIds(disabledHook.getCurrent().tree);
+        expect(ids).toContain('prompts');
+        expect(ids).not.toContain('promptsRegistries');
+        expect(ids).not.toContain('promptsAssets');
+        await disabledHook.unmount();
+    });
+
     it('uses the canonical pets companion feature decision for navigation and search', async () => {
         const { useResolvedSettingsPageCatalog } = await import('./useResolvedSettingsPageCatalog');
 
@@ -393,6 +503,20 @@ describe('useResolvedSettingsPageCatalog', () => {
         expect(results.some((result: any) => result.id === 'notifications')).toBe(true);
 
         await hook.unmount();
+    });
+
+    it("finds a page by the search words of the viewer's language", async () => {
+        searchWordsState.overrides = { 'settingsSearchKeywords.pets': 'mascotte, compagnon' };
+        try {
+            const { useResolvedSettingsPageCatalog } = await import('./useResolvedSettingsPageCatalog');
+            const hook = await renderHook(() => useResolvedSettingsPageCatalog());
+
+            expect(hook.getCurrent().search('mascotte').some((result: any) => result.id === 'pets' && !result.setting)).toBe(true);
+
+            await hook.unmount();
+        } finally {
+            searchWordsState.overrides = {};
+        }
     });
 
     it('feeds the public descriptor-only Settings page and an incumbent built-in page through one resolved catalog', async () => {
@@ -527,5 +651,144 @@ describe('useResolvedSettingsPageCatalog', () => {
         expect(flattenIds(nonDesktopHook.getCurrent().tree)).not.toContain('desktop');
         expect(nonDesktopHook.getCurrent().search('desktop').some((result: any) => result.id === 'desktop')).toBe(false);
         await nonDesktopHook.unmount();
+    });
+
+    it('finds an individual setting by its own label and points at its row on the page', async () => {
+        const { useResolvedSettingsPageCatalog } = await import('./useResolvedSettingsPageCatalog');
+        const hook = await renderHook(() => useResolvedSettingsPageCatalog());
+
+        // The mocked translator returns keys, so the setting's label is its title key.
+        expect(hook.getCurrent().search('itemDensity')).toContainEqual(expect.objectContaining({
+            id: 'appearance',
+            route: '/settings/appearance?setting=appearance.density',
+            setting: expect.objectContaining({
+                anchor: 'appearance.density',
+                title: 'settingsAppearance.itemDensity',
+                path: ['settings.appearance', 'settingsAppearance.text'],
+            }),
+        }));
+        // Sessions declares its settings too: its label, and its choices as keywords, find the row.
+        for (const query of ['startWithTitle', 'startWithWizard']) {
+            expect(hook.getCurrent().search(query)).toContainEqual(expect.objectContaining({
+                id: 'session',
+                route: '/settings/session?setting=session.startWith',
+                setting: expect.objectContaining({ anchor: 'session.startWith' }),
+            }));
+        }
+        // Page results keep their existing shape.
+        expect(hook.getCurrent().search('teams').every((result: any) => result.setting === undefined || result.id !== 'teams')).toBe(true);
+
+        await hook.unmount();
+    });
+
+    it('finds every prospective auto-follow preference at its Notifications row', async () => {
+        const { useResolvedSettingsPageCatalog } = await import('./useResolvedSettingsPageCatalog');
+        const hook = await renderHook(() => useResolvedSettingsPageCatalog());
+        for (const field of ['assigned', 'direct', 'team', 'group']) {
+            const anchor = `notifications.autoFollow${field[0]!.toUpperCase()}${field.slice(1)}`;
+            expect(hook.getCurrent().search(`session.follow.preferences.${field}`)).toContainEqual(expect.objectContaining({
+                id: 'notifications',
+                route: `/settings/notifications?setting=${anchor}`,
+                setting: expect.objectContaining({ anchor }),
+            }));
+        }
+        await hook.unmount();
+    });
+
+    it("finds the Settings home's About rows, and the EULA only where it is shown", async () => {
+        const { useResolvedSettingsPageCatalog } = await import('./useResolvedSettingsPageCatalog');
+        const hook = await renderHook(() => useResolvedSettingsPageCatalog());
+
+        for (const [query, anchor] of [
+            ['whatsNew', 'settings.whatsNew'],
+            ['rateUs', 'settings.rateUs'],
+            ['supportUs', 'settings.supportUs'],
+        ] as const) {
+            expect(hook.getCurrent().search(query)).toContainEqual(expect.objectContaining({
+                setting: expect.objectContaining({ anchor }),
+            }));
+        }
+        // The test host is the web app; the EULA row renders on iOS only.
+        expect(hook.getCurrent().search('eula').some((result: any) => result.setting?.anchor === 'settings.eula')).toBe(false);
+
+        await hook.unmount();
+    });
+
+    it('finds a setting on a sub-page that is not in the rail and opens that sub-page at its row', async () => {
+        const { useResolvedSettingsPageCatalog } = await import('./useResolvedSettingsPageCatalog');
+        const hook = await renderHook(() => useResolvedSettingsPageCatalog());
+
+        // Runtime is reached from Sessions; its settings belong to Sessions but live on their own route.
+        expect(hook.getCurrent().search('runtime.tmuxTitle')).toContainEqual(expect.objectContaining({
+            id: 'session',
+            route: '/settings/session/runtime?setting=session.runtime.tmux',
+            setting: expect.objectContaining({
+                anchor: 'session.runtime.tmux',
+                path: ['settings.sessions', 'settingsSession.runtime.title', 'settingsSessionPages.runtime.terminalSection'],
+            }),
+        }));
+
+        await hook.unmount();
+    });
+
+    it('lists the pages a query names before the rows of those pages, however many rows match', async () => {
+        const { useResolvedSettingsPageCatalog } = await import('./useResolvedSettingsPageCatalog');
+        const hook = await renderHook(() => useResolvedSettingsPageCatalog());
+
+        // Notifications declares dozens of rows whose path names the page; the page still comes first.
+        const results = hook.getCurrent().search('settings.notifications');
+        expect(results[0]).toEqual({ id: 'notifications', route: '/settings/notifications' });
+        const firstSettingIndex = results.findIndex((result: any) => result.setting);
+        const lastPageIndex = results.map((result: any) => !result.setting).lastIndexOf(true);
+        expect(firstSettingIndex === -1 || lastPageIndex < firstSettingIndex).toBe(true);
+        expect(results.some((result: any) => result.setting?.anchor.startsWith('notifications.'))).toBe(true);
+
+        await hook.unmount();
+    });
+
+    it('offers a row only on the hosts where its page renders it', async () => {
+        const { useResolvedSettingsPageCatalog } = await import('./useResolvedSettingsPageCatalog');
+        const commandPalette = expect.objectContaining({
+            setting: expect.objectContaining({ anchor: 'features.commandPalette' }),
+        });
+
+        // The test host is the web app: the command palette row renders there.
+        const webHook = await renderHook(() => useResolvedSettingsPageCatalog());
+        expect(webHook.getCurrent().search('commandPalette')).toContainEqual(commandPalette);
+        // Live Activities render only on iOS, so the web app never offers them.
+        expect(webHook.getCurrent().search('liveActivities').some((result: any) => result.setting?.anchor === 'notifications.liveActivitiesEnabled')).toBe(false);
+        await webHook.unmount();
+    });
+
+    it('evaluates every feature a declared section is gated on, with no hand-kept list', async () => {
+        const { useResolvedSettingsPageCatalog } = await import('./useResolvedSettingsPageCatalog');
+        const { SETTINGS_PAGE_DECLARATIONS } = await import('../settingsPageDeclarations');
+        const webhookRows = SETTINGS_PAGE_DECLARATIONS
+            .flatMap((declaration) => Object.values(declaration.settings))
+            .filter((ref) => ref.featureId === 'plugins.webhooks');
+        expect(webhookRows.length).toBeGreaterThan(0);
+
+        // Every feature is on here, so a gated row is withheld only when its feature was never evaluated.
+        const hook = await renderHook(() => useResolvedSettingsPageCatalog());
+        for (const ref of webhookRows) {
+            expect(hook.getCurrent().search(ref.titleKey).some((result: any) => result.setting?.anchor === ref.anchor)).toBe(true);
+        }
+        await hook.unmount();
+    });
+
+    it('offers a gated section’s settings only while its feature is on, as the page renders them', async () => {
+        const { useResolvedSettingsPageCatalog } = await import('./useResolvedSettingsPageCatalog');
+        const gaugeWindow = expect.objectContaining({
+            setting: expect.objectContaining({ anchor: 'session.providerLimits.gaugeWindow' }),
+        });
+
+        const enabledHook = await renderHook(() => useResolvedSettingsPageCatalog());
+        expect(enabledHook.getCurrent().search('providerUsageGauge.windowTitle')).toContainEqual(gaugeWindow);
+        await enabledHook.unmount();
+
+        featureGateState.enabled = (featureId) => featureId !== 'connectedServices.quotas';
+        const disabledHook = await renderHook(() => useResolvedSettingsPageCatalog());
+        expect(disabledHook.getCurrent().search('providerUsageGauge.windowTitle')).not.toContainEqual(gaugeWindow);
+        await disabledHook.unmount();
     });
 });

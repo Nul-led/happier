@@ -31,6 +31,10 @@ vi.mock('@react-navigation/native', async () => (await import('@/dev/testkit/moc
 vi.mock('react-native-unistyles', async () => (await import('@/dev/testkit/mocks/unistyles')).createUnistylesMock());
 vi.mock('@expo/vector-icons', async () => (await import('@/dev/testkit/mocks/icons')).createExpoVectorIconsMock());
 vi.mock('@/modal', async () => (await import('@/dev/testkit/mocks/modal')).createModalModuleMock().module);
+// No AuthProvider is mounted; the scanner reads auth refresh from context.
+vi.mock('@/auth/context/AuthContext', () => ({
+    useAuth: () => ({ refreshFromActiveServer: async () => {} }),
+}));
 
 let screen: Awaited<ReturnType<typeof renderScreen>> | undefined;
 let restore: (() => void) | undefined;

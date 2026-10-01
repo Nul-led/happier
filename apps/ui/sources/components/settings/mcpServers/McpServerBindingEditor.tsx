@@ -1,15 +1,14 @@
 import * as React from 'react';
 import { View } from 'react-native';
-import { StyleSheet, useUnistyles } from 'react-native-unistyles';
+import { StyleSheet } from 'react-native-unistyles';
 
 import { Item } from '@/components/ui/lists/Item';
-import { ItemGroup } from '@/components/ui/lists/ItemGroup';
+import { ExpandableItem } from '@/components/ui/lists/ExpandableItem';
+import { RoundButton } from '@/components/ui/buttons/RoundButton';
 import { Switch } from '@/components/ui/forms/Switch';
-import { Text } from '@/components/ui/text/Text';
 import { Modal } from '@/modal';
 import { useSettingMutable } from '@/sync/domains/state/storage';
 import { t } from '@/text';
-import { Typography } from '@/constants/Typography';
 import type { Machine } from '@/sync/domains/state/storageTypes';
 import type { SavedSecret } from '@/sync/domains/settings/savedSecretTypes';
 import type { McpServerBindingTargetV1, McpServerBindingV1, McpServerCatalogEntryTransportV1 } from '@happier-dev/protocol';
@@ -20,33 +19,6 @@ import { McpBindingTargetFields, describeBindingTarget } from './McpBindingTarge
 import { resolveMcpBindingTargetTypeChange } from './resolveMcpBindingTarget';
 import { Icon } from '@/components/ui/icons/Icon';
 
-const stylesheet = StyleSheet.create((theme) => ({
-    groupHeader: {
-        gap: 2,
-    },
-    groupHeaderTitle: {
-        ...Typography.default('regular'),
-        color: theme.colors.text.secondary,
-        fontSize: 14,
-        lineHeight: 20,
-        textTransform: 'uppercase',
-        fontWeight: '500',
-    },
-    groupHeaderSubtitle: {
-        ...Typography.default('regular'),
-        color: theme.colors.text.secondary,
-        fontSize: 14,
-        lineHeight: 20,
-    },
-    groupHeaderSummary: {
-        ...Typography.default('regular'),
-        color: theme.colors.text.secondary,
-        fontSize: 14,
-        lineHeight: 20,
-        marginTop: 8,
-    },
-}));
-
 export const McpServerBindingEditor = React.memo(function McpServerBindingEditor(props: Readonly<{
     binding: McpServerBindingV1;
     serverTransport: McpServerCatalogEntryTransportV1;
@@ -56,8 +28,8 @@ export const McpServerBindingEditor = React.memo(function McpServerBindingEditor
     onChange: (next: McpServerBindingV1) => void;
     onDelete: () => void;
 }>) {
-    const { theme } = useUnistyles();
     const styles = stylesheet;
+    const [expanded, setExpanded] = React.useState(false);
     const [favoriteDirectoriesRaw, setFavoriteDirectoriesRaw] = useSettingMutable('favoriteDirectories');
     const favoriteDirectories = Array.isArray(favoriteDirectoriesRaw) ? favoriteDirectoriesRaw : [];
     const selectedTargetSummary = React.useMemo(
@@ -158,31 +130,34 @@ export const McpServerBindingEditor = React.memo(function McpServerBindingEditor
         return t('settings.mcpServersBindingOverridesCount', { count });
     }, [props.binding.overrides]);
 
+    const toggleEnabled = React.useCallback((value: boolean) => {
+        update((b) => ({ ...b, enabled: value, updatedAt: Date.now() }));
+    }, [update]);
+
     return (
-        <ItemGroup
-            title={(
-                <View style={styles.groupHeader}>
-                    <Text style={styles.groupHeaderTitle}>
-                        {t('settings.mcpServersEditorAppliesTo')}
-                    </Text>
-                    <Text style={styles.groupHeaderSubtitle}>
-                        {t('settings.mcpServersEditorAppliesToSubtitle')}
-                    </Text>
-                    <Text style={styles.groupHeaderSummary}>
-                        {selectedTargetSummary}
-                    </Text>
-                </View>
+        <ExpandableItem
+            testID={`mcp.server.binding.${props.binding.id}`}
+            expanded={expanded}
+            onExpandedChange={setExpanded}
+            header={({ headerProps }) => (
+                <Item
+                    {...headerProps}
+                    testID={`mcp.server.binding.${props.binding.id}.header`}
+                    title={selectedTargetSummary}
+                    subtitle={props.binding.enabled ? overridesSummary : t('common.disabled')}
+                    titleStyle={props.binding.enabled ? undefined : styles.disabledTitle}
+                    rightElementOutsidePressable
+                    rightElement={(
+                        <Switch
+                            accessibilityLabel={t('settings.mcpServersBindingEnabled')}
+                            value={props.binding.enabled}
+                            onValueChange={toggleEnabled}
+                        />
+                    )}
+                    showChevron={false}
+                />
             )}
         >
-            <Item
-                title={t('settings.mcpServersBindingEnabled')}
-                subtitle={t('settings.mcpServersBindingEnabledSubtitle')}
-                icon={<Icon name="toggle-right" size={29} color={theme.colors.accent.blue} />}
-                rightElement={<Switch value={props.binding.enabled} onValueChange={(v) => update((b) => ({ ...b, enabled: v, updatedAt: Date.now() }))} />}
-                onPress={() => update((b) => ({ ...b, enabled: !b.enabled, updatedAt: Date.now() }))}
-                showChevron={false}
-            />
-
             <McpBindingTargetFields
                 target={props.binding.target}
                 machines={props.machines}
@@ -193,18 +168,34 @@ export const McpServerBindingEditor = React.memo(function McpServerBindingEditor
 
             <Item
                 title={t('settings.mcpServersBindingOverridesTitle')}
+                icon={<Icon name="sliders-horizontal" />}
                 subtitle={overridesSummary}
-                icon={<Icon name="sliders-horizontal" size={29} color={theme.colors.accent.purple} />}
                 onPress={openOverrides}
             />
 
-            <Item
-                title={t('common.delete')}
-                subtitle={t('settings.mcpServersBindingDeleteSubtitle')}
-                icon={<Icon name="trash" size={29} color={theme.colors.state.danger.foreground} />}
-                onPress={props.onDelete}
-                destructive
-            />
-        </ItemGroup>
+            <View style={styles.actions}>
+                <RoundButton
+                    testID={`mcp.server.binding.${props.binding.id}.delete`}
+                    size="small"
+                    display="destructive"
+                    title={t('common.delete')}
+                    accessibilityHint={t('settings.mcpServersBindingDeleteSubtitle')}
+                    onPress={props.onDelete}
+                />
+            </View>
+        </ExpandableItem>
     );
 });
+
+const stylesheet = StyleSheet.create((theme) => ({
+    actions: {
+        flexDirection: 'row',
+        justifyContent: 'flex-end',
+        paddingHorizontal: 16,
+        paddingTop: 4,
+        paddingBottom: 16,
+    },
+    disabledTitle: {
+        color: theme.colors.text.secondary,
+    },
+}));

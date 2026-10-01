@@ -166,7 +166,7 @@ describe('account settings raw delta merge mixed-version preservation', () => {
     it('writes retained session-authoring carriers without leaking their typed runtime projections', () => {
         const favoriteModelSelectionsV1 = [
             {
-                backendTargetKey: 'backend:codex',
+                backendTargetKey: 'agent:happier.agent.codex/codex',
                 modelId: 'gpt-5.4',
                 addedAtMs: 123,
             },

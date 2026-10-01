@@ -1,5 +1,6 @@
 import * as React from 'react';
 
+import { announceAccessibilityMessage } from '@/components/ui/accessibility/announceAccessibilityMessage';
 import { Item } from '@/components/ui/lists/Item';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
 import { useSessionCollaborationAvailability } from '@/hooks/session/useSessionCollaborationAvailability';
@@ -174,6 +175,7 @@ export function TeamMemberEncryptionSection(props: Readonly<{
     const { context } = props;
     const availability = useSessionCollaborationAvailability(context.scope.serverId);
     const [state, setState] = React.useState<EncryptedAccess>(CHECKING);
+    const [refreshing, setRefreshing] = React.useState(false);
     // One generation guards every async write: a Home, Account or membership change makes an
     // in-flight discovery or pass stale, and a stale result must never repaint this row.
     const generation = React.useRef(0);
@@ -200,7 +202,8 @@ export function TeamMemberEncryptionSection(props: Readonly<{
 
     const discover = React.useCallback(() => {
         const currentGeneration = (generation.current += 1);
-        setState(CHECKING);
+        setRefreshing(true);
+        setState((previous) => previous.kind === 'checking' ? CHECKING : previous);
         void (async () => {
             try {
                 const page = await createMembershipSessionDataKeyEnvelopeClient({
@@ -222,6 +225,8 @@ export function TeamMemberEncryptionSection(props: Readonly<{
                 // Preserve the boundary's typed distinction: unsupported or denied resources stay
                 // omitted, while a transient Home/network failure remains actionable.
                 setState(classifyTeamMemberEncryptionDiscoveryFailure(error));
+            } finally {
+                if (currentGeneration === generation.current) setRefreshing(false);
             }
         })();
     }, [request]);
@@ -229,6 +234,7 @@ export function TeamMemberEncryptionSection(props: Readonly<{
     React.useEffect(() => {
         if (availability !== 'available') {
             generation.current += 1;
+            setRefreshing(false);
             setState(UNSUPPORTED);
             return;
         }
@@ -240,7 +246,9 @@ export function TeamMemberEncryptionSection(props: Readonly<{
 
     const prepare = React.useCallback(() => {
         const currentGeneration = (generation.current += 1);
+        setRefreshing(false);
         setState({ kind: 'preparing', preparedCount: 0 });
+        announceAccessibilityMessage(t('teams.members.encryption.preparing', { prepared: 0 }));
         void (async () => {
             try {
                 // Detached on purpose: closing the member sheet stops this row from
@@ -277,9 +285,19 @@ export function TeamMemberEncryptionSection(props: Readonly<{
                     discover();
                     return;
                 }
+                announceAccessibilityMessage(
+                    settled.kind === 'ready'
+                        ? settled.actionable || settled.callerRepairRequired
+                            ? t('teams.members.encryption.pending')
+                            : t('teams.members.encryption.ready')
+                        : settled.kind === 'setup_required'
+                            ? t('teams.members.encryption.setupRequired')
+                            : t('teams.members.encryption.failed'),
+                );
                 setState(settled);
             } catch {
                 if (currentGeneration !== generation.current) return;
+                announceAccessibilityMessage(t('teams.members.encryption.failed'));
                 setState(FAILED);
             }
         })();
@@ -304,12 +322,13 @@ export function TeamMemberEncryptionSection(props: Readonly<{
         return (
             <ItemGroup
                 title={t('teams.members.encryption.title')}
-                footer={t('teams.unavailable.offline')}
+                description={t('teams.unavailable.offline')}
             >
                 <Item
                     testID="team-member-encryption-unavailable"
                     title={t('teams.unavailable.offline')}
                     detail={t('common.retry')}
+                    loading={refreshing}
                     onPress={discover}
                     showChevron={false}
                 />
@@ -332,10 +351,11 @@ export function TeamMemberEncryptionSection(props: Readonly<{
 
     if (state.kind === 'setup_required') {
         const presentation = classifyTeamMemberRecipientEncryptionState(state.reason);
+        const canCheckAgain = presentation !== 'plain_account';
         return (
             <ItemGroup
                 title={t('teams.members.encryption.title')}
-                footer={presentation === 'plain_account'
+                description={presentation === 'plain_account'
                     ? t('teams.members.encryption.plainAccount')
                     : presentation === 'setup_required'
                         ? t('teams.members.encryption.setupRequiredBody')
@@ -344,6 +364,7 @@ export function TeamMemberEncryptionSection(props: Readonly<{
                 <Item
                     testID="team-member-encryption-setup-required"
                     title={t('teams.members.encryption.title')}
+                    loading={refreshing}
                     detail={presentation === 'plain_account'
                         ? t('teams.members.encryption.notEncrypted')
                         : presentation === 'repair_required'
@@ -351,6 +372,15 @@ export function TeamMemberEncryptionSection(props: Readonly<{
                             : t('teams.members.encryption.setupRequired')}
                     showChevron={false}
                 />
+                {canCheckAgain ? (
+                    <Item
+                        testID="team-member-encryption-check-again"
+                        title={t('externalSessions.settingsIntegrationActionCheckAgain')}
+                        disabled={refreshing}
+                        onPress={discover}
+                        showChevron={false}
+                    />
+                ) : null}
             </ItemGroup>
         );
     }
@@ -386,11 +416,12 @@ export function TeamMemberEncryptionSection(props: Readonly<{
 
     if (state.kind === 'failed') {
         return (
-            <ItemGroup title={t('teams.members.encryption.title')} footer={t('teams.members.encryption.failed')}>
+            <ItemGroup title={t('teams.members.encryption.title')} description={t('teams.members.encryption.failed')}>
                 <Item
                     testID="team-member-encryption-retry"
                     title={t('teams.members.encryption.retry')}
-                    disabled={!context.mutationsAvailable}
+                    loading={refreshing}
+                    disabled={!context.mutationsAvailable || refreshing}
                     onPress={prepare}
                     showChevron={false}
                 />
@@ -401,6 +432,7 @@ export function TeamMemberEncryptionSection(props: Readonly<{
     // Repairable and permanently non-transferable Sessions get their own sentence.
     // The second offers no instruction on purpose: there is no action that would work.
     const footer = [
+        t('teams.members.encryption.scopeBody'),
         state.callerRepairRequired ? t('teams.members.encryption.repairBody') : undefined,
         state.nonTransferableHistory ? t('teams.members.encryption.nonTransferableBody') : undefined,
     ].filter((line): line is string => line !== undefined).join(' ');
@@ -408,11 +440,12 @@ export function TeamMemberEncryptionSection(props: Readonly<{
     return (
         <ItemGroup
             title={t('teams.members.encryption.title')}
-            footer={footer.length > 0 ? footer : undefined}
+            description={footer.length > 0 ? footer : undefined}
         >
             <Item
                 testID="team-member-encryption-status"
                 title={t('teams.members.encryption.title')}
+                loading={refreshing}
                 // Ready means every eligible Session was prepared. A caller envelope the
                 // Home still reports as needing repair is not that, even when this
                 // client's own page finished without a local failure.
@@ -427,7 +460,7 @@ export function TeamMemberEncryptionSection(props: Readonly<{
                 <Item
                     testID="team-member-encryption-prepare"
                     title={t('teams.members.encryption.prepare')}
-                    disabled={!context.mutationsAvailable}
+                    disabled={!context.mutationsAvailable || refreshing}
                     onPress={prepare}
                     showChevron={false}
                 />

@@ -228,7 +228,10 @@ export async function runRemoteTerminalEnrollment(params: Readonly<{
         throw new Error('Authenticated terminal pairing v3 is required.');
       }
       const persisted = await persistTerminalEnrollmentCredential({ token, opened });
-      const machineId = await registerTerminalEnrollmentMachine(persisted.credentials);
+      const machineId = await registerTerminalEnrollmentMachine(
+        persisted.credentials,
+        acquired.runtime.runtimeOrigin,
+      );
       return {
         success: true,
         homeServerIdentityId: verified.homeServerIdentityId,

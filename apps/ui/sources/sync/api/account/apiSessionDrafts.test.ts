@@ -30,7 +30,7 @@ describe('apiSessionDrafts', () => {
         await expect(transport.read(address)).resolves.toEqual(readResponse);
         await expect(transport.mutate({ address, expectedRevision: 'absent', content: null })).resolves.toEqual(mutateResponse);
 
-        expect(request).toHaveBeenNthCalledWith(1, '/v1/account/session-drafts/read', expect.objectContaining({
+        expect(request).toHaveBeenNthCalledWith(1, '/v2/account/session-drafts/read', expect.objectContaining({
             method: 'POST',
             body: JSON.stringify({ address }),
             headers: expect.objectContaining({ 'Content-Type': 'application/json' }),
@@ -147,37 +147,61 @@ describe('successor newSession content epoch', () => {
             .mockResolvedValueOnce(jsonResponse({ items: [predecessorRecord] }));
         await expect(transport.read(newAddress)).resolves.toEqual({ status: 'present', record: predecessorRecord });
         await expect(transport.list({})).resolves.toEqual({ items: [predecessorRecord] });
-        // A newSession address is a released V1 address, so reading it keeps the
-        // V1 route and upgrades only on a proven V1-epoch refusal. Nothing about
-        // the removed write bridge changes that direction.
+        // V2 reads admit the closed V1 payload, while avoiding a repeated V1
+        // probe when a 0.3-only row occupies the same newSession address.
         expect(request.mock.calls.map(([path]) => path)).toEqual([
-            '/v1/account/session-drafts/read',
+            '/v2/account/session-drafts/read',
             '/v2/account/session-drafts/list',
         ]);
     });
 
-    it('uses V2 for discovery and upgrades only a proven no-effect V1 epoch refusal', async () => {
+    it('uses V2 for reads and retains V1 writes for representable legacy content', async () => {
         const { createApiSessionDraftsTransport } = await import('./apiSessionDrafts');
         request.mockResolvedValueOnce(jsonResponse({ items: [] }))
-            .mockResolvedValueOnce(jsonResponse({ error: 'session_draft_epoch_unavailable' }, 409))
             .mockResolvedValueOnce(jsonResponse({ status: 'absent' }))
             .mockResolvedValueOnce(jsonResponse({ error: 'session_draft_epoch_unavailable' }, 409))
             .mockResolvedValueOnce(jsonResponse({ status: 'conflict', current: { status: 'absent' } }));
         const transport = createApiSessionDraftsTransport({ request });
         await transport.list({});
-        await expect(transport.read(newAddress)).resolves.toEqual({ status: 'absent' });
+        await expect(transport.read({ kind: 'session', sessionId: 'legacy-session' })).resolves.toEqual({ status: 'absent' });
         await transport.mutate({ address: newAddress, expectedRevision: 3, content: { t: 'encrypted', c: 'compatible' } });
         expect(request.mock.calls.map(([path]) => path)).toEqual([
-            '/v2/account/session-drafts/list', '/v1/account/session-drafts/read', '/v2/account/session-drafts/read',
+            '/v2/account/session-drafts/list', '/v2/account/session-drafts/read',
             '/v1/account/session-drafts/mutate', '/v2/account/session-drafts/mutate',
         ]);
-        expect(request.mock.calls[3]?.[1]?.body).toEqual(request.mock.calls[4]?.[1]?.body);
+        expect(request.mock.calls[2]?.[1]?.body).toEqual(request.mock.calls[3]?.[1]?.body);
     });
 
-    it('falls back only for an unfiltered read-only list on a server without V2', async () => {
+    it('falls back to V1 reads only when the V2 endpoint is unavailable', async () => {
+        const { createApiSessionDraftsTransport } = await import('./apiSessionDrafts');
+        request.mockResolvedValueOnce(jsonResponse({}, 404)).mockResolvedValueOnce(jsonResponse({ status: 'absent' }));
+
+        await expect(createApiSessionDraftsTransport({ request }).read(address)).resolves.toEqual({ status: 'absent' });
+        expect(request.mock.calls.map(([path]) => path)).toEqual([
+            '/v2/account/session-drafts/read',
+            '/v1/account/session-drafts/read',
+        ]);
+    });
+
+    it('reads newSession drafts through V2 so a V2-only row does not repeatedly probe V1', async () => {
+        const { createApiSessionDraftsTransport } = await import('./apiSessionDrafts');
+        const response = { status: 'absent' as const };
+        request.mockResolvedValueOnce(jsonResponse(response)).mockResolvedValueOnce(jsonResponse(response));
+        const transport = createApiSessionDraftsTransport({ request });
+
+        await expect(transport.read(newAddress)).resolves.toEqual(response);
+        await expect(transport.read(newAddress)).resolves.toEqual(response);
+        expect(request.mock.calls.map(([path]) => path)).toEqual([
+            '/v2/account/session-drafts/read',
+            '/v2/account/session-drafts/read',
+        ]);
+    });
+
+    it('reports an unavailable V2 list without requesting the predecessor list', async () => {
         const { createApiSessionDraftsTransport } = await import('./apiSessionDrafts');
         request.mockResolvedValueOnce(jsonResponse({}, 404)).mockResolvedValueOnce(jsonResponse({ items: [] }));
-        await expect(createApiSessionDraftsTransport({ request }).list({})).resolves.toEqual({ items: [] });
-        expect(request.mock.calls.map(([path]) => path)).toEqual(['/v2/account/session-drafts/list', '/v1/account/session-drafts/list']);
+        await expect(createApiSessionDraftsTransport({ request }).list({}))
+            .rejects.toMatchObject({ code: 'session_draft_epoch_unavailable' });
+        expect(request.mock.calls.map(([path]) => path)).toEqual(['/v2/account/session-drafts/list']);
     });
 });

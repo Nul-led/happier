@@ -19,6 +19,7 @@ import {
 } from './authorize';
 import { createAuthoritativeProviderSnapshotReader } from '../lifecycle/currentAccountSettingsSnapshot';
 import type { ActiveAccountSettingsSnapshot } from '@/settings/accountSettings/activeAccountSettingsSnapshot';
+import { createManagedPluginSourceCustody } from '@/plugins/runtime/lifecycle/contributions/runtimeIdentity.testkit';
 
 type ExternalProviderSpawnAuthorization = Extract<
   ProviderSpawnAuthorization,
@@ -98,8 +99,8 @@ function managedCurrentnessRuntime() {
         throw new Error('not invoked by currentness test');
       },
     },
-    activationGeneration: 'managed-provider-generation-p',
-    immutableGenerationId: 'managed-provider-generation-p',
+    activationOccurrenceId: 'managed-provider-generation-p',
+    sourceCustody: createManagedPluginSourceCustody('managed-provider-generation-p'),
     isCurrent: () => true,
   };
 }
@@ -336,7 +337,7 @@ describe('provider spawn authorization lifecycle', () => {
             ...managedCurrentnessBasis('account-a', runtime).deployment.implementation,
             runtime: {
               ...runtime,
-              activationGeneration: 'managed-provider-generation-q',
+              activationOccurrenceId: 'managed-provider-generation-q',
             },
           },
         },
@@ -352,7 +353,7 @@ describe('provider spawn authorization lifecycle', () => {
             ...managedCurrentnessBasis('account-a', runtime).deployment.implementation,
             runtime: {
               ...runtime,
-              immutableGenerationId: 'managed-provider-generation-q',
+              sourceCustody: createManagedPluginSourceCustody('managed-provider-generation-q'),
             },
           },
         },

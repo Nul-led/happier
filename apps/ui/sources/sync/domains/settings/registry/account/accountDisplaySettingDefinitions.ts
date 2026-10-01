@@ -17,6 +17,18 @@ function bucketBytes(value: number, smallMax: number, mediumMax: number): 'small
 }
 
 export const ACCOUNT_DISPLAY_SETTING_ANALYTICS = defineAccountSettingAnalytics({
+    homeHubLayoutV1: {
+        trackCurrentState: true,
+        trackChanges: true,
+        valueKind: 'count',
+        privacy: 'count_only',
+        identityScope: 'person',
+        // How many sections the person hid; the ids themselves are not reported.
+        serializeCurrent: (value: unknown) => {
+            const hidden = value && typeof value === 'object' ? (value as { hidden?: unknown }).hidden : null;
+            return Array.isArray(hidden) ? hidden.length : 0;
+        },
+    },
     sessionThinkingDisplayMode: { trackCurrentState: true, trackChanges: true, valueKind: 'enum', privacy: 'safe', identityScope: 'person' },
     sessionThinkingInlinePresentation: { trackCurrentState: true, trackChanges: true, valueKind: 'enum', privacy: 'safe', identityScope: 'person' },
     sessionThinkingInlineChrome: { trackCurrentState: true, trackChanges: true, valueKind: 'enum', privacy: 'safe', identityScope: 'person' },
@@ -64,6 +76,7 @@ export const ACCOUNT_DISPLAY_SETTING_ANALYTICS = defineAccountSettingAnalytics({
     sessionTagsEnabled: { trackCurrentState: true, trackChanges: true, valueKind: 'boolean', privacy: 'safe', identityScope: 'person' },
     sessionListWorkingStatusAnimatedTextEnabled: { trackCurrentState: true, trackChanges: true, valueKind: 'boolean', privacy: 'safe', identityScope: 'person' },
     mobileWorkspaceExperienceV1: { trackCurrentState: true, trackChanges: true, valueKind: 'enum', privacy: 'safe', identityScope: 'person' },
+    workspaceTabsSyncEnabled: { trackCurrentState: true, trackChanges: true, valueKind: 'boolean', privacy: 'safe', identityScope: 'person' },
     sessionCockpitSwipeNavigationEnabled: { trackCurrentState: true, trackChanges: true, valueKind: 'boolean', privacy: 'safe', identityScope: 'person' },
     tabBarGitBadgeMode: { trackCurrentState: true, trackChanges: true, valueKind: 'enum', privacy: 'safe', identityScope: 'person' },
     tabBarFriendsBadgeEnabled: { trackCurrentState: true, trackChanges: true, valueKind: 'boolean', privacy: 'safe', identityScope: 'person' },

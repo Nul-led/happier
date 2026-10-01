@@ -4,8 +4,15 @@ import type {
   BackendTargetRefV2,
 } from '@happier-dev/protocol';
 import type { RuntimeActiveTurnPermissionWitness } from '@/agent/runtime/turns/runtimeTurnOperations';
+import type { ResolvedRolesSnapshotV1 } from '@happier-dev/protocol';
+import type { RoleSourceReader } from '@/session/roles/roleSources';
+type WorkspaceWritesPolicyPreparation = (workspaceWrites: 'allow' | 'deny', context: import('@happier-dev/protocol').ActionExecutorContext) => Promise<Readonly<{ ok: true }> | Readonly<{ ok: false; errorCode: string }>>;
 
 export type RunnerMcpSessionContextAccessors = Readonly<{
+  getCurrentResolvedRoles?: () => ResolvedRolesSnapshotV1;
+  readRoleSources?: RoleSourceReader;
+  getCurrentWorkspaceWrites?: () => 'allow' | 'deny' | undefined;
+  prepareWorkspaceWritesPolicy?: WorkspaceWritesPolicyPreparation;
   getPermissionMode?: (() => PermissionMode | null | undefined) | null;
   getActiveTurnPermissionWitness?: (() => RuntimeActiveTurnPermissionWitness | null | undefined) | null;
   getRuntimeLifetimeSignal?: (() => AbortSignal | null | undefined) | null;
@@ -19,6 +26,10 @@ export type RunnerMcpSessionContextAccessors = Readonly<{
 }>;
 
 export type RunnerMcpSessionWithContext<TSession> = TSession & {
+  getCurrentResolvedRoles?: () => ResolvedRolesSnapshotV1;
+  readRoleSources?: RoleSourceReader;
+  getCurrentWorkspaceWrites?: () => 'allow' | 'deny' | undefined;
+  prepareWorkspaceWritesPolicy?: WorkspaceWritesPolicyPreparation;
   getMetadataSnapshot?: () => Metadata | null;
   getPermissionMode?: () => PermissionMode | null | undefined;
   getActiveTurnPermissionWitness?: () => RuntimeActiveTurnPermissionWitness | null | undefined;
@@ -37,6 +48,10 @@ export function applyRunnerMcpSessionContext<TSession extends object>(
   accessors: RunnerMcpSessionContextAccessors,
 ): RunnerMcpSessionWithContext<TSession> {
   const target = session as RunnerMcpSessionWithContext<TSession>;
+  if (accessors.getCurrentResolvedRoles) target.getCurrentResolvedRoles = accessors.getCurrentResolvedRoles;
+  if (accessors.readRoleSources) target.readRoleSources = accessors.readRoleSources;
+  if (accessors.getCurrentWorkspaceWrites) target.getCurrentWorkspaceWrites = accessors.getCurrentWorkspaceWrites;
+  if (accessors.prepareWorkspaceWritesPolicy) target.prepareWorkspaceWritesPolicy = accessors.prepareWorkspaceWritesPolicy;
   if (accessors.getPermissionMode) {
     target.getPermissionMode = accessors.getPermissionMode;
   }

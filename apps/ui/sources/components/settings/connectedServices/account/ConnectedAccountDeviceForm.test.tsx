@@ -9,11 +9,7 @@ vi.mock('react-native', async () => {
     const { createReactNativeWebMock } = await import('@/dev/testkit/mocks/reactNative');
     return createReactNativeWebMock();
 });
-vi.mock('react-native-unistyles', () => ({
-    useUnistyles: () => ({
-        theme: { colors: { text: { secondary: 'secondary' } } },
-    }),
-}));
+vi.mock('react-native-unistyles', async () => (await import('@/dev/testkit/mocks/unistyles')).createUnistylesMock());
 vi.mock('@/text', () => ({ t: (key: string) => key }));
 vi.mock('@/utils/url/openExternalUrl', () => ({ openExternalUrl: openExternalUrlMock }));
 vi.mock('@/components/ui/lists/ItemGroup', () => ({

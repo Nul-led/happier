@@ -1,13 +1,14 @@
 import * as React from 'react';
-import { router, usePathname } from 'expo-router';
+import { router } from 'expo-router';
+import { usePathname } from '@/components/appShell/workspace/destinationRoute';
 
 import { getDeviceType } from '@/utils/platform/responsive';
 
 type DeviceType = 'phone' | 'tablet';
 
 /**
- * The settings page to reopen after a presentation switch. Settings is a screen on phones and a modal
- * elsewhere (`resolveSettingsRoutePresentation`), so crossing that width remounts its navigator at the
+ * The settings page to reopen after a presentation switch. Settings shows native headers on phones and
+ * in-page headers beside the app rail elsewhere, so crossing that width remounts its navigator at the
  * index; the instance that is unmounted by the switch leaves its page here for the next one.
  */
 let pageToReopen: string | null = null;

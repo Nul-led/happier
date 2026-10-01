@@ -75,6 +75,8 @@ export type BrowserDiagnosticsRuntimeProjection = Readonly<{
 export type UseBrowserDiagnosticsRuntimeInput = Readonly<{
     view: BrowserControlViewState | null;
     enabled?: boolean;
+    /** The same collector identity is needed by automation even with diagnostics hidden. */
+    automationEnabled?: boolean;
     parentOrigin?: string | null;
     collectorVersion?: string;
     daemonSnapshotServerId?: string | null;
@@ -128,13 +130,13 @@ function defaultParentOrigin(): string | null {
     return normalizeHttpOrigin(window.location?.origin);
 }
 
-function canAttachInjectedDiagnostics(view: BrowserControlViewState): boolean {
-    const supportedAdapter = view.adapterKind === 'localPreview' || view.adapterKind === 'hostedPlugin';
-    // Native WebView owns an actual `injectedJavaScript` channel. Web iframes only have a
-    // postMessage listener in the host; without a production script-injection owner in the preview /
-    // hosted-web response path, exposing a bridge would advertise unsupported diagnostics and render
-    // a fake "Unavailable" devtools drawer.
-    return supportedAdapter && view.engineKind === 'nativeWebView';
+function canAttachInjectedDiagnostics(view: BrowserControlViewState, includeWebCollector = false): boolean {
+    const supportedAdapter = view.adapterKind === 'localPreview'
+        || view.adapterKind === 'hostedPlugin'
+        || view.adapterKind === 'externalUrl';
+    // The iframe engine verifies actual document access and collector installation before admission.
+    return supportedAdapter && (view.engineKind === 'nativeWebView'
+        || (includeWebCollector && view.engineKind === 'webIframe'));
 }
 
 /**
@@ -178,15 +180,16 @@ export function useBrowserDiagnosticsRuntime(
     const viewKey = runtimeViewKey(input.view);
     // The injected engine bridge is the local owner present on this device; full console fidelity is
     // the local-owner default (plan rule #3). Agent/remote egress is redacted by the classifier SSOT.
-    const valueCapture = input.consoleValueCapture ?? true;
+    const valueCapture = input.enabled === true && (input.consoleValueCapture ?? true);
 
     const onEvents = React.useCallback<BrowserDiagnosticsEngineBridgeConfig['onEvents']>((events) => {
+        if (input.enabled !== true) return;
         setState((current) => applyBrowserDiagnosticEvents(current, {
             events,
             consoleValueCapture: valueCapture,
             valueCapture,
         }));
-    }, [valueCapture]);
+    }, [input.enabled, valueCapture]);
 
     useBrowserDiagnosticsDaemonSnapshot({
         view: input.view,
@@ -208,21 +211,25 @@ export function useBrowserDiagnosticsRuntime(
         setObjectProperties({});
     }, [viewKey]);
 
+    // Only document/transport identity rotates the installed collector, not title/history projection.
+    const browserSessionId = input.view?.browserSessionId;
+    const viewId = input.view?.viewId;
+    const navigationGeneration = input.view?.navigationGeneration;
+    const injected = !!input.view && canAttachInjectedDiagnostics(input.view, input.automationEnabled === true);
+    const desktopInjected = !!input.view && !injected && canAttachDesktopInjectedDiagnostics(input.view);
+    const requiresOriginHandshake = input.view?.engineKind === 'webIframe';
+    const sourceOrigin = normalizeHttpOrigin(input.view?.securityOrigin) ?? normalizeHttpOrigin(input.view?.currentUrl);
+    const parentOrigin = normalizeHttpOrigin(input.parentOrigin) ?? defaultParentOrigin();
     const bridgeBase = React.useMemo<BrowserDiagnosticsBridgeBaseConfig | null>(() => {
-        const view = input.view;
-        if (input.enabled !== true || !view) {
+        if ((input.enabled !== true && input.automationEnabled !== true)
+            || !browserSessionId || !viewId || navigationGeneration === undefined) {
             return null;
         }
-        const injected = canAttachInjectedDiagnostics(view);
-        // Desktop injection (Wry ipc transport) when the standard injected surfaces do not apply.
-        const desktopInjected = !injected && canAttachDesktopInjectedDiagnostics(view);
         if (!injected && !desktopInjected) {
             return null;
         }
 
-        const sourceOrigin = normalizeHttpOrigin(view.securityOrigin) ?? normalizeHttpOrigin(view.currentUrl);
-        const parentOrigin = normalizeHttpOrigin(input.parentOrigin) ?? defaultParentOrigin();
-        if (injected && view.engineKind === 'webIframe' && (!sourceOrigin || !parentOrigin)) {
+        if (injected && requiresOriginHandshake && (!sourceOrigin || !parentOrigin)) {
             return null;
         }
 
@@ -233,10 +240,10 @@ export function useBrowserDiagnosticsRuntime(
         }
 
         return {
-            browserSessionId: view.browserSessionId,
-            viewId: view.viewId,
-            navigationGeneration: view.navigationGeneration,
-            collectorId: `browser_diagnostics:${view.viewId}:${view.navigationGeneration}:${collectorToken}`,
+            browserSessionId,
+            viewId,
+            navigationGeneration,
+            collectorId: `browser_diagnostics:${viewId}:${navigationGeneration}:${collectorToken}`,
             nonce,
             collectorVersion: input.collectorVersion ?? DEFAULT_COLLECTOR_VERSION,
             // The web/iframe origin handshake is meaningless for the desktop Wry channel (it delivers
@@ -250,8 +257,17 @@ export function useBrowserDiagnosticsRuntime(
     }, [
         input.collectorVersion,
         input.enabled,
-        input.parentOrigin,
-        input.view,
+        input.automationEnabled,
+        browserSessionId,
+        viewId,
+        navigationGeneration,
+        injected,
+        desktopInjected,
+        requiresOriginHandshake,
+        sourceOrigin,
+        parentOrigin,
+        input.view?.engineKind,
+        input.view?.adapterKind,
         valueCapture,
         onEvents,
     ]);
@@ -539,7 +555,7 @@ export function useBrowserDiagnosticsRuntime(
         startElementPicker,
     ]);
 
-    if (input.enabled !== true || !input.view) {
+    if ((input.enabled !== true && input.automationEnabled !== true) || !input.view) {
         return null;
     }
 

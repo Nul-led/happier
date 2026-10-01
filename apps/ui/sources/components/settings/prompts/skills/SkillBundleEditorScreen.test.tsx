@@ -102,14 +102,25 @@ installSkillBundleCommonModuleMocks({
         }),
 });
 
-vi.mock('@react-navigation/native', () => ({
-    useFocusEffect: (callback: () => void) => {
-        latestFocusEffect = callback;
-        React.useEffect(() => {
-            callback();
-        }, [callback]);
-    },
-}));
+/** Whether the screen currently asks the navigator to hold a departure (the unsaved-changes guard). */
+const preventRemoveState = vi.hoisted(() => ({ last: null as boolean | null }));
+
+vi.mock('@react-navigation/native', async () => {
+    const { createReactNavigationNativeMock } = await import('@/dev/testkit/mocks/reactNavigation');
+    return {
+        ...createReactNavigationNativeMock(),
+        // The navigator's remove interception is the navigation library boundary; record what the screen asks for.
+        usePreventRemove: (preventRemove: boolean) => {
+            preventRemoveState.last = preventRemove;
+        },
+        useFocusEffect: (callback: () => void) => {
+            latestFocusEffect = callback;
+            React.useEffect(() => {
+                callback();
+            }, [callback]);
+        },
+    };
+});
 
 vi.mock('@/components/ui/layout/layout', () => ({
     layout: { maxWidth: 960 },
@@ -124,29 +135,8 @@ vi.mock('@/components/ui/markdown/editor/MarkdownCodeEditorField', () => ({
     }),
 }));
 
-vi.mock('@/components/ui/lists/ItemGroup', () => ({
-    ItemGroup: ({ children }: any) => React.createElement('ItemGroup', null, children),
-}));
-
-vi.mock('@/components/ui/lists/Item', () => ({
-    Item: (props: any) => React.createElement('Item', props),
-}));
-
-vi.mock('@/components/ui/lists/ItemList', () => ({
-    ItemList: ({ children }: any) => React.createElement('ItemList', null, children),
-}));
-
 vi.mock('@/components/ui/lists/ItemRowActions', () => ({
     ItemRowActions: (props: any) => React.createElement('ItemRowActions', props),
-}));
-
-vi.mock('@/components/ui/text/Text', () => ({
-    Text: 'Text',
-    TextInput: 'TextInput',
-}));
-
-vi.mock('@/components/ui/settingsSurface/SettingsActionFooter', () => ({
-    SettingsActionFooter: (props: any) => React.createElement('SettingsActionFooter', props),
 }));
 
 vi.mock('@/sync/sync', () => ({
@@ -182,6 +172,11 @@ description: Describe when this skill should be used.
     },
     updateSkillPromptBundle: updateSkillPromptBundleSpy,
 }));
+
+/** The props a row was rendered with (its `Item`, the outermost element carrying the test id). */
+function rowProps(screen: Awaited<ReturnType<typeof renderScreen>>, testID: string): Record<string, unknown> | undefined {
+    return screen.tree.root.findAll((node) => node.props?.testID === testID)[0]?.props;
+}
 
 async function renderSkillBundleEditor(artifactId: string | null) {
     const { SkillBundleEditorScreen } = await import('./SkillBundleEditorScreen');
@@ -229,22 +224,25 @@ describe('SkillBundleEditorScreen', () => {
         };
     });
 
-    it('falls back to the skills list when saving from a deep-linked skill editor without back history', async () => {
+    it('saves an edited skill in place and keeps its editor open', async () => {
         const screen = await renderSkillBundleEditor('bundle-1');
-        const saveFooter = screen.findByType('SettingsActionFooter');
+        expect(screen.findByTestId('skillBundle.save')?.props.disabled).toBe(true);
 
         await act(async () => {
-            await saveFooter.props.onPrimaryPress();
+            screen.changeTextByTestId('skillBundle.title', 'Renamed skill');
+        });
+        await act(async () => {
+            await screen.findByTestId('skillBundle.save')?.props.onPress();
         });
 
         expect(updateSkillPromptBundleSpy).toHaveBeenCalledWith({
             artifactId: 'bundle-1',
-            title: 'Skill title',
+            title: 'Renamed skill',
             skillMarkdown: '---\\nname: skill\\n---\\nHello skill',
             folderId: 'folder-1',
             tags: ['alpha'],
         });
-        expect(skillBundleRouterReplaceSpy).toHaveBeenCalledWith('/settings/prompts/skills');
+        expect(skillBundleRouterReplaceSpy).not.toHaveBeenCalled();
         expect(skillBundleRouterBackSpy).not.toHaveBeenCalled();
     });
 
@@ -267,11 +265,13 @@ describe('SkillBundleEditorScreen', () => {
         await act(async () => {
             screen.changeTextByTestId('skillBundle.title', 'New skill');
         });
+        expect(preventRemoveState.last).toBe(true);
 
-        const saveButton = screen.findByType('SettingsActionFooter');
         await act(async () => {
-            await saveButton.props.onPrimaryPress();
+            await screen.findByTestId('skillBundle.save')?.props.onPress();
         });
+        // The saved draft has nothing left to lose, so opening the saved skill is not held for a decision.
+        expect(preventRemoveState.last).toBe(false);
 
         expect(createSkillPromptBundleSpy).toHaveBeenCalledWith({
             title: 'New skill',
@@ -279,7 +279,7 @@ describe('SkillBundleEditorScreen', () => {
             folderId: null,
             tags: [],
         });
-        expect(skillBundleRouterReplaceSpy).toHaveBeenCalledWith('/settings/prompts/skills');
+        expect(skillBundleRouterReplaceSpy).toHaveBeenCalledWith('/settings/prompts/skills/new-bundle');
     });
 
     it('keeps existing skill editors locked when the requested artifact body does not load', async () => {
@@ -296,26 +296,23 @@ describe('SkillBundleEditorScreen', () => {
 
         const titleInput = screen.findByTestId('skillBundle.title');
         const editor = screen.findByTestId('skillBundle.editor');
-        const footer = screen.findByType('SettingsActionFooter');
         if (!titleInput || !editor) {
             throw new Error('skill bundle inputs not found');
         }
 
         expect(titleInput.props.editable).toBe(false);
         expect(editor.props.readOnly).toBe(true);
-        expect(footer.props.primaryDisabled).toBe(true);
+        expect(screen.findByTestId('skillBundle.save')?.props.disabled).toBe(true);
     });
 
-    it('renders linked exports and a settings footer for existing skills', async () => {
+    it('renders linked exports and the organisation fields for existing skills', async () => {
         const screen = await renderSkillBundleEditor('bundle-1');
 
-        expect(screen.findByTestId('skillBundle.link.0')?.props.subtitle).toContain('Laptop');
+        expect(screen.findByTestId('skillBundle.link.0')).toBeTruthy();
+        expect(screen.getTextContent()).toContain('Laptop');
         expect(screen.findByTestId('skillBundle.folderName')?.props.value).toBe('Ops');
         expect(screen.findByTestId('skillBundle.tags')?.props.value).toBe('alpha');
-
-        const footer = screen.findByType('SettingsActionFooter');
-        expect(footer.props.primaryTestID).toBe('skillBundle.save');
-        expect(footer.props.secondaryTestID).toBe('skillBundle.cancel');
+        expect(screen.findByTestId('skillBundle.save')).toBeTruthy();
     });
 
     it('renders a title input, markdown editor, and save action for new skills', async () => {
@@ -323,19 +320,19 @@ describe('SkillBundleEditorScreen', () => {
 
         expect(screen.findByTestId('skillBundle.title')).toBeTruthy();
         expect(screen.findByTestId('skillBundle.editor')).toBeTruthy();
-        expect(screen.findByType('SettingsActionFooter').props.primaryTestID).toBe('skillBundle.save');
+        expect(screen.findByTestId('skillBundle.save')).toBeTruthy();
         expect(screen.findAllByTestId('skillBundle.manageExternalAssets')).toHaveLength(0);
     });
 
     it('shows supporting files for existing skills and a save-first hint for new skills', async () => {
         const existingTree = await renderSkillBundleEditor('bundle-1');
 
-        expect(existingTree.findByTestId('skillBundle.supportingFile.0')?.props.title).toBe('templates/review.md');
+        expect(rowProps(existingTree, 'skillBundle.supportingFile.0')?.title).toBe('templates/review.md');
         expect(existingTree.findByTestId('skillBundle.addSupportingFile')).toBeTruthy();
 
         const newTree = await renderSkillBundleEditor(null);
 
-        expect(newTree.findByTestId('skillBundle.supportingFilesSaveFirst')?.props.title)
+        expect(rowProps(newTree, 'skillBundle.supportingFilesSaveFirst')?.title)
             .toBe('promptLibrary.supportingFilesSaveFirstTitle');
     });
 
@@ -379,7 +376,7 @@ describe('SkillBundleEditorScreen', () => {
             await flushHookEffects({ cycles: 1, turns: 1 });
         });
 
-        expect(screen.findByTestId('skillBundle.supportingFile.1')?.props.title).toBe('templates/checklist.md');
+        expect(rowProps(screen, 'skillBundle.supportingFile.1')?.title).toBe('templates/checklist.md');
     });
 
     it('preserves dirty skill fields when prompt-folder settings refresh', async () => {

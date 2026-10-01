@@ -1,6 +1,7 @@
 import * as React from 'react';
 import { act } from 'react-test-renderer';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+import type { NativeAccountAdmissionV1 } from '@happier-dev/protocol';
 
 import { renderScreen } from '@/dev/testkit';
 import { installTokenStorageWebPlatformMocks } from '@/auth/storage/tokenStorage.testHelpers';
@@ -32,8 +33,9 @@ async function renderEntry(
         action: 'login' | 'provision' | 'connect';
         mode: 'keyed' | 'keyless' | 'either';
         recommendedProvisionMode?: 'plain' | 'e2ee';
+        passwordReset?: 'email';
     }>[],
-    options: Readonly<{ mailboxProven?: boolean }> = {},
+    options: Readonly<{ mailboxProven?: boolean; admission?: NativeAccountAdmissionV1 }> = {},
 ) {
     const fixture = createDirectoryHttpFixture();
     const capabilities = projectAuthEntryMethodCapabilities({
@@ -41,13 +43,14 @@ async function renderEntry(
         actions: actions.map((row) => ({
             kind: 'authenticate', methodId: 'email_password', action: row.action, mode: row.mode,
             ...(row.recommendedProvisionMode ? { recommendedProvisionMode: row.recommendedProvisionMode } : {}),
+            ...(row.passwordReset ? { passwordReset: row.passwordReset } : {}),
             origin: 'home', presentation: { displayName: 'Email and password' },
         })),
     });
     screen = await renderScreen(<AuthProvider initialCredentials={null}>
         <HomeAuthenticationFlow
             target={{ kind: 'descriptor', descriptor: fixture.home.connectionDescriptor, authority: 'current_connection' }}
-            {...(options.mailboxProven
+            {...(options.admission ? { nativeAdmission: options.admission } : options.mailboxProven
                 ? { nativeAdmission: { kind: 'native_email_verification' as const, token: 'V'.repeat(43) } }
                 : {})}
             actions={capabilities.authenticationActions} returnTo="/" onAuthenticated={vi.fn()} onBack={vi.fn()} />
@@ -128,7 +131,7 @@ it('routes a connect action to enrolment guidance instead of a sign-in form', as
 });
 
 it('offers forgot-password recovery from the login controller without disclosing Account existence', async () => {
-    const rendered = await renderEntry([{ action: 'login', mode: 'either' }]);
+    const rendered = await renderEntry([{ action: 'login', mode: 'either', passwordReset: 'email' }]);
 
     await rendered.pressByTestIdAsync('home-auth-email_password-login-either');
     await rendered.pressByTestIdAsync('email-password-forgot');
@@ -136,6 +139,16 @@ it('offers forgot-password recovery from the login controller without disclosing
     expect(rendered.findByTestId('email-password-request-reset')).not.toBeNull();
     expect(rendered.findByTestId('email-password-use-recovery-key')).not.toBeNull();
     expect(boundary.request).not.toHaveBeenCalled();
+});
+
+it('never offers a mailed reset the Home cannot send, keeping the recovery key', async () => {
+    const rendered = await renderEntry([{ action: 'login', mode: 'either' }]);
+
+    await rendered.pressByTestIdAsync('home-auth-email_password-login-either');
+    await rendered.pressByTestIdAsync('email-password-forgot');
+
+    expect(rendered.findByTestId('email-password-request-reset')).toBeNull();
+    expect(rendered.findByTestId('email-password-use-recovery-key')).not.toBeNull();
 });
 
 it('keeps the entered address and focuses the password when the Home rejects the credentials', async () => {
@@ -154,5 +167,39 @@ it('keeps the entered address and focuses the password when the Home rejects the
     await rendered.pressByTestIdAsync('email-password-submit');
 
     expect(rendered.findByTestId('email-password-email')!.props.value).toBe('person@example.test');
+    expect(rendered.findByTestId('email-password-password-error')).not.toBeNull();
+});
+
+it('keeps an addressed invitation and the password draft while the person corrects an email mismatch', async () => {
+    const admission = { kind: 'team_invitation' as const, token: 'I'.repeat(43) };
+    const rendered = await renderEntry([{ action: 'provision', mode: 'keyless' }], { admission });
+    await rendered.pressByTestIdAsync('home-auth-email_password-provision-keyless');
+    boundary.request.mockResolvedValue(new Response(JSON.stringify({ error: 'email_mismatch' }), { status: 403 }));
+    const password = 'a calm sixteen plus password';
+    await act(async () => {
+        rendered.findByTestId('email-password-email')!.props.onChangeText('different@example.test');
+        rendered.findByTestId('email-password-password')!.props.onChangeText(password);
+        rendered.findByTestId('email-password-confirm')!.props.onChangeText(password);
+    });
+    await rendered.pressByTestIdAsync('email-password-create');
+
+    expect(rendered.findByTestId('email-password-email-error')).not.toBeNull();
+    expect(rendered.findByTestId('email-password-email')!.props['aria-invalid']).toBe(true);
+    expect(rendered.findByTestId('email-password-password-error')).toBeNull();
+    expect(rendered.findByTestId('email-password-password')!.props.value).toBe(password);
+    expect(rendered.findByTestId('email-password-confirm')!.props.value).toBe(password);
+    expect(rendered.findByTestId('email-password-email')!.props.editable).toBe(true);
+
+    boundary.request.mockResolvedValue(new Response(JSON.stringify({ error: 'authentication_failed' }), { status: 401 }));
+    await act(async () => {
+        rendered.findByTestId('email-password-email')!.props.onChangeText('INVITED@EXAMPLE.TEST');
+    });
+    await rendered.pressByTestIdAsync('email-password-create');
+    const provisionRequests = boundary.request.mock.calls.filter(([url]) => String(url).endsWith('/v1/auth/email/provision'));
+    expect(provisionRequests.map(([, init]) => JSON.parse(init.body))).toEqual([
+        { v: 1, email: 'different@example.test', admission, account: { mode: 'plain', password } },
+        { v: 1, email: 'INVITED@EXAMPLE.TEST', admission, account: { mode: 'plain', password } },
+    ]);
+    expect(rendered.findByTestId('email-password-email-error')).toBeNull();
     expect(rendered.findByTestId('email-password-password-error')).not.toBeNull();
 });

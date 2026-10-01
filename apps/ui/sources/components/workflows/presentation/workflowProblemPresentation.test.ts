@@ -93,9 +93,9 @@ describe('workflowProblemPresentation', () => {
         const availability = {
             pause: false,
             resumeBoundary: false,
-            recoverSameConversation: false,
-            recoverFreshAgent: false,
-            retry: false,
+
+
+
             restoreWorkspace: false,
             cancel: false,
             inspectExecution: false,

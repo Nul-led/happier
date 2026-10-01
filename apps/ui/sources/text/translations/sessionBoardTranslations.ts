@@ -55,16 +55,7 @@ type SessionBoardTranslation = Readonly<{
         serverFailed: string;
         failed: string;
     }>;
-    add: Readonly<{ note: string; interactiveView: string; fromPlugins: string }>;
-    /** The installed-widget Add picker over the exact current Session projection. */
-    picker: Readonly<{
-        title: string;
-        description: string;
-        add: string;
-        empty: SessionBoardStateTranslation;
-        /** Two installed plugins may legitimately share a display name. */
-        qualified: (params: Readonly<{ plugin: string; pluginId: string }>) => string;
-    }>;
+    add: Readonly<{ note: string; interactiveView: string }>;
     width: Readonly<{ compact: string; medium: string; wide: string; full: string }>;
     /** Semantic vertical intent stored on the item, never a pixel value. */
     height: Readonly<{ auto: string; compact: string; regular: string; tall: string }>;
@@ -75,6 +66,7 @@ type SessionBoardTranslation = Readonly<{
         unsupported: SessionBoardStateTranslation;
         unavailable: SessionBoardStateTranslation;
         offline: string;
+        offlineEmpty: string;
         stale: string;
     }>;
     empty: Readonly<{
@@ -87,6 +79,8 @@ type SessionBoardTranslation = Readonly<{
              * not a message: the Board never sends anything on the person's behalf.
              */
             askAgentPrompt: string;
+            /** The quiet second way beside Ask the agent. */
+            addNote: string;
         }>;
         viewer: Readonly<{ title: string; description: string }>;
     }>;
@@ -181,7 +175,13 @@ type SessionBoardTranslation = Readonly<{
         /** After `Not now`: nothing is recorded, and the review stays one tap away. */
         declined: Readonly<{ title: string; reason: string; review: string }>;
     }>;
-    sidebar: Readonly<{ openInDetails: string }>;
+    /** The compact sidebar monitor and its pane header (who sees the Board, how much is on it). */
+    sidebar: Readonly<{
+        openInDetails: string;
+        openBoard: string;
+        sharedWithEveryone: string;
+        widgetCount: (params: Readonly<{ count: number }>) => string;
+    }>;
     /** The full-screen Cockpit Board; the desktop grid has no search field. */
     mobile: Readonly<{ searchPlaceholder: string }>;
     /**
@@ -196,7 +196,15 @@ type SessionBoardTranslation = Readonly<{
     /** Viewer-local Companion copy. Product says "Companion"; persistence says item. */
     companion: Readonly<{
         title: string;
-        empty: SessionBoardStateTranslation;
+        /** Announced for the small mark on a Board card this viewer keeps beside chat. */
+        inCompanionA11y: string;
+        empty: SessionBoardStateTranslation & Readonly<{ note: string }>;
+        /** Companion pane header: where it sits and how many items it holds. */
+        pane: Readonly<{
+            besideChat: string;
+            itemCount: (params: Readonly<{ count: number }>) => string;
+            justForYou: string;
+        }>;
         actions: Readonly<{
             addSummary: string;
             addItem: (params: Readonly<{ title: string }>) => string;
@@ -226,6 +234,8 @@ type SessionBoardTranslation = Readonly<{
             expand: (params: Readonly<{ count: number }>) => string;
         }>;
         summary: Readonly<{
+            /** The needs-you row's action ("1 waiting for you → Review"). */
+            review: string;
             title: string;
             untitled: string;
             approvals: (params: Readonly<{ count: number }>) => string;
@@ -282,14 +292,7 @@ export const sessionBoardTranslations = {
                 unpinMessage: 'Its widgets stay in the session but are no longer pinned to a view.',
             },
         },
-        add: { note: 'Note', interactiveView: 'Interactive view', fromPlugins: 'From plugins…' },
-        picker: {
-            title: 'Add from plugins',
-            description: 'Installed plugins can contribute widgets to this Session.',
-            add: 'Add to Board',
-            empty: { title: 'No plugin widgets available', reason: 'Install or enable a plugin that contributes a Session widget.' },
-            qualified: ({ plugin, pluginId }) => `${plugin} (${pluginId})`,
-        },
+        add: { note: 'Note', interactiveView: 'Interactive view' },
         width: { compact: 'Compact', medium: 'Medium', wide: 'Wide', full: 'Full width' },
         height: { auto: 'Fit content', compact: 'Short', regular: 'Medium', tall: 'Tall' },
         board: {
@@ -311,14 +314,16 @@ export const sessionBoardTranslations = {
                 reason: 'Nothing was lost. It becomes available once this Home enables boards.',
             },
             offline: 'Offline — showing the last version you loaded.',
+            offlineEmpty: 'Offline — reconnect to load this board.',
             stale: 'Showing the last version you loaded.',
         },
         empty: {
             editor: {
-                title: 'Add your first widget',
-                description: 'The board is shared with everyone who can read this session.',
+                title: 'Keep the plan beside the chat',
+                description: 'Notes and live views pinned here stay with this session, for everyone who can read it.',
                 askAgent: 'Ask the agent',
                 askAgentPrompt: 'Put something on this board that shows ',
+                addNote: 'Add a note',
             },
             viewer: {
                 title: 'Nothing on the board yet',
@@ -441,7 +446,12 @@ export const sessionBoardTranslations = {
                 review: 'Review',
             },
         },
-        sidebar: { openInDetails: 'Open in Details' },
+        sidebar: {
+            openInDetails: 'Open in Details',
+            openBoard: 'Open board',
+            sharedWithEveryone: 'Shared with everyone here',
+            widgetCount: ({ count }) => `${count} ${count === 1 ? 'widget' : 'widgets'}`,
+        },
         mobile: { searchPlaceholder: 'Search this board' },
         inline: {
             openBoard: 'Open Board',
@@ -449,9 +459,16 @@ export const sessionBoardTranslations = {
         },
         companion: {
             title: 'Companion',
+            inCompanionA11y: 'In your Companion',
             empty: {
-                title: 'Nothing in your Companion',
-                reason: 'Keep the session summary or a board widget beside chat.',
+                title: 'Keep the session in view',
+                reason: 'Put the session summary or a board widget beside your chat: what’s running, what’s waiting for you, what changed.',
+                note: 'Only you see your Companion.',
+            },
+            pane: {
+                besideChat: 'Beside your chat',
+                itemCount: ({ count }: { count: number }) => count === 1 ? '1 item' : `${count} items`,
+                justForYou: 'Just for you, beside the chat',
             },
             actions: {
                 addSummary: 'Add session summary',
@@ -479,6 +496,7 @@ export const sessionBoardTranslations = {
                 expand: ({ count }) => `Expand companion, ${count} items`,
             },
             summary: {
+                review: 'Review',
                 title: 'Session summary',
                 untitled: 'Session',
                 approvals: ({ count }) => `${count} waiting for you`,
@@ -531,14 +549,7 @@ export const sessionBoardTranslations = {
                 unpinMessage: 'Die Widgets bleiben in der Session, sind aber an keine Ansicht mehr geheftet.',
             },
         },
-        add: { note: 'Notiz', interactiveView: 'Interaktive Ansicht', fromPlugins: 'Aus Plugins…' },
-        picker: {
-            title: 'Aus Plugins hinzufügen',
-            description: 'Installierte Plugins können Widgets zu dieser Session beitragen.',
-            add: 'Zum Board hinzufügen',
-            empty: { title: 'Keine Plugin-Widgets verfügbar', reason: 'Installiere oder aktiviere ein Plugin, das ein Session-Widget bereitstellt.' },
-            qualified: ({ plugin, pluginId }) => `${plugin} (${pluginId})`,
-        },
+        add: { note: 'Notiz', interactiveView: 'Interaktive Ansicht' },
         width: { compact: 'Kompakt', medium: 'Mittel', wide: 'Breit', full: 'Volle Breite' },
         height: { auto: 'An Inhalt anpassen', compact: 'Niedrig', regular: 'Mittel', tall: 'Hoch' },
         board: {
@@ -560,14 +571,16 @@ export const sessionBoardTranslations = {
                 reason: 'Es ging nichts verloren. Sie erscheint, sobald dieses Home Pinnwände aktiviert.',
             },
             offline: 'Offline — du siehst den zuletzt geladenen Stand.',
+            offlineEmpty: 'Offline — verbinde dich erneut, um diese Pinnwand zu laden.',
             stale: 'Du siehst den zuletzt geladenen Stand.',
         },
         empty: {
             editor: {
-                title: 'Füge dein erstes Widget hinzu',
-                description: 'Die Pinnwand sehen alle, die diese Sitzung lesen dürfen.',
+                title: 'Behalte den Plan neben dem Chat',
+                description: 'Notizen und Live-Ansichten, die hier angeheftet sind, bleiben bei dieser Sitzung – für alle, die sie lesen dürfen.',
                 askAgent: 'Den Agenten fragen',
                 askAgentPrompt: 'Stelle etwas auf dieses Board, das Folgendes zeigt: ',
+                addNote: 'Notiz hinzufügen',
             },
             viewer: {
                 title: 'Noch nichts angeheftet',
@@ -690,7 +703,12 @@ export const sessionBoardTranslations = {
                 review: 'Prüfen',
             },
         },
-        sidebar: { openInDetails: 'In den Details öffnen' },
+        sidebar: {
+            openInDetails: 'In den Details öffnen',
+            openBoard: 'Pinnwand öffnen',
+            sharedWithEveryone: 'Für alle hier sichtbar',
+            widgetCount: ({ count }) => `${count} ${count === 1 ? 'Widget' : 'Widgets'}`,
+        },
         mobile: { searchPlaceholder: 'Dieses Board durchsuchen' },
         inline: {
             openBoard: 'Pinnwand öffnen',
@@ -698,9 +716,16 @@ export const sessionBoardTranslations = {
         },
         companion: {
             title: 'Begleiter',
+            inCompanionA11y: 'In deinem Begleiter',
             empty: {
-                title: 'Nichts in deinem Begleiter',
-                reason: 'Behalte die Sitzungsübersicht oder ein Pinnwand-Widget neben dem Chat.',
+                title: 'Behalte die Session im Blick',
+                reason: 'Lege die Sitzungsübersicht oder ein Pinnwand-Widget neben deinen Chat: was läuft, was auf dich wartet, was sich geändert hat.',
+                note: 'Nur du siehst deinen Begleiter.',
+            },
+            pane: {
+                besideChat: 'Neben deinem Chat',
+                itemCount: ({ count }: { count: number }) => count === 1 ? '1 Element' : `${count} Elemente`,
+                justForYou: 'Nur für dich, neben dem Chat',
             },
             actions: {
                 addSummary: 'Sitzungsübersicht hinzufügen',
@@ -728,6 +753,7 @@ export const sessionBoardTranslations = {
                 expand: ({ count }) => `Begleiter ausklappen, ${count} Elemente`,
             },
             summary: {
+                review: 'Ansehen',
                 title: 'Sitzungsübersicht',
                 untitled: 'Sitzung',
                 approvals: ({ count }) => `${count} warten auf dich`,
@@ -780,14 +806,7 @@ export const sessionBoardTranslations = {
                 unpinMessage: 'Ses widgets restent dans la session mais ne sont plus épinglés à une vue.',
             },
         },
-        add: { note: 'Nouvelle note', interactiveView: 'Vue interactive', fromPlugins: 'Depuis les plugins…' },
-        picker: {
-            title: 'Ajouter depuis les plugins',
-            description: 'Les plugins installés peuvent fournir des widgets à cette session.',
-            add: 'Ajouter au tableau',
-            empty: { title: 'Aucun widget de plugin disponible', reason: 'Installe ou active un plugin qui fournit un widget de session.' },
-            qualified: ({ plugin, pluginId }) => `${plugin} (${pluginId})`,
-        },
+        add: { note: 'Nouvelle note', interactiveView: 'Vue interactive' },
         width: { compact: 'Compacte', medium: 'Moyenne', wide: 'Large', full: 'Pleine largeur' },
         height: { auto: 'Ajuster au contenu', compact: 'Basse', regular: 'Moyenne', tall: 'Haute' },
         board: {
@@ -809,14 +828,16 @@ export const sessionBoardTranslations = {
                 reason: 'Rien n’est perdu. Il apparaîtra dès que ce Home activera les tableaux.',
             },
             offline: 'Hors ligne — tu vois la dernière version chargée.',
+            offlineEmpty: 'Hors ligne — reconnecte-toi pour charger ce tableau.',
             stale: 'Tu vois la dernière version chargée.',
         },
         empty: {
             editor: {
-                title: 'Ajoute ton premier widget',
-                description: 'Le tableau est partagé avec toutes les personnes qui peuvent lire cette session.',
+                title: 'Garde le plan à côté du chat',
+                description: 'Les notes et vues en direct épinglées ici restent avec cette session, pour toutes les personnes qui peuvent la lire.',
                 askAgent: 'Demander à l’agent',
                 askAgentPrompt: 'Place sur ce tableau quelque chose qui montre ',
+                addNote: 'Ajouter une note',
             },
             viewer: {
                 title: 'Rien sur le tableau pour l’instant',
@@ -939,7 +960,12 @@ export const sessionBoardTranslations = {
                 review: 'Consulter',
             },
         },
-        sidebar: { openInDetails: 'Ouvrir dans les détails' },
+        sidebar: {
+            openInDetails: 'Ouvrir dans les détails',
+            openBoard: 'Ouvrir le tableau',
+            sharedWithEveryone: 'Partagé avec tout le monde ici',
+            widgetCount: ({ count }) => `${count} widget${count === 1 ? '' : 's'}`,
+        },
         mobile: { searchPlaceholder: 'Rechercher dans ce tableau' },
         inline: {
             openBoard: 'Ouvrir le tableau',
@@ -947,9 +973,16 @@ export const sessionBoardTranslations = {
         },
         companion: {
             title: 'Compagnon',
+            inCompanionA11y: 'Dans ton compagnon',
             empty: {
-                title: 'Rien dans votre compagnon',
-                reason: 'Gardez le résumé de session ou un widget du tableau à côté du chat.',
+                title: 'Gardez la session sous les yeux',
+                reason: 'Placez le résumé de session ou un widget du tableau à côté de votre chat : ce qui tourne, ce qui vous attend, ce qui a changé.',
+                note: 'Vous seul voyez votre compagnon.',
+            },
+            pane: {
+                besideChat: 'À côté de votre chat',
+                itemCount: ({ count }: { count: number }) => count === 1 ? '1 élément' : `${count} éléments`,
+                justForYou: 'Rien que pour vous, à côté du chat',
             },
             actions: {
                 addSummary: 'Ajouter le résumé de session',
@@ -977,6 +1010,7 @@ export const sessionBoardTranslations = {
                 expand: ({ count }) => `Développer le compagnon, ${count} éléments`,
             },
             summary: {
+                review: 'Voir',
                 title: 'Résumé de session',
                 untitled: 'Session',
                 approvals: ({ count }) => `${count} en attente`,
@@ -1029,14 +1063,7 @@ export const sessionBoardTranslations = {
                 unpinMessage: 'Его виджеты останутся в сессии, но перестанут быть закреплены за видом.',
             },
         },
-        add: { note: 'Заметка', interactiveView: 'Интерактивный вид', fromPlugins: 'Из плагинов…' },
-        picker: {
-            title: 'Добавить из плагинов',
-            description: 'Установленные плагины могут добавлять виджеты в эту сессию.',
-            add: 'Добавить на доску',
-            empty: { title: 'Нет доступных виджетов', reason: 'Установите или включите плагин с виджетом сессии.' },
-            qualified: ({ plugin, pluginId }) => `${plugin} (${pluginId})`,
-        },
+        add: { note: 'Заметка', interactiveView: 'Интерактивный вид' },
         width: { compact: 'Узкий', medium: 'Средний', wide: 'Широкий', full: 'Во всю ширину' },
         height: { auto: 'По содержимому', compact: 'Низкая', regular: 'Средняя', tall: 'Высокая' },
         board: {
@@ -1058,14 +1085,16 @@ export const sessionBoardTranslations = {
                 reason: 'Ничего не потеряно. Она появится, когда этот Home включит доски.',
             },
             offline: 'Нет сети — показана последняя загруженная версия.',
+            offlineEmpty: 'Нет сети — подключитесь снова, чтобы загрузить эту доску.',
             stale: 'Показана последняя загруженная версия.',
         },
         empty: {
             editor: {
-                title: 'Добавьте первый виджет',
-                description: 'Доску видят все, кто может читать эту сессию.',
+                title: 'Держите план рядом с чатом',
+                description: 'Заметки и живые виды, закреплённые здесь, остаются в этой сессии — для всех, кто может её читать.',
                 askAgent: 'Попросить агента',
                 askAgentPrompt: 'Разместите на этой доске то, что показывает ',
+                addNote: 'Добавить заметку',
             },
             viewer: {
                 title: 'На доске пока пусто',
@@ -1188,7 +1217,12 @@ export const sessionBoardTranslations = {
                 review: 'Просмотреть',
             },
         },
-        sidebar: { openInDetails: 'Открыть в деталях' },
+        sidebar: {
+            openInDetails: 'Открыть в деталях',
+            openBoard: 'Открыть доску',
+            sharedWithEveryone: 'Видно всем здесь',
+            widgetCount: ({ count }) => `${count} ${count % 10 === 1 && count % 100 !== 11 ? 'виджет' : count % 10 >= 2 && count % 10 <= 4 && (count % 100 < 12 || count % 100 > 14) ? 'виджета' : 'виджетов'}`,
+        },
         mobile: { searchPlaceholder: 'Поиск по этой доске' },
         inline: {
             openBoard: 'Открыть доску',
@@ -1196,9 +1230,16 @@ export const sessionBoardTranslations = {
         },
         companion: {
             title: 'Спутник',
+            inCompanionA11y: 'В вашем спутнике',
             empty: {
-                title: 'В спутнике пусто',
-                reason: 'Держите сводку сессии или виджет доски рядом с чатом.',
+                title: 'Держите сессию на виду',
+                reason: 'Поместите сводку сессии или виджет доски рядом с чатом: что запущено, что ждёт вас, что изменилось.',
+                note: 'Ваш спутник видите только вы.',
+            },
+            pane: {
+                besideChat: 'Рядом с чатом',
+                itemCount: ({ count }: { count: number }) => `${count} эл.`,
+                justForYou: 'Только для вас, рядом с чатом',
             },
             actions: {
                 addSummary: 'Добавить сводку сессии',
@@ -1226,6 +1267,7 @@ export const sessionBoardTranslations = {
                 expand: ({ count }) => `Развернуть спутник, элементов: ${count}`,
             },
             summary: {
+                review: 'Посмотреть',
                 title: 'Сводка сессии',
                 untitled: 'Сессия',
                 approvals: ({ count }) => `Ожидают вас: ${count}`,
@@ -1278,14 +1320,7 @@ export const sessionBoardTranslations = {
                 unpinMessage: 'Jego widżety zostają w sesji, ale nie są już przypięte do żadnego widoku.',
             },
         },
-        add: { note: 'Notatka', interactiveView: 'Widok interaktywny', fromPlugins: 'Z wtyczek…' },
-        picker: {
-            title: 'Dodaj z wtyczek',
-            description: 'Zainstalowane wtyczki mogą dodawać widgety do tej sesji.',
-            add: 'Dodaj do tablicy',
-            empty: { title: 'Brak dostępnych widgetów', reason: 'Zainstaluj lub włącz wtyczkę z widgetem sesji.' },
-            qualified: ({ plugin, pluginId }) => `${plugin} (${pluginId})`,
-        },
+        add: { note: 'Notatka', interactiveView: 'Widok interaktywny' },
         width: { compact: 'Wąski', medium: 'Średni', wide: 'Szeroki', full: 'Pełna szerokość' },
         height: { auto: 'Dopasuj do treści', compact: 'Niska', regular: 'Średnia', tall: 'Wysoka' },
         board: {
@@ -1307,14 +1342,16 @@ export const sessionBoardTranslations = {
                 reason: 'Nic nie zginęło. Pojawi się, gdy ten Home włączy tablice.',
             },
             offline: 'Offline — widzisz ostatnio wczytaną wersję.',
+            offlineEmpty: 'Offline — połącz się ponownie, aby wczytać tę tablicę.',
             stale: 'Widzisz ostatnio wczytaną wersję.',
         },
         empty: {
             editor: {
-                title: 'Dodaj pierwszy widżet',
-                description: 'Tablicę widzi każdy, kto może czytać tę sesję.',
+                title: 'Miej plan obok czatu',
+                description: 'Notatki i widoki na żywo przypięte tutaj zostają przy tej sesji — dla każdego, kto może ją czytać.',
                 askAgent: 'Poproś agenta',
                 askAgentPrompt: 'Umieść na tej tablicy coś, co pokazuje ',
+                addNote: 'Dodaj notatkę',
             },
             viewer: {
                 title: 'Na tablicy jeszcze pusto',
@@ -1437,7 +1474,12 @@ export const sessionBoardTranslations = {
                 review: 'Sprawdź',
             },
         },
-        sidebar: { openInDetails: 'Otwórz w szczegółach' },
+        sidebar: {
+            openInDetails: 'Otwórz w szczegółach',
+            openBoard: 'Otwórz tablicę',
+            sharedWithEveryone: 'Widoczne dla wszystkich tutaj',
+            widgetCount: ({ count }) => `${count} ${count === 1 ? 'widżet' : count % 10 >= 2 && count % 10 <= 4 && (count % 100 < 12 || count % 100 > 14) ? 'widżety' : 'widżetów'}`,
+        },
         mobile: { searchPlaceholder: 'Szukaj na tej tablicy' },
         inline: {
             openBoard: 'Otwórz tablicę',
@@ -1445,9 +1487,16 @@ export const sessionBoardTranslations = {
         },
         companion: {
             title: 'Towarzysz',
+            inCompanionA11y: 'W twoim towarzyszu',
             empty: {
-                title: 'Nic w towarzyszu',
-                reason: 'Trzymaj podsumowanie sesji lub widżet tablicy obok czatu.',
+                title: 'Miej sesję na oku',
+                reason: 'Umieść podsumowanie sesji lub widżet tablicy obok czatu: co działa, co na ciebie czeka, co się zmieniło.',
+                note: 'Tylko ty widzisz swojego towarzysza.',
+            },
+            pane: {
+                besideChat: 'Obok twojego czatu',
+                itemCount: ({ count }: { count: number }) => count === 1 ? '1 element' : `${count} el.`,
+                justForYou: 'Tylko dla ciebie, obok czatu',
             },
             actions: {
                 addSummary: 'Dodaj podsumowanie sesji',
@@ -1475,6 +1524,7 @@ export const sessionBoardTranslations = {
                 expand: ({ count }) => `Rozwiń towarzysza, elementy: ${count}`,
             },
             summary: {
+                review: 'Przejrzyj',
                 title: 'Podsumowanie sesji',
                 untitled: 'Sesja',
                 approvals: ({ count }) => `Czeka na Ciebie: ${count}`,
@@ -1527,14 +1577,7 @@ export const sessionBoardTranslations = {
                 unpinMessage: 'Sus widgets siguen en la sesión, pero dejan de estar fijados a una vista.',
             },
         },
-        add: { note: 'Nota', interactiveView: 'Vista interactiva', fromPlugins: 'Desde plugins…' },
-        picker: {
-            title: 'Añadir desde plugins',
-            description: 'Los plugins instalados pueden aportar widgets a esta sesión.',
-            add: 'Añadir al tablero',
-            empty: { title: 'No hay widgets de plugins', reason: 'Instala o activa un plugin que aporte un widget de sesión.' },
-            qualified: ({ plugin, pluginId }) => `${plugin} (${pluginId})`,
-        },
+        add: { note: 'Nota', interactiveView: 'Vista interactiva' },
         width: { compact: 'Estrecho', medium: 'Medio', wide: 'Ancho', full: 'Ancho completo' },
         height: { auto: 'Ajustar al contenido', compact: 'Baja', regular: 'Media', tall: 'Alta' },
         board: {
@@ -1556,14 +1599,16 @@ export const sessionBoardTranslations = {
                 reason: 'No se perdió nada. Aparecerá cuando este Home active los tableros.',
             },
             offline: 'Sin conexión: ves la última versión que cargaste.',
+            offlineEmpty: 'Sin conexión: vuelve a conectarte para cargar este tablero.',
             stale: 'Ves la última versión que cargaste.',
         },
         empty: {
             editor: {
-                title: 'Añade tu primer widget',
-                description: 'El tablero lo ve todo el mundo que pueda leer esta sesión.',
+                title: 'Ten el plan junto al chat',
+                description: 'Las notas y vistas en vivo que se fijan aquí se quedan con esta sesión, para todo el que pueda leerla.',
                 askAgent: 'Pedírselo al agente',
                 askAgentPrompt: 'Coloca en este tablero algo que muestre ',
+                addNote: 'Añadir una nota',
             },
             viewer: {
                 title: 'Todavía no hay nada en el tablero',
@@ -1686,7 +1731,12 @@ export const sessionBoardTranslations = {
                 review: 'Revisar',
             },
         },
-        sidebar: { openInDetails: 'Abrir en Detalles' },
+        sidebar: {
+            openInDetails: 'Abrir en Detalles',
+            openBoard: 'Abrir el tablero',
+            sharedWithEveryone: 'Compartido con todos aquí',
+            widgetCount: ({ count }) => `${count} widget${count === 1 ? '' : 's'}`,
+        },
         mobile: { searchPlaceholder: 'Buscar en este tablero' },
         inline: {
             openBoard: 'Abrir el tablero',
@@ -1694,9 +1744,16 @@ export const sessionBoardTranslations = {
         },
         companion: {
             title: 'Acompañante',
+            inCompanionA11y: 'En tu acompañante',
             empty: {
-                title: 'No hay nada en tu acompañante',
-                reason: 'Mantén el resumen de la sesión o un widget del tablero junto al chat.',
+                title: 'Mantén la sesión a la vista',
+                reason: 'Pon el resumen de la sesión o un widget del tablero junto a tu chat: lo que se ejecuta, lo que te espera, lo que cambió.',
+                note: 'Solo tú ves tu acompañante.',
+            },
+            pane: {
+                besideChat: 'Junto a tu chat',
+                itemCount: ({ count }: { count: number }) => count === 1 ? '1 elemento' : `${count} elementos`,
+                justForYou: 'Solo para ti, junto al chat',
             },
             actions: {
                 addSummary: 'Añadir resumen de la sesión',
@@ -1724,6 +1781,7 @@ export const sessionBoardTranslations = {
                 expand: ({ count }) => `Expandir acompañante, ${count} elementos`,
             },
             summary: {
+                review: 'Revisar',
                 title: 'Resumen de la sesión',
                 untitled: 'Sesión',
                 approvals: ({ count }) => `${count} esperándote`,
@@ -1776,14 +1834,7 @@ export const sessionBoardTranslations = {
                 unpinMessage: 'I suoi widget restano nella sessione ma non sono più fissati a una vista.',
             },
         },
-        add: { note: 'Nota', interactiveView: 'Vista interattiva', fromPlugins: 'Dai plugin…' },
-        picker: {
-            title: 'Aggiungi dai plugin',
-            description: 'I plugin installati possono fornire widget a questa sessione.',
-            add: 'Aggiungi alla board',
-            empty: { title: 'Nessun widget disponibile', reason: 'Installa o abilita un plugin che fornisce un widget di sessione.' },
-            qualified: ({ plugin, pluginId }) => `${plugin} (${pluginId})`,
-        },
+        add: { note: 'Nota', interactiveView: 'Vista interattiva' },
         width: { compact: 'Stretto', medium: 'Medio', wide: 'Largo', full: 'Larghezza piena' },
         height: { auto: 'Adatta al contenuto', compact: 'Bassa', regular: 'Media', tall: 'Alta' },
         board: {
@@ -1805,14 +1856,16 @@ export const sessionBoardTranslations = {
                 reason: 'Non è andato perso nulla. Comparirà quando questo Home abiliterà le bacheche.',
             },
             offline: 'Offline: stai vedendo l’ultima versione caricata.',
+            offlineEmpty: 'Offline: riconnettiti per caricare questa bacheca.',
             stale: 'Stai vedendo l’ultima versione caricata.',
         },
         empty: {
             editor: {
-                title: 'Aggiungi il tuo primo widget',
-                description: 'La bacheca è condivisa con chiunque possa leggere questa sessione.',
+                title: 'Tieni il piano accanto alla chat',
+                description: 'Note e viste dal vivo fissate qui restano con questa sessione, per chiunque possa leggerla.',
                 askAgent: 'Chiedi all’agente',
                 askAgentPrompt: 'Metti su questa bacheca qualcosa che mostri ',
+                addNote: 'Aggiungi una nota',
             },
             viewer: {
                 title: 'Ancora niente in bacheca',
@@ -1935,7 +1988,12 @@ export const sessionBoardTranslations = {
                 review: 'Controlla',
             },
         },
-        sidebar: { openInDetails: 'Apri nei dettagli' },
+        sidebar: {
+            openInDetails: 'Apri nei dettagli',
+            openBoard: 'Apri la bacheca',
+            sharedWithEveryone: 'Condiviso con tutti qui',
+            widgetCount: ({ count }) => `${count} widget`,
+        },
         mobile: { searchPlaceholder: 'Cerca in questa bacheca' },
         inline: {
             openBoard: 'Apri la bacheca',
@@ -1943,9 +2001,16 @@ export const sessionBoardTranslations = {
         },
         companion: {
             title: 'Compagno',
+            inCompanionA11y: 'Nel tuo compagno',
             empty: {
-                title: 'Niente nel tuo compagno',
-                reason: 'Tieni il riepilogo della sessione o un widget della bacheca accanto alla chat.',
+                title: 'Tieni la sessione sott’occhio',
+                reason: 'Metti il riepilogo della sessione o un widget della bacheca accanto alla chat: cosa è in esecuzione, cosa ti aspetta, cosa è cambiato.',
+                note: 'Solo tu vedi il tuo compagno.',
+            },
+            pane: {
+                besideChat: 'Accanto alla tua chat',
+                itemCount: ({ count }: { count: number }) => count === 1 ? '1 elemento' : `${count} elementi`,
+                justForYou: 'Solo per te, accanto alla chat',
             },
             actions: {
                 addSummary: 'Aggiungi riepilogo sessione',
@@ -1973,6 +2038,7 @@ export const sessionBoardTranslations = {
                 expand: ({ count }) => `Espandi compagno, ${count} elementi`,
             },
             summary: {
+                review: 'Rivedi',
                 title: 'Riepilogo sessione',
                 untitled: 'Sessione',
                 approvals: ({ count }) => `${count} in attesa di te`,
@@ -2025,14 +2091,7 @@ export const sessionBoardTranslations = {
                 unpinMessage: 'Os widgets continuam na sessão, mas deixam de estar fixados a uma vista.',
             },
         },
-        add: { note: 'Nota', interactiveView: 'Vista interativa', fromPlugins: 'Dos plugins…' },
-        picker: {
-            title: 'Adicionar dos plugins',
-            description: 'Plugins instalados podem fornecer widgets a esta sessão.',
-            add: 'Adicionar ao quadro',
-            empty: { title: 'Nenhum widget disponível', reason: 'Instale ou ative um plugin que forneça um widget de sessão.' },
-            qualified: ({ plugin, pluginId }) => `${plugin} (${pluginId})`,
-        },
+        add: { note: 'Nota', interactiveView: 'Vista interativa' },
         width: { compact: 'Estreito', medium: 'Médio', wide: 'Largo', full: 'Largura total' },
         height: { auto: 'Ajustar ao conteúdo', compact: 'Baixa', regular: 'Média', tall: 'Alta' },
         board: {
@@ -2054,14 +2113,16 @@ export const sessionBoardTranslations = {
                 reason: 'Nada se perdeu. Aparece assim que este Home ativar os quadros.',
             },
             offline: 'Sem ligação — estás a ver a última versão carregada.',
+            offlineEmpty: 'Sem ligação — volta a ligar-te para carregar este quadro.',
             stale: 'Estás a ver a última versão carregada.',
         },
         empty: {
             editor: {
-                title: 'Adiciona o teu primeiro widget',
-                description: 'O quadro é partilhado com quem puder ler esta sessão.',
+                title: 'Mantém o plano ao lado do chat',
+                description: 'As notas e vistas em direto fixadas aqui ficam com esta sessão, para quem a puder ler.',
                 askAgent: 'Pedir ao agente',
                 askAgentPrompt: 'Coloca neste quadro algo que mostre ',
+                addNote: 'Adicionar uma nota',
             },
             viewer: {
                 title: 'Ainda não há nada no quadro',
@@ -2184,7 +2245,12 @@ export const sessionBoardTranslations = {
                 review: 'Rever',
             },
         },
-        sidebar: { openInDetails: 'Abrir nos detalhes' },
+        sidebar: {
+            openInDetails: 'Abrir nos detalhes',
+            openBoard: 'Abrir o quadro',
+            sharedWithEveryone: 'Partilhado com todos aqui',
+            widgetCount: ({ count }) => `${count} widget${count === 1 ? '' : 's'}`,
+        },
         mobile: { searchPlaceholder: 'Pesquisar neste quadro' },
         inline: {
             openBoard: 'Abrir o quadro',
@@ -2192,9 +2258,16 @@ export const sessionBoardTranslations = {
         },
         companion: {
             title: 'Companheiro',
+            inCompanionA11y: 'No teu companheiro',
             empty: {
-                title: 'Nada no seu companheiro',
-                reason: 'Mantenha o resumo da sessão ou um widget do quadro ao lado do chat.',
+                title: 'Mantenha a sessão à vista',
+                reason: 'Coloque o resumo da sessão ou um widget do quadro ao lado do chat: o que está rodando, o que espera por você, o que mudou.',
+                note: 'Só você vê o seu companheiro.',
+            },
+            pane: {
+                besideChat: 'Ao lado do seu chat',
+                itemCount: ({ count }: { count: number }) => count === 1 ? '1 item' : `${count} itens`,
+                justForYou: 'Só para você, ao lado do chat',
             },
             actions: {
                 addSummary: 'Adicionar resumo da sessão',
@@ -2222,6 +2295,7 @@ export const sessionBoardTranslations = {
                 expand: ({ count }) => `Expandir companheiro, ${count} itens`,
             },
             summary: {
+                review: 'Revisar',
                 title: 'Resumo da sessão',
                 untitled: 'Sessão',
                 approvals: ({ count }) => `${count} à sua espera`,
@@ -2274,14 +2348,7 @@ export const sessionBoardTranslations = {
                 unpinMessage: 'Els seus widgets continuen a la sessió, però ja no estan fixats a cap vista.',
             },
         },
-        add: { note: 'Nota', interactiveView: 'Vista interactiva', fromPlugins: 'Des dels plugins…' },
-        picker: {
-            title: 'Afegeix des dels plugins',
-            description: 'Els plugins instal·lats poden aportar widgets a aquesta sessió.',
-            add: 'Afegeix al tauler',
-            empty: { title: 'No hi ha cap widget disponible', reason: 'Instal·la o activa un plugin que aporti un widget de sessió.' },
-            qualified: ({ plugin, pluginId }) => `${plugin} (${pluginId})`,
-        },
+        add: { note: 'Nota', interactiveView: 'Vista interactiva' },
         width: { compact: 'Estret', medium: 'Mitjà', wide: 'Ample', full: 'Amplada completa' },
         height: { auto: 'Ajusta al contingut', compact: 'Baixa', regular: 'Mitjana', tall: 'Alta' },
         board: {
@@ -2303,14 +2370,16 @@ export const sessionBoardTranslations = {
                 reason: 'No s’ha perdut res. Apareixerà quan aquest Home activi els taulers.',
             },
             offline: 'Sense connexió: veus l’última versió que has carregat.',
+            offlineEmpty: 'Sense connexió: torna a connectar-te per carregar aquest tauler.',
             stale: 'Veus l’última versió que has carregat.',
         },
         empty: {
             editor: {
-                title: 'Afegeix el teu primer giny',
-                description: 'El tauler el veu tothom que pugui llegir aquesta sessió.',
+                title: 'Tingues el pla al costat del xat',
+                description: 'Les notes i vistes en directe fixades aquí es queden amb aquesta sessió, per a tothom qui la pugui llegir.',
                 askAgent: 'Demana-ho a l’agent',
                 askAgentPrompt: 'Posa en aquest tauler alguna cosa que mostri ',
+                addNote: 'Afegeix una nota',
             },
             viewer: {
                 title: 'Encara no hi ha res al tauler',
@@ -2433,7 +2502,12 @@ export const sessionBoardTranslations = {
                 review: 'Revisa',
             },
         },
-        sidebar: { openInDetails: 'Obre als detalls' },
+        sidebar: {
+            openInDetails: 'Obre als detalls',
+            openBoard: 'Obre el tauler',
+            sharedWithEveryone: 'Compartit amb tothom aquí',
+            widgetCount: ({ count }) => `${count} giny${count === 1 ? '' : 's'}`,
+        },
         mobile: { searchPlaceholder: 'Cerca en aquest tauler' },
         inline: {
             openBoard: 'Obre el tauler',
@@ -2441,9 +2515,16 @@ export const sessionBoardTranslations = {
         },
         companion: {
             title: 'Acompanyant',
+            inCompanionA11y: 'Al teu acompanyant',
             empty: {
-                title: 'No hi ha res al teu acompanyant',
-                reason: 'Mantén el resum de la sessió o un widget del tauler al costat del xat.',
+                title: 'Mantén la sessió a la vista',
+                reason: 'Posa el resum de la sessió o un widget del tauler al costat del xat: què s’executa, què t’espera, què ha canviat.',
+                note: 'Només tu veus el teu acompanyant.',
+            },
+            pane: {
+                besideChat: 'Al costat del teu xat',
+                itemCount: ({ count }: { count: number }) => count === 1 ? '1 element' : `${count} elements`,
+                justForYou: 'Només per a tu, al costat del xat',
             },
             actions: {
                 addSummary: 'Afegeix el resum de la sessió',
@@ -2471,6 +2552,7 @@ export const sessionBoardTranslations = {
                 expand: ({ count }) => `Desplega l’acompanyant, ${count} elements`,
             },
             summary: {
+                review: 'Revisa',
                 title: 'Resum de la sessió',
                 untitled: 'Sessió',
                 approvals: ({ count }) => `${count} t’esperen`,
@@ -2523,14 +2605,7 @@ export const sessionBoardTranslations = {
                 unpinMessage: '其中的组件仍留在会话中，但不再固定到任何视图。',
             },
         },
-        add: { note: '笔记', interactiveView: '交互视图', fromPlugins: '来自插件…' },
-        picker: {
-            title: '从插件添加',
-            description: '已安装的插件可为此会话提供小组件。',
-            add: '添加到看板',
-            empty: { title: '没有可用的插件小组件', reason: '请安装或启用提供会话小组件的插件。' },
-            qualified: ({ plugin, pluginId }) => `${plugin} (${pluginId})`,
-        },
+        add: { note: '笔记', interactiveView: '交互视图' },
         width: { compact: '窄', medium: '中等', wide: '宽', full: '整行宽度' },
         height: { auto: '适应内容', compact: '较矮', regular: '中等', tall: '较高' },
         board: {
@@ -2552,14 +2627,16 @@ export const sessionBoardTranslations = {
                 reason: '没有内容丢失。等这个 Home 启用面板后就会出现。',
             },
             offline: '离线 — 显示的是你上次加载的版本。',
+            offlineEmpty: '离线 — 重新连接后即可加载此面板。',
             stale: '显示的是你上次加载的版本。',
         },
         empty: {
             editor: {
-                title: '添加第一个组件',
-                description: '所有能阅读这个会话的人都会看到这个面板。',
+                title: '把计划放在聊天旁边',
+                description: '固定在这里的笔记和实时视图会留在这个会话中，所有能阅读它的人都能看到。',
                 askAgent: '让智能体来做',
                 askAgentPrompt: '在这个面板上放一个可以显示以下内容的组件：',
+                addNote: '添加笔记',
             },
             viewer: {
                 title: '面板上还没有内容',
@@ -2682,7 +2759,12 @@ export const sessionBoardTranslations = {
                 review: '查看',
             },
         },
-        sidebar: { openInDetails: '在详情中打开' },
+        sidebar: {
+            openInDetails: '在详情中打开',
+            openBoard: '打开面板',
+            sharedWithEveryone: '与这里的所有人共享',
+            widgetCount: ({ count }) => `${count} 个组件`,
+        },
         mobile: { searchPlaceholder: '搜索此面板' },
         inline: {
             openBoard: '打开面板',
@@ -2690,9 +2772,16 @@ export const sessionBoardTranslations = {
         },
         companion: {
             title: '随行面板',
+            inCompanionA11y: '在你的随行面板中',
             empty: {
-                title: '随行面板中没有内容',
-                reason: '把会话摘要或看板小组件留在聊天旁边。',
+                title: '让会话一直在视线内',
+                reason: '把会话摘要或看板小组件放在聊天旁边：正在运行什么、什么在等你、改了什么。',
+                note: '只有你能看到你的随行面板。',
+            },
+            pane: {
+                besideChat: '在聊天旁边',
+                itemCount: ({ count }: { count: number }) => `${count} 项`,
+                justForYou: '只属于你，在聊天旁边',
             },
             actions: {
                 addSummary: '添加会话摘要',
@@ -2720,6 +2809,7 @@ export const sessionBoardTranslations = {
                 expand: ({ count }) => `展开随行面板，${count} 个项目`,
             },
             summary: {
+                review: '查看',
                 title: '会话摘要',
                 untitled: '会话',
                 approvals: ({ count }) => `${count} 项等待你处理`,
@@ -2772,14 +2862,7 @@ export const sessionBoardTranslations = {
                 unpinMessage: '其中的小工具仍留在工作階段中，但不再釘選到任何檢視。',
             },
         },
-        add: { note: '筆記', interactiveView: '互動檢視', fromPlugins: '來自外掛…' },
-        picker: {
-            title: '從外掛新增',
-            description: '已安裝的外掛可為此對話提供小元件。',
-            add: '新增至看板',
-            empty: { title: '沒有可用的外掛小元件', reason: '請安裝或啟用提供對話小元件的外掛。' },
-            qualified: ({ plugin, pluginId }) => `${plugin} (${pluginId})`,
-        },
+        add: { note: '筆記', interactiveView: '互動檢視' },
         width: { compact: '窄', medium: '中等', wide: '寬', full: '整行寬度' },
         height: { auto: '符合內容', compact: '較矮', regular: '中等', tall: '較高' },
         board: {
@@ -2801,14 +2884,16 @@ export const sessionBoardTranslations = {
                 reason: '沒有內容遺失。等這個 Home 啟用面板後就會出現。',
             },
             offline: '離線 — 顯示的是你上次載入的版本。',
+            offlineEmpty: '離線 — 重新連線後即可載入此面板。',
             stale: '顯示的是你上次載入的版本。',
         },
         empty: {
             editor: {
-                title: '加入第一個小工具',
-                description: '所有能閱讀這個工作階段的人都會看到這個面板。',
+                title: '把計畫放在聊天旁邊',
+                description: '釘選在這裡的筆記和即時檢視會留在這個工作階段中，所有能閱讀它的人都看得到。',
                 askAgent: '請代理人處理',
                 askAgentPrompt: '在這個看板上放一個可以顯示以下內容的元件：',
+                addNote: '新增筆記',
             },
             viewer: {
                 title: '面板上還沒有內容',
@@ -2931,7 +3016,12 @@ export const sessionBoardTranslations = {
                 review: '查看',
             },
         },
-        sidebar: { openInDetails: '在詳細資料中開啟' },
+        sidebar: {
+            openInDetails: '在詳細資料中開啟',
+            openBoard: '開啟面板',
+            sharedWithEveryone: '與這裡的所有人共享',
+            widgetCount: ({ count }) => `${count} 個小工具`,
+        },
         mobile: { searchPlaceholder: '搜尋此面板' },
         inline: {
             openBoard: '開啟面板',
@@ -2939,9 +3029,16 @@ export const sessionBoardTranslations = {
         },
         companion: {
             title: '隨行面板',
+            inCompanionA11y: '在你的隨行面板中',
             empty: {
-                title: '隨行面板中沒有內容',
-                reason: '把工作階段摘要或看板小工具留在聊天旁邊。',
+                title: '讓工作階段一直在視線內',
+                reason: '把工作階段摘要或看板小工具放在聊天旁邊：正在執行什麼、什麼在等你、改了什麼。',
+                note: '只有你能看到你的隨行面板。',
+            },
+            pane: {
+                besideChat: '在聊天旁邊',
+                itemCount: ({ count }: { count: number }) => `${count} 項`,
+                justForYou: '只屬於你，在聊天旁邊',
             },
             actions: {
                 addSummary: '新增工作階段摘要',
@@ -2969,6 +3066,7 @@ export const sessionBoardTranslations = {
                 expand: ({ count }) => `展開隨行面板，${count} 個項目`,
             },
             summary: {
+                review: '查看',
                 title: '工作階段摘要',
                 untitled: '工作階段',
                 approvals: ({ count }) => `${count} 項等待你處理`,
@@ -3021,14 +3119,7 @@ export const sessionBoardTranslations = {
                 unpinMessage: 'ウィジェットはセッションに残りますが、どのビューにも固定されなくなります。',
             },
         },
-        add: { note: 'メモ', interactiveView: 'インタラクティブビュー', fromPlugins: 'プラグインから…' },
-        picker: {
-            title: 'プラグインから追加',
-            description: 'インストール済みのプラグインはこのセッションにウィジェットを提供できます。',
-            add: 'ボードに追加',
-            empty: { title: '利用できるウィジェットがありません', reason: 'セッションウィジェットを提供するプラグインをインストールまたは有効化してください。' },
-            qualified: ({ plugin, pluginId }) => `${plugin} (${pluginId})`,
-        },
+        add: { note: 'メモ', interactiveView: 'インタラクティブビュー' },
         width: { compact: '狭い', medium: '中くらい', wide: '広い', full: '全幅' },
         height: { auto: '内容に合わせる', compact: '低め', regular: '標準', tall: '高め' },
         board: {
@@ -3050,14 +3141,16 @@ export const sessionBoardTranslations = {
                 reason: '失われたものはありません。この Home がボードを有効にすると表示されます。',
             },
             offline: 'オフライン — 最後に読み込んだ状態を表示しています。',
+            offlineEmpty: 'オフライン — 再接続するとこのボードを読み込めます。',
             stale: '最後に読み込んだ状態を表示しています。',
         },
         empty: {
             editor: {
-                title: '最初のウィジェットを追加しましょう',
-                description: 'ボードは、このセッションを読める人全員に共有されます。',
+                title: '計画をチャットのそばに',
+                description: 'ここにピン留めしたメモやライブビューはこのセッションに残り、読める人全員が見られます。',
                 askAgent: 'エージェントに頼む',
                 askAgentPrompt: 'このボードに次の内容を表示するものを置いて：',
+                addNote: 'メモを追加',
             },
             viewer: {
                 title: 'ボードにはまだ何もありません',
@@ -3180,7 +3273,12 @@ export const sessionBoardTranslations = {
                 review: '確認',
             },
         },
-        sidebar: { openInDetails: '詳細で開く' },
+        sidebar: {
+            openInDetails: '詳細で開く',
+            openBoard: 'ボードを開く',
+            sharedWithEveryone: 'ここにいる全員と共有',
+            widgetCount: ({ count }) => `${count} 個のウィジェット`,
+        },
         mobile: { searchPlaceholder: 'このボードを検索' },
         inline: {
             openBoard: 'ボードを開く',
@@ -3188,9 +3286,16 @@ export const sessionBoardTranslations = {
         },
         companion: {
             title: 'コンパニオン',
+            inCompanionA11y: 'コンパニオンに表示中',
             empty: {
-                title: 'コンパニオンには何もありません',
-                reason: 'セッション概要やボードのウィジェットをチャットの横に置いておけます。',
+                title: 'セッションを目の届くところに',
+                reason: 'セッション概要やボードのウィジェットをチャットの横に置けます：実行中のもの、あなたを待っているもの、変更点。',
+                note: 'コンパニオンはあなただけに表示されます。',
+            },
+            pane: {
+                besideChat: 'チャットの横',
+                itemCount: ({ count }: { count: number }) => `${count} 件`,
+                justForYou: 'あなただけの、チャットの横',
             },
             actions: {
                 addSummary: 'セッション概要を追加',
@@ -3218,6 +3323,7 @@ export const sessionBoardTranslations = {
                 expand: ({ count }) => `コンパニオンを展開、${count} 件`,
             },
             summary: {
+                review: '確認',
                 title: 'セッション概要',
                 untitled: 'セッション',
                 approvals: ({ count }) => `${count} 件があなたを待っています`,

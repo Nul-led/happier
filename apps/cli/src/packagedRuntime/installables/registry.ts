@@ -4,10 +4,12 @@ import {
   type InstallableKey,
   type InstallablesRegistry,
 } from '@happier-dev/protocol';
+import type { AgentInstallProgressCallback } from '@happier-dev/cli-common/agents';
 
 import { getGitHubReleaseBinaryRuntimeInstallableAdapter } from './sourceAdapters/githubReleaseBinary';
 import { getManagedPypiWheelAssetRuntimeInstallableAdapter } from './sourceAdapters/pypiWheelAsset';
 import { getPinnedArchiveRuntimeInstallableAdapter } from './sourceAdapters/pinnedArchive';
+import { COMPUTER_CUA_DRIVER_INSTALLABLE_KEY, getComputerCuaDriverArchiveDownloadInstallableAdapter } from './sourceAdapters/computerCuaDriver';
 import {
   ARCHIVE_DOWNLOAD_INSTALLABLE_SOURCE_KIND,
   BROWSER_CHROMIUM_INSTALLABLE_KEY,
@@ -50,11 +52,24 @@ export type RuntimeInstallableLaunchCommandParams = Readonly<{
  */
 export type RuntimeInstallableInstallResult =
   | Readonly<{ ok: true; logPath: string | null }>
-  | Readonly<{ ok: false; errorMessage: string; logPath: string | null }>;
+  | Readonly<{ ok: false; errorMessage: string; logPath: string | null; errorCode?: RuntimeInstallableInstallErrorCode }>;
+
+export type RuntimeInstallableInstallErrorCode =
+  | 'download-failed'
+  | 'verification-failed'
+  | 'command-timed-out'
+  | 'termination-failed';
 
 export type RuntimeInstallableCapabilityStatusParams = Readonly<{
+  env?: NodeJS.ProcessEnv;
   includeLatestVersion?: boolean;
   onlyIfInstalled?: boolean;
+}>;
+
+export type RuntimeInstallableInstallOptions = Readonly<{
+  env?: NodeJS.ProcessEnv;
+  signal?: AbortSignal;
+  onProgress?: AgentInstallProgressCallback;
 }>;
 
 export type RuntimeInstallableAdapter = Readonly<{
@@ -63,7 +78,7 @@ export type RuntimeInstallableAdapter = Readonly<{
   detectCapabilityStatus?: (params?: RuntimeInstallableCapabilityStatusParams) => Promise<unknown>;
   detectLaunchResolution: (params?: Readonly<{ env?: NodeJS.ProcessEnv }>) => Promise<RuntimeInstallableLaunchResolution>;
   resolveLaunchCommand?: (params?: RuntimeInstallableLaunchCommandParams) => Promise<RuntimeInstallableLaunchCommandResolution>;
-  installOrUpgrade: () => Promise<RuntimeInstallableInstallResult>;
+  installOrUpgrade: (options?: RuntimeInstallableInstallOptions) => Promise<RuntimeInstallableInstallResult>;
   removeManagedInstall?: () => Promise<void>;
   runBackgroundAutoUpdateCheck: () => Promise<void>;
 }>;
@@ -123,6 +138,9 @@ export function getArchiveDownloadInstallableAdapter(
 ): ArchiveDownloadInstallableAdapter | null {
   if (key === BROWSER_CHROMIUM_INSTALLABLE_KEY) {
     return getBrowserChromiumArchiveDownloadInstallableAdapter();
+  }
+  if (key === COMPUTER_CUA_DRIVER_INSTALLABLE_KEY) {
+    return getComputerCuaDriverArchiveDownloadInstallableAdapter();
   }
   return null;
 }

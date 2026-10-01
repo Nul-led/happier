@@ -1,16 +1,21 @@
 import * as React from 'react';
 import { act } from 'react-test-renderer';
+import { JSDOM } from 'jsdom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { flushHookEffects, renderScreen } from '@/dev/testkit';
+import { flushHookEffects } from '@/dev/testkit/hooks/flushHookEffects';
+import { createDeferred } from '@/dev/testkit/hooks/createDeferred';
+import { renderScreen } from '@/dev/testkit/render/renderScreen';
 import type { BrowserControlViewState } from '@/sync/domains/browser/control';
 import { buildBrowserAdapterCapabilities } from '@/sync/domains/browser/adapters/capabilities';
+import { createBrowserAutomationControlService } from '@/sync/domains/browser/automation/controlService';
 import type {
     DesktopBrowserCommandResult,
     DesktopBrowserPageInfoResult,
 } from '@/sync/domains/browser/adapters/desktopWebViewBridge';
 
 import { DesktopWebViewEngine, type DesktopWebViewEngineBridge } from './DesktopWebViewEngine';
+import { LocalPreviewTarget } from '../../adapters/LocalPreviewTarget.web';
 
 vi.mock('@expo/vector-icons', async () => (await import('@/dev/testkit/mocks/icons')).createExpoVectorIconsMock());
 
@@ -78,7 +83,7 @@ function createExternalDesktopView(overrides: Partial<BrowserControlViewState> =
     };
 }
 
-function createBridge(): DesktopWebViewEngineBridge {
+function createBridge() {
     const commandResult = { ok: true, availability: availableDesktopWebView } satisfies DesktopBrowserCommandResult;
     const pageInfoResult = {
         ok: true,
@@ -90,25 +95,144 @@ function createBridge(): DesktopWebViewEngineBridge {
             currentUrl: 'https://example.com/dashboard?token=secret#panel',
             title: 'Example dashboard',
             loadingState: 'finished',
+            canGoBack: true,
+            canGoForward: false,
         },
     } satisfies DesktopBrowserPageInfoResult;
     return {
-        openView: vi.fn(async () => commandResult),
-        navigateView: vi.fn(async () => commandResult),
-        setBounds: vi.fn(async () => commandResult),
-        setPointerPassthrough: vi.fn(async () => commandResult),
-        closeView: vi.fn(async () => commandResult),
-        openDevtools: vi.fn(async () => commandResult),
-        readPageInfo: vi.fn(async () => pageInfoResult),
-        drainDiagnostics: vi.fn(async () => ({ ok: true, availability: availableDesktopWebView, messages: [] })),
-        evalScript: vi.fn(async () => commandResult),
-        dispatchNavigation: vi.fn(async () => commandResult),
-    };
+        openView: vi.fn<DesktopWebViewEngineBridge['openView']>(async () => commandResult),
+        navigateView: vi.fn<DesktopWebViewEngineBridge['navigateView']>(async () => commandResult),
+        setBounds: vi.fn<DesktopWebViewEngineBridge['setBounds']>(async () => commandResult),
+        setPointerPassthrough: vi.fn<DesktopWebViewEngineBridge['setPointerPassthrough']>(async () => commandResult),
+        closeView: vi.fn<DesktopWebViewEngineBridge['closeView']>(async () => commandResult),
+        openDevtools: vi.fn<DesktopWebViewEngineBridge['openDevtools']>(async () => commandResult),
+        readPageInfo: vi.fn<DesktopWebViewEngineBridge['readPageInfo']>(async () => pageInfoResult),
+        drainDiagnostics: vi.fn<DesktopWebViewEngineBridge['drainDiagnostics']>(async () => ({ ok: true, availability: availableDesktopWebView, messages: [] })),
+        evalScript: vi.fn<DesktopWebViewEngineBridge['evalScript']>(async () => commandResult),
+        dispatchNavigation: vi.fn<DesktopWebViewEngineBridge['dispatchNavigation']>(async () => commandResult),
+    } satisfies DesktopWebViewEngineBridge;
 }
 
 describe('DesktopWebViewEngine', () => {
     beforeEach(() => {
         vi.restoreAllMocks();
+    });
+
+    it('opens and releases a local preview in the native child view rather than a host iframe', async () => {
+        const bridge = createBridge();
+        const view = createExternalDesktopView({
+            target: { kind: 'localServicePreview', targetId: 'preview-1', machineId: 'machine-1' },
+            adapterKind: 'localPreview', currentUrl: null,
+        });
+        const screen = await renderScreen(<LocalPreviewTarget
+            title="Preview" url="http://127.0.0.1:48128/app" testID="preview"
+            view={view} profileId="profile-1" bridge={bridge}
+        />);
+        await flushHookEffects();
+        expect(bridge.openView).toHaveBeenCalledWith(expect.objectContaining({ url: 'http://127.0.0.1:48128/app' }));
+        await screen.unmount();
+        expect(bridge.closeView).toHaveBeenCalledWith(expect.objectContaining({ viewId: view.viewId }));
+    });
+
+    it('executes agent commands in the mounted page and returns injected IPC results through its registered owner', async () => {
+        // The native WebView is the boundary: execute its actual init/command scripts in a DOM,
+        // and buffer window.ipc messages exactly as the Wry host does.
+        const page = new JSDOM('<button id="go">Go</button>', { url: 'https://example.com/', runScripts: 'outside-only' });
+        // JSDOM has no native canvas renderer; report that platform capability as unavailable.
+        vi.spyOn(page.window.HTMLCanvasElement.prototype, 'getContext').mockReturnValue(null);
+        const messages: string[] = [];
+        Object.defineProperty(page.window, 'ipc', { value: { postMessage: (raw: string) => messages.push(raw) } });
+        let clicks = 0;
+        page.window.document.querySelector('#go')?.addEventListener('click', () => { clicks += 1; });
+        const bridge = createBridge();
+        const commandResult = { ok: true, availability: availableDesktopWebView } satisfies DesktopBrowserCommandResult;
+        bridge.openView.mockImplementation(async (request) => {
+            if (request.diagnosticsInitScript) page.window.eval(request.diagnosticsInitScript);
+            return commandResult;
+        });
+        bridge.evalScript.mockImplementation(async (request) => {
+            page.window.eval(request.script);
+            return commandResult;
+        });
+        bridge.drainDiagnostics.mockImplementation(async () => ({ ok: true, availability: availableDesktopWebView, messages: messages.splice(0) }));
+        const identity = {
+            browserSessionId: 'browser_session_1',
+            viewId: 'view_external_1',
+            navigationGeneration: 0,
+            collectorId: 'desktop_collector_1',
+            nonce: 'desktop_nonce_1',
+        };
+        const controlService = createBrowserAutomationControlService({ nowMs: Date.now });
+        const automation = {
+            ...identity,
+            capabilityVersion: '1.0.0',
+            adapterKind: 'externalUrl',
+            supportedActions: ['click'],
+            controlService,
+        };
+        const diagnostics = { ...identity, collectorVersion: '1.0.0', onEvents: vi.fn() };
+        const screen = await renderScreen(<DesktopWebViewEngine
+            view={createExternalDesktopView()}
+            profileId="profile_external_1"
+            testID="desktop-webview"
+            diagnostics={diagnostics}
+            automation={automation}
+            bridge={bridge}
+            pageInfoPollIntervalMs={null}
+        />);
+        await flushHookEffects({ cycles: 3, turns: 3 });
+        const request = {
+            v: 1,
+            automationRequestId: 'agent_click',
+            browserSessionId: identity.browserSessionId,
+            viewId: identity.viewId,
+            navigationGeneration: 0,
+            requestedBy: 'agent',
+            requesterRef: { kind: 'session', id: 'session_1' },
+            actionKind: 'click',
+            timeoutMs: 1_000,
+            payload: { locator: { kind: 'css', value: '#go' } },
+        } as const;
+        try {
+            const result = await controlService.executeAction(request);
+            expect(result.status).toBe('succeeded');
+            expect(clicks).toBe(1);
+            const missing = await controlService.executeAction({
+                ...request,
+                automationRequestId: 'agent_missing',
+                payload: { locator: { kind: 'css', value: '#missing' } },
+            });
+            expect(missing).toMatchObject({ status: 'failed', errorCode: 'selector_not_found' });
+
+            // The native evaluator may still be running while title/history state rerenders the host.
+            // Equivalent config objects do not replace that physical page or cancel its real owner.
+            const evaluationGate = createDeferred<void>();
+            bridge.evalScript.mockImplementation(async (input) => {
+                await evaluationGate.promise;
+                page.window.eval(input.script);
+                return commandResult;
+            });
+            const pending = controlService.executeAction({ ...request, automationRequestId: 'agent_pending' });
+            await flushHookEffects({ cycles: 1, turns: 2 });
+            await screen.update(<DesktopWebViewEngine
+                view={createExternalDesktopView({ title: 'Updated title' })}
+                profileId="profile_external_1"
+                testID="desktop-webview"
+                diagnostics={{ ...diagnostics }}
+                automation={{ ...automation, supportedActions: [...automation.supportedActions] }}
+                bridge={bridge}
+                pageInfoPollIntervalMs={null}
+            />);
+            evaluationGate.resolve(undefined);
+            expect(await pending).toMatchObject({ status: 'succeeded' });
+            expect(clicks).toBe(2);
+            await screen.unmount();
+            expect(await controlService.executeAction({ ...request, automationRequestId: 'agent_after_unmount' }))
+                .toMatchObject({ status: 'canceled', errorCode: 'owner_disconnected' });
+        } finally {
+            await screen.unmount();
+            page.window.close();
+        }
     });
 
     it('opens, bounds, navigates, omits the occluded in-frame devtools button, emits page-info diagnostics, and closes the native view', async () => {
@@ -393,6 +517,7 @@ describe('DesktopWebViewEngine', () => {
 
     it('renders a recoverable crash surface and reloads the last URL when the render process crashes', async () => {
         const bridge = createBridge();
+        const onLifecycle = vi.fn();
         const crashedPageInfo = {
             ok: true,
             availability: availableDesktopWebView,
@@ -403,6 +528,8 @@ describe('DesktopWebViewEngine', () => {
                 currentUrl: 'https://example.com/',
                 title: 'Example',
                 loadingState: 'crashed',
+                canGoBack: false,
+                canGoForward: false,
             },
         } satisfies DesktopBrowserPageInfoResult;
         // First read after open reports a crash; subsequent reads (after reload) report finished.
@@ -418,6 +545,8 @@ describe('DesktopWebViewEngine', () => {
                     currentUrl: 'https://example.com/',
                     title: 'Example',
                     loadingState: 'finished',
+                    canGoBack: false,
+                    canGoForward: false,
                 },
             } satisfies DesktopBrowserPageInfoResult);
 
@@ -428,6 +557,7 @@ describe('DesktopWebViewEngine', () => {
                 testID="desktop-webview"
                 bridge={bridge}
                 pageInfoPollIntervalMs={null}
+                onLifecycle={onLifecycle}
                 nowMs={() => 5_000}
             />,
         );
@@ -436,11 +566,14 @@ describe('DesktopWebViewEngine', () => {
         // A crashed render process surfaces a recoverable frame with a Reload affordance — not a
         // frozen page and not the generic unavailable frame.
         expect(screen.findByTestId('desktop-webview-crashed')).not.toBeNull();
-        const reload = screen.findByTestId('desktop-webview-crashed-reload');
+        // A native crash must remain failed in the reducer, not be revived by a ready navigation snapshot.
+        expect(onLifecycle).toHaveBeenCalledWith(expect.objectContaining({ kind: 'loadFailed' }));
+        expect(onLifecycle).not.toHaveBeenCalledWith(expect.objectContaining({ kind: 'navigationStateChanged' }));
+        const reload = screen.findByTestId('desktop-webview-crashed-action');
         expect(reload).not.toBeNull();
 
         vi.mocked(bridge.navigateView).mockClear();
-        await screen.pressByTestIdAsync('desktop-webview-crashed-reload');
+        await screen.pressByTestIdAsync('desktop-webview-crashed-action');
         await flushHookEffects({ cycles: 2, turns: 2 });
 
         // Reload re-issues navigation to the last good URL and clears the crashed surface.
@@ -477,6 +610,14 @@ describe('DesktopWebViewEngine', () => {
         expect(onLifecycle).toHaveBeenCalledWith({
             kind: 'loadFinished',
             url: 'https://example.com/dashboard?token=secret#panel',
+        });
+        expect(onLifecycle).toHaveBeenCalledWith({
+            kind: 'navigationStateChanged',
+            url: 'https://example.com/dashboard?token=secret#panel',
+            title: 'Example dashboard',
+            loading: false,
+            canGoBack: true,
+            canGoForward: false,
         });
 
         await screen.unmount();
@@ -559,6 +700,8 @@ describe('DesktopWebViewEngine', () => {
                     currentUrl: 'https://example.com/',
                     title: 'Example',
                     loadingState: 'loading',
+                    canGoBack: false,
+                    canGoForward: false,
                 },
             } satisfies DesktopBrowserPageInfoResult);
             const onLifecycle = vi.fn();
@@ -638,6 +781,18 @@ describe('DesktopWebViewEngine', () => {
             script: expect.stringContaining('desktop_collector_1'),
         }));
 
+        await screen.unmount();
+    });
+
+    it('dispatches Back and Forward through native history rather than injecting guessed history', async () => {
+        const bridge = createBridge();
+        const props = { view: createExternalDesktopView(), profileId: 'profile_external_1', testID: 'desktop-webview', bridge, pageInfoPollIntervalMs: null };
+        const screen = await renderScreen(<DesktopWebViewEngine {...props} navigationCommand={{ commandId: 'back_1', kind: 'goBack' }} />);
+        await flushHookEffects({ cycles: 3, turns: 3 });
+        expect(bridge.dispatchNavigation).toHaveBeenCalledWith({ browserSessionId: 'browser_session_1', viewId: 'view_external_1', kind: 'goBack' });
+        await screen.update(<DesktopWebViewEngine {...props} navigationCommand={{ commandId: 'forward_1', kind: 'goForward' }} />);
+        await flushHookEffects({ cycles: 2, turns: 2 });
+        expect(bridge.dispatchNavigation).toHaveBeenCalledWith({ browserSessionId: 'browser_session_1', viewId: 'view_external_1', kind: 'goForward' });
         await screen.unmount();
     });
 

@@ -174,6 +174,8 @@ describe('Connected Services Team credential broker source', () => {
 
     const opened = await open(request());
     expect(opened).not.toBeNull();
+    readResource.mockRejectedValueOnce(new Error('Home unreachable'));
+    await expect(opened!.sourceCurrentness.isCurrent()).rejects.toThrow('Home unreachable');
     revision = 8;
     await expect(opened!.sourceCurrentness.isCurrent()).resolves.toBe(true);
     // A real withdrawal of the resource still ends the operation.

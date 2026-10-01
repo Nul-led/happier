@@ -5,9 +5,12 @@ import type {
     TeamInvitationCreateResultV1,
 } from '@happier-dev/protocol/teams';
 
+import { RoundButton } from '@/components/ui/buttons/RoundButton';
+import { FieldTextInput } from '@/components/ui/forms/FieldTextInput';
+import { AttentionBanner } from '@/components/ui/lists/AttentionBanner';
 import { Item } from '@/components/ui/lists/Item';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
-import { TextInput } from '@/components/ui/text/Text';
+import { SectionButtonRow } from '@/components/ui/lists/SectionButtonRow';
 import { useTeamInvitations } from '@/hooks/teams/useTeamInvitations';
 import { randomUUID } from '@/platform/randomUUID';
 import {
@@ -30,7 +33,11 @@ const ADMISSIBLE_ROLES: readonly TeamInvitationAdmissibleRoleV1[] = Object.freez
 
 type Delivery = 'link' | 'email';
 
-const InviteForm = React.memo(function InviteForm(props: Readonly<{ context: TeamSectionContext }>) {
+/**
+ * The one invitation form: delivery, role, history access and the confined bearer. The Team's own
+ * invitation page and the Home console's Invite people dialog both render it.
+ */
+export const TeamInvitationForm = React.memo(function TeamInvitationForm(props: Readonly<{ context: TeamSectionContext }>) {
     const { context } = props;
     const [delivery, setDelivery] = React.useState<Delivery>('link');
     const [email, setEmail] = React.useState('');
@@ -209,8 +216,15 @@ const InviteForm = React.memo(function InviteForm(props: Readonly<{ context: Tea
 
     if (!canManageInvitations) {
         return (
-            <ItemGroup footer={t('teams.errors.forbidden')}>
-                <Item testID="team-invite-forbidden" title={t('homeGovernance.forbiddenTitle')} showChevron={false} />
+            <ItemGroup>
+                <Item
+                    testID="team-invite-forbidden"
+                    title={t('homeGovernance.forbiddenTitle')}
+                    subtitle={t('teams.errors.forbidden')}
+                    subtitleLines={0}
+                    mode="info"
+                    showChevron={false}
+                />
             </ItemGroup>
         );
     }
@@ -226,35 +240,28 @@ const InviteForm = React.memo(function InviteForm(props: Readonly<{ context: Tea
                     missing link is not proof of a delivered email: it also
                     happens for an egress-restricted caller, and a mailed
                     invitation can have failed at the mail boundary. */}
-                {deliveryResult !== null ? (
-                    <ItemGroup>
-                        <Item
-                            testID={deliveryResult.status === 'sent'
-                                ? 'team-invite-delivery-sent'
-                                : 'team-invite-delivery-failed'}
-                            title={deliveryResult.status === 'sent'
-                                ? t('teams.invitations.deliverySent')
-                                : t('teams.invitations.deliveryFailed')}
-                            showChevron={false}
-                        />
-                    </ItemGroup>
-                ) : null}
-
-                {canRetryEmail ? (
-                    <ItemGroup footer={error ?? undefined}>
-                        <Item
-                            testID="team-invite-retry-delivery"
-                            title={t('teams.invitations.deliveryRetry')}
-                            loading={retryingDelivery}
-                            disabled={!context.canMutate || retryingDelivery}
-                            onPress={() => void reissueIssuedInvitation()}
-                            showChevron={false}
-                        />
-                    </ItemGroup>
+                {deliveryResult !== null || canRetryEmail ? (
+                    <AttentionBanner
+                        testID={deliveryResult?.status === 'sent'
+                            ? 'team-invite-delivery-sent'
+                            : 'team-invite-delivery-failed'}
+                        tone={deliveryResult?.status === 'sent' ? 'neutral' : 'warning'}
+                        title={deliveryResult?.status === 'sent'
+                            ? t('teams.invitations.deliverySent')
+                            : t('teams.invitations.deliveryFailed')}
+                        description={error ?? undefined}
+                        action={canRetryEmail ? {
+                            label: t('teams.invitations.deliveryRetry'),
+                            onPress: () => void reissueIssuedInvitation(),
+                            loading: retryingDelivery,
+                            disabled: !context.canMutate || retryingDelivery,
+                            testID: 'team-invite-retry-delivery',
+                        } : null}
+                    />
                 ) : null}
 
                 {joinUrl === null && !emailBound && linkUnavailable ? (
-                    <ItemGroup footer={error ?? t('teams.invitations.linkUnavailableBody')}>
+                    <ItemGroup description={error ?? t('teams.invitations.linkUnavailableBody')}>
                         <Item
                             testID="team-invite-link-unavailable"
                             title={t('teams.invitations.linkUnavailableRow')}
@@ -263,7 +270,7 @@ const InviteForm = React.memo(function InviteForm(props: Readonly<{ context: Tea
                         />
                     </ItemGroup>
                 ) : joinUrl === null && !emailBound ? (
-                    <ItemGroup footer={error ?? t('teams.invitations.bearerUnavailable')}>
+                    <ItemGroup description={error ?? t('teams.invitations.bearerUnavailable')}>
                         <Item
                             testID="team-invite-bearer-unavailable"
                             title={deliveryResult === null
@@ -341,7 +348,7 @@ const InviteForm = React.memo(function InviteForm(props: Readonly<{ context: Tea
                 // instead of promising a link this Home cannot render.
                 <ItemGroup
                     title={t('teams.invitations.inviteTitle', { team: context.team.name })}
-                    footer={t('teams.invitations.linkUnavailableBody')}
+                    description={t('teams.invitations.linkUnavailableBody')}
                 >
                     <Item
                         testID="team-invite-link-unavailable-notice"
@@ -356,7 +363,7 @@ const InviteForm = React.memo(function InviteForm(props: Readonly<{ context: Tea
                 // the sheet says the link is the way and why.
                 <ItemGroup
                     title={t('teams.invitations.inviteTitle', { team: context.team.name })}
-                    footer={t('teams.invitations.emailUnavailable')}
+                    description={t('teams.invitations.emailUnavailable')}
                 >
                     <Item
                         testID="team-invite-delivery-link-only"
@@ -368,22 +375,30 @@ const InviteForm = React.memo(function InviteForm(props: Readonly<{ context: Tea
             ) : null}
 
             {effectiveDelivery === 'email' ? (
-                <ItemGroup title={t('teams.invitations.emailLabel')}>
-                    <TextInput
-                        testID="team-invite-email"
-                        value={email}
-                        onChangeText={setEmail}
-                        placeholder={t('teams.invitations.emailPlaceholder')}
-                        accessibilityLabel={t('teams.invitations.emailLabel')}
-                        inputMode="email"
-                        autoCapitalize="none"
+                <ItemGroup>
+                    <Item
+                        title={t('teams.invitations.emailLabel')}
+                        accessoryLayout="adaptive"
+                        showChevron={false}
+                        rightElement={(
+                            <FieldTextInput
+                                testID="team-invite-email"
+                                value={email}
+                                onChangeText={setEmail}
+                                placeholder={t('teams.invitations.emailPlaceholder')}
+                                accessibilityLabel={t('teams.invitations.emailLabel')}
+                                keyboardType="email-address"
+                                autoCapitalize="none"
+                                autoFocus
+                            />
+                        )}
                     />
                 </ItemGroup>
             ) : null}
 
             <ItemGroup
                 title={t('teams.members.roleLabel')}
-                footer={role === 'guest'
+                description={role === 'guest'
                     ? t('teams.roleHelp.guest')
                     : role === 'admin'
                         ? t('teams.roleHelp.admin')
@@ -412,7 +427,7 @@ const InviteForm = React.memo(function InviteForm(props: Readonly<{ context: Tea
             {historyChoiceAvailable ? (
                 <ItemGroup
                     title={t('teams.history.label')}
-                    footer={t('teams.history.scopeNote')}
+                    description={t('teams.history.scopeNote')}
                     accessibilityRole="radiogroup"
                     accessibilityLabel={t('teams.history.label')}
                 >
@@ -439,22 +454,25 @@ const InviteForm = React.memo(function InviteForm(props: Readonly<{ context: Tea
                 </ItemGroup>
             ) : null}
 
-            <ItemGroup
-                footer={error ?? (effectiveDelivery === 'link'
-                    ? t('teams.invitations.linkNotice', {
-                        team: context.team.name,
-                        role: teamRoleLabel(role),
-                    })
-                    : undefined)}
-            >
-                <Item
-                    testID="team-invite-submit"
-                    title={t('teams.invitations.create')}
-                    loading={submitting}
-                    disabled={!canSubmit}
-                    onPress={() => void submit()}
-                    showChevron={false}
-                />
+            <ItemGroup surface="none">
+                <SectionButtonRow
+                    footnote={error ?? (effectiveDelivery === 'link'
+                        ? t('teams.invitations.linkNotice', {
+                            team: context.team.name,
+                            role: teamRoleLabel(role),
+                        })
+                        : null)}
+                    footnoteTone={error ? 'danger' : 'secondary'}
+                >
+                    <RoundButton
+                        testID="team-invite-submit"
+                        size="small"
+                        title={t('teams.invitations.create')}
+                        loading={submitting}
+                        disabled={!canSubmit}
+                        onPress={() => void submit()}
+                    />
+                </SectionButtonRow>
             </ItemGroup>
         </>
     );
@@ -465,8 +483,13 @@ export const TeamInvitationCreateScreen = React.memo(function TeamInvitationCrea
     teamId: string;
 }>) {
     return (
-        <TeamSection serverId={props.serverId} teamId={props.teamId} title={t('teams.invitations.invite')}>
-            {(context) => <InviteForm context={context} />}
+        <TeamSection
+            serverId={props.serverId}
+            teamId={props.teamId}
+            title={t('teams.invitations.invite')}
+            description={t('teams.pages.newInvitation')}
+        >
+            {(context) => <TeamInvitationForm context={context} />}
         </TeamSection>
     );
 });

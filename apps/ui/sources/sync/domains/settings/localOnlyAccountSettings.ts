@@ -1,4 +1,5 @@
 import type { Settings } from '@/sync/domains/settings/settings';
+import { LEGACY_AUTHORING_MEMORY_SETTINGS_KEYS } from '@happier-dev/protocol';
 
 import {
     NewSessionOrdinaryEntryDraftIdSchema,
@@ -51,14 +52,26 @@ export function stripDerivedAccountSettingsProjections(
     const {
         currentSecretBindingsByProfileId: _currentSecretBindingsByProfileId,
         currentFavoriteModelSelectionsV1: _currentFavoriteModelSelectionsV1,
-        currentRememberedEngineSelectionsByScopeV1: _currentRememberedEngineSelectionsByScopeV1,
         ...rest
     } = settings;
-    return rest;
+    const stripped = rest as Record<string, unknown>;
+    delete stripped.currentRememberedEngineSelectionsByScopeV1;
+    return stripped as Partial<Settings>;
+}
+
+/** Only sparse pending/input deltas use this; authoritative raw roots survive until import commits. */
+export function stripLegacyAuthoringMemorySettingsDelta<T extends object>(delta: T): T {
+    const next = { ...delta } as T & Record<string, unknown>;
+    for (const key of [...LEGACY_AUTHORING_MEMORY_SETTINGS_KEYS, 'currentRememberedEngineSelectionsByScopeV1']) {
+        delete next[key];
+    }
+    return next;
 }
 
 export function stripLocalOnlyAccountSettings(settings: Partial<Settings>): Partial<Settings> {
     const {
+        sessionSplitCanvasLayoutsV1: _sessionSplitCanvasLayoutsV1,
+        machineAdministrationTargetsLocalV1: _machineAdministrationTargetsLocalV1,
         lastUsedAgent: _lastUsedAgent,
         lastUsedBackendTarget: _lastUsedBackendTarget,
         lastNewSessionAgentPickerViewV1: _lastNewSessionAgentPickerView,

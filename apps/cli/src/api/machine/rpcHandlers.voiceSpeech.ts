@@ -360,8 +360,6 @@ export function registerMachineVoiceSpeechRpcHandlers(params: Readonly<{
         && VOICE_SPEECH_CREDENTIAL_PHASES.some((phase) => (
           hasDeclaredRawSpeechAccess(phase) || hasDeclaredMediatedSpeechAccess(phase)
         ))
-        && (lease.registry.generation === undefined
-          || speech.generation === String(lease.registry.generation))
       ) {
         const dependencies = await resolveRawCredentialDependencies();
         if (dependencies?.getAccountSettingsSnapshot) {
@@ -414,7 +412,6 @@ export function registerMachineVoiceSpeechRpcHandlers(params: Readonly<{
                   phase,
                   machineId: params.machineId ?? null,
                   materialization: caller,
-                  immutableGenerationId: lifecycle.generation,
                   isRuntimeAuthorityCurrent: () => speech.isCurrent() && lifecycle.isCurrent(),
                 },
                 ...(dependencies.credentials ? { credentials: dependencies.credentials } : {}),
@@ -779,7 +776,7 @@ export function registerMachineVoiceSpeechRpcHandlers(params: Readonly<{
             interactions: createPluginInteractionsService({
               currentSession: null,
               signal,
-              isGenerationCurrent: isCurrent,
+              isOccurrenceCurrent: isCurrent,
             }),
             signal,
             tools: Object.freeze([]),

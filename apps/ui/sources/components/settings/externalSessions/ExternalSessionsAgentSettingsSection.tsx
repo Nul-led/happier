@@ -1,13 +1,10 @@
 import * as React from 'react';
-import { useUnistyles } from 'react-native-unistyles';
 
-import { SafeIonicons } from '@/components/ui/icons/SafeIonicons';
 import { Item } from '@/components/ui/lists/Item';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
 import { t } from '@/text';
 
 import { ExternalSessionsIntegrationSection } from './ExternalSessionsIntegrationSection';
-import { Icon } from '@/components/ui/icons/Icon';
 import type {
     ExternalSessionsAutoLinkSourceDescriptor,
     ExternalSessionsIntegrationDescriptor,
@@ -17,6 +14,7 @@ import type {
 import type {
     ExternalSessionsIntegrationInventoryState,
 } from './externalSessionsIntegrationController';
+import { Icon } from '@/components/ui/icons/Icon';
 
 export const ExternalSessionsAgentSettingsSection = React.memo(function ExternalSessionsAgentSettingsSection(
     props: Readonly<{
@@ -35,7 +33,6 @@ export const ExternalSessionsAgentSettingsSection = React.memo(function External
         onManageAll: () => void;
     }>,
 ) {
-    const { theme } = useUnistyles();
     return (
         <>
             <ExternalSessionsIntegrationSection
@@ -51,20 +48,21 @@ export const ExternalSessionsAgentSettingsSection = React.memo(function External
                 loadingMoreInventory={props.loadingMoreInventory}
                 onLoadMoreInventory={props.onLoadMoreInventory}
             />
-            <ItemGroup title={t('externalSessions.settingsAgentActionsGroupTitle')}>
+            {/* On an agent's page, browsing and managing its external sessions are its integrations. */}
+            <ItemGroup title={t('settingsAgents.detailPage.integrationsTitle')}>
                 {props.onBrowse ? (
                     <Item
                         testID="settings-external-sessions-agent-browse"
+                        icon={<Icon name="folder-open" />}
                         title={t('externalSessions.settingsAgentBrowseTitle', { agent: props.agentTitle })}
-                        icon={<Icon name="folder-open" size={29} color={theme.colors.accent.blue} />}
                         onPress={props.onBrowse}
                     />
                 ) : null}
                 <Item
                     testID="settings-external-sessions-manage-all"
+                    icon={<Icon name="sliders-horizontal" />}
                     title={t('externalSessions.settingsManageAllTitle')}
                     subtitle={t('externalSessions.settingsManageAllSubtitle')}
-                    icon={<Icon name="sliders-horizontal" size={29} color={theme.colors.text.secondary} />}
                     onPress={props.onManageAll}
                 />
             </ItemGroup>

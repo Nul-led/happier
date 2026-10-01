@@ -1,7 +1,13 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import axios from 'axios';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
-import { accountSettingsParse, FeaturesResponseSchema } from '@happier-dev/protocol';
+import {
+  accountSettingsParse,
+  FeaturesResponseSchema,
+  formatSavedSecretCatalogReferenceV1,
+  sealSavedSecretResourceStoredContentV1,
+} from '@happier-dev/protocol';
 
 import { RpcHandlerManager } from '@/api/rpc/RpcHandlerManager';
 import { createExecutionRunOccurrenceWitnessRegistry } from '@/agent/runtime/bridges/executionRun/runOccurrenceWitness';
@@ -9,7 +15,29 @@ import type { AgentInvocationTurnAdmissionWitness } from '@/plugins/runtime/invo
 import type { ExecutionRunController } from '@/agent/executionRuns/controllers/types';
 import type { SessionActionConfirmationRuntimeBinding } from '@/session/actions/approvals/sessionActionConfirmation';
 import type { HappyMcpSessionClient } from '@/mcp/startHappyServer';
+import {
+  resetActiveAccountSettingsSnapshotForTests,
+  setActiveAccountSettingsSnapshot,
+} from '@/settings/accountSettings/activeAccountSettingsSnapshot';
+import { resolveAccountSettingsScopeKeyForToken } from '@/settings/accountSettings/accountSettingsScopeKey';
 import { resolveRunnerMcpServers } from './resolveRunnerMcpServers';
+
+const persistenceMocks = vi.hoisted(() => ({ readStoredCredentials: vi.fn() }));
+
+vi.mock('axios', () => ({ default: { get: vi.fn() } }));
+vi.mock('@/persistence', async (importOriginal) => ({
+  ...await importOriginal<typeof import('@/persistence')>(),
+  readStoredCredentials: persistenceMocks.readStoredCredentials,
+}));
+vi.mock('@/features/serverFeaturesClient', () => ({
+  fetchServerFeaturesSnapshot: vi.fn(async () => ({
+    status: 'ready' as const,
+    features: {
+      features: { teams: { enabled: true, credentialResources: { enabled: true } } },
+      capabilities: {},
+    },
+  })),
+}));
 
 // The daemon catalog is a transport boundary; the MCP server and Action execution stay real.
 vi.mock('@/daemon/controlClient', async (importOriginal) => ({
@@ -17,9 +45,92 @@ vi.mock('@/daemon/controlClient', async (importOriginal) => ({
   readDaemonPluginCatalog: async () => ({ kind: 'unavailable', code: 'daemon_unavailable' }),
 }));
 
-afterEach(() => vi.unstubAllEnvs());
+afterEach(() => {
+  vi.unstubAllEnvs();
+  resetActiveAccountSettingsSnapshotForTests();
+});
 
 describe('Session-owned Run MCP binding', () => {
+  it('refreshes selected shared Saved Secrets before composing an Execution Run MCP profile', async () => {
+    const token = 'runtime-test-token';
+    const resourceId = 'revoked-run-mcp-resource';
+    const ref = formatSavedSecretCatalogReferenceV1({ kind: 'shared_resource', id: resourceId });
+    const accountSettings = accountSettingsParse({
+      mcpServersSettingsV1: {
+        v: 1,
+        strictMode: true,
+        servers: [{
+          id: 'shared-run-server',
+          name: 'shared-run-server',
+          transport: 'stdio',
+          stdio: { command: 'node', args: ['server.js'] },
+          env: { API_KEY: { t: 'savedSecret', secretId: ref } },
+          createdAt: 1,
+          updatedAt: 1,
+        }],
+        bindings: [{
+          id: 'shared-run-binding',
+          serverId: 'shared-run-server',
+          enabled: true,
+          target: { t: 'allMachines' },
+          createdAt: 1,
+          updatedAt: 1,
+        }],
+      },
+    });
+    const staleResource = {
+      resourceId,
+      ownerAccountId: 'owner-account',
+      displayName: 'Revoked run key',
+      kind: 'apiKey' as const,
+      encryptionMode: 'plain' as const,
+      revision: 4,
+      storedContent: sealSavedSecretResourceStoredContentV1({
+        resourceId,
+        mode: 'plain',
+        content: { v: 1, name: 'Revoked run key', kind: 'apiKey', value: 'stale-value' },
+      }),
+      materialStatus: 'ready' as const,
+    };
+    setActiveAccountSettingsSnapshot({
+      source: 'network',
+      settings: accountSettings,
+      settingsVersion: 1,
+      loadedAtMs: 1,
+      settingsSecretsReadKeys: [],
+      scopeKey: resolveAccountSettingsScopeKeyForToken(token),
+      savedSecretCatalogState: 'ready',
+      savedSecretResources: [staleResource],
+    });
+    persistenceMocks.readStoredCredentials.mockResolvedValue({ token, encryption: null });
+    vi.mocked(axios.get).mockResolvedValue({ status: 200, data: { resources: [] } });
+
+    await expect(resolveRunnerMcpServers({
+      session: {} as HappyMcpSessionClient,
+      credentials: { token, encryption: null },
+      accountSettings,
+      savedSecretResources: [staleResource],
+      machineId: 'machine-a',
+      directory: '/run/a',
+      env: {},
+      tmpDir: null,
+      executionRun: {
+        runId: 'run-a',
+        workDepth: 0,
+        cwd: '/run/a',
+        signal: new AbortController().signal,
+        isCurrent: () => true,
+        readActiveTurnAdmissionWitness: () => null,
+        readCurrentRunOccurrence: () => null,
+      },
+    })).rejects.toMatchObject({
+      code: 'saved_secret_resolution_failed',
+      status: 'forbidden',
+      reference: ref,
+    });
+    expect(axios.get).toHaveBeenCalledTimes(1);
+  });
+
   it('keeps the parent profile but binds confirmation to this Run occurrence and admitted turn', async () => {
     vi.stubEnv('HAPPIER_E2E_PROVIDER_USE_CLI_SOURCE_ENTRYPOINT', '1');
     const lifetime = new AbortController();
@@ -62,7 +173,6 @@ describe('Session-owned Run MCP binding', () => {
             },
             sessions: {
               enabled: true,
-              collaboration: { enabled: true },
               conversations: { enabled: true },
             },
           },
@@ -87,7 +197,7 @@ describe('Session-owned Run MCP binding', () => {
       machineId: 'machine-a', directory: '/run/a',
       resolvedMcpServers: { extra: { command: 'authorized-tool', env: { SECRET: 'already-resolved' } } },
       executionRun: {
-        runId: 'run-a', cwd: '/run/a', signal: lifetime.signal,
+        runId: 'run-a', workDepth: 4, cwd: '/run/a', signal: lifetime.signal,
         isCurrent: () => !lifetime.signal.aborted,
         getPermissionMode: () => 'default',
         readActiveTurnAdmissionWitness: () => witness,

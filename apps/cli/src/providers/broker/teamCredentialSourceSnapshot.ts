@@ -101,6 +101,7 @@ function manualConnectedAccountVersion(input: Readonly<{
     configurationRevision: input.material.configurationRevision,
     authenticationModeId: input.material.authenticationModeId,
     contributionContractVersion: directContributionContract,
+    privateConfigurationFingerprint: input.material.serviceConfigurationFingerprint,
   });
 }
 
@@ -225,7 +226,7 @@ export function createProviderConnectionTeamCredentialSourceSnapshot(input: Read
       String(input.expected.provider.definitionRevision),
       input.expected.endpointSetFingerprint,
       input.expected.grantFingerprint,
-      String(input.expected.runtimeRegistryGeneration ?? 'no-runtime-generation'),
+      input.expected.activationOccurrenceId ?? 'no-activation-occurrence',
       input.expected.endpoint.endpointTemplateId,
       input.expected.endpoint.normalizedUrl,
       input.expected.endpoint.protocol,

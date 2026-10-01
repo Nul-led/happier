@@ -30,6 +30,8 @@ import {
   createActionExecutor,
   type ActionExecutorDeps,
 } from '@happier-dev/protocol';
+import { SessionBoardGetInputV1Schema } from '@happier-dev/protocol/sessions/board';
+import { createCliActionDeps } from '@/session/actions/createCliActionDeps';
 
 import { createResolvedContributionRegistry } from '@/plugins/projection/registry/createResolvedContributionRegistry';
 import type { ProjectedPluginToolCatalogEntry } from '@/plugins/runtime/toolCatalog';
@@ -37,24 +39,48 @@ import type { ProjectedPluginToolCatalogEntry } from '@/plugins/runtime/toolCata
 import { createActionToolExecutorBridge } from './createActionToolExecutorBridge';
 
 describe('createActionToolExecutorBridge', () => {
-  it('keeps current-Session Board tools on the host-bound Session before family dispatch', async () => {
-    const sessionBoardAction = vi.fn(async (args: Readonly<{
-      input: Readonly<{ sessionId?: string }>;
-      context: Readonly<{ defaultSessionId?: string | null; serverId?: string | null }>;
-    }>) => ({
-      v: 1 as const,
-      serverId: args.context.serverId ?? 'home-1',
-      sessionId: args.input.sessionId ?? args.context.defaultSessionId ?? 'missing-session',
-      capabilities: { readTranscript: true, editSessionRecords: true },
-      layout: null,
-      items: [],
-      incomplete: false,
-      page: { cursor: null, hasNext: false },
+  it('defaults normal agent listing to the led subtree and retains an explicitly restricted corpus', async () => {
+    // The list port is the authenticated server HTTP boundary; the bridge and executor stay real.
+    const sessionList = vi.fn(async () => ({
+      sessions: [], nextCursor: null, hasNext: false,
+      queryVersion: 1, attentionNextCursor: null, attentionHasNext: false,
     }));
     const executor = createActionExecutor({
+      ...createCliActionDeps({ token: 'test-token', sessionId: 'lead', mode: 'plain', ctx: null }),
+      sessionList,
+      isActionApprovalRequired: () => false,
+    });
+    const bridge = createActionToolExecutorBridge({ surface: 'agent', executor });
+    await expect(bridge.executeActionByToolName('session_list', {}, 'lead')).resolves.toMatchObject({ ok: true });
+    expect(sessionList).toHaveBeenCalledWith(expect.objectContaining({ query: expect.objectContaining({ underSessionId: 'lead' }) }));
+    const restricted = createActionToolExecutorBridge({
+      surface: 'agent', executor, resolveSessionListAccess: () => 'current_session',
+    });
+    sessionList.mockClear();
+    await expect(restricted.executeActionByToolName('session_list', { underSessionId: 'lead' }, 'lead'))
+      .resolves.toMatchObject({ ok: false, errorCode: 'unsupported_action' });
+    expect(sessionList).not.toHaveBeenCalled();
+  });
+
+  it('keeps current-Session Board tools on the host-bound Session before family dispatch', async () => {
+    const sessionBoardAction = vi.fn(async (args: Parameters<NonNullable<ActionExecutorDeps['sessionBoardAction']>>[0]) => {
+      const input = SessionBoardGetInputV1Schema.parse(args.input);
+      return {
+        v: 1 as const,
+        serverId: args.context.serverId ?? 'home-1',
+        sessionId: input.sessionId ?? args.context.defaultSessionId ?? 'missing-session',
+        capabilities: { readTranscript: true, editSessionRecords: true },
+        layout: null,
+        items: [],
+        incomplete: false,
+        page: { cursor: null, hasNext: false },
+      };
+    });
+    const executor = createActionExecutor({
+      ...createCliActionDeps({ token: 'test-token', sessionId: 'session-1', mode: 'plain', ctx: null }),
       sessionBoardAction,
       isActionApprovalRequired: () => false,
-    } as unknown as ActionExecutorDeps);
+    });
     const bridge = createActionToolExecutorBridge({
       surface: 'agent',
       executor: {
@@ -166,7 +192,7 @@ describe('createActionToolExecutorBridge', () => {
       modelSelection: {
         v: 1,
         updatedAt: 1,
-        ref: { agentTargetKey: 'backend:claude', modelId: 'claude-opus-4-8' },
+        ref: { agentTargetKey: 'agent:happier.agent.claude/claude', modelId: 'claude-opus-4-8' },
       },
     } as const;
 
@@ -953,7 +979,7 @@ describe('createActionToolExecutorBridge', () => {
       inputSchema: { type: 'object', additionalProperties: false },
       safety: 'safe',
       surfaces: ['agent'],
-      expectedContributorImmutableGenerationId: 'generation-g',
+      expectedContributorOccurrenceId: 'occurrence-g',
     }];
     const bridge = createActionToolExecutorBridge({
       surface: 'agent',
@@ -980,13 +1006,13 @@ describe('createActionToolExecutorBridge', () => {
       expect.objectContaining({
         actionId: 'acme.composition/review-start',
         context: expect.objectContaining({
-          expectedContributorImmutableGenerationId: 'generation-g',
+          expectedContributorOccurrenceId: 'occurrence-g',
         }),
       }),
       expect.objectContaining({
         actionId: 'acme.composition/review-start',
         context: expect.objectContaining({
-          expectedContributorImmutableGenerationId: 'generation-g',
+          expectedContributorOccurrenceId: 'occurrence-g',
         }),
       }),
     ]);

@@ -1,15 +1,15 @@
 import * as React from 'react';
-import { View, type GestureResponderEvent, type LayoutChangeEvent, type ViewStyle } from 'react-native';
-import { StyleSheet, useUnistyles } from 'react-native-unistyles';
+import { useUnistyles } from 'react-native-unistyles';
 
-import { Text } from '@/components/ui/text/Text';
-import { Typography } from '@/constants/Typography';
+import { Slider } from '@/components/ui/forms/Slider';
+import { Icon, ICON_SIZE } from '@/components/ui/icons/Icon';
+import { Item } from '@/components/ui/lists/Item';
 import {
     PET_COMPANION_SIZE_SCALE_MAX,
     PET_COMPANION_SIZE_SCALE_MIN,
+    PET_COMPANION_SIZE_SCALE_STEP,
     normalizePetCompanionSizeScale,
     petCompanionSizeScaleToPercent,
-    resolvePetCompanionSizeScaleFromTrackPosition,
 } from '@/sync/domains/pets/companionSizeScale';
 import { t } from '@/text';
 
@@ -19,160 +19,39 @@ type PetCompanionSizeSliderProps = Readonly<{
     showDivider?: boolean;
 }>;
 
-function readLocationX(event: GestureResponderEvent): number | null {
-    const locationX = event.nativeEvent.locationX;
-    return typeof locationX === 'number' && Number.isFinite(locationX) ? locationX : null;
-}
-
+/** The pet size row: a real ordered scale, so a slider whose ends show small and large. */
 export function PetCompanionSizeSlider(props: PetCompanionSizeSliderProps): React.ReactElement {
     const { theme } = useUnistyles();
-    const [trackWidth, setTrackWidth] = React.useState(0);
     const value = normalizePetCompanionSizeScale(props.value);
-    const progress =
-        (value - PET_COMPANION_SIZE_SCALE_MIN)
-        / (PET_COMPANION_SIZE_SCALE_MAX - PET_COMPANION_SIZE_SCALE_MIN);
     const percent = petCompanionSizeScaleToPercent(value);
-
-    const updateFromEvent = React.useCallback((event: GestureResponderEvent) => {
-        const locationX = readLocationX(event);
-        if (locationX == null) return;
-        props.onValueChange(resolvePetCompanionSizeScaleFromTrackPosition({
-            locationX,
-            trackWidth,
-        }));
-    }, [props, trackWidth]);
-
-    const handleTrackLayout = React.useCallback((event: LayoutChangeEvent) => {
-        setTrackWidth(event.nativeEvent.layout.width);
-    }, []);
+    const { onValueChange } = props;
+    const handleValueChange = React.useCallback((next: number) => {
+        onValueChange(normalizePetCompanionSizeScale(next));
+    }, [onValueChange]);
 
     return (
-        <View
-            testID="settings-pets-companion-size-slider"
-            accessibilityRole="adjustable"
-            accessibilityLabel={t('settingsPets.companionSizeTitle')}
-            accessibilityValue={{
-                min: 75,
-                max: 150,
-                now: percent,
-                text: t('settingsPets.companionSizeValue', { percent }),
-            }}
-            style={styles.row}
-        >
-            <View style={styles.header}>
-                <View style={styles.copy}>
-                    <Text numberOfLines={1} style={[styles.title, { color: theme.colors.text.primary }]}>
-                        {t('settingsPets.companionSizeTitle')}
-                    </Text>
-                    <Text numberOfLines={2} style={[styles.subtitle, { color: theme.colors.text.secondary }]}>
-                        {t('settingsPets.companionSizeSubtitle')}
-                    </Text>
-                </View>
-                <Text
-                    testID="settings-pets-companion-size-slider-value"
-                    style={[styles.value, { color: theme.colors.text.secondary }]}
-                >
-                    {t('settingsPets.companionSizeValue', { percent })}
-                </Text>
-            </View>
-            <View
-                testID="settings-pets-companion-size-slider-track"
-                onLayout={handleTrackLayout}
-                onStartShouldSetResponder={() => true}
-                onMoveShouldSetResponder={() => true}
-                onResponderGrant={updateFromEvent}
-                onResponderMove={updateFromEvent}
-                style={[
-                    styles.trackHitbox,
-                    props.showDivider === false ? styles.lastRowPadding : null,
-                ]}
-            >
-                <View style={[styles.track, { backgroundColor: theme.colors.border.default }]}>
-                    <View
-                        testID="settings-pets-companion-size-slider-fill"
-                        style={[
-                            styles.fill,
-                            {
-                                width: `${Math.round(progress * 100)}%`,
-                                backgroundColor: theme.colors.button.primary.background,
-                            },
-                        ]}
-                    />
-                    <View
-                        testID="settings-pets-companion-size-slider-thumb"
-                        style={[
-                            styles.thumb,
-                            {
-                                left: `${Math.round(progress * 100)}%`,
-                                backgroundColor: theme.colors.button.primary.background,
-                                borderColor: theme.colors.surface.base,
-                            },
-                        ]}
-                    />
-                </View>
-            </View>
-        </View>
+        <Item
+            testID="settings-pets-companion-size"
+            title={t('settingsPets.companionSizeTitle')}
+            subtitle={`${t('settingsPets.companionSizeValue', { percent })} · ${t('settingsPets.companionSizeSubtitle')}`}
+            showDivider={props.showDivider}
+            accessoryLayout="adaptive"
+            showChevron={false}
+            rightElement={(
+                <Slider
+                    testID="settings-pets-companion-size-slider"
+                    value={value}
+                    min={PET_COMPANION_SIZE_SCALE_MIN}
+                    max={PET_COMPANION_SIZE_SCALE_MAX}
+                    step={PET_COMPANION_SIZE_SCALE_STEP}
+                    trackWidth={180}
+                    accessibilityLabel={t('settingsPets.companionSizeTitle')}
+                    formatValueText={(next) => t('settingsPets.companionSizeValue', { percent: petCompanionSizeScaleToPercent(next) })}
+                    leading={<Icon name="paw-print" size={ICON_SIZE.xs} color={theme.colors.text.secondary} />}
+                    trailing={<Icon name="paw-print" size={ICON_SIZE.md} color={theme.colors.text.secondary} />}
+                    onValueChange={handleValueChange}
+                />
+            )}
+        />
     );
 }
-
-const styles = StyleSheet.create({
-    row: {
-        paddingHorizontal: 16,
-        paddingTop: 14,
-        paddingBottom: 12,
-        gap: 10,
-    } satisfies ViewStyle,
-    header: {
-        alignItems: 'center',
-        flexDirection: 'row',
-        gap: 14,
-        justifyContent: 'space-between',
-    },
-    copy: {
-        flex: 1,
-        minWidth: 0,
-    },
-    title: {
-        ...Typography.default('semiBold'),
-        fontSize: 15,
-        lineHeight: 20,
-    },
-    subtitle: {
-        ...Typography.default('regular'),
-        fontSize: 13,
-        lineHeight: 18,
-    },
-    value: {
-        ...Typography.default('semiBold'),
-        fontSize: 13,
-        fontVariant: ['tabular-nums'],
-        lineHeight: 18,
-    },
-    trackHitbox: {
-        height: 40,
-        justifyContent: 'center',
-    },
-    lastRowPadding: {
-        paddingBottom: 2,
-    },
-    track: {
-        borderRadius: 999,
-        height: 6,
-        overflow: 'visible',
-        position: 'relative',
-    },
-    fill: {
-        borderRadius: 999,
-        height: 6,
-    },
-    thumb: {
-        borderRadius: 12,
-        borderWidth: 3,
-        height: 24,
-        marginLeft: -12,
-        marginTop: -9,
-        position: 'absolute',
-        top: 0,
-        width: 24,
-    },
-});

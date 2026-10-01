@@ -60,8 +60,8 @@ describe('settings registry completeness', () => {
 
         expect(ACCOUNT_SETTING_ARTIFACTS.definitions.rememberLastEngineSelectionsV1.storageScope).toBe('account');
         expect(ACCOUNT_SETTING_ARTIFACTS.defaults).toHaveProperty('rememberLastEngineSelectionsV1', true);
-        expect(ACCOUNT_SETTING_ARTIFACTS.definitions.lastEngineSelectionsByScopeV1.storageScope).toBe('account');
-        expect(ACCOUNT_SETTING_ARTIFACTS.defaults).toHaveProperty('lastEngineSelectionsByScopeV1', {});
+        expect(ACCOUNT_SETTING_ARTIFACTS.definitions).not.toHaveProperty('lastEngineSelectionsByScopeV1');
+        expect(ACCOUNT_SETTING_ARTIFACTS.defaults).not.toHaveProperty('lastEngineSelectionsByScopeV1');
     });
 
     it('owns remoteHostsV1 in canonical account settings artifacts', async () => {

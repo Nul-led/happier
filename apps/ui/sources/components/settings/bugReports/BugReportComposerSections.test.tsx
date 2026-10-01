@@ -34,8 +34,10 @@ vi.mock('@/components/ui/forms/Switch', async () => await import('@/components/u
 /** Query the way an assistive technology does: find the controls by ROLE, then read their names. */
 function switchNames(screen: RenderScreenResult): Array<string | undefined> {
     return screen
+        // Rendered (host) nodes only: a component forwarding the same props is not a second control.
         .findAll((node: ReactTestInstance) => (
-            node.props?.role === 'switch' || node.props?.accessibilityRole === 'switch'
+            typeof node.type === 'string'
+            && (node.props?.role === 'switch' || node.props?.accessibilityRole === 'switch')
         ))
         .map((node) => node.props?.['aria-label'] ?? node.props?.accessibilityLabel);
 }
@@ -68,7 +70,6 @@ describe('Bug report composer toggles (web)', () => {
                 previewDisabled={false}
                 pastedCliDoctorSnapshotJson=""
                 onPastedCliDoctorSnapshotJsonChange={() => {}}
-                placeholderTextColor="#888888"
             />,
         );
 
@@ -79,5 +80,25 @@ describe('Bug report composer toggles (web)', () => {
             'Stack service diagnostics',
             'Server diagnostics',
         ]);
+    });
+});
+
+describe('Bug report similar issues', () => {
+    it('keeps saying it is searching while a new search runs over earlier results', async () => {
+        const { BugReportSimilarIssuesSection } = await import('./BugReportSimilarIssuesSection');
+
+        const screen = await renderScreen(
+            <BugReportSimilarIssuesSection
+                loading
+                issues={[{ owner: 'happier-dev', repo: 'happier', number: 12, title: 'Crash on open', state: 'open', url: 'https://example.test/12' } as never]}
+                selectedIssueNumber={null}
+                onSelectedIssueNumberChange={() => {}}
+                disabled={false}
+            />,
+        );
+
+        expect(screen.findByTestId('bug-report-similar-issues-searching')).toBeTruthy();
+        // The earlier results stay while the new search runs.
+        expect(screen.findByTestId('bug-report-similar-issue-12')).toBeTruthy();
     });
 });

@@ -1,3 +1,4 @@
+import { API_TOKEN_FULL_GRANT_V1, type ApiTokenGrantV1 } from '@happier-dev/protocol';
 import * as React from 'react';
 import { act, type ReactTestInstance } from 'react-test-renderer';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -117,7 +118,7 @@ function createState(reveal: ApiTokenSettingsState['reveal']): ApiTokenSettingsS
         isRefreshing: false,
         listError: null,
         createDraft: { label: '', expiryPreset: '90d' },
-            canCreateEncrypted: false,
+            encryptionAvailability: 'unchecked',
             recoveryTokenId: null,
         createPending: false,
         createError: null,
@@ -125,7 +126,7 @@ function createState(reveal: ApiTokenSettingsState['reveal']): ApiTokenSettingsS
         operation: null,
         operationTokenId: null,
         operationError: null,
-        operationNotice: null,
+        operationNotice: null, accessEdit: null,
     };
 }
 
@@ -138,13 +139,21 @@ function createController(state: ApiTokenSettingsState): ApiTokenSettingsControl
         setCreateDraft: () => {},
         resetCreateDraft: () => {},
         createToken: async () => {},
+        adoptCreatedToken: () => false,
         acknowledgeReveal: vi.fn(),
         clearReveal: () => {},
         requestRevealDismiss: async () => true,
+        // The Account this fake controller serves stays active.
+        captureDestructiveTarget: () => ({ scope: { serverId: 'server-a', accountId: 'account-a' }, isCurrent: () => true, onRetire: () => ({ dispose() {} }) }),
         revokeToken: async () => true,
         revokeAllTokens: async () => 0,
         signOutEverywhere: async () => true,
         clearOperationFeedback: () => {},
+        beginAccessEdit: () => true,
+        setAccessEditGrant: () => {},
+        saveAccessEdit: async () => true,
+        updateToken: async () => null,
+        cancelAccessEdit: () => {},
         retire: () => {},
     };
 }
@@ -162,11 +171,12 @@ afterEach(() => {
 });
 
 describe('ApiTokenCreateModal', () => {
-    it('carries only the non-secret create draft through recovery and returns to this modal', async () => {
+    it('carries the complete non-secret create draft through recovery and returns to this modal', async () => {
         const { ApiTokenCreateModal } = await import('./ApiTokenCreateModal');
+        const grant = { ...API_TOKEN_FULL_GRANT_V1, actions: { families: ['session_transcripts'], ids: [] }, origins: ['https://crm.acme.dev'] } satisfies ApiTokenGrantV1;
         const state = {
             ...createState(null),
-            createDraft: { label: 'Release deploy', expiryPreset: '1y' as const, encryptionAccess: true },
+            createDraft: { label: 'Release deploy', expiryPreset: '1y' as const, encryptionAccess: true, access: 'limited' as const, grant },
             createError: 'api_token_encryption_not_ready' as const,
         };
         const onClose = vi.fn();
@@ -179,14 +189,16 @@ describe('ApiTokenCreateModal', () => {
         expect(onClose).toHaveBeenCalledOnce();
         const destination = String(runtime.push.mock.calls[0]?.[0]);
         expect(destination).toContain('/restore/manual?returnTo=');
-        expect(destination).toContain('label=Release%20deploy');
-        expect(destination).toContain('expiry=1y');
+        const resumed = new URL(destination, 'https://app.test').searchParams;
+        expect(resumed.get('returnTo')).toBe('/settings/account/api-tokens');
+        expect(JSON.parse(resumed.get('draft') ?? 'null')).toEqual({
+            label: 'Release deploy', expiryPreset: '1y', encryptionAccess: true, access: 'limited', grant,
+        });
         expect(destination).toContain('targetServerId=home-a');
         expect(destination).toContain('targetServerUrl=https%3A%2F%2Fhome-a.example.test');
         expect(destination).toContain('expectedAccountId=account-a');
         expect(destination).not.toContain('token=');
         expect(destination).not.toContain('secret=');
-        expect(destination).not.toContain('encryptionAccess');
     });
 
     it('offers the shared recovery continuation for a bearer-only create whose outcome is unknown', async () => {
@@ -215,7 +227,7 @@ describe('ApiTokenCreateModal', () => {
 
     it('offers encryption consent on capable devices and preserves the selected choice', async () => {
         const { ApiTokenCreateModal } = await import('./ApiTokenCreateModal');
-        const state = { ...createState(null), canCreateEncrypted: true };
+        const state = { ...createState(null), encryptionAvailability: 'ready' as const };
         const controller = createController(state);
         const update = vi.spyOn(controller, 'setCreateDraft');
         const screen = await renderScreen(<ApiTokenCreateModal controller={controller} onClose={vi.fn()} setChrome={vi.fn()} />);
@@ -235,55 +247,73 @@ describe('ApiTokenCreateModal', () => {
         expect(update).toHaveBeenCalledWith({ ...state.createDraft, authorizeUnattendedTeamAccess: true });
     });
 
-    it('exposes the selected expiry preset through web radio semantics', async () => {
+    it('sets the expiry from its segmented choice', async () => {
         const { ApiTokenCreateModal } = await import('./ApiTokenCreateModal');
-        const screen = await renderScreen(
-            <ApiTokenCreateModal
-                controller={createController(createState(null))}
-                onClose={vi.fn()}
-                setChrome={vi.fn()}
-            />,
-        );
-
-        const expiryGroup = screen.findAll((node) => node.props.accessibilityRole === 'radiogroup')[0];
-        expect(expiryGroup?.props.accessibilityLabel).toBe('settingsApiTokens.create.expiry');
-        expect(screen.findByTestId('settings-api-tokens-expiry-30d')?.props['aria-checked']).toBe(false);
-        expect(screen.findByTestId('settings-api-tokens-expiry-90d')?.props['aria-checked']).toBe(true);
-        expect(screen.findByTestId('settings-api-tokens-expiry-1y')?.props['aria-checked']).toBe(false);
-        expect(screen.findByTestId('settings-api-tokens-expiry-none')?.props['aria-checked']).toBe(false);
-    });
-
-    it('uses the shared radio-group behavior for web roving focus and selection', async () => {
-        const { ApiTokenCreateModal } = await import('./ApiTokenCreateModal');
-        const state = createState(null);
         const setCreateDraft = vi.fn();
-        const controller: ApiTokenSettingsController = {
-            ...createController(state),
-            setCreateDraft,
-        };
-        const screen = await renderScreen(
-            <ApiTokenCreateModal controller={controller} onClose={vi.fn()} setChrome={vi.fn()} />,
-        );
+        const controller: ApiTokenSettingsController = { ...createController(createState(null)), setCreateDraft };
+        const screen = await renderScreen(<ApiTokenCreateModal controller={controller} onClose={vi.fn()} setChrome={vi.fn()} />);
 
-        const thirtyDays = screen.findByTestId('settings-api-tokens-expiry-30d');
-        const ninetyDays = screen.findByTestId('settings-api-tokens-expiry-90d');
-        expect(thirtyDays?.props.tabIndex).toBe(-1);
-        expect(ninetyDays?.props.tabIndex).toBe(0);
-
-        const preventDefault = vi.fn();
-        const stopPropagation = vi.fn();
-        await act(async () => {
-            ninetyDays?.props.onKeyDown?.({
-                key: 'ArrowLeft',
-                nativeEvent: { key: 'ArrowLeft' },
-                preventDefault,
-                stopPropagation,
-            });
-        });
+        await screen.pressByTestIdAsync('settings-api-tokens-expiry:30d');
 
         expect(setCreateDraft).toHaveBeenCalledWith({ label: '', expiryPreset: '30d' });
-        expect(preventDefault).toHaveBeenCalledTimes(1);
-        expect(stopPropagation).toHaveBeenCalledTimes(1);
+    });
+
+    it('continues a limited token to the grant editor before it can be created', async () => {
+        const { ApiTokenCreateModal } = await import('./ApiTokenCreateModal');
+        const state: ApiTokenSettingsState = {
+            ...createState(null),
+            createDraft: { label: 'Leads dashboard', expiryPreset: '30d', access: 'limited', grant: { ...API_TOKEN_FULL_GRANT_V1, actions: { families: [], ids: [] } } },
+        };
+        const setChrome = vi.fn<(chrome: CustomModalChromeCardConfig | null) => void>();
+        const screen = await renderScreen(<ApiTokenCreateModal controller={createController(state)} onClose={vi.fn()} setChrome={setChrome} />);
+        const footer = async () => await renderScreen(<>{setChrome.mock.calls.at(-1)?.[0]?.footer}</>);
+
+        expect((await footer()).findByTestId('settings-api-tokens-create-submit')).toBeNull();
+        const continueButton = (await footer()).findByTestId('settings-api-tokens-create-continue');
+        await act(async () => { continueButton?.props.onPress(); });
+
+        expect(screen.findByTestId('api-token-grant-actions')).toBeTruthy();
+        // No action is chosen yet, so the grant cannot succeed and Create stays unavailable.
+        expect((await footer()).findByTestId('settings-api-tokens-create-submit')?.props.disabled).toBe(true);
+    });
+
+    it('warns that saving edited access signs out active embedded credentials', async () => {
+        const { ApiTokenCreateModal } = await import('./ApiTokenCreateModal');
+        const token = {
+            tokenId: '11111111-1111-4111-8111-111111111111',
+            label: 'Leads dashboard',
+            displayPrefix: 'hap_v1_11111111',
+            createdAt: '2026-08-22T12:00:00.000Z',
+            lastUsedAt: null,
+            expiresAt: null,
+            hasEncryptionAccess: false,
+            hasUnattendedTeamAccess: false,
+            grant: API_TOKEN_FULL_GRANT_V1,
+            parentTokenId: null,
+            activeChildCount: 2,
+            embedConfig: null,
+        };
+        const renderEdit = async (signsOutEmbeddedCredentials: boolean) => {
+            const setChrome = vi.fn<(chrome: CustomModalChromeCardConfig | null) => void>();
+            await renderScreen(
+                <ApiTokenCreateModal
+                    mode="editAccess"
+                    controller={createController({
+                        ...createState(null),
+                        tokens: [token],
+                        accessEdit: { tokenId: token.tokenId, grant: { ...API_TOKEN_FULL_GRANT_V1, approve: true }, pending: false, error: null, signsOutEmbeddedCredentials },
+                    })}
+                    onClose={vi.fn()}
+                    setChrome={setChrome}
+                />,
+            );
+            return await renderScreen(<>{setChrome.mock.calls.at(-1)?.[0]?.footer}</>);
+        };
+
+        const withChildren = await renderEdit(true);
+        expect(withChildren.findByTestId('settings-api-tokens-edit-signs-out')).toBeTruthy();
+        expect(withChildren.findByTestId('settings-api-tokens-edit-save')?.props.disabled).toBe(false);
+        expect((await renderEdit(false)).findByTestId('settings-api-tokens-edit-signs-out')).toBeNull();
     });
 
     it('holds mutable form controls in their busy state while the one-time token is being minted', async () => {
@@ -302,10 +332,6 @@ describe('ApiTokenCreateModal', () => {
         );
 
         expect(screen.findByTestId('settings-api-tokens-create-label')?.props.editable).toBe(false);
-        expect(screen.findByTestId('settings-api-tokens-expiry-90d')?.props).toMatchObject({
-            disabled: true,
-            accessibilityState: { checked: true, disabled: true },
-        });
         expect(screen.findByTestId('settings-api-tokens-action-settings')?.props).toMatchObject({
             disabled: true,
             accessibilityState: { disabled: true },
@@ -325,6 +351,10 @@ describe('ApiTokenCreateModal', () => {
                 expiresAt: null,
                 hasEncryptionAccess: false,
                 hasUnattendedTeamAccess: false,
+                grant: API_TOKEN_FULL_GRANT_V1,
+                parentTokenId: null,
+                activeChildCount: 0,
+                embedConfig: null,
             },
             acknowledged: false,
         }));
@@ -359,6 +389,10 @@ describe('ApiTokenCreateModal', () => {
                 expiresAt: null,
                 hasEncryptionAccess: false,
                 hasUnattendedTeamAccess: false,
+                grant: API_TOKEN_FULL_GRANT_V1,
+                parentTokenId: null,
+                activeChildCount: 0,
+                embedConfig: null,
             },
             acknowledged: false,
         }));
@@ -380,6 +414,8 @@ describe('ApiTokenCreateModal', () => {
 
         const chrome = setChrome.mock.calls.at(-1)?.[0];
         expect(chrome?.kind).toBe('card');
+        // The body says "shown once" a single time; the title band does not repeat it.
+        expect(chrome?.subtitle).toBeUndefined();
         const footerScreen = await renderScreen(<>{chrome?.footer}</>);
         expect(footerScreen.findByTestId('settings-api-tokens-reveal-stage-done')).toBeTruthy();
     });
@@ -402,6 +438,10 @@ describe('ApiTokenCreateModal', () => {
                         expiresAt: null,
                         hasEncryptionAccess: false,
                         hasUnattendedTeamAccess: false,
+                        grant: API_TOKEN_FULL_GRANT_V1,
+                        parentTokenId: null,
+                        activeChildCount: 0,
+                        embedConfig: null,
                     },
                     acknowledged: false,
                 }))}
@@ -437,6 +477,10 @@ describe('ApiTokenCreateModal', () => {
                         expiresAt: null,
                         hasEncryptionAccess: false,
                         hasUnattendedTeamAccess: false,
+                        grant: API_TOKEN_FULL_GRANT_V1,
+                        parentTokenId: null,
+                        activeChildCount: 0,
+                        embedConfig: null,
                     },
                     acknowledged: false,
                 }))}
@@ -470,6 +514,10 @@ describe('ApiTokenCreateModal', () => {
                 expiresAt: null,
                 hasEncryptionAccess: false,
                 hasUnattendedTeamAccess: false,
+                grant: API_TOKEN_FULL_GRANT_V1,
+                parentTokenId: null,
+                activeChildCount: 0,
+                embedConfig: null,
             },
             acknowledged: false,
         }));
@@ -516,6 +564,10 @@ describe('ApiTokenCreateModal', () => {
                 expiresAt: null,
                 hasEncryptionAccess: false,
                 hasUnattendedTeamAccess: false,
+                grant: API_TOKEN_FULL_GRANT_V1,
+                parentTokenId: null,
+                activeChildCount: 0,
+                embedConfig: null,
             },
             acknowledged: false,
         }));
@@ -565,7 +617,6 @@ describe('ApiTokenCreateModal', () => {
         );
 
         for (const testID of [
-            'settings-api-tokens-expiry-30d',
             'settings-api-tokens-action-settings',
         ]) {
             const focusedStyle = flattenInteractionStyle(createScreen.findByTestId(testID)?.props.style, true);
@@ -589,6 +640,10 @@ describe('ApiTokenCreateModal', () => {
                         expiresAt: null,
                         hasEncryptionAccess: false,
                         hasUnattendedTeamAccess: false,
+                        grant: API_TOKEN_FULL_GRANT_V1,
+                        parentTokenId: null,
+                        activeChildCount: 0,
+                        embedConfig: null,
                     },
                     acknowledged: false,
                 }))}

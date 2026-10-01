@@ -35,8 +35,8 @@ export const KEYBOARD_SETTINGS: SettingsPageDeclaration = defineSettingsPage({
         generalGroup: {
             titleKey: 'settingsKeyboard.generalGroupTitle',
             settings: {
-                enableShortcuts: { titleKey: 'settingsKeyboard.enableShortcutsTitle', descriptionKey: 'settingsKeyboard.enableShortcutsSubtitle' },
-                singleKey: { titleKey: 'settingsKeyboard.singleKeyTitle', descriptionKey: 'settingsKeyboard.singleKeySubtitle' },
+                enableShortcuts: { titleKey: 'settingsKeyboard.enableShortcutsTitle', descriptionKey: 'settingsKeyboard.enableShortcutsSubtitle', storage: { scope: 'account', key: 'keyboardShortcutsV2Enabled', access: 'read_write' } },
+                singleKey: { titleKey: 'settingsKeyboard.singleKeyTitle', descriptionKey: 'settingsKeyboard.singleKeySubtitle', storage: { scope: 'account', key: 'keyboardSingleKeyShortcutsEnabled', access: 'read_write' } },
             },
         },
         ...commandSections,

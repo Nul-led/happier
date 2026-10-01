@@ -11,6 +11,7 @@ import {
 } from '@happier-dev/protocol/installables';
 import { resolveWindowsCommandOnPath } from '@happier-dev/cli-common/process';
 import { fetchGitHubLatestRelease } from '@happier-dev/release-runtime/github';
+import { resolveHappyHomeDirFromEnvironment } from '@happier-dev/cli-common/agents';
 
 import { configuration } from '@/configuration';
 import { runCliCommandBestEffort } from '@/capabilities/cliAuth/shared';
@@ -35,8 +36,8 @@ type LatestVersionCheck =
 type GhStatusDeps = Readonly<{
   resolveSystemGhBinPath: (env?: NodeJS.ProcessEnv) => Promise<string | null>;
   resolveManagedGhBinPath: (env?: NodeJS.ProcessEnv) => Promise<string | null>;
-  runGhCommand: (params: Readonly<{ binPath: string; args: readonly string[]; timeoutMs?: number }>) => Promise<GhCommandResult>;
-  readState: () => Promise<GhState>;
+  runGhCommand: (params: Readonly<{ binPath: string; args: readonly string[]; timeoutMs?: number; env?: NodeJS.ProcessEnv }>) => Promise<GhCommandResult>;
+  readState: (env?: NodeJS.ProcessEnv) => Promise<GhState>;
   readLastBackgroundUpdateCheckAtMs: () => Promise<number | null>;
 }>;
 
@@ -59,18 +60,18 @@ export type GhDepData = Readonly<{
   latestVersionCheck?: LatestVersionCheck;
 }>;
 
-export const ghInstallDir = () => join(configuration.happyHomeDir, 'tools', INSTALLABLE_KEYS.GH);
+export const ghInstallDir = (env?: NodeJS.ProcessEnv) => join(env ? resolveHappyHomeDirFromEnvironment(env) : configuration.happyHomeDir, 'tools', INSTALLABLE_KEYS.GH);
 
-export const ghBinPath = () => {
+export const ghBinPath = (env?: NodeJS.ProcessEnv) => {
   const binaryName = process.platform === 'win32' ? 'gh.exe' : GH_BINARY_NAME;
-  return join(ghInstallDir(), 'current', 'bin', binaryName);
+  return join(ghInstallDir(env), 'current', 'bin', binaryName);
 };
 
-const ghStatePath = () => join(ghInstallDir(), 'install-state.json');
+const ghStatePath = (env?: NodeJS.ProcessEnv) => join(ghInstallDir(env), 'install-state.json');
 
-async function readGhState(): Promise<GhState> {
+async function readGhState(env?: NodeJS.ProcessEnv): Promise<GhState> {
   try {
-    const raw = await readFile(ghStatePath(), 'utf8');
+    const raw = await readFile(ghStatePath(env), 'utf8');
     const parsed = JSON.parse(raw);
     return {
       installedVersion: typeof parsed?.installedVersion === 'string' ? parsed.installedVersion : null,
@@ -122,8 +123,8 @@ async function resolveSystemGhBinPath(env: NodeJS.ProcessEnv = process.env): Pro
   return resolveCommandOnPath(GH_BINARY_NAME, env);
 }
 
-async function resolveManagedGhBinPath(): Promise<string | null> {
-  const candidate = ghBinPath();
+async function resolveManagedGhBinPath(env?: NodeJS.ProcessEnv): Promise<string | null> {
+  const candidate = ghBinPath(env);
   const accessMode = process.platform === 'win32' ? fsConstants.F_OK : fsConstants.X_OK;
   try {
     await access(candidate, accessMode);
@@ -133,20 +134,21 @@ async function resolveManagedGhBinPath(): Promise<string | null> {
   }
 }
 
-async function runGhCommand(params: Readonly<{ binPath: string; args: readonly string[]; timeoutMs?: number }>): Promise<GhCommandResult> {
+async function runGhCommand(params: Readonly<{ binPath: string; args: readonly string[]; timeoutMs?: number; env?: NodeJS.ProcessEnv }>): Promise<GhCommandResult> {
   return runCliCommandBestEffort({
     resolvedPath: params.binPath,
     args: [...params.args],
     timeoutMs: params.timeoutMs ?? 2_000,
+    ...(params.env ? { env: Object.fromEntries(Object.entries(params.env).filter((entry): entry is [string, string] => typeof entry[1] === 'string')) } : {}),
   });
 }
 
-async function detectLatestVersionCheck(): Promise<LatestVersionCheck> {
+async function detectLatestVersionCheck(env?: NodeJS.ProcessEnv): Promise<LatestVersionCheck> {
   try {
     const release = await fetchGitHubLatestRelease({
       githubRepo: GH_GITHUB_REPO,
       userAgent: 'happier-cli',
-      githubToken: process.env.GITHUB_TOKEN,
+      githubToken: (env ?? process.env).GITHUB_TOKEN,
       ...(githubFetchImpl ? { fetchImpl: githubFetchImpl } : {}),
     });
     const asset = GH_RUNTIME_INSTALLABLE_POLICY.selectReleaseAsset(release, {
@@ -166,11 +168,13 @@ async function probeGh(params: Readonly<{
   binPath: string;
   source: 'system' | 'managed';
   deps: GhStatusDeps;
+  env?: NodeJS.ProcessEnv;
 }>): Promise<Pick<GhDepData, 'binPath' | 'resolvedSource' | 'installedVersion' | 'authenticated' | 'authStatus' | 'remediationReason'>> {
-  const versionResult = await params.deps.runGhCommand({ binPath: params.binPath, args: ['--version'] });
+  const versionResult = await params.deps.runGhCommand({ binPath: params.binPath, args: ['--version'], ...(params.env ? { env: params.env } : {}) });
   const authResult = await params.deps.runGhCommand({
     binPath: params.binPath,
     args: ['auth', 'status', '--hostname', 'github.com'],
+    ...(params.env ? { env: params.env } : {}),
   });
   // `gh auth status` answers only when it exits. A probe the deadline killed — or one that never
   // launched — comes back `ok: false` with `exitCode: null`; reporting that as "signed out" is the
@@ -190,7 +194,7 @@ async function probeGh(params: Readonly<{
 }
 
 export async function getGhDepStatus(
-  opts: Readonly<{ includeLatestVersion?: boolean; onlyIfInstalled?: boolean }> = {},
+  opts: Readonly<{ includeLatestVersion?: boolean; onlyIfInstalled?: boolean; env?: NodeJS.ProcessEnv }> = {},
   depsOverrides: Partial<GhStatusDeps> = {},
 ): Promise<GhDepData> {
   const deps: GhStatusDeps = {
@@ -200,21 +204,21 @@ export async function getGhDepStatus(
     readState: depsOverrides.readState ?? readGhState,
     readLastBackgroundUpdateCheckAtMs:
       depsOverrides.readLastBackgroundUpdateCheckAtMs
-      ?? (() => readRuntimeInstallableLastCheckAtMs(INSTALLABLE_KEYS.GH)),
+      ?? (() => readRuntimeInstallableLastCheckAtMs(INSTALLABLE_KEYS.GH, opts.env)),
   };
 
   const [state, systemBinPath, managedBinPath, lastBackgroundUpdateCheckAtMs] = await Promise.all([
-    deps.readState(),
-    deps.resolveSystemGhBinPath(process.env),
-    deps.resolveManagedGhBinPath(process.env),
+    deps.readState(opts.env),
+    deps.resolveSystemGhBinPath(opts.env ?? process.env),
+    deps.resolveManagedGhBinPath(opts.env),
     deps.readLastBackgroundUpdateCheckAtMs(),
   ]);
 
   const systemProbe = systemBinPath
-    ? await probeGh({ binPath: systemBinPath, source: 'system', deps })
+    ? await probeGh({ binPath: systemBinPath, source: 'system', deps, env: opts.env })
     : null;
   const managedProbe = managedBinPath
-    ? await probeGh({ binPath: managedBinPath, source: 'managed', deps })
+    ? await probeGh({ binPath: managedBinPath, source: 'managed', deps, env: opts.env })
     : null;
   const selected = systemProbe?.authenticated === true
     ? systemProbe
@@ -226,13 +230,13 @@ export async function getGhDepStatus(
   const includeLatestVersion = opts.includeLatestVersion === true;
   const onlyIfInstalled = opts.onlyIfInstalled === true;
   const latestVersionCheck = includeLatestVersion && (!onlyIfInstalled || installed)
-    ? await detectLatestVersionCheck()
+    ? await detectLatestVersionCheck(opts.env)
     : undefined;
 
   return {
     installed,
     capabilityId: GH_DEP_ID,
-    installDir: ghInstallDir(),
+    installDir: ghInstallDir(opts.env),
     binPath: selected?.binPath ?? null,
     managedBinPath,
     installedVersion: selected?.installedVersion ?? state.installedVersion,

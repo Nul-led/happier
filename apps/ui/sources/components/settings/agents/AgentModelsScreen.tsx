@@ -1,6 +1,6 @@
 import * as React from 'react';
 import { Platform, View } from 'react-native';
-import { useRouter } from 'expo-router';
+import { useRouter } from '@/components/appShell/workspace/destinationRoute';
 import {
     createProviderErrorV1,
     serializeModelVisibilityRefV1,
@@ -17,6 +17,7 @@ import { Item } from '@/components/ui/lists/Item';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
 import { ItemList } from '@/components/ui/lists/ItemList';
 import { MachineAdministrationTargetSelector } from '@/components/settings/machines/MachineAdministrationTargetSelector';
+import { SettingsPageHeader } from '@/components/settings/shell/SettingsPageHeader';
 import { useFeatureEnabled } from '@/hooks/server/useFeatureEnabled';
 import { Modal } from '@/modal';
 import { useProviderModelProjection } from '@/providers/hooks/useProviderModelProjection';
@@ -38,6 +39,7 @@ import { useMachineAdministrationTargetSelection } from '@/sync/domains/machines
 import { isMachineAdministrationExecutionTargetCurrent } from '@/sync/domains/machines/administration/operationCurrentness';
 import { t } from '@/text';
 import { resolveAgentModelsSettingsAccess } from './resolveAgentModelsSettingsAccess';
+import { providerConnectionModelsRoute } from '@/components/settings/providers/collection/providerCollectionModel';
 
 export const AgentModelsScreen = React.memo(function AgentModelsScreen(props: Readonly<{
     agentTargetKey: string;
@@ -236,79 +238,94 @@ export const AgentModelsScreen = React.memo(function AgentModelsScreen(props: Re
         </View>
     );
 
-    const targetSelector = (
-        <MachineAdministrationTargetSelector
-            selection={administrationTargetSelection}
-            testIDPrefix="settings.agents.models.administration.target"
+    const header = (
+        <SettingsPageHeader
+            testID="settings.agents.models.header"
+            description={t('settingsProvidersCollection.modelsDescription')}
+            actions={(
+                <MachineAdministrationTargetSelector
+                    selection={administrationTargetSelection}
+                    presentation="chip"
+                    testIDPrefix="settings.agents.models.administration.target"
+                />
+            )}
         />
+    );
+    // The page as it stands before the model list can show: its header (with the machine chip, the
+    // control that recovers these states) above the one state row.
+    const statePage = (row: React.ReactNode) => (
+        <ItemList presentation="page">
+            {header}
+            <ItemGroup>{row}</ItemGroup>
+        </ItemList>
     );
 
     if (!settingsAccess.writable) {
-        return (
-            <ItemList>
-                {targetSelector}
-                <ItemGroup>
-                    <Item
-                        mode="info"
-                        title={t('settingsProviders.errors.genericTitle')}
-                        subtitle={t('settingsProviders.errors.genericDescription')}
-                    />
-                </ItemGroup>
-            </ItemList>
+        return statePage(
+            <Item
+                mode="info"
+                title={t('settingsProviders.errors.genericTitle')}
+                subtitle={t('settingsProviders.errors.genericDescription')}
+                subtitleLines={0}
+            />,
         );
     }
 
     if (!enabled) {
-        return <ItemList>{targetSelector}<ItemGroup><Item mode="info" title={t('settingsProviders.unavailable')} subtitle={t('settingsProviders.unavailableDescription')} /></ItemGroup></ItemList>;
+        return statePage(<Item mode="info" title={t('settingsProviders.unavailable')} subtitle={t('settingsProviders.unavailableDescription')} subtitleLines={0} />);
     }
     if (!machineId) {
-        return <ItemList>{targetSelector}<ItemGroup><Item mode="info" title={t('settingsProviders.noMachine')} subtitle={t('settingsProviders.noMachineDescription')} /></ItemGroup></ItemList>;
+        return statePage(<Item mode="info" title={t('settingsProviders.noMachine')} subtitle={t('settingsProviders.noMachineDescription')} subtitleLines={0} />);
     }
 
     if (projection.loading && !projection.data) {
-        return <ItemList>{targetSelector}<ItemGroup><Item mode="info" loading title={t('common.loading')} /></ItemGroup></ItemList>;
+        return statePage(<Item mode="info" loading title={t('common.loading')} />);
     }
     const displayError = operationError?.error ?? projection.error;
     const errorRetry = operationError?.retry ?? (!operationError && projection.error ? async () => { await projection.refresh(); } : undefined);
     if (displayError && !projection.data) {
-        return <ItemList>{targetSelector}<ItemGroup><ProviderErrorItems error={displayError} retry={errorRetry} loadModel={operationError?.loadModel} reviewCurrentState={operationError?.reviewCurrentState} /></ItemGroup></ItemList>;
+        return statePage(<ProviderErrorItems error={displayError} retry={errorRetry} loadModel={operationError?.loadModel} reviewCurrentState={operationError?.reviewCurrentState} />);
     }
 
-    return (
+    const leadingRows = displayError || modelLoad.cancelledProviderMayContinue ? (
         <>
-            <ItemList>{targetSelector}</ItemList>
             {displayError ? (
-                <ItemGroup>
-                    <ProviderErrorItems error={displayError} retry={errorRetry} loadModel={operationError?.loadModel} reviewCurrentState={operationError?.reviewCurrentState} />
-                </ItemGroup>
+                <ProviderErrorItems error={displayError} retry={errorRetry} loadModel={operationError?.loadModel} reviewCurrentState={operationError?.reviewCurrentState} />
             ) : null}
             {modelLoad.cancelledProviderMayContinue ? (
-                <ItemGroup>
-                    <Item
-                        mode="info"
-                        title={t('settingsProviders.models.loadCancelled')}
-                        subtitle={t('settingsProviders.models.loadCancelledProviderMayContinue')}
-                    />
-                </ItemGroup>
+                <Item
+                    mode="info"
+                    title={t('settingsProviders.models.loadCancelled')}
+                    subtitle={t('settingsProviders.models.loadCancelledProviderMayContinue')}
+                />
             ) : null}
-            <ProviderModelManager
-                scope={{ kind: 'agent', agentTargetKey: props.agentTargetKey }}
-                nativeModels={nativeModels}
-                groups={projection.data?.groups ?? []}
-                showHidden={showHidden}
-                onSetVisibility={setVisibility}
-                onShowAll={() => { void runBulk('showAll'); }}
-                onHideAll={() => { void runBulk('hideAll'); }}
-                onResetVisibility={reset}
-                onShowOnly={(ref) => { void runBulk('showOnly', ref); }}
-                onLoadModel={(connectionId, modelId) => { void loadModel(connectionId, modelId); }}
-                onCancelModelLoad={() => { void modelLoad.cancel(); }}
-                onOpenConnection={(connectionId) => router.push(`/(app)/settings/providers/${encodeURIComponent(connectionId)}/models` as never)}
-                loadingModelKey={modelLoad.loadingModelKey}
-                onRequestClose={() => router.back()}
-                headerActions={headerActions}
-                testID="agent-models"
-            />
         </>
+    ) : null;
+
+    return (
+        <ProviderModelManager
+            scope={{ kind: 'agent', agentTargetKey: props.agentTargetKey }}
+            nativeModels={nativeModels}
+            groups={projection.data?.groups ?? []}
+            showHidden={showHidden}
+            onSetVisibility={setVisibility}
+            onShowAll={() => { void runBulk('showAll'); }}
+            onHideAll={() => { void runBulk('hideAll'); }}
+            onResetVisibility={reset}
+            onShowOnly={(ref) => { void runBulk('showOnly', ref); }}
+            onLoadModel={(connectionId, modelId) => { void loadModel(connectionId, modelId); }}
+            onCancelModelLoad={() => { void modelLoad.cancel(); }}
+            onOpenConnection={(connectionId) => router.push(providerConnectionModelsRoute(connectionId) as never)}
+            loadingModelKey={modelLoad.loadingModelKey}
+            onRequestClose={() => router.back()}
+            headerActions={headerActions}
+            testID="agent-models"
+            page={{
+                header,
+                title: t('settingsProviders.detail.modelsTitle'),
+                leadingRows,
+                testID: 'agent-models',
+            }}
+        />
     );
 });

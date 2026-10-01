@@ -61,11 +61,11 @@ export function createInstallableCapability(
           : {}),
       };
     },
-    invoke: async ({ method }) => {
+    invoke: async ({ method, signal }) => {
       if (method !== 'install' && method !== 'upgrade') {
         throw new CapabilityError(`Unsupported method: ${method}`, 'unsupported-method');
       }
-      return mapInstallResult(await adapter.installOrUpgrade());
+      return mapInstallResult(await adapter.installOrUpgrade({ signal }));
     },
   };
 }

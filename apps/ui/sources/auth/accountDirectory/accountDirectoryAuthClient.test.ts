@@ -389,6 +389,26 @@ describe('accountDirectoryAuthClient', () => {
         });
     });
 
+    it('offers direct Home connection for a verified Home entered as an Account Service', async () => {
+        const features = supportedFeatures('home-only');
+        probeServerFeaturesAtUrlMock.mockResolvedValueOnce({
+            ...features,
+            features: {
+                ...features.features,
+                capabilities: { ...features.features.capabilities, accountDirectory: undefined },
+            },
+        });
+        const { checkAccountServiceEndpoint } = await import('@/sync/ops/accountDirectory/selectAccountServiceEndpoint');
+
+        await expect(checkAccountServiceEndpoint('https://home-only.example.test', {
+            signal: new AbortController().signal,
+        })).resolves.toEqual({
+            kind: 'home_endpoint',
+            homeServerIdentityId: 'home-only',
+            homeUrl: 'https://canonical-directory.example.test',
+        });
+    });
+
     it('requires an advertised canonical URL for a supported Account Service', async () => {
         const features = supportedFeatures();
         probeServerFeaturesAtUrlMock.mockResolvedValueOnce({

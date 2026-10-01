@@ -1,20 +1,20 @@
 import * as React from 'react';
-import { View } from 'react-native';
-import { useUnistyles } from 'react-native-unistyles';
 
 import { DropdownMenu } from '@/components/ui/forms/dropdown/DropdownMenu';
-import { Item } from '@/components/ui/lists/Item';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
-import { Modal } from '@/modal';
 import { t } from '@/text';
 import { normalizeSecretStringPromptInput } from '@/utils/secrets/normalizeSecretStringPromptInput';
-import { Icon } from '@/components/ui/icons/Icon';
 
 import {
     MemoryEmbeddingsLocalTransformersConfigSchema,
     MemoryEmbeddingsOpenAiCompatibleConfigSchema,
     type MemorySettingsV1,
 } from '@happier-dev/protocol';
+import { FieldValueItem } from '@/components/ui/forms/FieldValueItem';
+import { Item } from '@/components/ui/lists/Item';
+import { SegmentedChoiceItem } from '@/components/ui/lists/SegmentedChoiceItem';
+import { SettingAnchor, SettingSection } from '@/components/settings/shell/SettingRow';
+import { MEMORY_SETTINGS } from '@/components/settings/memory/memorySettings';
 
 type EmbeddingsModeOptionId = 'disabled' | 'preset:balanced' | 'preset:long_context' | 'preset:quality' | 'custom';
 
@@ -55,10 +55,8 @@ export const MemorySettingsEmbeddingsSection = React.memo(function MemorySetting
     settings: MemorySettingsV1;
     writeSettings: (next: MemorySettingsV1) => void | Promise<void>;
 }>) {
-    const { theme } = useUnistyles();
     const { settings } = props;
     const [modeMenuOpen, setModeMenuOpen] = React.useState(false);
-    const [providerMenuOpen, setProviderMenuOpen] = React.useState(false);
 
     if (settings.indexMode !== 'deep') return null;
 
@@ -74,117 +72,100 @@ export const MemorySettingsEmbeddingsSection = React.memo(function MemorySetting
     })();
 
     return (
+        <SettingSection section={MEMORY_SETTINGS.sectionRefs.embeddings}>
         <ItemGroup
             title={t('memorySearchSettings.embeddings.groupTitle')}
-            footer={t('memorySearchSettings.embeddings.groupFooter')}
+            description={t('memorySearchSettings.embeddings.groupFooter')}
         >
-            <View style={{ paddingHorizontal: 16, paddingBottom: 8 }}>
-                <DropdownMenu
-                    open={modeMenuOpen}
-                    onOpenChange={setModeMenuOpen}
-                    selectedId={getEmbeddingsModeOptionId(embeddings)}
-                    search={false}
-                    showCategoryTitles={false}
-                    matchTriggerWidth={true}
-                    connectToTrigger={true}
-                    rowKind="item"
-                    itemTrigger={{
-                        title: t('memorySearchSettings.embeddings.mode.title'),
-                        subtitle: modeSubtitle,
-                        icon: <Icon name="sparkle" size={29} color={theme.colors.state.success.foreground} />,
-                        itemProps: {
-                            testID: 'memory-settings-embeddings-mode',
-                        },
-                    }}
-                    items={[
-                        {
-                            id: 'disabled',
-                            title: t('memorySearchSettings.embeddings.mode.options.disabledTitle'),
-                            subtitle: t('memorySearchSettings.embeddings.mode.options.disabledSubtitle'),
-                        },
-                        {
-                            id: 'preset:balanced',
-                            title: t('memorySearchSettings.embeddings.mode.options.balancedTitle'),
-                            subtitle: t('memorySearchSettings.embeddings.mode.options.balancedSubtitle'),
-                        },
-                        {
-                            id: 'preset:long_context',
-                            title: t('memorySearchSettings.embeddings.mode.options.longContextTitle'),
-                            subtitle: t('memorySearchSettings.embeddings.mode.options.longContextSubtitle'),
-                        },
-                        {
-                            id: 'preset:quality',
-                            title: t('memorySearchSettings.embeddings.mode.options.qualityTitle'),
-                            subtitle: t('memorySearchSettings.embeddings.mode.options.qualitySubtitle'),
-                        },
-                        {
-                            id: 'custom',
-                            title: t('memorySearchSettings.embeddings.mode.options.customTitle'),
-                            subtitle: t('memorySearchSettings.embeddings.mode.options.customSubtitle'),
-                        },
-                    ]}
-                    onSelect={(id) => {
-                        setModeMenuOpen(false);
-                        if (id === 'disabled') {
-                            updateEmbeddings(settings, props.writeSettings, {
-                                ...embeddings,
-                                mode: 'disabled',
-                            });
-                            return;
-                        }
-                        if (id === 'custom') {
-                            updateEmbeddings(settings, props.writeSettings, {
-                                ...embeddings,
-                                mode: 'custom',
-                                custom: embeddings.custom ?? DEFAULT_LOCAL_EMBEDDINGS_CUSTOM_CONFIG,
-                            });
-                            return;
-                        }
-                        const presetId = id.replace('preset:', '') as MemorySettingsV1['embeddings']['presetId'];
+            <SettingAnchor setting={MEMORY_SETTINGS.settings.embeddingsMode}>
+            <DropdownMenu
+                open={modeMenuOpen}
+                onOpenChange={setModeMenuOpen}
+                selectedId={getEmbeddingsModeOptionId(embeddings)}
+                search={false}
+                showCategoryTitles={false}
+                itemTrigger={{
+                    title: t(MEMORY_SETTINGS.settings.embeddingsMode.titleKey),
+                    subtitle: modeSubtitle,
+                    itemProps: {
+                        testID: 'memory-settings-embeddings-mode',
+                    },
+                }}
+                items={[
+                    {
+                        id: 'disabled',
+                        title: t('memorySearchSettings.embeddings.mode.options.disabledTitle'),
+                        subtitle: t('memorySearchSettings.embeddings.mode.options.disabledSubtitle'),
+                    },
+                    {
+                        id: 'preset:balanced',
+                        title: t('memorySearchSettings.embeddings.mode.options.balancedTitle'),
+                        subtitle: t('memorySearchSettings.embeddings.mode.options.balancedSubtitle'),
+                    },
+                    {
+                        id: 'preset:long_context',
+                        title: t('memorySearchSettings.embeddings.mode.options.longContextTitle'),
+                        subtitle: t('memorySearchSettings.embeddings.mode.options.longContextSubtitle'),
+                    },
+                    {
+                        id: 'preset:quality',
+                        title: t('memorySearchSettings.embeddings.mode.options.qualityTitle'),
+                        subtitle: t('memorySearchSettings.embeddings.mode.options.qualitySubtitle'),
+                    },
+                    {
+                        id: 'custom',
+                        title: t('memorySearchSettings.embeddings.mode.options.customTitle'),
+                        subtitle: t('memorySearchSettings.embeddings.mode.options.customSubtitle'),
+                    },
+                ]}
+                onSelect={(id) => {
+                    setModeMenuOpen(false);
+                    if (id === 'disabled') {
                         updateEmbeddings(settings, props.writeSettings, {
                             ...embeddings,
-                            mode: 'preset',
-                            presetId,
+                            mode: 'disabled',
                         });
-                    }}
-                />
-            </View>
+                        return;
+                    }
+                    if (id === 'custom') {
+                        updateEmbeddings(settings, props.writeSettings, {
+                            ...embeddings,
+                            mode: 'custom',
+                            custom: embeddings.custom ?? DEFAULT_LOCAL_EMBEDDINGS_CUSTOM_CONFIG,
+                        });
+                        return;
+                    }
+                    const presetId = id.replace('preset:', '') as MemorySettingsV1['embeddings']['presetId'];
+                    updateEmbeddings(settings, props.writeSettings, {
+                        ...embeddings,
+                        mode: 'preset',
+                        presetId,
+                    });
+                }}
+            />
+            </SettingAnchor>
 
             {embeddings.mode === 'custom' ? (
-                <View style={{ paddingHorizontal: 16, paddingBottom: 8 }}>
-                    <DropdownMenu
-                        open={providerMenuOpen}
-                        onOpenChange={setProviderMenuOpen}
-                        selectedId={customProvider?.kind ?? 'local_transformers'}
-                        search={false}
-                        showCategoryTitles={false}
-                        matchTriggerWidth={true}
-                        connectToTrigger={true}
-                        rowKind="item"
-                        itemTrigger={{
-                            title: t('memorySearchSettings.embeddings.provider.title'),
-                            subtitle: customProvider?.kind === 'openai_compatible'
-                                ? t('memorySearchSettings.embeddings.provider.options.openAiCompatibleSubtitle')
-                                : t('memorySearchSettings.embeddings.provider.options.localSubtitle'),
-                            icon: <Icon name="cloud" size={29} color={theme.colors.accent.blue} />,
-                            itemProps: {
-                                testID: 'memory-settings-embeddings-provider',
-                            },
-                        }}
-                        items={[
+                <SettingAnchor setting={MEMORY_SETTINGS.settings.embeddingsProvider}>
+                    <SegmentedChoiceItem<'local_transformers' | 'openai_compatible'>
+                        testID="memory-settings-embeddings-provider"
+                        testIDPrefix="memory-settings-embeddings-provider"
+                        title={t(MEMORY_SETTINGS.settings.embeddingsProvider.titleKey)}
+                        subtitleLines={0}
+                        value={customProvider?.kind ?? 'local_transformers'}
+                        options={[
                             {
                                 id: 'local_transformers',
-                                title: t('memorySearchSettings.embeddings.provider.options.localTitle'),
-                                subtitle: t('memorySearchSettings.embeddings.provider.options.localSubtitle'),
+                                label: t('memorySearchSettings.embeddings.provider.options.localTitle'),
+                                description: t('memorySearchSettings.embeddings.provider.options.localSubtitle'),
                             },
                             {
                                 id: 'openai_compatible',
-                                title: t('memorySearchSettings.embeddings.provider.options.openAiCompatibleTitle'),
-                                subtitle: t('memorySearchSettings.embeddings.provider.options.openAiCompatibleSubtitle'),
+                                label: t('memorySearchSettings.embeddings.provider.options.openAiCompatibleTitle'),
+                                description: t('memorySearchSettings.embeddings.provider.options.openAiCompatibleSubtitle'),
                             },
                         ]}
-                        onSelect={(id) => {
-                            setProviderMenuOpen(false);
+                        onChange={(id) => {
                             if (id === 'openai_compatible') {
                                 updateEmbeddings(settings, props.writeSettings, {
                                     ...embeddings,
@@ -215,203 +196,196 @@ export const MemorySettingsEmbeddingsSection = React.memo(function MemorySetting
                             });
                         }}
                     />
-                </View>
+                </SettingAnchor>
             ) : null}
 
             {customProvider?.kind === 'local_transformers' ? (
                 <>
-                    <Item
-                        testID="memory-settings-embeddings-local-model"
-                        title={t('memorySearchSettings.embeddings.modelTitle')}
-                        subtitle={customProvider.modelId}
-                        icon={<Icon name="cube" size={29} color={theme.colors.accent.purple} />}
-                        onPress={async () => {
-                            const next = await Modal.prompt(
-                                t('memorySearchSettings.embeddings.modelTitle'),
-                                t('memorySearchSettings.embeddings.promptBody'),
-                                {
-                                    defaultValue: customProvider.modelId,
-                                    placeholder: t('memorySearchSettings.embeddings.modelPlaceholder'),
-                                    confirmText: t('common.save'),
-                                    cancelText: t('common.cancel'),
-                                },
-                            );
-                            if (typeof next === 'string' && next.trim()) {
+                    <SettingAnchor setting={MEMORY_SETTINGS.settings.localModel}>
+                        <FieldValueItem
+                            testID="memory-settings-embeddings-local-model"
+                            fieldTestID="memory-settings-embeddings-local-model-field"
+                            title={t('memorySearchSettings.embeddings.modelTitle')}
+                            subtitle={t('memorySearchSettings.embeddings.promptBody')}
+                            placeholder={t('memorySearchSettings.embeddings.modelPlaceholder')}
+                            monospace
+                            value={customProvider.modelId}
+                            onCommit={(draft) => {
+                                if (!draft) return customProvider.modelId;
                                 updateEmbeddings(settings, props.writeSettings, {
                                     ...embeddings,
-                                    custom: { ...customProvider, modelId: next.trim() },
+                                    custom: { ...customProvider, modelId: draft },
                                 });
-                            }
-                        }}
-                        showChevron={false}
-                    />
-                    <Item
-                        testID="memory-settings-embeddings-local-query-prefix"
-                        title={t('memorySearchSettings.embeddings.queryPrefixTitle')}
-                        subtitle={customProvider.queryPrefix ?? t('memorySearchSettings.embeddings.notSet')}
-                        icon={<Icon name="magnifying-glass" size={29} color={theme.colors.text.secondary} />}
-                        onPress={async () => {
-                            const next = await Modal.prompt(
-                                t('memorySearchSettings.embeddings.queryPrefixTitle'),
-                                t('memorySearchSettings.embeddings.queryPrefixPromptBody'),
-                                { defaultValue: customProvider.queryPrefix ?? '' },
-                            );
-                            if (next === null) return;
-                            updateEmbeddings(settings, props.writeSettings, {
-                                ...embeddings,
-                                custom: { ...customProvider, queryPrefix: next.trim() || null },
-                            });
-                        }}
-                        showChevron={false}
-                    />
-                    <Item
-                        testID="memory-settings-embeddings-local-document-prefix"
-                        title={t('memorySearchSettings.embeddings.documentPrefixTitle')}
-                        subtitle={customProvider.documentPrefix ?? t('memorySearchSettings.embeddings.notSet')}
-                        icon={<Icon name="file-text" size={29} color={theme.colors.text.secondary} />}
-                        onPress={async () => {
-                            const next = await Modal.prompt(
-                                t('memorySearchSettings.embeddings.documentPrefixTitle'),
-                                t('memorySearchSettings.embeddings.documentPrefixPromptBody'),
-                                { defaultValue: customProvider.documentPrefix ?? '' },
-                            );
-                            if (next === null) return;
-                            updateEmbeddings(settings, props.writeSettings, {
-                                ...embeddings,
-                                custom: { ...customProvider, documentPrefix: next.trim() || null },
-                            });
-                        }}
-                        showChevron={false}
-                    />
+                            }}
+                        />
+                    </SettingAnchor>
+                    <SettingAnchor setting={MEMORY_SETTINGS.settings.queryPrefix}>
+                        <FieldValueItem
+                            testID="memory-settings-embeddings-local-query-prefix"
+                            fieldTestID="memory-settings-embeddings-local-query-prefix-field"
+                            title={t('memorySearchSettings.embeddings.queryPrefixTitle')}
+                            subtitle={t('memorySearchSettings.embeddings.queryPrefixPromptBody')}
+                            placeholder={t('memorySearchSettings.embeddings.notSet')}
+                            value={customProvider.queryPrefix ?? ''}
+                            onCommit={(draft) => {
+                                updateEmbeddings(settings, props.writeSettings, {
+                                    ...embeddings,
+                                    custom: { ...customProvider, queryPrefix: draft || null },
+                                });
+                            }}
+                        />
+                    </SettingAnchor>
+                    <SettingAnchor setting={MEMORY_SETTINGS.settings.documentPrefix}>
+                        <FieldValueItem
+                            testID="memory-settings-embeddings-local-document-prefix"
+                            fieldTestID="memory-settings-embeddings-local-document-prefix-field"
+                            title={t('memorySearchSettings.embeddings.documentPrefixTitle')}
+                            subtitle={t('memorySearchSettings.embeddings.documentPrefixPromptBody')}
+                            placeholder={t('memorySearchSettings.embeddings.notSet')}
+                            value={customProvider.documentPrefix ?? ''}
+                            onCommit={(draft) => {
+                                updateEmbeddings(settings, props.writeSettings, {
+                                    ...embeddings,
+                                    custom: { ...customProvider, documentPrefix: draft || null },
+                                });
+                            }}
+                        />
+                    </SettingAnchor>
                 </>
             ) : null}
 
             {customProvider?.kind === 'openai_compatible' ? (
                 <>
-                    <Item
-                        testID="memory-settings-embeddings-openai-base-url"
-                        title={t('memorySearchSettings.embeddings.openAi.baseUrlTitle')}
-                        subtitle={customProvider.baseUrl ?? t('memorySearchSettings.embeddings.notSet')}
-                        icon={<Icon name="link" size={29} color={theme.colors.accent.blue} />}
-                        onPress={async () => {
-                            const next = await Modal.prompt(
-                                t('memorySearchSettings.embeddings.openAi.baseUrlTitle'),
-                                t('memorySearchSettings.embeddings.openAi.baseUrlPromptBody'),
-                                { defaultValue: customProvider.baseUrl ?? '' },
-                            );
-                            if (next === null) return;
-                            updateEmbeddings(settings, props.writeSettings, {
-                                ...embeddings,
-                                custom: { ...customProvider, baseUrl: next.trim() || null },
-                            });
-                        }}
-                        showChevron={false}
-                    />
-                    <Item
-                        testID="memory-settings-embeddings-openai-model"
-                        title={t('memorySearchSettings.embeddings.openAi.modelTitle')}
-                        subtitle={customProvider.model}
-                        icon={<Icon name="cube" size={29} color={theme.colors.accent.purple} />}
-                        onPress={async () => {
-                            const next = await Modal.prompt(
-                                t('memorySearchSettings.embeddings.openAi.modelTitle'),
-                                t('memorySearchSettings.embeddings.openAi.modelPromptBody'),
-                                { defaultValue: customProvider.model },
-                            );
-                            if (typeof next === 'string' && next.trim()) {
+                    <SettingAnchor setting={MEMORY_SETTINGS.settings.baseUrl}>
+                        <FieldValueItem
+                            testID="memory-settings-embeddings-openai-base-url"
+                            fieldTestID="memory-settings-embeddings-openai-base-url-field"
+                            title={t('memorySearchSettings.embeddings.openAi.baseUrlTitle')}
+                            subtitle={t('memorySearchSettings.embeddings.openAi.baseUrlPromptBody')}
+                            placeholder={t('memorySearchSettings.embeddings.notSet')}
+                            monospace
+                            value={customProvider.baseUrl ?? ''}
+                            onCommit={(draft) => {
                                 updateEmbeddings(settings, props.writeSettings, {
                                     ...embeddings,
-                                    custom: { ...customProvider, model: next.trim() },
+                                    custom: { ...customProvider, baseUrl: draft || null },
                                 });
-                            }
-                        }}
-                        showChevron={false}
-                    />
-                    <Item
-                        testID="memory-settings-embeddings-openai-api-key"
-                        title={t('memorySearchSettings.embeddings.openAi.apiKeyTitle')}
-                        subtitle={customProvider.apiKey ? t('memorySearchSettings.embeddings.secretSet') : t('memorySearchSettings.embeddings.secretNotSet')}
-                        icon={<Icon name="key" size={29} color={theme.colors.state.neutral.foreground} />}
-                        onPress={async () => {
-                            const next = await Modal.prompt(
-                                t('memorySearchSettings.embeddings.openAi.apiKeyTitle'),
-                                t('memorySearchSettings.embeddings.openAi.apiKeyPromptBody'),
-                                { inputType: 'secure-text' },
-                            );
-                            if (next === null) return;
-                            updateEmbeddings(settings, props.writeSettings, {
-                                ...embeddings,
-                                custom: { ...customProvider, apiKey: normalizeSecretStringPromptInput(next) },
-                            });
-                        }}
-                        showChevron={false}
-                    />
-                    <Item
-                        testID="memory-settings-embeddings-openai-dimensions"
-                        title={t('memorySearchSettings.embeddings.openAi.dimensionsTitle')}
-                        subtitle={customProvider.dimensions == null
-                            ? t('memorySearchSettings.embeddings.notSet')
-                            : String(customProvider.dimensions)}
-                        icon={<Icon name="resize" size={29} color={theme.colors.text.secondary} />}
-                        onPress={async () => {
-                            const next = await Modal.prompt(
-                                t('memorySearchSettings.embeddings.openAi.dimensionsTitle'),
-                                t('memorySearchSettings.embeddings.openAi.dimensionsPromptBody'),
-                                { defaultValue: customProvider.dimensions == null ? '' : String(customProvider.dimensions) },
-                            );
-                            if (next === null) return;
-                            updateEmbeddings(settings, props.writeSettings, {
-                                ...embeddings,
-                                custom: { ...customProvider, dimensions: parseOptionalInteger(next) },
-                            });
-                        }}
-                        showChevron={false}
-                    />
+                            }}
+                        />
+                    </SettingAnchor>
+                    <SettingAnchor setting={MEMORY_SETTINGS.settings.remoteModel}>
+                        <FieldValueItem
+                            testID="memory-settings-embeddings-openai-model"
+                            fieldTestID="memory-settings-embeddings-openai-model-field"
+                            title={t('memorySearchSettings.embeddings.openAi.modelTitle')}
+                            subtitle={t('memorySearchSettings.embeddings.openAi.modelPromptBody')}
+                            monospace
+                            value={customProvider.model}
+                            onCommit={(draft) => {
+                                if (!draft) return customProvider.model;
+                                updateEmbeddings(settings, props.writeSettings, {
+                                    ...embeddings,
+                                    custom: { ...customProvider, model: draft },
+                                });
+                            }}
+                        />
+                    </SettingAnchor>
+                    {/* The saved key is never shown; typing a new one replaces it. */}
+                    <SettingAnchor setting={MEMORY_SETTINGS.settings.apiKey}>
+                        <FieldValueItem
+                            testID="memory-settings-embeddings-openai-api-key"
+                            fieldTestID="memory-settings-embeddings-openai-api-key-field"
+                            title={t('memorySearchSettings.embeddings.openAi.apiKeyTitle')}
+                            subtitle={t('memorySearchSettings.embeddings.openAi.apiKeyPromptBody')}
+                            placeholder={customProvider.apiKey ? t('memorySearchSettings.embeddings.secretSet') : t('memorySearchSettings.embeddings.secretNotSet')}
+                            secureTextEntry
+                            value=""
+                            onCommit={(draft) => {
+                                updateEmbeddings(settings, props.writeSettings, {
+                                    ...embeddings,
+                                    custom: { ...customProvider, apiKey: normalizeSecretStringPromptInput(draft) },
+                                });
+                                return '';
+                            }}
+                        />
+                    </SettingAnchor>
+                    {customProvider.apiKey ? (
+                        <Item
+                            testID="memory-settings-embeddings-openai-api-key-remove"
+                            title={t('memorySearchSettings.embeddings.openAi.removeApiKey')}
+                            showChevron={false}
+                            onPress={() => {
+                                updateEmbeddings(settings, props.writeSettings, {
+                                    ...embeddings,
+                                    custom: { ...customProvider, apiKey: null },
+                                });
+                            }}
+                        />
+                    ) : null}
+                    <SettingAnchor setting={MEMORY_SETTINGS.settings.dimensions}>
+                        <FieldValueItem
+                            testID="memory-settings-embeddings-openai-dimensions"
+                            fieldTestID="memory-settings-embeddings-openai-dimensions-field"
+                            title={t('memorySearchSettings.embeddings.openAi.dimensionsTitle')}
+                            subtitle={t('memorySearchSettings.embeddings.openAi.dimensionsPromptBody')}
+                            placeholder={t('memorySearchSettings.embeddings.notSet')}
+                            kind="integer"
+                            allowEmpty
+                            value={customProvider.dimensions == null ? '' : String(customProvider.dimensions)}
+                            onCommit={(draft) => {
+                                const dimensions = parseOptionalInteger(draft);
+                                updateEmbeddings(settings, props.writeSettings, {
+                                    ...embeddings,
+                                    custom: { ...customProvider, dimensions },
+                                });
+                                return dimensions == null ? '' : String(dimensions);
+                            }}
+                        />
+                    </SettingAnchor>
                 </>
             ) : null}
 
-            <Item
-                testID="memory-settings-embeddings-fts-weight"
-                title={t('memorySearchSettings.embeddings.advanced.ftsWeightTitle')}
-                subtitle={String(embeddings.blend.ftsWeight)}
-                icon={<Icon name="chart-line" size={29} color={theme.colors.text.secondary} />}
-                onPress={async () => {
-                    const next = await Modal.prompt(
-                        t('memorySearchSettings.embeddings.advanced.ftsWeightTitle'),
-                        t('memorySearchSettings.embeddings.advanced.ftsWeightPromptBody'),
-                        { defaultValue: String(embeddings.blend.ftsWeight) },
-                    );
-                    if (next === null) return;
-                    const parsed = Number(next);
-                    if (!Number.isFinite(parsed)) return;
-                    updateEmbeddings(settings, props.writeSettings, {
-                        ...embeddings,
-                        blend: { ...embeddings.blend, ftsWeight: Math.max(0, Math.min(10, parsed)) },
-                    });
-                }}
-                showChevron={false}
-            />
-            <Item
-                testID="memory-settings-embeddings-embedding-weight"
-                title={t('memorySearchSettings.embeddings.advanced.embeddingWeightTitle')}
-                subtitle={String(embeddings.blend.embeddingWeight)}
-                icon={<Icon name="graph" size={29} color={theme.colors.text.secondary} />}
-                onPress={async () => {
-                    const next = await Modal.prompt(
-                        t('memorySearchSettings.embeddings.advanced.embeddingWeightTitle'),
-                        t('memorySearchSettings.embeddings.advanced.embeddingWeightPromptBody'),
-                        { defaultValue: String(embeddings.blend.embeddingWeight) },
-                    );
-                    if (next === null) return;
-                    const parsed = Number(next);
-                    if (!Number.isFinite(parsed)) return;
-                    updateEmbeddings(settings, props.writeSettings, {
-                        ...embeddings,
-                        blend: { ...embeddings.blend, embeddingWeight: Math.max(0, Math.min(10, parsed)) },
-                    });
-                }}
-                showChevron={false}
-            />
+            <SettingAnchor setting={MEMORY_SETTINGS.settings.textWeight}>
+                <FieldValueItem
+                    testID="memory-settings-embeddings-fts-weight"
+                    fieldTestID="memory-settings-embeddings-fts-weight-field"
+                    title={t('memorySearchSettings.embeddings.advanced.ftsWeightTitle')}
+                    subtitle={t('memorySearchSettings.embeddings.advanced.ftsWeightPromptBody')}
+                    kind="decimal"
+                    value={String(embeddings.blend.ftsWeight)}
+                    onCommit={(draft) => {
+                        const parsed = Number(draft);
+                        if (!Number.isFinite(parsed)) return String(embeddings.blend.ftsWeight);
+                        const ftsWeight = Math.max(0, Math.min(10, parsed));
+                        updateEmbeddings(settings, props.writeSettings, {
+                            ...embeddings,
+                            blend: { ...embeddings.blend, ftsWeight },
+                        });
+                        return String(ftsWeight);
+                    }}
+                />
+            </SettingAnchor>
+            <SettingAnchor setting={MEMORY_SETTINGS.settings.embeddingWeight}>
+                <FieldValueItem
+                    testID="memory-settings-embeddings-embedding-weight"
+                    fieldTestID="memory-settings-embeddings-embedding-weight-field"
+                    title={t('memorySearchSettings.embeddings.advanced.embeddingWeightTitle')}
+                    subtitle={t('memorySearchSettings.embeddings.advanced.embeddingWeightPromptBody')}
+                    kind="decimal"
+                    value={String(embeddings.blend.embeddingWeight)}
+                    onCommit={(draft) => {
+                        const parsed = Number(draft);
+                        if (!Number.isFinite(parsed)) return String(embeddings.blend.embeddingWeight);
+                        const embeddingWeight = Math.max(0, Math.min(10, parsed));
+                        updateEmbeddings(settings, props.writeSettings, {
+                            ...embeddings,
+                            blend: { ...embeddings.blend, embeddingWeight },
+                        });
+                        return String(embeddingWeight);
+                    }}
+                />
+            </SettingAnchor>
         </ItemGroup>
+        </SettingSection>
     );
 });

@@ -49,6 +49,20 @@ The conformance helper verifies the declared source contribution against the
 public V1 contract. Installation, generation currentness, provider behavior,
 and host admission remain owned by their existing host boundaries.
 
+## Optional pull-request status (development preview)
+
+Sources may bind the safe `readPullRequestStatus` role for a declared
+`pullRequest` workflow kind. It accepts the existing exact-instance
+`TriageGetInputV1` and returns `TriagePullRequestStatusResultV1`: named checks,
+nullable counts, review decisions and reviewer verbs, mergeability/blocker,
+and head/base branches with optional diff counts. Unknown or partial reads
+remain explicit; they are not zero checks or an approval. This detail read
+cannot conclude entry absence or replace `get`/`scan` observations.
+
+The Session tab requests it only when a PR is expanded, through Triage's own
+safe Action and the source's existing admitted readers. Sources that leave
+the optional role unbound continue to provide their existing entry details.
+
 ## Evolving the ABI
 
 V1 is the only supported epoch. Keep shared source fields and schemas in this

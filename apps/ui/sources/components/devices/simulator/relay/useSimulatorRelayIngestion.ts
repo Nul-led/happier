@@ -2,17 +2,17 @@ import * as React from 'react';
 import { Platform } from 'react-native';
 import {
     MACHINE_LIVE_STREAM_SOCKET_EVENT,
-    MachineLiveStreamRelayEnvelopeV1Schema,
+    MachineLiveStreamDecodedEnvelopeV1Schema as MachineLiveStreamRelayEnvelopeV1Schema,
     type MachineLiveStreamCapsV1,
     type MachineLiveStreamCodecIdV1,
     type MachineLiveStreamRelayEnvelopeV1,
+    type MachineLiveStreamFrameV1,
 } from '@happier-dev/protocol';
 
-import {
-    openMachineLiveStreamRelayClient,
-    resolveLiveStreamViewerCapabilities,
-    type LiveStreamViewerCapabilities,
-} from '@/sync/domains/machines/peer/mediation/stream';
+import { openMachineLiveStreamRelayClient, renewMachineLiveStreamRelayClient, type MachineLiveStreamRelayClientInput } from '@/sync/domains/machines/peer/mediation/stream/relayClient';
+import { resolveLiveStreamViewerCapabilities, type LiveStreamViewerCapabilities } from '@/sync/domains/machines/peer/mediation/stream/capabilities';
+import { resolveMachineLiveStreamCodecPreference } from '@/sync/domains/machines/peer/mediation/stream/codecs';
+import { resolveBrowserLiveStreamWebCodecsSupport } from '@/sync/domains/machines/peer/mediation/stream/webCodecs';
 import type { SimulatorPreviewStreamState } from '@/sync/domains/devices/simulator/types';
 import {
     createSimulatorRelayStreamState,
@@ -57,6 +57,7 @@ export type UseSimulatorRelayIngestionInput = Readonly<{
     simulatorId: string;
     streamId: string;
     streamFamily: string;
+    sourceId?: string;
     caps: MachineLiveStreamCapsV1;
     sourceCodecs: readonly MachineLiveStreamCodecIdV1[];
     viewerCapabilities?: LiveStreamViewerCapabilities;
@@ -64,6 +65,8 @@ export type UseSimulatorRelayIngestionInput = Readonly<{
     startProduction?: StartProductionMachineLiveStream;
     startDaemonRelay?: StartDaemonRelay;
     timeoutMs?: number;
+    /** Source-owned metadata shares this one scoped subscriber, but never enters the image decoder. */
+    onMetadataFrame?: (frame: MachineLiveStreamFrameV1) => void;
 }>;
 
 export type UseSimulatorRelayIngestionResult = Readonly<{
@@ -78,6 +81,7 @@ function createStreamIdentityKey(input: Readonly<{
     targetMachineId: string;
     streamId: string;
     streamFamily: string;
+    sourceId?: string;
 }>): string {
     return [
         input.simulatorId,
@@ -85,12 +89,8 @@ function createStreamIdentityKey(input: Readonly<{
         input.sourceMachineId,
         input.targetMachineId,
         input.streamFamily,
+        input.sourceId ?? '',
     ].join('\u0000');
-}
-
-function hasWebCodecsDecoder(): boolean {
-    return typeof globalThis !== 'undefined'
-        && typeof (globalThis as { VideoDecoder?: unknown }).VideoDecoder !== 'undefined';
 }
 
 function isWebPlatform(): boolean {
@@ -98,16 +98,14 @@ function isWebPlatform(): boolean {
 }
 
 function resolveDefaultViewerCapabilities(): LiveStreamViewerCapabilities {
-    // WebCodecs H.264 decode is only real on web/desktop runtimes. The native RN target
-    // re-exports the browser adapter and would silently fall back to MJPEG at decode time
-    // (SIM-P2-2), so negotiation must be honest: never advertise `webcodecs` off-web, even if
-    // a global `VideoDecoder` polyfill happens to exist.
+    // Advertise the same platform support that the actual decoder requires.
+    // A browser SDK polyfill does not make the native surface a WebCodecs renderer.
     const web = isWebPlatform();
     return resolveLiveStreamViewerCapabilities({
         platform: web ? 'web' : 'native',
         renderers: {
             mjpeg: true,
-            webcodecs: web && hasWebCodecsDecoder(),
+            webcodecs: web && resolveBrowserLiveStreamWebCodecsSupport().ok,
             mse: false,
             wasm: false,
             nativeVideo: false,
@@ -143,11 +141,18 @@ export function useSimulatorRelayIngestion(
         targetMachineId,
         streamId,
         streamFamily,
+        sourceId,
     } = input;
 
     React.useEffect(() => {
         if (!enabled || !transport) return;
         let disposed = false;
+        let ended = false;
+        let renewalTimer: ReturnType<typeof setTimeout> | undefined;
+        const clearRenewal = () => {
+            if (renewalTimer !== undefined) clearTimeout(renewalTimer);
+            renewalTimer = undefined;
+        };
 
         const streamIdentityKey = createStreamIdentityKey({
             simulatorId,
@@ -155,6 +160,7 @@ export function useSimulatorRelayIngestion(
             targetMachineId,
             streamId,
             streamFamily,
+            sourceId,
         });
         const openEvent: SimulatorRelayIngestionEvent = {
             type: 'open',
@@ -170,6 +176,12 @@ export function useSimulatorRelayIngestion(
             dispatch({ ...openEvent, type: 'reset_open', streamId });
             openedStreamIdentityKeyRef.current = streamIdentityKey;
         }
+        const codec = resolveMachineLiveStreamCodecPreference({
+            sourceCodecs: latestRef.current.sourceCodecs,
+            viewerCodecs: viewerCapabilitiesRef.current.supportedCodecs,
+            ...(latestRef.current.preferredCodec ? { preferredCodec: latestRef.current.preferredCodec } : {}),
+        });
+        if (!codec.ok) return;
 
         const viewerSocketId = latestRef.current.viewerSocketId ?? '';
         const controlEnvelope = (
@@ -181,11 +193,59 @@ export function useSimulatorRelayIngestion(
             ...(viewerSocketId ? { viewerSocketId } : {}),
             message: { kind: 'control', control },
         });
+        const stop = () => transport.send(MACHINE_LIVE_STREAM_SOCKET_EVENT, controlEnvelope({
+            v: 1, streamId, kind: 'stop', reasonCode: 'viewer_closed',
+        }));
+        const clientInput: MachineLiveStreamRelayClientInput = {
+            serverId, sourceMachineId, targetMachineId, streamId, streamFamily,
+            ...(sourceId ? { sourceId } : {}),
+            ...(viewerSocketId ? { viewerSocketId } : {}),
+            caps: latestRef.current.caps,
+            codecId: codec.codecId,
+            viewerCodecs: viewerCapabilitiesRef.current.supportedCodecs,
+            ...(latestRef.current.startProduction ? { startProduction: latestRef.current.startProduction } : {}),
+            ...(latestRef.current.startDaemonRelay ? { startDaemonRelay: latestRef.current.startDaemonRelay } : {}),
+            ...(typeof latestRef.current.timeoutMs === 'number' ? { timeoutMs: latestRef.current.timeoutMs } : {}),
+        };
+        const failRenewal = (reasonCode: string) => {
+            if (disposed || ended) return;
+            ended = true;
+            clearRenewal();
+            dispatch({ type: 'error', reasonCode });
+            stop();
+        };
+        const scheduleRenewal = (expiresAtMs: number) => {
+            clearRenewal();
+            if (disposed || ended) return;
+            const remainingMs = expiresAtMs - Date.now();
+            if (remainingMs <= 0) { failRenewal('grant_expired'); return; }
+            // Renew within the signed lifetime, through the existing grant owner.
+            // A fresh grant is not a second capture start. Its exact expiry is
+            // acknowledged by grant_expiring and schedules the next renewal.
+            renewalTimer = setTimeout(() => {
+                renewalTimer = undefined;
+                void renewMachineLiveStreamRelayClient(clientInput).then((result) => {
+                    if (disposed || ended) return;
+                    if (!result.ok) { failRenewal(result.reasonCode); return; }
+                    if (result.routeKind !== 'server_relay') { failRenewal('unexpected_route_kind'); return; }
+                    transport.send(MACHINE_LIVE_STREAM_SOCKET_EVENT, {
+                        v: 1, sourceMachineId, targetMachineId,
+                        ...(viewerSocketId ? { viewerSocketId } : {}),
+                        message: { kind: 'renew', startRequest: result.startRequest },
+                    });
+                }).catch(() => failRenewal('grant_refresh_failed'));
+            }, remainingMs / 2);
+        };
 
         const unsubscribe = transport.onEnvelope((raw) => {
-            if (disposed) return;
+            if (disposed || ended) return;
             const parsed = MachineLiveStreamRelayEnvelopeV1Schema.safeParse(raw);
             if (!parsed.success) return;
+            if (parsed.data.sourceMachineId !== sourceMachineId || parsed.data.targetMachineId !== targetMachineId) return;
+            if (parsed.data.message.kind === 'control' && parsed.data.message.control.streamId === streamId
+                && parsed.data.message.control.kind === 'grant_expiring') {
+                scheduleRenewal(parsed.data.message.control.expiresAtMs);
+            }
             // Viewer-side ack (SIM-P0-2): every delivered frame replenishes the server's bounded
             // in-flight window. The ack is the backpressure signal — without it the relay stops
             // crediting after `maxWindowFrames` frames. Only socket-precise viewers ack (the
@@ -208,49 +268,49 @@ export function useSimulatorRelayIngestion(
                 targetMachineId,
                 streamId,
             });
-            if (event) dispatch(event);
+            if (parsed.data.message.kind === 'frame' && parsed.data.message.frame.streamId === streamId
+                && parsed.data.message.frame.payloadKind === 'metadata') {
+                latestRef.current.onMetadataFrame?.(parsed.data.message.frame);
+                return;
+            }
+            if (event) {
+                if (event.type === 'error' || event.type === 'stopped') { ended = true; clearRenewal(); }
+                dispatch(event);
+            }
         });
 
         void openMachineLiveStreamRelayClient({
-            serverId,
-            sourceMachineId,
-            targetMachineId,
-            streamId,
-            streamFamily,
-            ...(viewerSocketId ? { viewerSocketId } : {}),
-            caps: latestRef.current.caps,
-            ...(latestRef.current.startProduction ? { startProduction: latestRef.current.startProduction } : {}),
-            ...(latestRef.current.startDaemonRelay ? { startDaemonRelay: latestRef.current.startDaemonRelay } : {}),
-            ...(typeof latestRef.current.timeoutMs === 'number' ? { timeoutMs: latestRef.current.timeoutMs } : {}),
+            ...clientInput,
+            onAuthorized: (request) => {
+                if (request.authorization) scheduleRenewal(request.authorization.payload.exp);
+            },
         })
             .then((result) => {
-                if (disposed || result.ok) return;
+                // Cleanup can precede registration at the source. Stop the exact
+                // viewer again when a late successful start becomes reachable.
+                if (disposed) { if (result.ok) stop(); return; }
+                if (result.ok) return;
+                ended = true;
+                clearRenewal();
                 dispatch({ type: 'error', reasonCode: result.reasonCode });
             })
             .catch(() => {
-                if (!disposed) dispatch({ type: 'error', reasonCode: 'relay_open_failed' });
+                if (!disposed) { ended = true; clearRenewal(); dispatch({ type: 'error', reasonCode: 'relay_open_failed' }); }
             });
 
         return () => {
             disposed = true;
+            clearRenewal();
             unsubscribe();
-            // Stop on unmount (SIM-P1-2): tell the relay to tear the stream down and the daemon
-            // to end capture — otherwise the encode keeps running up to maxDurationMs (30 min)
-            // after the tab navigates away. Fire-and-forget: the server-side viewer-disconnect
-            // teardown is the safety net when the socket is already gone.
-            transport.send(MACHINE_LIVE_STREAM_SOCKET_EVENT, controlEnvelope({
-                v: 1,
-                streamId,
-                kind: 'stop',
-                reasonCode: 'viewer_closed',
-            }));
+            stop();
         };
-    }, [enabled, transport, serverId, simulatorId, sourceMachineId, targetMachineId, streamId, streamFamily]);
+    }, [enabled, transport, serverId, simulatorId, sourceMachineId, targetMachineId, streamId, streamFamily, sourceId]);
 
+    const onFrameDecoded = React.useCallback(() => dispatch({ type: 'frame_decoded', streamId }), [streamId]);
     const playerStatesBySimulatorId = React.useMemo<UseSimulatorRelayIngestionResult['playerStatesBySimulatorId']>(() => {
         if (!enabled) return EMPTY_PLAYER_STATES;
-        return { [simulatorId]: toSimulatorPreviewStreamState(state) };
-    }, [enabled, simulatorId, state]);
+        return { [simulatorId]: { ...toSimulatorPreviewStreamState(state), onFrameDecoded } };
+    }, [enabled, simulatorId, state, onFrameDecoded]);
 
     return React.useMemo(() => ({ playerStatesBySimulatorId }), [playerStatesBySimulatorId]);
 }

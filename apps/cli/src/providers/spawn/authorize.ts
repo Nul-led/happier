@@ -5,6 +5,7 @@ import {
   assessProviderEndpoint,
   createProviderManagedRuntimeBindingEqualityKeyV1,
   createProviderErrorV1,
+  pluginSourceCustodyV1Equal,
   ProviderErrorV1Schema,
   type AgentProviderBindingMaterializationV1,
   type ConnectedServiceBindingsV2,
@@ -62,6 +63,7 @@ import {
   type RetainedManagedProviderAuthorizationCurrentnessCheck,
 } from '../sessions/retainedManagedProviderPolicy';
 import { projectProviderRuntimeBindingBasis } from './runtimeBindingBasis';
+import { admitRuntimeProviderSavedSecret } from './runtimeCredential';
 
 type ExternalProviderSpawnAuthorization = Extract<
   ProviderSpawnAuthorization,
@@ -126,10 +128,12 @@ export function sameManagedProviderAuthorizationCurrentnessBasis(
       })
     && expected.deployment.implementation.runtime.runtime
       === actual.deployment.implementation.runtime.runtime
-    && expected.deployment.implementation.runtime.activationGeneration
-      === actual.deployment.implementation.runtime.activationGeneration
-    && expected.deployment.implementation.runtime.immutableGenerationId
-      === actual.deployment.implementation.runtime.immutableGenerationId
+    && expected.deployment.implementation.runtime.activationOccurrenceId
+      === actual.deployment.implementation.runtime.activationOccurrenceId
+    && pluginSourceCustodyV1Equal(
+      expected.deployment.implementation.runtime.sourceCustody,
+      actual.deployment.implementation.runtime.sourceCustody,
+    )
     && expected.deployment.implementation.runtime.isCurrent() === true
     && actual.deployment.implementation.runtime.isCurrent() === true;
 }
@@ -548,7 +552,10 @@ export async function createRuntimeProviderSpawnAuthorizationAttempt(input: Read
   // Reject only cold, locally definitive facts before activation can create an
   // executable plugin runtime or any downstream launch state.  A later fresh
   // resolution still owns dynamic prerequisites and can legitimately fail.
-  const initialSnapshot = input.getAccountSettingsSnapshot();
+  const getAccountSettingsSnapshot = createAccountBoundProviderSnapshotReader(
+    input.getAccountSettingsSnapshot,
+  );
+  const initialSnapshot = getAccountSettingsSnapshot();
   if (!initialSnapshot) {
     return {
       ok: false,
@@ -600,9 +607,6 @@ export async function createRuntimeProviderSpawnAuthorizationAttempt(input: Read
       }),
     };
   }
-  const getAccountSettingsSnapshot = createAccountBoundProviderSnapshotReader(
-    input.getAccountSettingsSnapshot,
-  );
   const registry = {
     providersByContributionKey:
       input.lease.registry.contributes.providersByContributionKey ?? new Map(),
@@ -612,8 +616,9 @@ export async function createRuntimeProviderSpawnAuthorizationAttempt(input: Read
     lifetime = createProviderOperationLifetime({
       wallTimeMs: PROVIDER_ENDPOINT_SAFETY_LIMITS.maxWallTimeMs,
     }),
+    admitSavedSecret = false,
   ): Promise<ProviderSpawnAuthorizationResult> => {
-    const snapshot = getAccountSettingsSnapshot();
+    let snapshot = getAccountSettingsSnapshot();
     if (!snapshot) {
       return {
         ok: false,
@@ -663,6 +668,17 @@ export async function createRuntimeProviderSpawnAuthorizationAttempt(input: Read
           }
         : {}),
     });
+    if (admitSavedSecret && connectionResolution.status === 'resolved') {
+      const admitted = await admitRuntimeProviderSavedSecret({
+        connection: connectionResolution.record,
+        providerSettings,
+        snapshot,
+        getAccountSettingsSnapshot,
+        lifetime,
+      });
+      if (!admitted.ok) return admitted;
+      snapshot = admitted.snapshot;
+    }
     if (
       connectionResolution.status === 'resolved'
       && connectionResolution.record.deployment.kind === 'managedLocal'
@@ -808,7 +824,7 @@ export async function createRuntimeProviderSpawnAuthorizationAttempt(input: Read
     }
     return authorization;
   };
-  const initial = await resolveCurrent(admissionLifetime);
+  const initial = await resolveCurrent(admissionLifetime, true);
   if (!initial.ok) return initial;
   const retainedManagedRuntimeBindingBasis =
     isManagedProviderSpawnAuthorization(initial.authorization)

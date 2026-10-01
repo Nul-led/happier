@@ -186,6 +186,7 @@ describe('TeamGroupsScreen', () => {
 
         releaseArchived();
         await waitForTestId(screen, 'team-groups-archived-empty');
+        expect(collectRenderedTestIds(screen.tree.toJSON())).not.toContain('team-groups-toggle-archived');
     });
 
     it('names the source that owns a directory-created Group without hiding its roster', async () => {
@@ -227,6 +228,17 @@ describe('TeamGroupsScreen', () => {
         await waitForTestId(screen, 'team-groups-retry');
         // Continuity: the page already read stays rendered through the failure.
         expect(collectRenderedTestIds(screen.tree.toJSON())).toContain('team-groups-row:group-1');
+    });
+
+    it('does not offer retry after the Home authoritatively refuses the Groups read', async () => {
+        const serverId = await addManagedHome();
+        harness.answer(serverId, GROUPS_LIST_PATH, { status: 403, body: { error: 'forbidden' } });
+
+        const screen = await renderGroups(serverId);
+        await waitForTestId(screen, 'team-groups-unavailable');
+
+        expect(collectRenderedTestIds(screen.tree.toJSON())).not.toContain('team-groups-retry');
+        expect(screen.getTextContent()).toContain('teams.errors.forbidden');
     });
 
     it('reads Groups for a plain viewer and offers no create control', async () => {

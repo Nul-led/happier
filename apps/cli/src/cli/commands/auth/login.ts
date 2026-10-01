@@ -7,7 +7,7 @@ import { isDaemonStopIncompleteError, stopDaemon } from '@/daemon/controlClient'
 import { logger } from '@/ui/logger';
 import { applyServerSelectionFromArgs } from '@/server/serverSelection';
 import { createOutputBuilder, definitionList, errorFrame, ok, warn } from '@happier-dev/cli-common/output';
-import { decodeJwtPayload } from '@/cloud/decodeJwtPayload';
+import { readAccountIdFromToken } from '@/cloud/decodeJwtPayload';
 
 import { showAuthHelp } from './help';
 import { resolveAuthMethodFlag } from './methodFlag';
@@ -22,14 +22,6 @@ function readWaitTimeoutSecondsFlag(args: readonly string[]): number | null {
     process.exit(1);
   }
   return seconds;
-}
-
-function readAccountIdFromCredentials(credentials: Awaited<ReturnType<typeof readStoredCredentials>>): string | null {
-  const token = typeof credentials?.token === 'string' ? credentials.token : '';
-  if (!token) return null;
-  const payload = decodeJwtPayload(token);
-  const subject = typeof payload?.sub === 'string' ? payload.sub.trim() : '';
-  return subject || null;
 }
 
 export async function handleAuthLogin(args: string[], signal?: AbortSignal): Promise<void> {
@@ -69,7 +61,8 @@ export async function handleAuthLogin(args: string[], signal?: AbortSignal): Pro
   }
 
   if (forceAuth) {
-    const replacementAccountId = readAccountIdFromCredentials(await readStoredCredentials());
+    const replacementCredentials = await readStoredCredentials();
+    const replacementAccountId = replacementCredentials ? readAccountIdFromToken(replacementCredentials.token) : null;
     const out = createOutputBuilder();
     out.line(warn('Force authentication requested.'));
     out.blank();
@@ -106,7 +99,7 @@ export async function handleAuthLogin(args: string[], signal?: AbortSignal): Pro
     let existingCreds = readiness.credentials;
 
     if (readiness.unusableReason === 'credentials-rejected' && existingCreds) {
-        const replacementAccountId = readAccountIdFromCredentials(existingCreds);
+        const replacementAccountId = readAccountIdFromToken(existingCreds.token);
         const out = createOutputBuilder();
         out.line(warn('Stored credentials were rejected by the selected server'));
         out.line('  Repairing local authentication state before logging in again...');

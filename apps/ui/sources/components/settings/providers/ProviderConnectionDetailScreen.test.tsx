@@ -8,6 +8,7 @@ import { RPC_METHODS } from '@happier-dev/protocol/rpc';
 import {
     createProviderConnectionViewFixture,
     createProviderConnectionsDescribeFixture,
+    createProviderModelsFixture,
     createMachineAdministrationTargetSelectionMock,
     createProviderSettingsHarness,
     createDeferred,
@@ -81,6 +82,8 @@ installSettingsViewCommonModuleMocks({
         });
     },
     storage: async () => ({
+        // The page header reads the viewer's content-width preference.
+        useLocalSetting: () => undefined,
         useAllMachines: () => [
             { id: 'machine-a', active: true, revokedAt: null, metadata: { displayName: 'Mac' } },
             { id: 'machine-b', active: true, revokedAt: null, metadata: { displayName: 'Linux' } },
@@ -206,6 +209,7 @@ vi.mock('@/sync/domains/connectedServices/connectedServiceRegistry', () => ({
         }],
     }),
     getQualifiedConnectedServiceRegistryEntry: () => null,
+    getGeneratedLegacyConnectedServiceRegistryFallback: () => null,
     getLegacyConnectedServiceRegistryEntry: () => ({
         serviceId: 'unavailable', connectCommand: '', supportsOauth: false,
     }),
@@ -225,6 +229,12 @@ vi.mock('@/components/ui/forms/Switch', () => ({ Switch: (props: Record<string, 
 vi.mock('@/components/ui/feedback/ActivitySpinner', () => ({ ActivitySpinner: () => null }));
 vi.mock('@/components/ui/icons/SafeIonicons', () => ({ SafeIonicons: () => null }));
 vi.mock('@/providers/connection/ProviderIcon', () => ({ ProviderIcon: (props: Record<string, unknown>) => React.createElement('ProviderIcon', props) }));
+// The detail page is one virtualized list (its sections as the header, the model rows as items);
+// the recycler renders every row here so the page reads as a whole.
+vi.mock('@legendapp/list/react-native', async (importOriginal) => {
+    const { createCapturingLegendListMock } = await import('@/dev/testkit/mocks/legendList');
+    return createCapturingLegendListMock({ original: await importOriginal<Record<string, unknown>>() }).module;
+});
 
 function connection(overrides: Record<string, unknown> = {}) {
     const base = {
@@ -265,6 +275,31 @@ async function pressAndFlush(item: { props: { onPress?: () => void } } | undefin
     });
 }
 
+type RenderedScreen = Awaited<ReturnType<typeof renderScreen>>;
+
+/** The header's Test action with its result line, read as one control (null result = nothing shown). */
+function findTestRow(screen: RenderedScreen) {
+    const button = screen.findByTestId('provider-connection-test');
+    if (!button) return undefined;
+    const result = findComposite(screen, 'provider-connection-probe-result', 'text');
+    return {
+        props: {
+            onPress: button.props.onPress as (() => void) | undefined,
+            loading: Boolean(button.props.loading),
+            subtitle: (result?.props.text ?? null) as string | null,
+        },
+    };
+}
+
+/** One entry of the entity header's `⋯` menu, as a pressable row. */
+function findMenuAction(screen: RenderedScreen, id: string) {
+    const actions = findComposite(screen, 'provider-connection-menu', 'actions')?.props.actions as
+        | Array<{ id: string; disabled?: boolean; onSelect: () => unknown }>
+        | undefined;
+    const action = actions?.find((entry) => entry.id === id);
+    return action ? { props: { onPress: action.onSelect, disabled: Boolean(action.disabled) } } : undefined;
+}
+
 function findProviderExternalLink(
     screen: Awaited<ReturnType<typeof renderScreen>>,
     label: string,
@@ -273,6 +308,12 @@ function findProviderExternalLink(
         node.props.label === label
         && typeof node.props.onPress === 'function'
     ));
+}
+
+
+/** The rendered component that carries `prop` for a test id (the host view under it carries none). */
+function findComposite(screen: { findAllByTestId: (testID: string) => Array<{ props: Record<string, any> }> }, testID: string, prop: string) {
+    return screen.findAllByTestId(testID).find((node) => node.props[prop] !== undefined) ?? null;
 }
 
 describe('ProviderConnectionDetailScreen', () => {
@@ -382,7 +423,7 @@ describe('ProviderConnectionDetailScreen', () => {
         const { ProviderConnectionDetailScreen } = await import('./ProviderConnectionDetailScreen');
         const screen = await renderScreen(<ProviderConnectionDetailScreen connectionId="pc_a" />);
 
-        expect(screen.findAllByType('Item').map((item) => item.props.title)).toContain('Boundary detail');
+        expect(findComposite(screen, 'provider-connection-header', 'title')?.props.title).toBe('Boundary detail');
     });
 
     it('keeps foreign-daemon inspection but disables active-Account Saved Secrets with colliding ids', async () => {
@@ -418,7 +459,8 @@ describe('ProviderConnectionDetailScreen', () => {
             'provider-connection-machine-api-key',
         ]) {
             const row = screen.findAllByType('Item').find((item) => item.props.testID === testID);
-            expect(row?.props.disabled).toBe(true);
+            // The key's Replace stays visible but cannot open the other Account's Saved Secrets.
+            expect(row?.props.rightElement.props.disabled).toBe(true);
             expect(row?.props.onPress).toBeUndefined();
             expect(row?.props.subtitle).toBe('settingsProviders.local.accountScopeMismatchDescription');
         }
@@ -457,32 +499,18 @@ describe('ProviderConnectionDetailScreen', () => {
         const initialConnection = state.connection;
         const { ProviderConnectionDetailScreen } = await import('./ProviderConnectionDetailScreen');
         const screen = await renderScreen(<ProviderConnectionDetailScreen connectionId="pc_a" />);
-        const websiteRow = screen.findAllByType('Item')
-            .find((item) => item.props.title === 'settingsProviders.links.providerWebsite');
         const titles = screen.findAllByType('Item').map((item) => item.props.title);
-        const testStatusBefore = screen.findAllByType('Item')
-            .find((item) => item.props.title === 'settingsProviders.detail.testConnection')?.props.subtitle;
+        const testStatusBefore = findTestRow(screen)?.props.subtitle;
 
-        expect(websiteRow?.props.accessibilityLabel).toBe('settingsProviders.links.providerWebsite');
-        expect(websiteRow?.props.onPress).toBeUndefined();
+        expect(findMenuAction(screen, 'website')).toBeDefined();
         expect(titles).not.toContain('settingsProviders.links.getApiKey');
-        await pressAndFlush(findProviderExternalLink(screen, 'settingsProviders.links.providerWebsite'));
+        await pressAndFlush(findMenuAction(screen, 'website'));
 
         expect(openUrl).toHaveBeenCalledWith('https://provider.example.test');
         expect(run).not.toHaveBeenCalled();
         expect(state.connection).toBe(initialConnection);
-        expect(screen.findAllByType('Item')
-            .find((item) => item.props.title === 'settingsProviders.detail.testConnection')?.props.subtitle)
+        expect(findTestRow(screen)?.props.subtitle)
             .toBe(testStatusBefore);
-    });
-
-    it('routes the provider website accessory through HappierLink', async () => {
-        state.connection = connection({ websiteUrl: 'https://provider.example.test' });
-        const { ProviderConnectionDetailScreen } = await import('./ProviderConnectionDetailScreen');
-        const screen = await renderScreen(<ProviderConnectionDetailScreen connectionId="pc_a" />);
-        const website = findProviderExternalLink(screen, 'settingsProviders.links.providerWebsite');
-
-        expect(website?.props.label).toBe('settingsProviders.links.providerWebsite');
     });
 
     it('opens a key-only projected Provider destination without mutating credentials', async () => {
@@ -501,6 +529,7 @@ describe('ProviderConnectionDetailScreen', () => {
         const getKeyRow = screen.findAllByType('Item')
             .find((item) => item.props.title === 'settingsProviders.links.getApiKey');
 
+        expect(findMenuAction(screen, 'website')).toBeUndefined();
         expect(titles).not.toContain('settingsProviders.links.providerWebsite');
         expect(getKeyRow?.props.accessibilityLabel).toBe('settingsProviders.links.getApiKey');
         expect(getKeyRow?.props.onPress).toBeUndefined();
@@ -519,10 +548,10 @@ describe('ProviderConnectionDetailScreen', () => {
         const { ProviderConnectionDetailScreen } = await import('./ProviderConnectionDetailScreen');
         const screen = await renderScreen(<ProviderConnectionDetailScreen connectionId="pc_a" />);
 
-        await pressAndFlush(findProviderExternalLink(screen, 'settingsProviders.links.providerWebsite'));
+        await pressAndFlush(findMenuAction(screen, 'website'));
 
         expect(alert).toHaveBeenCalledWith('common.error', 'settingsProviders.links.failedToOpen');
-        expect(screen.findAllByType('Item').map((item) => item.props.title)).toContain('Acme');
+        expect(findComposite(screen, 'provider-connection-header', 'title')?.props.title).toBe('Acme');
         expect(run).not.toHaveBeenCalled();
     });
 
@@ -540,7 +569,7 @@ describe('ProviderConnectionDetailScreen', () => {
         const { ProviderConnectionDetailScreen } = await import('./ProviderConnectionDetailScreen');
         const unavailable = await renderScreen(<ProviderConnectionDetailScreen connectionId="pc_a" />);
         const unavailableTitles = unavailable.findAllByType('Item').map((item) => item.props.title);
-        expect(unavailableTitles).not.toContain('settingsProviders.links.providerWebsite');
+        expect(findMenuAction(unavailable, 'website')).toBeUndefined();
         expect(unavailableTitles).not.toContain('settingsProviders.links.getApiKey');
 
         state.connection = connection({
@@ -549,16 +578,16 @@ describe('ProviderConnectionDetailScreen', () => {
         });
         const custom = await renderScreen(<ProviderConnectionDetailScreen connectionId="pc_a" />);
         const customTitles = custom.findAllByType('Item').map((item) => item.props.title);
-        expect(customTitles).not.toContain('settingsProviders.links.providerWebsite');
+        expect(findMenuAction(custom, 'website')).toBeUndefined();
         expect(customTitles).not.toContain('settingsProviders.links.getApiKey');
     });
 
     it('omits Test connection and explains first-session checking when no safe probe exists', async () => {
         const { ProviderConnectionDetailScreen } = await import('./ProviderConnectionDetailScreen');
         const screen = await renderScreen(<ProviderConnectionDetailScreen connectionId="pc_a" />);
-        const titles = screen.findAllByType('Item').map((item) => item.props.title);
-        expect(titles).not.toContain('settingsProviders.detail.testConnection');
-        expect(titles).toContain('settingsProviders.detail.testNotSupported');
+        expect(findTestRow(screen)).toBeUndefined();
+        expect(findComposite(screen, 'provider-connection-probe-result', 'text')?.props.text)
+            .toBe('settingsProviders.detail.testOnFirstSession');
     });
 
     it('offers Test connection only for a projected safe probe capability', async () => {
@@ -568,24 +597,19 @@ describe('ProviderConnectionDetailScreen', () => {
         });
         const { ProviderConnectionDetailScreen } = await import('./ProviderConnectionDetailScreen');
         const screen = await renderScreen(<ProviderConnectionDetailScreen connectionId="pc_a" />);
-        expect(screen.findAllByType('Item').map((item) => item.props.title))
-            .toContain('settingsProviders.detail.testConnection');
+        expect(findTestRow(screen)).toBeDefined();
     });
 
     it('labels only an externally sourced Provider connection as experimental', async () => {
         state.connection = connection({ provenance: 'external' });
         const { ProviderConnectionDetailScreen } = await import('./ProviderConnectionDetailScreen');
         const external = await renderScreen(<ProviderConnectionDetailScreen connectionId="pc_a" />);
-        const externalSource = external.findAllByType('Item')
-            .find((item) => item.props.subtitle === 'settingsProviders.detail.sourceAvailable');
-        expect(externalSource?.props.subtitleAccessory.props.label)
+        expect(findComposite(external, 'provider-connection-experimental', 'label')?.props.label)
             .toBe('settingsProviders.compatibility.experimental');
 
         state.connection = connection({ provenance: 'first_party' });
         const bundled = await renderScreen(<ProviderConnectionDetailScreen connectionId="pc_a" />);
-        const bundledSource = bundled.findAllByType('Item')
-            .find((item) => item.props.subtitle === 'settingsProviders.detail.sourceAvailable');
-        expect(bundledSource?.props.subtitleAccessory).toBeUndefined();
+        expect(bundled.findByTestId('provider-connection-experimental')).toBeNull();
     });
 
     it('renders an initial typed load failure instead of falsely claiming the connection was deleted', async () => {
@@ -598,10 +622,10 @@ describe('ProviderConnectionDetailScreen', () => {
         const titles = screen.findAllByType('Item').map((item) => item.props.title);
         expect(titles).toContain('settingsProviders.errors.unreachableTitle');
         expect(titles).toContain('settingsProviders.errors.actions.retry');
-        expect(titles).not.toContain('settingsProviders.detail.notFoundTitle');
+        expect(screen.findByTestId('provider-connection-not-found')).toBeNull();
     });
 
-    it('renders a failed probe actionably inside the Test connection row', async () => {
+    it('reports a failed probe beside the header Test action', async () => {
         state.connection = connection({ probeCapability: 'catalog' });
         probeProviderConnection.mockResolvedValue({
             status: 'error',
@@ -609,12 +633,10 @@ describe('ProviderConnectionDetailScreen', () => {
         });
         const { ProviderConnectionDetailScreen } = await import('./ProviderConnectionDetailScreen');
         const screen = await renderScreen(<ProviderConnectionDetailScreen connectionId="pc_a" />);
-        const testRow = screen.findAllByType('Item')
-            .find((item) => item.props.title === 'settingsProviders.detail.testConnection');
+        const testRow = findTestRow(screen);
         await pressAndFlush(testRow);
 
-        const updatedTestRow = screen.findAllByType('Item')
-            .find((item) => item.props.title === 'settingsProviders.detail.testConnection');
+        const updatedTestRow = findTestRow(screen);
         expect(updatedTestRow?.props.subtitle).toBe('settingsProviders.errors.unreachableDescription');
     });
 
@@ -623,14 +645,12 @@ describe('ProviderConnectionDetailScreen', () => {
         probeProviderConnection.mockRejectedValueOnce(new Error('socket implementation detail'));
         const { ProviderConnectionDetailScreen } = await import('./ProviderConnectionDetailScreen');
         const screen = await renderScreen(<ProviderConnectionDetailScreen connectionId="pc_a" />);
-        const testRow = screen.findAllByType('Item')
-            .find((item) => item.props.title === 'settingsProviders.detail.testConnection');
+        const testRow = findTestRow(screen);
 
         await pressAndFlush(testRow);
 
-        const updatedTestRow = screen.findAllByType('Item')
-            .find((item) => item.props.title === 'settingsProviders.detail.testConnection');
-        expect(updatedTestRow?.props.subtitle).toBe('settingsProviders.errors.machineUnavailableDescription');
+        const updatedTestRow = findTestRow(screen);
+        expect(updatedTestRow?.props.subtitle).toBe('settingsProviders.errors.rpcResponseInvalidDescription');
     });
 
     it('clears the previous machine probe result when the target machine changes', async () => {
@@ -641,19 +661,16 @@ describe('ProviderConnectionDetailScreen', () => {
         probeProviderConnection.mockResolvedValue({ status: 'success' });
         const { ProviderConnectionDetailScreen } = await import('./ProviderConnectionDetailScreen');
         const screen = await renderScreen(<ProviderConnectionDetailScreen connectionId="pc_a" />);
-        const testRow = screen.findAllByType('Item')
-            .find((item) => item.props.title === 'settingsProviders.detail.testConnection');
+        const testRow = findTestRow(screen);
         await pressAndFlush(testRow);
-        expect(screen.findAllByType('Item')
-            .find((item) => item.props.title === 'settingsProviders.detail.testConnection')?.props.subtitle)
+        expect(findTestRow(screen)?.props.subtitle)
             .toBe('settingsProviders.detail.testSucceeded');
 
         await act(async () => {
             administrationTarget.controller.select('machine-b');
         });
-        expect(screen.findAllByType('Item')
-            .find((item) => item.props.title === 'settingsProviders.detail.testConnection')?.props.subtitle)
-            .toBe('settingsProviders.detail.testDescription');
+        expect(findTestRow(screen)?.props.subtitle)
+            .toBeNull();
     });
 
     it('ignores a probe response that completes after the target machine changes', async () => {
@@ -662,17 +679,15 @@ describe('ProviderConnectionDetailScreen', () => {
         probeProviderConnection.mockReturnValueOnce(new Promise((resolve) => { resolveProbe = resolve; }));
         const { ProviderConnectionDetailScreen } = await import('./ProviderConnectionDetailScreen');
         const screen = await renderScreen(<ProviderConnectionDetailScreen connectionId="pc_a" />);
-        const testRow = screen.findAllByType('Item')
-            .find((item) => item.props.title === 'settingsProviders.detail.testConnection');
+        const testRow = findTestRow(screen);
         await act(async () => { testRow?.props.onPress?.(); });
         await act(async () => { administrationTarget.controller.select('machine-b'); });
         await act(async () => {
             resolveProbe?.({ status: 'success', models: [], requestFingerprint: 'probe-request:v1:late' });
             await Promise.resolve();
         });
-        const updated = screen.findAllByType('Item')
-            .find((item) => item.props.title === 'settingsProviders.detail.testConnection');
-        expect(updated?.props.subtitle).toBe('settingsProviders.detail.testDescription');
+        const updated = findTestRow(screen);
+        expect(updated?.props.subtitle).toBeNull();
         expect(updated?.props.loading).toBe(false);
     });
 
@@ -689,11 +704,9 @@ describe('ProviderConnectionDetailScreen', () => {
         probeProviderConnection.mockResolvedValue({ status: 'success' });
         const { ProviderConnectionDetailScreen } = await import('./ProviderConnectionDetailScreen');
         const screen = await renderScreen(<ProviderConnectionDetailScreen connectionId="pc_a" />);
-        const testRow = screen.findAllByType('Item')
-            .find((item) => item.props.title === 'settingsProviders.detail.testConnection');
+        const testRow = findTestRow(screen);
         await pressAndFlush(testRow);
-        expect(screen.findAllByType('Item')
-            .find((item) => item.props.title === 'settingsProviders.detail.testConnection')?.props.subtitle)
+        expect(findTestRow(screen)?.props.subtitle)
             .toBe('settingsProviders.detail.testSucceeded');
 
         state.connection = connection({
@@ -709,8 +722,7 @@ describe('ProviderConnectionDetailScreen', () => {
             administrationTarget.controller.select('machine-a');
         });
 
-        expect(screen.findAllByType('Item')
-            .find((item) => item.props.title === 'settingsProviders.detail.testConnection')?.props.subtitle)
+        expect(findTestRow(screen)?.props.subtitle)
             .toBe('settingsProviders.detail.testSucceeded');
     });
 
@@ -731,17 +743,15 @@ describe('ProviderConnectionDetailScreen', () => {
         probeProviderConnection.mockResolvedValue({ status: 'success' });
         const { ProviderConnectionDetailScreen } = await import('./ProviderConnectionDetailScreen');
         const screen = await renderScreen(<ProviderConnectionDetailScreen connectionId="pc_a" />);
-        const testRow = screen.findAllByType('Item')
-            .find((item) => item.props.title === 'settingsProviders.detail.testConnection');
+        const testRow = findTestRow(screen);
         state.connection = connection({
             ...facts,
             probeObservationIdentity: 'probe-observation:v1:secret-record-two',
         });
         await pressAndFlush(testRow);
 
-        expect(screen.findAllByType('Item')
-            .find((item) => item.props.title === 'settingsProviders.detail.testConnection')?.props.subtitle)
-            .toBe('settingsProviders.detail.testDescription');
+        expect(findTestRow(screen)?.props.subtitle)
+            .toBeNull();
     });
 
     it('ignores a probe response that completes after the daemon observation identity changes', async () => {
@@ -761,8 +771,7 @@ describe('ProviderConnectionDetailScreen', () => {
         probeProviderConnection.mockReturnValueOnce(new Promise((resolve) => { resolveProbe = resolve; }));
         const { ProviderConnectionDetailScreen } = await import('./ProviderConnectionDetailScreen');
         const screen = await renderScreen(<ProviderConnectionDetailScreen connectionId="pc_a" />);
-        const testRow = screen.findAllByType('Item')
-            .find((item) => item.props.title === 'settingsProviders.detail.testConnection');
+        const testRow = findTestRow(screen);
         await act(async () => { testRow?.props.onPress?.(); });
 
         state.connection = connection({
@@ -777,9 +786,8 @@ describe('ProviderConnectionDetailScreen', () => {
             await Promise.resolve();
         });
 
-        const updated = screen.findAllByType('Item')
-            .find((item) => item.props.title === 'settingsProviders.detail.testConnection');
-        expect(updated?.props.subtitle).toBe('settingsProviders.detail.testDescription');
+        const updated = findTestRow(screen);
+        expect(updated?.props.subtitle).toBeNull();
         expect(updated?.props.loading).toBe(false);
     });
 
@@ -791,12 +799,10 @@ describe('ProviderConnectionDetailScreen', () => {
         probeProviderConnection.mockResolvedValue({ status: 'success' });
         const { ProviderConnectionDetailScreen } = await import('./ProviderConnectionDetailScreen');
         const screen = await renderScreen(<ProviderConnectionDetailScreen connectionId="pc_a" />);
-        const testRow = screen.findAllByType('Item')
-            .find((item) => item.props.title === 'settingsProviders.detail.testConnection');
+        const testRow = findTestRow(screen);
         await pressAndFlush(testRow);
-        expect(screen.findAllByType('Item')
-            .find((item) => item.props.title === 'settingsProviders.detail.testConnection')?.props.subtitle)
-            .toBe('settingsProviders.detail.testDescription');
+        expect(findTestRow(screen)?.props.subtitle)
+            .toBeNull();
     });
 
     it('conservatively clears legacy-daemon probe truth when revision or projected security state changes', async () => {
@@ -808,17 +814,15 @@ describe('ProviderConnectionDetailScreen', () => {
         probeProviderConnection.mockResolvedValue({ status: 'success' });
         const { ProviderConnectionDetailScreen } = await import('./ProviderConnectionDetailScreen');
         const screen = await renderScreen(<ProviderConnectionDetailScreen connectionId="pc_a" />);
-        const testRow = screen.findAllByType('Item')
-            .find((item) => item.props.title === 'settingsProviders.detail.testConnection');
+        const testRow = findTestRow(screen);
         state.connection = connection({
             probeCapability: 'catalog',
             revision: 2,
             credential: { required: true, accountBound: true, boundMachineIds: [] },
         });
         await pressAndFlush(testRow);
-        expect(screen.findAllByType('Item')
-            .find((item) => item.props.title === 'settingsProviders.detail.testConnection')?.props.subtitle)
-            .toBe('settingsProviders.detail.testDescription');
+        expect(findTestRow(screen)?.props.subtitle)
+            .toBeNull();
     });
 
     it('ignores a probe response that completes after the connection security scope changes', async () => {
@@ -833,8 +837,7 @@ describe('ProviderConnectionDetailScreen', () => {
         probeProviderConnection.mockReturnValueOnce(new Promise((resolve) => { resolveProbe = resolve; }));
         const { ProviderConnectionDetailScreen } = await import('./ProviderConnectionDetailScreen');
         const screen = await renderScreen(<ProviderConnectionDetailScreen connectionId="pc_a" />);
-        const testRow = screen.findAllByType('Item')
-            .find((item) => item.props.title === 'settingsProviders.detail.testConnection');
+        const testRow = findTestRow(screen);
         await act(async () => { testRow?.props.onPress?.(); });
 
         state.connection = connection({
@@ -850,9 +853,8 @@ describe('ProviderConnectionDetailScreen', () => {
             await Promise.resolve();
         });
 
-        const updated = screen.findAllByType('Item')
-            .find((item) => item.props.title === 'settingsProviders.detail.testConnection');
-        expect(updated?.props.subtitle).toBe('settingsProviders.detail.testDescription');
+        const updated = findTestRow(screen);
+        expect(updated?.props.subtitle).toBeNull();
         expect(updated?.props.loading).toBe(false);
     });
 
@@ -873,20 +875,17 @@ describe('ProviderConnectionDetailScreen', () => {
         run.mockReturnValue(new Promise(() => undefined));
         const { ProviderConnectionDetailScreen } = await import('./ProviderConnectionDetailScreen');
         const screen = await renderScreen(<ProviderConnectionDetailScreen connectionId="pc_a" />);
-        const testRow = screen.findAllByType('Item')
-            .find((item) => item.props.title === 'settingsProviders.detail.testConnection');
+        const testRow = findTestRow(screen);
         await pressAndFlush(testRow);
-        expect(screen.findAllByType('Item')
-            .find((item) => item.props.title === 'settingsProviders.detail.testConnection')?.props.subtitle)
+        expect(findTestRow(screen)?.props.subtitle)
             .toBe('settingsProviders.detail.testSucceeded');
 
         const accountRow = screen.findAllByType('Item')
             .find((item) => item.props.title === 'settingsProviders.detail.accountAccess');
         await act(async () => { accountRow?.props.rightElement.props.onValueChange(false); });
 
-        expect(screen.findAllByType('Item')
-            .find((item) => item.props.title === 'settingsProviders.detail.testConnection')?.props.subtitle)
-            .toBe('settingsProviders.detail.testDescription');
+        expect(findTestRow(screen)?.props.subtitle)
+            .toBeNull();
     });
 
     it('retries the exact typed detail mutation instead of substituting a connection read', async () => {
@@ -980,15 +979,12 @@ describe('ProviderConnectionDetailScreen', () => {
             connectionId: 'pc_a',
             enabled: true,
         }));
-        expect(screen.findByType('MachineAdministrationTargetSelector').props.selection.selectedTarget.machineId)
-            .toBe('machine-a');
     });
 
     it('returns a successfully deleted connection to the Provider index without requiring back history', async () => {
         const { ProviderConnectionDetailScreen } = await import('./ProviderConnectionDetailScreen');
         const screen = await renderScreen(<ProviderConnectionDetailScreen connectionId="pc_a" />);
-        const remove = screen.findAllByType('Item')
-            .find((item) => item.props.title === 'settingsProviders.detail.deleteTitle');
+        const remove = findMenuAction(screen, 'delete');
 
         await pressAndFlush(remove);
 
@@ -1012,8 +1008,7 @@ describe('ProviderConnectionDetailScreen', () => {
         });
         const { ProviderConnectionDetailScreen } = await import('./ProviderConnectionDetailScreen');
         const screen = await renderScreen(<ProviderConnectionDetailScreen connectionId="pc_a" />);
-        const remove = screen.findAllByType('Item')
-            .find((item) => item.props.title === 'settingsProviders.detail.deleteTitle');
+        const remove = findMenuAction(screen, 'delete');
 
         await pressAndFlush(remove);
 
@@ -1024,8 +1019,9 @@ describe('ProviderConnectionDetailScreen', () => {
         // The detail view has already re-scoped to the newly selected machine,
         // so the refusal is silent by the existing scope contract rather than
         // surfacing an error about the machine the user just left.
-        expect(screen.findByType('MachineAdministrationTargetSelector')
-            .props.selection.selectedTarget.machineId).toBe('machine-b');
+        expect(providerHarness.state.requests.some((request) => (
+            request.method === RPC_METHODS.DAEMON_PROVIDERS_CONNECTIONS_DESCRIBE && request.machineId === 'machine-b'
+        ))).toBe(true);
     });
 
     it('admits one delete confirmation and re-enables the action after cancellation', async () => {
@@ -1035,8 +1031,7 @@ describe('ProviderConnectionDetailScreen', () => {
         const screen = await renderScreen(<ProviderConnectionDetailScreen connectionId="pc_a" />);
 
         await act(async () => {
-            const remove = screen.findAllByType('Item')
-                .find((item) => item.props.title === 'settingsProviders.detail.deleteTitle');
+            const remove = findMenuAction(screen, 'delete');
             remove?.props.onPress?.();
             remove?.props.onPress?.();
             await Promise.resolve();
@@ -1044,21 +1039,18 @@ describe('ProviderConnectionDetailScreen', () => {
 
         expect(confirm).toHaveBeenCalledOnce();
         expect(run).not.toHaveBeenCalled();
-        expect(screen.findAllByType('Item')
-            .find((item) => item.props.title === 'settingsProviders.detail.deleteTitle')?.props)
-            .toMatchObject({ loading: true, disabled: true });
+        expect(findMenuAction(screen, 'delete')?.props)
+            .toMatchObject({ disabled: true });
 
         await act(async () => {
             confirmation.resolve(false);
             await confirmation.promise;
             await Promise.resolve();
         });
-        expect(screen.findAllByType('Item')
-            .find((item) => item.props.title === 'settingsProviders.detail.deleteTitle')?.props)
-            .toMatchObject({ loading: false, disabled: false });
+        expect(findMenuAction(screen, 'delete')?.props)
+            .toMatchObject({ disabled: false });
 
-        await pressAndFlush(screen.findAllByType('Item')
-            .find((item) => item.props.title === 'settingsProviders.detail.deleteTitle'));
+        await pressAndFlush(findMenuAction(screen, 'delete'));
         expect(confirm).toHaveBeenCalledTimes(2);
         expect(run).not.toHaveBeenCalled();
     });
@@ -1070,8 +1062,7 @@ describe('ProviderConnectionDetailScreen', () => {
         const screen = await renderScreen(<ProviderConnectionDetailScreen connectionId="pc_a" />);
 
         await act(async () => {
-            const remove = screen.findAllByType('Item')
-                .find((item) => item.props.title === 'settingsProviders.detail.deleteTitle');
+            const remove = findMenuAction(screen, 'delete');
             remove?.props.onPress?.();
             remove?.props.onPress?.();
             for (let turn = 0; turn < 3; turn += 1) await Promise.resolve();
@@ -1079,9 +1070,8 @@ describe('ProviderConnectionDetailScreen', () => {
 
         expect(confirm).toHaveBeenCalledOnce();
         expect(run).toHaveBeenCalledOnce();
-        expect(screen.findAllByType('Item')
-            .find((item) => item.props.title === 'settingsProviders.detail.deleteTitle')?.props)
-            .toMatchObject({ loading: true, disabled: true });
+        expect(findMenuAction(screen, 'delete')?.props)
+            .toMatchObject({ disabled: true });
 
         await act(async () => {
             deletion.reject(new Error('delete acknowledgement unavailable'));
@@ -1093,13 +1083,11 @@ describe('ProviderConnectionDetailScreen', () => {
             for (let turn = 0; turn < 6; turn += 1) await Promise.resolve();
         });
         expect(router.replace).not.toHaveBeenCalled();
-        expect(screen.findAllByType('Item')
-            .find((item) => item.props.title === 'settingsProviders.detail.deleteTitle')?.props)
-            .toMatchObject({ loading: false, disabled: false });
+        expect(findMenuAction(screen, 'delete')?.props)
+            .toMatchObject({ disabled: false });
 
         confirm.mockResolvedValueOnce(false);
-        await pressAndFlush(screen.findAllByType('Item')
-            .find((item) => item.props.title === 'settingsProviders.detail.deleteTitle'));
+        await pressAndFlush(findMenuAction(screen, 'delete'));
         expect(confirm).toHaveBeenCalledTimes(2);
         expect(run).toHaveBeenCalledOnce();
     });
@@ -1270,10 +1258,9 @@ describe('ProviderConnectionDetailScreen', () => {
         });
         const { ProviderConnectionDetailScreen } = await import('./ProviderConnectionDetailScreen');
         const screen = await renderScreen(<ProviderConnectionDetailScreen connectionId="pc_a" />);
-        const status = screen.findAllByType('Item')
-            .find((item) => item.props.title === 'Acme')?.props.rightElement;
-        expect(status?.props.label).toBe('settingsProviders.status.unreachable');
-        expect(status?.props.variant).toBe('danger');
+        const meta = findComposite(screen, 'provider-connection-header', 'meta')?.props.meta as
+            Array<{ key: string; text: string }> | undefined;
+        expect(meta?.find((fact) => fact.key === 'status')?.text).toBe('settingsProviders.status.unreachable');
     });
 
     it('distinguishes adopted local service ownership and offers managed start when installed', async () => {
@@ -1546,9 +1533,7 @@ describe('ProviderConnectionDetailScreen', () => {
             });
             for (let turn = 0; turn < 6; turn += 1) await Promise.resolve();
         });
-        await pressAndFlush(screen.findAllByType('Item').find(
-            (item) => item.props.testID === 'provider-connection-managed-purpose-save',
-        ));
+        await pressAndFlush(screen.findByTestId('provider-connection-managed-purpose-save') ?? undefined);
         expect(run).toHaveBeenCalledWith({
             action: 'update',
             machineId: 'machine-a',
@@ -1628,9 +1613,7 @@ describe('ProviderConnectionDetailScreen', () => {
         await pressAndFlush(screen.findAllByType('Item').find(
             (item) => item.props.testID === 'provider-connection-managed-purpose-chooser:upstream:reload',
         ));
-        await pressAndFlush(screen.findAllByType('Item').find(
-            (item) => item.props.testID === 'provider-connection-managed-purpose-save',
-        ));
+        await pressAndFlush(screen.findByTestId('provider-connection-managed-purpose-save') ?? undefined);
 
         expect(alert).toHaveBeenCalledWith(
             'settingsProviders.local.invalidPurposeTargetTitle',
@@ -1754,9 +1737,7 @@ describe('ProviderConnectionDetailScreen', () => {
 
         await pressAndFlush(activate);
         expect(run).not.toHaveBeenCalled();
-        await pressAndFlush(screen.findAllByType('Item').find(
-            (item) => item.props.testID === 'provider-connection-managed-purpose-save',
-        ));
+        await pressAndFlush(screen.findByTestId('provider-connection-managed-purpose-save') ?? undefined);
         expect(alert).not.toHaveBeenCalled();
         expect(run).toHaveBeenCalledWith({
             action: 'update',
@@ -1792,9 +1773,7 @@ describe('ProviderConnectionDetailScreen', () => {
         await pressAndFlush(screen.findAllByType('Item').find(
             (item) => item.props.testID === 'provider-connection-managed-configure',
         ));
-        await pressAndFlush(screen.findAllByType('Item').find(
-            (item) => item.props.testID === 'provider-connection-managed-purpose-save',
-        ));
+        await pressAndFlush(screen.findByTestId('provider-connection-managed-purpose-save') ?? undefined);
 
         expect(alert).toHaveBeenCalledWith(
             'settingsProviders.local.invalidPurposeTargetTitle',
@@ -1865,9 +1844,7 @@ describe('ProviderConnectionDetailScreen', () => {
         );
 
         await pressAndFlush(activate);
-        await pressAndFlush(screen.findAllByType('Item').find(
-            (item) => item.props.testID === 'provider-connection-managed-purpose-save',
-        ));
+        await pressAndFlush(screen.findByTestId('provider-connection-managed-purpose-save') ?? undefined);
         expect(alert).toHaveBeenCalledWith(
             'settingsProviders.local.invalidPurposeTargetTitle',
             'settingsProviders.local.invalidPurposeTargetDescription',
@@ -1881,12 +1858,14 @@ describe('ProviderConnectionDetailScreen', () => {
         // send the user looking for an input that does not exist.
         const raisedBody = en.settingsProviders.local.invalidPurposeTargetDescription;
         expect(raisedBody).not.toMatch(/\b(account|group)\s*:\s*<?id>?/iu);
-        expect(screen.findAllByType('TextInput')).toHaveLength(0);
-        expect(screen.findAllByType(ConnectedAccountPurposeTargetChooser).length).toBeGreaterThan(0);
+        // (The page's own Name field and model filter sit in other sections.)
+        const managedSection = screen.findAllByType('ItemGroup')
+            .find((group) => group.props.title === 'settingsProvidersCollection.managedTitle');
+        expect(managedSection).toBeDefined();
+        expect(managedSection?.findAllByType('TextInput')).toHaveLength(0);
+        expect(managedSection?.findAllByType(ConnectedAccountPurposeTargetChooser).length).toBeGreaterThan(0);
 
-        await pressAndFlush(screen.findAllByType('Item').find(
-            (item) => item.props.testID === 'provider-connection-managed-purpose-cancel',
-        ));
+        await pressAndFlush(screen.findByTestId('provider-connection-managed-purpose-cancel') ?? undefined);
         expect(run).not.toHaveBeenCalled();
         expect(screen.findAllByType('Item').some(
             (item) => item.props.testID === 'provider-connection-managed-configure',
@@ -1937,9 +1916,49 @@ describe('ProviderConnectionDetailScreen', () => {
         await act(async () => { buttons.find((button) => button.text === 'common.keepEditing')?.onPress?.(); });
 
         expect(navigationDispatch).not.toHaveBeenCalled();
-        expect(screen.findAllByType('Item').some(
-            (item) => item.props.testID === 'provider-connection-managed-purpose-save',
-        )).toBe(true);
+        expect(screen.findByTestId('provider-connection-managed-purpose-save')).not.toBeNull();
+    });
+
+    it('joins a typed manual-model draft to the same unsaved-changes guard and discards it on a machine change', async () => {
+        state.connection = connection({ manualModelPolicy: 'allowed' });
+        providerHarness.intercept(RPC_METHODS.DAEMON_PROVIDERS_MODELS, async () => createProviderModelsFixture({
+            connectionId: 'pc_a', connectionRevision: 0, manualModelPolicy: 'allowed', modelLoadAction: 'descriptor_absent',
+            models: [{ id: 'model-one', name: 'Model one', source: 'static', stale: false, loadState: 'unknown', visibility: 'visible' }],
+        }));
+        const { ProviderConnectionDetailScreen } = await import('./ProviderConnectionDetailScreen');
+        const { getActiveUnsavedChangesGuard, runGuardedNavigation } = await import('@/utils/navigation/runGuardedNavigation');
+        const screen = await renderScreen(<ProviderConnectionDetailScreen connectionId="pc_a" startAddingModels />);
+        await flushHookEffects();
+        const manualField = () => findComposite(screen, 'provider-manual-model-ids', 'onChangeText');
+        expect(navigationPreventRemove.enabled).toBe(false);
+
+        await act(async () => {
+            manualField()?.props.onChangeText('draft-model');
+            await flushHookEffects({ cycles: 1, turns: 2 });
+        });
+
+        // Leaving with the draft asks first; keeping it editing leaves everything in place.
+        expect(navigationPreventRemove.enabled).toBe(true);
+        navigationPreventRemove.callback?.({ data: { action: { type: 'GO_BACK' } } });
+        await vi.waitFor(() => expect(alert).toHaveBeenCalled());
+        const keepButtons = alert.mock.calls.at(-1)?.[2] as Array<{ text: string; onPress?: () => void }>;
+        await act(async () => { keepButtons.find((button) => button.text === 'common.keepEditing')?.onPress?.(); });
+        expect(navigationDispatch).not.toHaveBeenCalled();
+        expect(manualField()?.props.value).toBe('draft-model');
+
+        // Moving to another machine goes through the same guard; discarding clears the draft.
+        let navigationResult: true | Promise<boolean> = true;
+        await act(async () => {
+            navigationResult = runGuardedNavigation(() => { administrationTarget.controller.select('machine-b'); });
+            await flushHookEffects({ cycles: 1, turns: 2 });
+        });
+        const discardButtons = alert.mock.calls.at(-1)?.[2] as Array<{ style?: string; onPress?: () => void }>;
+        await act(async () => {
+            discardButtons.find((button) => button.style === 'destructive')?.onPress?.();
+            await navigationResult;
+        });
+        expect(getActiveUnsavedChangesGuard()?.isDirtyRef.current).toBe(false);
+        expect(run).not.toHaveBeenCalled();
     });
 
     it('edits future managed defaults and explicitly contracts back to external', async () => {
@@ -2055,9 +2074,7 @@ describe('ProviderConnectionDetailScreen', () => {
             });
             for (let turn = 0; turn < 6; turn += 1) await Promise.resolve();
         });
-        await pressAndFlush(screen.findAllByType('Item').find(
-            (item) => item.props.testID === 'provider-connection-managed-purpose-save',
-        ));
+        await pressAndFlush(screen.findByTestId('provider-connection-managed-purpose-save') ?? undefined);
         expect(run).toHaveBeenCalledWith(expect.objectContaining({
             action: 'update',
             connectionId: 'pc_a',
@@ -2084,17 +2101,122 @@ describe('ProviderConnectionDetailScreen', () => {
         }, 'deployment:external');
     });
 
+    it('turns the whole connection off from the header with one connection-scope disable', async () => {
+        state.connection = connection({
+            authorized: true,
+            grants: { accountEnabled: true, enabledMachineIds: ['machine-a'], effectiveState: 'valid' },
+        });
+        const { ProviderConnectionDetailScreen } = await import('./ProviderConnectionDetailScreen');
+        const screen = await renderScreen(<ProviderConnectionDetailScreen connectionId="pc_a" />);
+        const enabled = screen.findByTestId('provider-connection-enabled');
+        expect(enabled?.props.value).toBe(true);
+
+        await act(async () => { await enabled?.props.onValueChange(false); });
+
+        expect(run).toHaveBeenCalledWith(expect.objectContaining({
+            action: 'setEnabled', connectionId: 'pc_a', enabled: false, scope: 'connection',
+        }), 'pc_a');
+    });
+
+    it('remembers the opened connection for the wide landing, whichever layout opened it', async () => {
+        const { readLastVisitedProviderConnectionId } = await import('./collection/providerCollectionModel');
+        state.connection = connection({ connectionId: 'pc_remembered' });
+        const { ProviderConnectionDetailScreen } = await import('./ProviderConnectionDetailScreen');
+        await renderScreen(<ProviderConnectionDetailScreen connectionId="pc_remembered" />);
+        expect(readLastVisitedProviderConnectionId()).toBe('pc_remembered');
+    });
+
+    it('shows a saved key as Saved with Replace and never its value', async () => {
+        state.connection = connection({
+            credential: { required: true, accountBound: true, boundMachineIds: [] },
+        });
+        const { ProviderConnectionDetailScreen } = await import('./ProviderConnectionDetailScreen');
+        const screen = await renderScreen(<ProviderConnectionDetailScreen connectionId="pc_a" />);
+
+        expect(findComposite(screen, 'provider-connection-account-api-key.saved', 'label')?.props.label)
+            .toBe('settingsProvidersCollection.saved');
+        expect(findComposite(screen, 'provider-connection-account-api-key.choose', 'title')?.props.title)
+            .toBe('settingsProvidersCollection.replace');
+        // No key on this machine yet: it offers to choose one, with no Saved claim.
+        expect(screen.findByTestId('provider-connection-machine-api-key.saved')).toBeNull();
+        expect(findComposite(screen, 'provider-connection-machine-api-key.choose', 'title')?.props.title)
+            .toBe('settingsProvidersCollection.addKey');
+    });
+
     it('offers separate same-source and custom duplication actions', async () => {
         run.mockResolvedValue({ status: 'success', action: 'duplicate', connection: connection() });
         const { ProviderConnectionDetailScreen } = await import('./ProviderConnectionDetailScreen');
         const screen = await renderScreen(<ProviderConnectionDetailScreen connectionId="pc_a" />);
-        const rows = screen.findAllByType('Item');
-        expect(rows.map((item) => item.props.title)).toContain('settingsProviders.customTitle');
+        expect(findMenuAction(screen, 'duplicate')).toBeDefined();
         await act(async () => {
-            await rows.find((item) => item.props.title === 'settingsProviders.customTitle')?.props.onPress?.();
+            await findMenuAction(screen, 'duplicateAsCustom')?.props.onPress?.();
         });
         expect(run).toHaveBeenCalledWith(expect.objectContaining({
             action: 'duplicate', connectionId: 'pc_a', mode: 'asCustom', displayName: 'Custom copy',
         }), 'duplicate:asCustom');
+    });
+    it('renames the connection through its update write, with the owner validation inline', async () => {
+        state.connection = connection({ displayName: 'Acme', revision: 3 });
+        const { ProviderConnectionDetailScreen } = await import('./ProviderConnectionDetailScreen');
+        const screen = await renderScreen(<ProviderConnectionDetailScreen connectionId="pc_a" />);
+        const nameField = () => findComposite(screen, 'provider-connection-name', 'onChangeText');
+        expect(nameField()?.props.value).toBe('Acme');
+
+        // Leaving the field unchanged writes nothing.
+        await act(async () => { await nameField()?.props.onBlur?.(); });
+        expect(run).not.toHaveBeenCalled();
+
+        // A name the connection schema refuses is reported under the field, before any write.
+        await act(async () => { nameField()?.props.onChangeText('   '); });
+        await act(async () => { await nameField()?.props.onSubmitEditing?.(); });
+        expect(run).not.toHaveBeenCalled();
+        expect(nameField()?.props.error).toBe('settingsProvidersCollection.nameRequired');
+
+        await act(async () => { nameField()?.props.onChangeText('x'.repeat(129)); });
+        await act(async () => { await nameField()?.props.onBlur?.(); });
+        expect(run).not.toHaveBeenCalled();
+        // The limit comes from the connection schema, not from this page.
+        expect(nameField()?.props.error).toBe('settingsProvidersCollection.nameTooLong(max=128)');
+
+        await act(async () => { nameField()?.props.onChangeText('  Work  '); });
+        expect(nameField()?.props.error).toBeFalsy();
+        await act(async () => { await nameField()?.props.onSubmitEditing?.(); });
+        expect(run).toHaveBeenCalledTimes(1);
+        expect(run).toHaveBeenCalledWith({
+            action: 'update', machineId: 'machine-a', connectionId: 'pc_a',
+            expectedRevision: 3, displayName: 'Work', displayNameMode: 'custom',
+        }, 'pc_a');
+    });
+
+    it('lists the connection models inside its page, with no second scroll owner', async () => {
+        state.connection = connection({ manualModelPolicy: 'allowed', probeCapability: 'catalog' });
+        providerHarness.intercept(RPC_METHODS.DAEMON_PROVIDERS_MODELS, async () => createProviderModelsFixture({
+            connectionId: 'pc_a',
+            connectionRevision: 0,
+            manualModelPolicy: 'allowed',
+            modelLoadAction: 'descriptor_absent',
+            models: [
+                { id: 'model-one', name: 'Model one', source: 'static', stale: false, loadState: 'unknown', visibility: 'visible' },
+                { id: 'model-two', name: 'Model two', source: 'static', stale: false, loadState: 'unknown', visibility: 'hidden_all_agents' },
+            ],
+        }));
+        const { ProviderModelManager } = await import('@/providers/models/ProviderModelManager');
+        const { SelectionListScreen } = await import('@/components/ui/selectionList');
+        const { ProviderConnectionDetailScreen } = await import('./ProviderConnectionDetailScreen');
+        const screen = await renderScreen(<ProviderConnectionDetailScreen connectionId="pc_a" />);
+        await flushHookEffects();
+
+        const manager = screen.findByType(ProviderModelManager);
+        expect(manager.props.page).toBeDefined();
+        expect(manager.props.groups[0].rows.map((row: { descriptor: { name: string } }) => row.descriptor.name))
+            .toEqual(['Model one', 'Model two']);
+        // The page's own sections scroll with the list: the header is part of the same list.
+        expect(findComposite(screen, 'provider-connection-header', 'title')?.props.title).toBe('Acme');
+        // Hidden models stay out of the list until asked for; the visible one is a row with its switch.
+        const { providerModelRowKey } = await import('@/providers/models/modelRowKey');
+        expect(screen.findByTestId(`provider-model-manager.row:${providerModelRowKey('pc_a', 'model-one')}`)).not.toBeNull();
+        expect(screen.findByTestId(`provider-model-manager.row:${providerModelRowKey('pc_a', 'model-two')}`)).toBeNull();
+        expect(screen.findAllByType(SelectionListScreen)).toHaveLength(0);
+        expect(screen.findByTestId('provider-connection-manage-models')).toBeNull();
     });
 });

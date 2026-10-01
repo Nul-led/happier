@@ -56,6 +56,13 @@ describe('settings catalog rail shape', () => {
         expect((root.children ?? []).every((child) => !child.route)).toBe(true);
     });
 
+    it('opens Homes inside the settings layout, like its siblings', () => {
+        const homes = walk(catalog).find(({ node }) => node.id === 'servers')?.node;
+        // `/server` is the Home-recovery entry outside the settings layout: the rail and search must not
+        // send the Homes page there, or it renders with no settings shell around it.
+        expect(homes?.route).toBe('/settings/server');
+    });
+
     it('registers Machine Pool creation beneath the searchable Machines catalog node', () => {
         const machines = walk(catalog).find(({ node }) => node.id === 'machines')?.node;
 

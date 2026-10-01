@@ -173,13 +173,14 @@ export function createProviderConnectionCpxBridge(input: Readonly<{
         || !await openInput.isCurrent().catch(() => false)
       ) return null;
       const acquired = await acquireBrokerSourceOperation({
+        ...(openInput.retirementGroup ? { retirementGroup: openInput.retirementGroup } : {}),
         custody: input.custody,
         identity: openInput.application.implementationIdentity,
         contributionKey: `${openInput.application.implementationIdentity.pluginId}/${openInput.application.implementationIdentity.localId}`,
         endpointTemplateId: openInput.application.endpointTemplateId,
         operationClaim: { kind: 'providerBroker', operation: openInput.operation },
         purposeBindings: { v: 1, bindings: [] },
-        isSourceCurrent: async (signal) => await openInput.isCurrent(signal).catch(() => false),
+        isSourceCurrent: async (signal) => await openInput.isCurrent(signal),
         ...(openInput.revalidateOperationAuthorization
           ? { revalidateOperationAuthorization: openInput.revalidateOperationAuthorization }
           : {}),

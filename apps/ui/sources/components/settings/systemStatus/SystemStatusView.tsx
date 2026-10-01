@@ -1,7 +1,7 @@
 import * as React from 'react';
 import { Platform, View } from 'react-native';
 import Constants from 'expo-constants';
-import { useRouter } from 'expo-router';
+import { useRouter } from '@/components/appShell/workspace/destinationRoute';
 import { useUnistyles } from 'react-native-unistyles';
 import {
   sanitizeBugReportUrl,
@@ -44,24 +44,22 @@ import {
   buildMachineDoctorSnapshotTargetKey,
   useMachineDoctorSnapshotCollection,
 } from '@/components/machines/doctorSnapshot/useMachineDoctorSnapshotCollection';
-import { createServerUrlComparableKey } from '@/sync/domains/server/url/serverUrlCanonical';
 import { OtaUpdateStatusSection } from './OtaUpdateStatusSection';
 import { Icon } from '@/components/ui/icons/Icon';
 import { sanitizeActiveServerSnapshotForDiagnostics } from './systemStatusDiagnostics';
+import { isDaemonOfAnotherAccount } from '@/sync/domains/server/relayDrift/relayDriftModel';
+import { createServerUrlComparableKey } from '@/sync/domains/server/url/serverUrlCanonical';
 import { useActiveHomeConnectionHealth } from '@/components/navigation/connectionStatus/useConnectionHealth';
 import { formatIrohRelayConfiguration } from '@/components/navigation/connectionStatus/formatIrohRelayConfiguration';
-
-function formatRelativeTimeMs(ms: number | null | undefined): string {
-  if (!ms) return t('status.unknown');
-  const deltaSec = Math.max(0, Math.floor((Date.now() - ms) / 1000));
-  if (deltaSec < 60) return t('systemStatus.time.secondsAgo', { count: deltaSec });
-  const deltaMin = Math.floor(deltaSec / 60);
-  if (deltaMin < 60) return t('systemStatus.time.minutesAgo', { count: deltaMin });
-  const deltaHr = Math.floor(deltaMin / 60);
-  if (deltaHr < 48) return t('systemStatus.time.hoursAgo', { count: deltaHr });
-  const deltaDays = Math.floor(deltaHr / 24);
-  return t('systemStatus.time.daysAgo', { count: deltaDays });
-}
+import { projectIrohHomeTransportPresentation } from '@/components/navigation/connectionStatus/projectIrohHomeTransportPresentation';
+import { resolveHomeConnectionSummary } from '@/components/navigation/connectionStatus/resolveHomeConnectionSummary';
+import { formatRelativeTimeShort } from '@/components/ui/selectionList/formatRelativeTimeShort';
+import { SettingsPageHeader } from '@/components/settings/shell/SettingsPageHeader';
+import { SettingAnchor, SettingRow } from '@/components/settings/shell/SettingRow';
+import { RoundButton } from '@/components/ui/buttons/RoundButton';
+import { ActivitySpinner } from '@/components/ui/feedback/ActivitySpinner';
+import { SYSTEM_STATUS_SETTINGS } from '@/components/settings/systemStatus/systemStatusSettings';
+import { resolveHomeDisplayLabel } from '@/components/settings/server/homeDisplayName';
 
 function resolveMachineDisplayName(params: Readonly<{ host?: string; displayName?: string | null }>): string {
   const displayName = String(params.displayName ?? '').trim();
@@ -72,8 +70,7 @@ function resolveMachineDisplayName(params: Readonly<{ host?: string; displayName
 }
 
 function resolveServerProfileLabel(profile: ServerProfile): string {
-  const name = String(profile.name ?? '').trim();
-  return name || profile.id || profile.serverUrl;
+  return resolveHomeDisplayLabel(profile, profile.id);
 }
 
 function doServerUrlsMismatch(left: string, right: string): boolean {
@@ -284,60 +281,75 @@ export const SystemStatusView = React.memo(function SystemStatusView() {
   const activeTransportDiagnostics = homeTransportDiagnostics.find((candidate) => (
     candidate.homeServerIdentityId === (activeHomeProfile?.serverIdentityId ?? activeServerSnapshot.serverId)
   )) ?? null;
-  const currentTransportPath = activeTransportDiagnostics?.current ?? null;
-  const lastKnownTransportPath = currentTransportPath ? null : activeTransportDiagnostics?.lastKnown ?? null;
-  const effectiveCarrier = activeServerSnapshot.carrier ?? null;
-  const observedCarrier = currentTransportPath?.carrier ?? lastKnownTransportPath?.carrier ?? null;
-  const effectiveObservedPath = currentTransportPath?.observedPath
-    ?? lastKnownTransportPath?.observedPath
-    ?? null;
+  const irohTransportPresentation = React.useMemo(() => projectIrohHomeTransportPresentation({
+    effectiveCarrier: activeServerSnapshot.carrier,
+    diagnostics: activeTransportDiagnostics,
+  }), [activeServerSnapshot.carrier, activeTransportDiagnostics]);
+  const effectiveCarrier = irohTransportPresentation.effectiveCarrier;
+  const primaryTransportPath = irohTransportPresentation.primaryPath;
+  const observedCarrier = primaryTransportPath?.observation.carrier ?? null;
+  const effectiveObservedPath = primaryTransportPath?.observation.observedPath ?? null;
   const observedPathLabel = effectiveObservedPath === 'direct'
     ? t('connectionStatus.values.pathDirect')
     : effectiveObservedPath === 'relay'
       ? t('connectionStatus.values.pathRelay')
       : t('status.unknown');
   const appliedIrohConfiguration = activeTransportDiagnostics?.effectiveConfiguration;
-  const transportStateLabel = activeTransportDiagnostics?.state === 'connected'
-    ? t('status.connected')
-    : activeTransportDiagnostics?.state === 'connecting'
-      ? t('status.connecting')
-      : activeTransportDiagnostics?.state === 'reconnecting'
-        ? t('connectionStatus.summary.reconnecting')
-        : activeTransportDiagnostics?.state === 'unavailable'
-          ? t('connectionStatus.summary.unavailable')
-          : activeTransportDiagnostics?.state === 'disconnected'
-            ? t('status.disconnected')
-            : t('status.unknown');
+  const transportStateLabel = t(irohTransportPresentation.transportStatus?.labelKey ?? 'status.unknown');
 
   const openDiagnosis = React.useCallback(() => {
     router.push('/settings/diagnosis');
   }, [router]);
 
   return (
-    <ItemList style={{ paddingTop: 0 }} testID="system-status-screen">
+    <ItemList style={{ paddingTop: 0 }} testID="system-status-screen" presentation="page">
+      <SettingsPageHeader
+        description={t('systemStatus.pageDescription')}
+        actions={(
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+            <CopiedPill visible={copyFeedback.isCopied('system-status')} testID="system-status-copy-feedback" />
+            <SettingAnchor setting={SYSTEM_STATUS_SETTINGS.settings.copyJson}>
+              <RoundButton
+                testID="system-status-copy-json"
+                size="small"
+                display="inverted"
+                title={t(SYSTEM_STATUS_SETTINGS.settings.copyJson.titleKey)}
+                accessibilityHint={t('systemStatus.actions.copyJsonSubtitle')}
+                leading={<Icon name="copy" size={14} color={theme.colors.text.secondary} />}
+                loading={copying}
+                onPress={copySystemStatusJson}
+              />
+            </SettingAnchor>
+            <RoundButton
+              testID="system-status-run-diagnosis"
+              size="small"
+              display="secondary"
+              title={t('systemStatus.actions.runDiagnosis')}
+              accessibilityHint={t('systemStatus.actions.runDiagnosisSubtitle')}
+              onPress={openDiagnosis}
+            />
+          </View>
+        )}
+      />
       <React.Fragment>
         <ItemGroup title={t('systemStatus.sections.appHealth')}>
           <Item
             title={t('bugReports.composer.environment.appVersionLabel')}
             detail={appRuntimeInfo.appVersion ?? t('status.unknown')}
-            icon={<Icon name="device-mobile" size={24} color={theme.colors.accent.indigo} />}
             copy={appRuntimeInfo.appVersion ?? false}
           />
           <Item
             title={t('settingsAgents.releaseChannelTitle')}
             detail={appRuntimeInfo.updateChannel ?? t('status.unknown')}
-            icon={<Icon name="git-branch" size={24} color={theme.colors.accent.blue} />}
             copy={appRuntimeInfo.updateChannel ?? false}
           />
           <Item
             title={t('systemStatus.ui.dataReady')}
             detail={isDataReady ? t('common.yes') : t('common.no')}
-            icon={<Icon name="pulse" size={24} color={theme.colors.accent.indigo} />}
           />
           <Item
             title={t('systemStatus.ui.realtime')}
             detail={String(voiceStatus)}
-            icon={<Icon name="wifi-high" size={24} color={theme.colors.accent.blue} />}
           />
           <Item
             title={t('systemStatus.ui.socket')}
@@ -347,35 +359,31 @@ export const SystemStatusView = React.memo(function SystemStatusView() {
                 ? <Text style={{ color: theme.colors.text.secondary }}>{t('systemStatus.ui.socketLastError', { error: sanitizeDoctorDiagnosticErrorMessage(socket.lastError) })}</Text>
                 : undefined
             }
-            icon={<Icon name="cloud" size={24} color={theme.colors.accent.blue} />}
           />
           <Item
             title={t('systemStatus.ui.lastSync')}
             detail={lastSyncAt ? new Date(lastSyncAt).toLocaleString() : t('status.unknown')}
-            icon={<Icon name="clock" size={24} color={theme.colors.accent.orange} />}
           />
         </ItemGroup>
 
         <OtaUpdateStatusSection />
 
         <ItemGroup title={t('systemStatus.sections.currentServer')}>
-          <Item
-            title={t('systemStatus.server.activeHomeHealth')}
+          <SettingRow
+            setting={SYSTEM_STATUS_SETTINGS.settings.activeHomeHealth}
+            icon={<Icon name="hard-drives" />}
             subtitle={<Text style={{ color: theme.colors.text.secondary }}>{activeServerUrl || t('status.unknown')}</Text>}
-            detail={t(activeHomeHealth.statusLabelKey)}
-            icon={<Icon name="hard-drives" size={24} color={theme.colors.accent.blue} />}
+            detail={t(resolveHomeConnectionSummary({ healthKind: activeHomeHealth.kind }).statusLabelKey)}
             onPress={() => router.push('/settings/server')}
           />
           <Item
             title={t('connectionStatus.labels.homeIdentity')}
             detail={activeHomeProfile?.serverIdentityId ?? activeServerSnapshot.serverId ?? t('status.unknown')}
-            icon={<Icon name="hard-drives" size={24} color={theme.colors.accent.blue} />}
             copy={activeHomeProfile?.serverIdentityId ?? activeServerSnapshot.serverId ?? false}
           />
           <Item
             title={t('connectionStatus.labels.canonicalAddress')}
             detail={activeHomeProfile?.canonicalServerUrl ?? activeServerSnapshot.serverUrl ?? t('status.unknown')}
-            icon={<Icon name="link" size={24} color={theme.colors.accent.blue} />}
             copy={activeHomeProfile?.canonicalServerUrl ?? activeServerSnapshot.serverUrl ?? false}
           />
           <Item
@@ -385,7 +393,6 @@ export const SystemStatusView = React.memo(function SystemStatusView() {
               : activeHomeProfile?.publicServerUrl === undefined
                 ? t('status.unknown')
                 : activeHomeProfile.publicServerUrl}
-            icon={<Icon name="cloud" size={24} color={theme.colors.accent.blue} />}
             copy={typeof activeHomeProfile?.publicServerUrl === 'string' ? activeHomeProfile.publicServerUrl : false}
           />
           <Item
@@ -395,33 +402,29 @@ export const SystemStatusView = React.memo(function SystemStatusView() {
               : effectiveCarrier === 'https'
                 ? 'HTTPS'
                 : t('status.unknown')}
-            icon={<Icon name="wifi-high" size={24} color={theme.colors.accent.blue} />}
           />
           {activeTransportDiagnostics ? (
             <Item
-              title={t(currentTransportPath || effectiveCarrier === 'iroh'
+              title={t(irohTransportPresentation.heading === 'current'
                 ? 'systemStatus.transport.irohCurrent'
                 : 'systemStatus.transport.irohHistory')}
               detail={transportStateLabel}
-              icon={<Icon name="pulse" size={24} color={theme.colors.accent.blue} />}
             />
           ) : null}
-          {currentTransportPath || lastKnownTransportPath ? (
+          {primaryTransportPath ? (
             <Item
-              title={currentTransportPath
+              title={primaryTransportPath.role === 'current'
                 ? t('connectionStatus.labels.currentPath')
                 : t('connectionStatus.labels.lastKnownPath')}
               detail={observedCarrier
                 ? `${observedCarrier === 'iroh' ? 'Iroh' : 'HTTPS'} · ${observedPathLabel}`
                 : observedPathLabel}
-              icon={<Icon name="wifi-high" size={24} color={theme.colors.accent.blue} />}
             />
           ) : null}
           {appliedIrohConfiguration ? (
             <Item
               title={t('connectionStatus.labels.relayConfiguration')}
               detail={formatIrohRelayConfiguration(appliedIrohConfiguration)}
-              icon={<Icon name="wifi-high" size={24} color={theme.colors.accent.blue} />}
             />
           ) : null}
         </ItemGroup>
@@ -430,13 +433,11 @@ export const SystemStatusView = React.memo(function SystemStatusView() {
           <Item
             title={t('systemStatus.identity.accountId')}
             detail={profile?.id ?? t('status.unknown')}
-            icon={<Icon name="person" size={24} color={theme.colors.accent.purple} />}
             copy={profile?.id ?? false}
           />
           <Item
             title={t('systemStatus.identity.username')}
             detail={profile?.username ?? t('status.unknown')}
-            icon={<Icon name="at" size={24} color={theme.colors.accent.purple} />}
             copy={profile?.username ?? false}
           />
         </ItemGroup>
@@ -445,7 +446,6 @@ export const SystemStatusView = React.memo(function SystemStatusView() {
           {serverProfiles.length === 0 ? (
             <Item
               title={t('systemStatus.servers.noneConfigured')}
-              icon={<Icon name="hard-drives" size={24} color={theme.colors.text.secondary} />}
               disabled
             />
           ) : serverProfiles.map((p) => (
@@ -454,15 +454,30 @@ export const SystemStatusView = React.memo(function SystemStatusView() {
               title={resolveServerProfileLabel(p)}
               subtitle={<Text style={{ color: theme.colors.text.secondary }}>{sanitizeBugReportUrl(p.serverUrl) ?? p.serverUrl}</Text>}
               detail={p.id === activeServerSnapshot.serverId ? t('systemStatus.servers.active') : p.id}
-              icon={<Icon name="hard-drives" size={24} color={p.id === activeServerSnapshot.serverId ? theme.colors.state.success.foreground : theme.colors.accent.blue} />}
+              icon={<Icon name="hard-drives" size={24} color={theme.colors.text.secondary} />}
               copy
             />
           ))}
         </ItemGroup>
 
         <View style={{ maxWidth: layout.maxWidth, alignSelf: 'center', width: '100%' }}>
-          {machineGroups.map((serverId) => {
+          {machineGroups.map((serverId, groupIndex) => {
             const list = machineListByServerId[serverId];
+            // One refresh for every Home's machines, on the first machines section.
+            const refreshAction = groupIndex === 0 ? (
+              <RoundButton
+                testID="system-status-refresh-machine-attribution"
+                size="small"
+                display="inverted"
+                title={t('systemStatus.actions.refreshMachineAttribution')}
+                accessibilityHint={t('systemStatus.actions.refreshMachineAttributionSubtitle')}
+                leading={refreshingMachines
+                  ? <ActivitySpinner size="small" />
+                  : <Icon name="arrows-clockwise" size={14} color={theme.colors.text.secondary} />}
+                disabled={refreshingMachines}
+                onPress={runRefreshMachineAttribution}
+              />
+            ) : undefined;
             const serverProfile = serverProfileById.get(serverId);
             const title = serverId === activeServerSnapshot.serverId
               ? t('systemStatus.sections.machinesActiveServer')
@@ -477,12 +492,12 @@ export const SystemStatusView = React.memo(function SystemStatusView() {
                 <ItemGroup
                   key={serverId}
                   title={title}
-                  footer={statusSubtitle}
+                  description={statusSubtitle}
+                  action={refreshAction}
                 >
                   <Item
                     title={t('systemStatus.machines.none')}
-                    icon={<Icon name="laptop" size={24} color={theme.colors.text.secondary} />}
-                    disabled
+                    mode="info"
                   />
                 </ItemGroup>
               );
@@ -492,7 +507,8 @@ export const SystemStatusView = React.memo(function SystemStatusView() {
               <ItemGroup
                 key={serverId}
                 title={title}
-                footer={statusSubtitle}
+                description={statusSubtitle}
+                action={refreshAction}
               >
                 {list.map((machine) => {
                   const meta = machine.metadata;
@@ -518,7 +534,8 @@ export const SystemStatusView = React.memo(function SystemStatusView() {
                       const daemonServerUrl = fetchEntry.snapshot.server.serverUrl;
                       const daemonAccountId = fetchEntry.snapshot.accountId ?? t('status.unknown');
                       const serverMismatch = Boolean(activeServerUrl && daemonServerUrl && doServerUrlsMismatch(activeServerUrl, daemonServerUrl));
-                      const accountMismatch = profile?.id && fetchEntry.snapshot.accountId && fetchEntry.snapshot.accountId !== profile.id;
+                      // The account comparison is the drift owner's, shared with every daemon surface.
+                      const accountMismatch = isDaemonOfAnotherAccount({ daemonAccountId: fetchEntry.snapshot.accountId, appAccountId: profile?.id });
 
                       const mismatchLabel = serverMismatch || accountMismatch ? ` • ${t('systemStatus.mismatch')}` : '';
                       return (
@@ -526,7 +543,7 @@ export const SystemStatusView = React.memo(function SystemStatusView() {
                           {t('systemStatus.machine.daemonAttribution', { serverUrl: daemonServerUrl, accountId: daemonAccountId })}
                           {mismatchLabel}
                           {'\n'}
-                          {t('systemStatus.machine.daemonAttributionAge', { age: formatRelativeTimeMs(fetchEntry.cachedAt) })}
+                          {t('systemStatus.machine.daemonAttributionAge', { age: fetchEntry.cachedAt ? formatRelativeTimeShort(fetchEntry.cachedAt, Date.now()) : t('status.unknown') })}
                         </Text>
                       );
                     }
@@ -555,7 +572,7 @@ export const SystemStatusView = React.memo(function SystemStatusView() {
                       <Item
                         title={displayName}
                         subtitle={subtitle}
-                        icon={<Icon name="laptop" size={24} color={online ? theme.colors.state.success.foreground : theme.colors.text.secondary} />}
+                        icon={<Icon name="laptop" size={24} color={theme.colors.text.secondary} />}
                         onPress={() => {
                           const query = serverId ? `?serverId=${encodeURIComponent(serverId)}` : '';
                           router.push(`/machine/${machine.id}${query}`);
@@ -567,7 +584,7 @@ export const SystemStatusView = React.memo(function SystemStatusView() {
                             machineId: machine.id,
                           }]), { tag: 'SystemStatusView.fetchDoctorSnapshotForMachine' });
                         }}
-                        detail={formatRelativeTimeMs(machine.activeAt)}
+                        detail={machine.activeAt ? formatRelativeTimeShort(machine.activeAt, Date.now()) : t('status.unknown')}
                       />
                       {fetchEntry.status !== 'idle' ? (
                         <MachineDoctorRuntimeInventorySection snapshotState={fetchEntry} mode="summary" />
@@ -580,33 +597,6 @@ export const SystemStatusView = React.memo(function SystemStatusView() {
           })}
         </View>
 
-        <ItemGroup title={t('systemStatus.sections.actions')}>
-          <Item
-            testID="system-status-run-diagnosis"
-            title={t('systemStatus.actions.runDiagnosis')}
-            subtitle={t('systemStatus.actions.runDiagnosisSubtitle')}
-            icon={<Icon name="first-aid-kit" size={24} color={theme.colors.accent.orange} />}
-            onPress={openDiagnosis}
-          />
-          <Item
-            title={t('systemStatus.actions.refreshMachineAttribution')}
-            subtitle={t('systemStatus.actions.refreshMachineAttributionSubtitle')}
-            icon={<Icon name="arrow-clockwise" size={24} color={theme.colors.accent.blue} />}
-            onPress={runRefreshMachineAttribution}
-            loading={refreshingMachines}
-            showChevron={false}
-          />
-          <Item
-            testID="system-status-copy-json"
-            title={t('systemStatus.actions.copyJson')}
-            subtitle={t('systemStatus.actions.copyJsonSubtitle')}
-            icon={<Icon name="copy" size={24} color={theme.colors.accent.indigo} />}
-            onPress={copySystemStatusJson}
-            rightElement={<CopiedPill visible={copyFeedback.isCopied('system-status')} testID="system-status-copy-feedback" />}
-            loading={copying}
-            showChevron={false}
-          />
-        </ItemGroup>
       </React.Fragment>
     </ItemList>
   );

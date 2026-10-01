@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import tweetnacl from 'tweetnacl';
 import {
+  API_TOKEN_FULL_GRANT_V1,
   EXTERNAL_ACTION_EFFECT_ACTION_HEADER,
   EXTERNAL_ACTION_EXECUTION_AUTHORIZATION_HEADER,
   EXTERNAL_ACTION_MACHINE_SIGNATURE_HEADER,
@@ -40,7 +41,7 @@ vi.mock('@/session/transport/http/sessionsHttp', async (importOriginal) => ({
 }));
 
 import { createSessionDiscussionActionDeps } from './sessionDiscussionActionDeps';
-import { sealSessionStoredContent } from '@/session/transport/encryption/sessionStoredContentCodec';
+import { sealSessionStoredContent, type SessionStoredContentCryptoContext } from '@/session/transport/encryption/sessionStoredContentCodec';
 
 const capabilities = {
   postMessages: true,
@@ -59,13 +60,13 @@ const discussionCrypto = {
   },
 };
 
-function wireSummary() {
+function wireSummary(crypto: SessionStoredContentCryptoContext = discussionCrypto) {
   return {
     id: 'discussion-1',
     sessionId: 'session-1',
     creationLocalId: 'creation-1',
     titleContent: sealSessionStoredContent({
-      ...discussionCrypto,
+      ...crypto,
       payload: { v: 1, title: 'Title' },
     }),
     latestMessage: {
@@ -87,7 +88,7 @@ function wireSummary() {
   };
 }
 
-function wireMessage() {
+function wireMessage(crypto: SessionStoredContentCryptoContext = discussionCrypto) {
   return {
     id: 'message-1',
     discussionId: 'discussion-1',
@@ -97,7 +98,7 @@ function wireMessage() {
     accountActor: { v: 1, accountId: 'account-1', profile: null },
     producerV1: null,
     content: sealSessionStoredContent({
-      ...discussionCrypto,
+      ...crypto,
       payload: { v: 1, parts: [{ t: 'text', text: 'Hello' }] },
     }),
     mentionedAccountIds: [],
@@ -191,7 +192,6 @@ describe('createSessionDiscussionActionDeps', () => {
         features: {
           sessions: {
             enabled: true,
-            collaboration: { enabled: true },
             conversations: { enabled: true },
           },
           sharing: { session: { enabled: true } },
@@ -319,6 +319,46 @@ describe('createSessionDiscussionActionDeps', () => {
     expect(result).not.toHaveProperty('firstMessage.content.t');
   });
 
+  it('derives E2EE equality evidence from the supplied exact Session key with token-only credentials', async () => {
+    const key = new Uint8Array(32).fill(23);
+    const crypto = { mode: 'e2ee' as const, ctx: { encryptionKey: key, encryptionVariant: 'dataKey' as const } };
+    const resolveExactSessionEncryptionMaterial = vi.fn((sessionId: string) =>
+      sessionId === 'session-1' ? { mode: 'e2ee' as const, dataEncryptionKey: key } : null);
+    axiosRequest.mockResolvedValueOnce({
+      status: 200,
+      data: { discussion: wireSummary(crypto), firstMessage: wireMessage(crypto) },
+    });
+    const action = createSessionDiscussionActionDeps({
+      credentials: { token: 'token-1', encryption: null },
+      serverId: 'server-1',
+      serverHttpBaseUrl: 'https://home.example.test',
+      resolveExactSessionEncryptionMaterial,
+    }).sessionDiscussionAction!;
+
+    const result = await action({
+      actionId: 'session.discussion.create',
+      input: {
+        sessionId: 'session-1',
+        creationLocalId: 'creation-1',
+        title: 'Title',
+        firstMessage: {
+          localId: 'message-1',
+          content: { v: 1, parts: [{ t: 'text', text: 'Hello' }] },
+          mentionedAccountIds: [],
+        },
+      },
+      context: { serverId: 'server-1', surface: 'cli', authority: 'present_user' },
+    } as never);
+
+    expect(resolveExactSessionEncryptionMaterial).toHaveBeenCalledWith('session-1');
+    const body = JSON.parse(axiosRequest.mock.calls[0]![0].data as string) as Record<string, unknown>;
+    expect(body).toMatchObject({
+      creationEqualityEvidenceV1: { kind: 'e2eeTag', tag: expect.any(String) },
+      firstMessage: { requestEqualityEvidenceV1: { kind: 'e2eeTag', tag: expect.any(String) } },
+    });
+    expect(result).toMatchObject({ discussion: { title: 'Title' } });
+  });
+
   it('uses the same keyless Plain stored-content envelope without client equality evidence', async () => {
     fetchSessionById.mockResolvedValueOnce({
       id: 'session-1',
@@ -339,7 +379,13 @@ describe('createSessionDiscussionActionDeps', () => {
       },
     });
 
-    const result = await discussionAction()!({
+    const action = createSessionDiscussionActionDeps({
+      credentials: { token: 'token-1', encryption: null },
+      serverId: 'server-1',
+      serverHttpBaseUrl: 'https://home.example.test',
+      resolveExactSessionEncryptionMaterial: () => ({ mode: 'plain' }),
+    }).sessionDiscussionAction!;
+    const result = await action({
       actionId: 'session.discussion.create',
       input: {
         sessionId: 'session-1',
@@ -366,6 +412,34 @@ describe('createSessionDiscussionActionDeps', () => {
     expect(body).not.toHaveProperty('creationEqualityEvidenceV1');
     expect(body.firstMessage).not.toHaveProperty('requestEqualityEvidenceV1');
     expect(result).toMatchObject({ discussion: { title: 'Title' } });
+  });
+
+  it('rejects exact Session material that disagrees with the persisted mode before a discussion write', async () => {
+    const action = createSessionDiscussionActionDeps({
+      credentials: { token: 'token-1', encryption: null },
+      serverId: 'server-1',
+      serverHttpBaseUrl: 'https://home.example.test',
+      resolveExactSessionEncryptionMaterial: () => ({ mode: 'plain' }),
+    }).sessionDiscussionAction!;
+
+    await expect(action({
+      actionId: 'session.discussion.create',
+      input: {
+        sessionId: 'session-1',
+        creationLocalId: 'creation-1',
+        title: 'Title',
+        firstMessage: {
+          localId: 'message-1',
+          content: { v: 1, parts: [{ t: 'text', text: 'Hello' }] },
+        },
+      },
+      context: { serverId: 'server-1', surface: 'cli', authority: 'present_user' },
+    } as never)).resolves.toEqual({
+      ok: false,
+      errorCode: 'encryption_material_unavailable',
+      error: 'encryption_material_unavailable',
+    });
+    expect(axiosRequest).not.toHaveBeenCalled();
   });
 
   it('marks a mismatched stored-content envelope incomplete instead of reinterpreting it', async () => {
@@ -425,6 +499,7 @@ describe('createSessionDiscussionActionDeps', () => {
       token: 'execution-proof',
       binding: {
         serverIdentityId: 'server-1', accountId: 'account-1', principalId: 'principal-1', credentialId: 'credential-1',
+        grant: API_TOKEN_FULL_GRANT_V1,
         machineId: 'machine-1', actionId: 'session.discussion.list', requestId: 'request-1',
         requestEnvelopeDigest: 'd'.repeat(43), target,
       },
@@ -443,7 +518,7 @@ describe('createSessionDiscussionActionDeps', () => {
     });
     const context = {
       serverId: 'server-1', surface: 'cli' as const, authority: 'account_automation' as const,
-      externalActionCredential: { accountId: 'account-1', principalId: 'principal-1', credentialId: 'credential-1' },
+      externalActionCredential: { accountId: 'account-1', principalId: 'principal-1', credentialId: 'credential-1', grant: authorization.binding.grant },
       externalActionExecutionAuthorization: authorization,
       externalActionTarget: target,
     };

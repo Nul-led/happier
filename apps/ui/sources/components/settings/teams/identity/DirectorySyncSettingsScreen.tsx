@@ -1,11 +1,13 @@
 import * as React from 'react';
-import { useRouter } from 'expo-router';
+import { useRouter } from '@/components/appShell/workspace/destinationRoute';
 import { AppState } from 'react-native';
-import type { TeamDirectorySourceSetupOptionV1 } from '@happier-dev/protocol/teams';
+import type { TeamDirectorySourceSetupOptionV1, TeamDirectorySourceSetupOptionsV1 } from '@happier-dev/protocol/teams';
 
 import { ActivitySpinner } from '@/components/ui/feedback/ActivitySpinner';
 import { Item } from '@/components/ui/lists/Item';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
+import { SettingAnchor, SettingSection } from '@/components/settings/shell/SettingRow';
+import { DIRECTORY_SETTINGS } from './directorySettings';
 import { Modal } from '@/modal';
 import { identityAdministrationFailureMessage } from '@/components/settings/identity/identityAdministrationFailure';
 import { announceAccessibilityMessage } from '@/components/ui/accessibility/announceAccessibilityMessage';
@@ -19,7 +21,7 @@ import type { ActionApprovalRegistration } from '@/components/approvals/actionAp
 import { TeamSection } from '../TeamSection';
 import { teamDirectorySourcePath } from '../teamsRoutes';
 import { directorySourcePresentationState } from './directoryAdministrationPresentation';
-import { createIdentityAdministrationClient } from './identityAdministrationClient';
+import { createIdentityAdministrationClient, executeIdentityAdministrationRead } from './identityAdministrationClient';
 import { useDirectoryAdministration } from './useDirectoryAdministration';
 import { createWorkosPortalReturnController } from './workosPortalReturn';
 
@@ -51,7 +53,7 @@ const AuthorizedDirectoryList = React.memo(function AuthorizedDirectoryList(prop
     requestApproval: (registration: ActionApprovalRegistration) => void;
 }>) {
     const router = useRouter();
-    const { state, refresh, loadMore } = useDirectoryAdministration(props.scope, props.address.teamId);
+    const { state, refresh, loadMore } = useDirectoryAdministration(props.scope, props.address.teamId, true, props.requestApproval);
     const bindingKey = serverAccountScopedTeamKey(props.scope, props.address);
     const client = React.useMemo(
         () => createIdentityAdministrationClient(props.scope, {
@@ -69,6 +71,7 @@ const AuthorizedDirectoryList = React.memo(function AuthorizedDirectoryList(prop
     }>>({ kind: 'hidden', items: [], nextCursor: null, complete: false, failure: null, retryCursor: null });
     const [pendingSetup, setPendingSetup] = React.useState<string | null>(null);
     const setupRequestGenerationRef = React.useRef(0);
+    const setupRequestControllerRef = React.useRef<AbortController | null>(null);
     const setupVisibleRef = React.useRef(false);
     const projectionCurrent = state.kind === 'ready' && !state.refreshing && !state.stale;
     // Setup failures render in the options footer, out of the pressed control's
@@ -92,20 +95,27 @@ const AuthorizedDirectoryList = React.memo(function AuthorizedDirectoryList(prop
             retryCursor: null,
         });
         setPendingSetup(null);
+        return () => setupRequestControllerRef.current?.abort();
     }, [bindingKey]);
 
     const loadSetup = React.useCallback(async (cursor: string | null = null) => {
         if (!props.mutationsAvailable || !projectionCurrent) return;
         const requestGeneration = setupRequestGenerationRef.current + 1;
         setupRequestGenerationRef.current = requestGeneration;
+        setupRequestControllerRef.current?.abort();
+        const controller = new AbortController();
+        setupRequestControllerRef.current = controller;
         setupVisibleRef.current = true;
         setSetup((current) => ({ ...current, kind: 'loading', failure: null, retryCursor: null }));
-        const result = await client.executeDirectory('teams.directory.sourceSetup.list', {
-            v: 1,
-            teamId: props.address.teamId,
-            ...(cursor ? { cursor } : {}),
-        });
-        if (setupRequestGenerationRef.current !== requestGeneration) return;
+        const result = await executeIdentityAdministrationRead<TeamDirectorySourceSetupOptionsV1>(
+            (options) => client.executeDirectory('teams.directory.sourceSetup.list', {
+                v: 1,
+                teamId: props.address.teamId,
+                ...(cursor ? { cursor } : {}),
+            }, options),
+            controller.signal,
+        );
+        if (controller.signal.aborted || setupRequestGenerationRef.current !== requestGeneration) return;
         const failureMessage = result.ok ? null : reportSetupFailure(result.failure.code);
         setSetup((current) => {
             if (!result.ok) {
@@ -293,13 +303,13 @@ const AuthorizedDirectoryList = React.memo(function AuthorizedDirectoryList(prop
     return (
         <>
             {state.stale ? (
-                <ItemGroup footer={t('teams.stale.label')}>
+                <ItemGroup description={t('teams.stale.label')}>
                     <Item title={t('teams.unavailable.offline')} detail={t('common.retry')} onPress={refresh} showChevron={false} />
                 </ItemGroup>
             ) : null}
             <ItemGroup
                 title={t('teams.authentication.directory.sourcesSection')}
-                footer={t('teams.authentication.directory.subtitle')}
+                description={t('teams.authentication.directory.subtitle')}
             >
                 {state.items.length === 0 ? (
                     <Item title={t('teams.authentication.directory.empty')} showChevron={false} />
@@ -334,22 +344,22 @@ const AuthorizedDirectoryList = React.memo(function AuthorizedDirectoryList(prop
                     />
                 ) : null}
             </ItemGroup>
-            <ItemGroup title={t('teams.authentication.directory.setup.section')}>
-                <Item
+            <SettingSection section={DIRECTORY_SETTINGS.sectionRefs.actions}><ItemGroup title={t('teams.authentication.directory.setup.section')}>
+                <SettingAnchor setting={DIRECTORY_SETTINGS.settings.addSource}><Item
                     testID="team-directory-source-add"
                     title={t('teams.authentication.directory.setup.add')}
                     loading={setup.kind === 'loading'}
                     disabled={!projectionCurrent || !props.mutationsAvailable || pendingSetup !== null || setup.kind === 'loading'}
                     onPress={() => void loadSetup()}
                     showChevron={false}
-                />
-            </ItemGroup>
+                /></SettingAnchor>
+            </ItemGroup></SettingSection>
             {setup.kind === 'ready' || setup.kind === 'unavailable' || (setup.kind === 'loading' && setup.items.length > 0) ? (
                 <ItemGroup
                     title={t('teams.authentication.directory.setup.options')}
-                    footer={setup.failure ?? t('teams.authentication.directory.setup.optionsFooter')}
+                    description={setup.failure ?? t('teams.authentication.directory.setup.optionsFooter')}
                 >
-                    <Item
+                    <SettingAnchor setting={DIRECTORY_SETTINGS.settings.workosSetup}><Item
                         testID="team-directory-setup-workos"
                         title={t('teams.authentication.directory.setup.workos')}
                         subtitle={t('teams.authentication.directory.setup.workosSubtitle')}
@@ -357,7 +367,7 @@ const AuthorizedDirectoryList = React.memo(function AuthorizedDirectoryList(prop
                         disabled={!projectionCurrent || !props.mutationsAvailable || pendingSetup !== null}
                         onPress={() => void startWorkosSetup()}
                         showChevron={false}
-                    />
+                    /></SettingAnchor>
                     {setup.items.map((option) => {
                         const optionId = option.kind === 'workos_directory'
                             ? option.workosDirectoryId
@@ -415,11 +425,13 @@ export const DirectorySyncSettingsScreen = React.memo(function DirectorySyncSett
     teamId: string;
 }>) {
     return (
-        <TeamSection serverId={props.serverId} teamId={props.teamId} title={t('teams.authentication.directory.title')}>
+        <TeamSection serverId={props.serverId} teamId={props.teamId} title={t('teams.authentication.directory.title')} description={t('teams.pages.directory')}>
             {({ team, scope, address, canMutate, requestApproval }) => team.capabilities.manageAuthentication ? (
                 <AuthorizedDirectoryList scope={scope} address={address} mutationsAvailable={canMutate} requestApproval={requestApproval} />
             ) : (
-                <ItemGroup><Item title={t('teams.errors.forbidden')} showChevron={false} /></ItemGroup>
+                <SettingSection section={DIRECTORY_SETTINGS.sectionRefs.actions}>
+                    <ItemGroup><Item title={t('teams.errors.forbidden')} showChevron={false} /></ItemGroup>
+                </SettingSection>
             )}
         </TeamSection>
     );

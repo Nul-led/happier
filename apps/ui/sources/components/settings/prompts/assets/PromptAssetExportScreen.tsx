@@ -1,9 +1,8 @@
 import * as React from 'react';
-import { TextInput, View } from 'react-native';
+import { View } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 import {
-  type MachineAdministrationTargetV1,
   type PromptAssetInstallModeV1,
   type PromptAssetScopeV1,
   type PromptAssetTypeDescriptorV1,
@@ -13,21 +12,18 @@ import { ContextBar } from '@/components/settings/contextBar/ContextBar';
 import { useContextBarSelection } from '@/components/settings/contextBar/useContextBarSelection';
 import { MachineAdministrationTargetSelector } from '@/components/settings/machines/MachineAdministrationTargetSelector';
 import { DropdownMenu, type DropdownMenuItem } from '@/components/ui/forms/dropdown/DropdownMenu';
-import { SETTINGS_TEXT_INPUT_METRICS } from '@/components/ui/forms/settingsTextInputMetrics';
+import { FieldTextInput } from '@/components/ui/forms/FieldTextInput';
+import { RoundButton } from '@/components/ui/buttons/RoundButton';
+import { PageHeader } from '@/components/ui/layout/PageHeader';
+import { PageHeaderMenu } from '@/components/ui/layout/PageHeaderEntityParts';
 import { Item } from '@/components/ui/lists/Item';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
 import { ItemList } from '@/components/ui/lists/ItemList';
-import { useLayoutMaxWidthStyle } from '@/components/ui/layout/layout';
-import { SettingsActionFooter } from '@/components/ui/settingsSurface/SettingsActionFooter';
 import { Modal } from '@/modal';
 import { useAllMachines, useSettingMutable } from '@/sync/domains/state/storage';
 import { MACHINE_ADMINISTRATION_SELECTION_KEYS_V1 } from '@/sync/domains/machines/administration/selectionPreferences';
-import { machineAdministrationTargetsEqual } from '@/sync/domains/machines/administration/targetSelection';
-import {
-  type FreshMachineAdministrationExecutionTargetV1,
-  useMachineAdministrationTargetSelection,
-} from '@/sync/domains/machines/administration/useTargetSelection';
-import { isMachineAdministrationExecutionTargetCurrent } from '@/sync/domains/machines/administration/operationCurrentness';
+import { useMachineAdministrationTargetSelection } from '@/sync/domains/machines/administration/useTargetSelection';
+import { useMachineAdministrationExecutionTargetBinding } from '@/sync/domains/machines/administration/useExecutionTargetBinding';
 import { machinePromptAssetsDelete, machinePromptAssetsListTypes } from '@/sync/ops/machinePromptAssets';
 import { removePromptExternalLink } from '@/sync/ops/promptLibrary/promptDocs';
 import { readPromptLibraryArtifactForExport, writePromptLibraryArtifactToExternalAsset, type ExportablePromptLibraryArtifact } from '@/sync/ops/promptLibrary/exportPromptLibraryArtifact';
@@ -45,28 +41,20 @@ import {
 
 import { defaultPromptAssetTargetInput } from './promptAssetExportDefaults';
 import { Icon } from '@/components/ui/icons/Icon';
+import { SegmentedChoiceItem } from '@/components/ui/lists/SegmentedChoiceItem';
 
-const styles = StyleSheet.create((theme) => ({
-  container: {
-    flex: 1,
-    backgroundColor: theme.colors.background.canvas,
-  },
-  content: {
-    padding: 16,
-    paddingBottom: 64,
-    width: '100%',
-    alignSelf: 'center',
-  },
-  input: {
-    backgroundColor: theme.colors.input.background,
-    color: theme.colors.input.text,
-    borderRadius: 10,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    ...SETTINGS_TEXT_INPUT_METRICS,
-    marginTop: 12,
+const styles = StyleSheet.create(() => ({
+  headerActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    flexWrap: 'wrap',
   },
 }));
+
+
+/** A prompt exports as one file, so it can only be copied. */
+const COPY_ONLY_INSTALL_MODES: readonly PromptAssetInstallModeV1[] = ['copy'];
 
 type PromptAssetExportInitialSelection = Readonly<{
   assetTypeId?: string | null;
@@ -85,10 +73,6 @@ export const PromptAssetExportScreen = React.memo((props: Readonly<{
   artifactId: string;
   initialSelection?: PromptAssetExportInitialSelection;
 }>) => {
-  // Composed at render time: the module-scope stylesheet evaluates once, so a
-  // baked-in `layout.maxWidth` would freeze the user's content-width preference.
-  const contentMaxWidthStyle = useLayoutMaxWidthStyle();
-  const contentStyle = React.useMemo(() => [styles.content, contentMaxWidthStyle], [contentMaxWidthStyle]);
   const { theme } = useUnistyles();
   const machines = useAllMachines();
   const [promptExternalLinksV1, setPromptExternalLinksV1] = useSettingMutable('promptExternalLinksV1');
@@ -96,41 +80,16 @@ export const PromptAssetExportScreen = React.memo((props: Readonly<{
     MACHINE_ADMINISTRATION_SELECTION_KEYS_V1.promptAssets,
   );
   const selectedTarget = administrationTargetSelection.selectedTarget;
-  const selectionKey = selectedTarget
-    ? `${selectedTarget.serverIdentityId}\0${selectedTarget.machineId}`
-    : '';
-  const selectionKeyRef = React.useRef(selectionKey);
-  selectionKeyRef.current = selectionKey;
-  const resolveExecutionTargetRef = React.useRef(administrationTargetSelection.resolveExecutionTarget);
-  resolveExecutionTargetRef.current = administrationTargetSelection.resolveExecutionTarget;
-  const resolveExactExecutionTarget = React.useCallback((
-    expectedTarget: MachineAdministrationTargetV1 | null,
-  ): FreshMachineAdministrationExecutionTargetV1 | null => {
-    const resolved = resolveExecutionTargetRef.current();
-    return expectedTarget !== null
-      && resolved !== null
-      && machineAdministrationTargetsEqual(expectedTarget, resolved.target)
-      ? resolved
-      : null;
-  }, []);
-  const isExecutionTargetCurrent = React.useCallback((
-    requestedSelection: string,
-    executionTarget: FreshMachineAdministrationExecutionTargetV1,
-  ): boolean => {
-    return isMachineAdministrationExecutionTargetCurrent({
-      expectedTarget: executionTarget,
-      resolveCurrentTarget: resolveExecutionTargetRef.current,
-      expectedSelectionKey: requestedSelection,
-      currentSelectionKey: selectionKeyRef.current,
-    });
-  }, []);
+  const {
+    selectionKey,
+    resolveExactExecutionTarget,
+    isExecutionTargetCurrent,
+  } = useMachineAdministrationExecutionTargetBinding(administrationTargetSelection);
   const [types, setTypes] = React.useState<PromptAssetTypeDescriptorV1[]>([]);
   const [scope, setScope] = React.useState<PromptAssetScopeV1>(props.initialSelection?.scope ?? 'project');
-  const [scopeMenuOpen, setScopeMenuOpen] = React.useState(false);
   const [selectedAssetTypeId, setSelectedAssetTypeId] = React.useState<string | null>(props.initialSelection?.assetTypeId ?? null);
   const [assetTypeMenuOpen, setAssetTypeMenuOpen] = React.useState(false);
   const [installMode, setInstallMode] = React.useState<PromptAssetInstallModeV1 | null>(null);
-  const [installModeMenuOpen, setInstallModeMenuOpen] = React.useState(false);
   const [artifactState, setArtifactState] = React.useState<ExportablePromptLibraryArtifact | null>(null);
   const [busy, setBusy] = React.useState(false);
   const {
@@ -221,7 +180,7 @@ export const PromptAssetExportScreen = React.memo((props: Readonly<{
   const availableInstallModes = React.useMemo(
     () => artifactState?.libraryKind === 'bundle'
       ? listPromptAssetInstallModesForType(currentType)
-      : ['copy'],
+      : ['copy'] as const,
     [artifactState?.libraryKind, currentType],
   );
 
@@ -257,21 +216,6 @@ export const PromptAssetExportScreen = React.memo((props: Readonly<{
     }));
   }, [artifactState, currentLink]);
 
-  const scopeItems = React.useMemo((): DropdownMenuItem[] => ([
-    {
-      id: 'project',
-      title: t('promptLibrary.externalAssetsProjectScope'),
-      subtitle: t('promptLibrary.externalAssetsProjectScopeSubtitle'),
-      icon: <Icon name="folder" size={20} color={theme.colors.accent.indigo} />,
-    },
-    {
-      id: 'user',
-      title: t('promptLibrary.externalAssetsUserScope'),
-      subtitle: t('promptLibrary.externalAssetsUserScopeSubtitle'),
-      icon: <Icon name="person" size={20} color={theme.colors.accent.blue} />,
-    },
-  ]), [theme.colors.accent.blue, theme.colors.accent.indigo]);
-
   const assetTypeItems = React.useMemo((): DropdownMenuItem[] => {
     return scopeCompatibleTypes
       .map((entry) => ({
@@ -282,18 +226,13 @@ export const PromptAssetExportScreen = React.memo((props: Readonly<{
       }));
   }, [scopeCompatibleTypes, theme.colors.text.secondary]);
 
-  const installModeItems = React.useMemo((): DropdownMenuItem[] => {
-    return availableInstallModes.map((entry) => ({
-      id: entry,
-      title: entry === 'symlink'
-        ? t('promptLibrary.externalAssetsInstallMethodSymlink')
-        : t('promptLibrary.externalAssetsInstallMethodCopy'),
-      subtitle: entry === 'symlink'
-        ? t('promptLibrary.externalAssetsInstallMethodSymlinkSubtitle')
-        : t('promptLibrary.externalAssetsInstallMethodCopySubtitle'),
-      icon: <Icon name={entry === 'symlink' ? 'git-branch' : 'copy'} size={20} color={theme.colors.text.secondary} />,
-    }));
-  }, [availableInstallModes, theme.colors.text.secondary]);
+  const installModeOptions = React.useMemo(() => availableInstallModes.map((entry) => ({
+    id: entry,
+    label: entry === 'symlink' ? t('promptLibrary.surface.installMethodLink') : t('promptLibrary.surface.installMethodCopy'),
+    description: entry === 'symlink'
+      ? t('promptLibrary.surface.installMethodLinkDescription')
+      : t('promptLibrary.externalAssetsInstallMethodCopySubtitle'),
+  })), [availableInstallModes]);
 
   const selectedInstallMode = React.useMemo(
     () => resolvePromptAssetInstallModeSelection({
@@ -433,17 +372,56 @@ export const PromptAssetExportScreen = React.memo((props: Readonly<{
 
   const executionTarget = resolveExactExecutionTarget(selectedTarget);
 
+  const exportDisabled = busy || !artifactState || !executionTarget || !currentType || targetInput.trim().length === 0 || (scope === 'project' && !resolveProjectDirectory(workspacePath));
+
   return (
-    <View style={styles.container}>
-      <ItemList containerStyle={contentStyle} keyboardShouldPersistTaps="handled">
-        <MachineAdministrationTargetSelector
-          selection={administrationTargetSelection}
-          testIDPrefix="settings.promptAssetExport.administration.target"
+    <ItemList presentation="page" keyboardShouldPersistTaps="handled">
+      <PageHeader
+        testID="promptAssetExport.header"
+        alwaysShowTitle
+        title={t('promptLibrary.externalAssetsExportTitle')}
+        description={artifactState?.title
+          ? t('promptLibrary.surface.exportDescription', { title: artifactState.title })
+          : undefined}
+        actions={(
+          <View style={styles.headerActions}>
+            <MachineAdministrationTargetSelector
+              selection={administrationTargetSelection}
+              presentation="chip"
+              testIDPrefix="settings.promptAssetExport.administration.target"
+            />
+            <RoundButton
+              testID="promptAssetExport.export"
+              size="small"
+              title={t('promptLibrary.externalAssetsExportAction')}
+              disabled={exportDisabled}
+              loading={busy}
+              onPress={() => { void exportAsset(); }}
+            />
+            {currentLink ? (
+              <PageHeaderMenu
+                testID="promptAssetExport.menu"
+                actions={[{ id: 'delete', testID: 'promptAssetExport.delete', title: t('common.delete'), onSelect: () => { void deleteExport(); } }]}
+              />
+            ) : null}
+          </View>
+        )}
+      />
+
+      <ItemGroup title={t('promptLibrary.externalAssetsExportOptions')} description={t('promptLibrary.surface.exportOptionsDescription')}>
+        <SegmentedChoiceItem
+            title={t('promptLibrary.externalAssetsScope')}
+            options={[
+                { id: 'project', label: t('promptLibrary.externalAssetsProjectScope'), description: t('promptLibrary.surface.installProjectScopeDescription') },
+                { id: 'user', label: t('promptLibrary.externalAssetsUserScope'), description: t('promptLibrary.surface.installUserScopeDescription') },
+            ]}
+            value={scope}
+            onChange={(nextScope) => setScope(nextScope as PromptAssetScopeV1)}
         />
-        <ItemGroup title={t('promptLibrary.externalAssetsContext')}>
+        {scope === 'project' ? (
           <ContextBar
             mode="workspace_only"
-            workspace={scope === 'project' ? {
+            workspace={{
               value: workspacePath,
               onChange: setWorkspacePath,
               placeholder: t('promptLibrary.externalAssetsProjectDirectory'),
@@ -453,113 +431,73 @@ export const PromptAssetExportScreen = React.memo((props: Readonly<{
                 serverId: executionTarget?.serverId ?? null,
                 enabled: executionTarget !== null,
               },
-            } : undefined}
-          />
-        </ItemGroup>
-
-        <ItemGroup title={t('promptLibrary.externalAssetsExportOptions')}>
-          <DropdownMenu
-            open={scopeMenuOpen}
-            onOpenChange={setScopeMenuOpen}
-            items={scopeItems}
-            selectedId={scope}
-            onSelect={(nextScope) => setScope(nextScope as PromptAssetScopeV1)}
-            itemTrigger={{
-              title: t('promptLibrary.externalAssetsScope'),
-              subtitle: scope === 'project' ? t('promptLibrary.externalAssetsProjectScope') : t('promptLibrary.externalAssetsUserScope'),
-              icon: <Icon name="stack" size={29} color={theme.colors.accent.indigo} />,
             }}
-            rowKind="item"
-            connectToTrigger
-            variant="default"
           />
+        ) : null}
 
-          <DropdownMenu
-            open={assetTypeMenuOpen}
-            onOpenChange={setAssetTypeMenuOpen}
-            items={assetTypeItems}
-            selectedId={selectedAssetTypeId}
-            onSelect={(nextTypeId) => setSelectedAssetTypeId(nextTypeId)}
-            itemTrigger={{
-              title: t('promptLibrary.externalAssetsExportType'),
-              subtitle: currentType?.title ?? t('promptLibrary.externalAssetsNoTypes'),
-              icon: <Icon name="stack-simple" size={29} color={theme.colors.text.secondary} />,
-            }}
-            rowKind="item"
-            connectToTrigger
-            variant="default"
+        <DropdownMenu
+          open={assetTypeMenuOpen}
+          onOpenChange={setAssetTypeMenuOpen}
+          items={assetTypeItems}
+          selectedId={selectedAssetTypeId}
+          onSelect={(nextTypeId) => setSelectedAssetTypeId(nextTypeId)}
+          itemTrigger={{
+            title: t('promptLibrary.externalAssetsExportType'),
+            subtitle: currentType?.title ?? t('promptLibrary.externalAssetsNoTypes'),
+          }}
+          rowKind="item"
+          connectToTrigger
+          variant="default"
+        />
+
+        {artifactState?.libraryKind === 'bundle' && installModeOptions.length > 0 && selectedInstallMode ? (
+          <SegmentedChoiceItem<PromptAssetInstallModeV1>
+            title={t('promptLibrary.externalAssetsInstallMethod')}
+            options={installModeOptions}
+            value={selectedInstallMode}
+            onChange={setInstallMode}
+            testIDPrefix="promptAssetExport.installMode"
           />
+        ) : null}
 
-          {artifactState?.libraryKind === 'bundle' ? (
-            <DropdownMenu
-              open={installModeMenuOpen}
-              onOpenChange={setInstallModeMenuOpen}
-              items={installModeItems}
-              selectedId={selectedInstallMode}
-              onSelect={(nextInstallMode) => setInstallMode(nextInstallMode as PromptAssetInstallModeV1)}
-              itemTrigger={{
-                title: t('promptLibrary.externalAssetsInstallMethod'),
-                subtitle: selectedInstallMode === 'symlink'
-                  ? t('promptLibrary.externalAssetsInstallMethodSymlink')
-                  : t('promptLibrary.externalAssetsInstallMethodCopy'),
-                icon: <Icon name={selectedInstallMode === 'symlink' ? 'git-branch' : 'copy'} size={29} color={theme.colors.text.secondary} />,
-              }}
-              rowKind="item"
-              connectToTrigger
-              variant="default"
+        <Item
+          title={t('promptLibrary.externalAssetsExportTarget')}
+          subtitle={t('promptLibrary.surface.installTargetDescription')}
+          accessoryLayout="adaptive"
+          showChevron={false}
+          rightElement={(
+            <FieldTextInput
+              testID="promptAssetExport.targetInput"
+              accessibilityLabel={t('promptLibrary.externalAssetsExportTarget')}
+              placeholder={artifactState?.libraryKind === 'doc'
+                ? t('promptLibrary.externalAssetsExportTargetPathPlaceholder')
+                : t('promptLibrary.externalAssetsExportTargetNamePlaceholder')}
+              value={targetInput}
+              onChangeText={setTargetInput}
+              autoCapitalize="none"
+              monospace
             />
-          ) : null}
+          )}
+        />
 
+        {currentLink ? (
           <Item
-            title={t('promptLibrary.externalAssetsExportTarget')}
-            subtitle={(
-              <TextInput
-                testID="promptAssetExport.targetInput"
-                placeholder={artifactState?.libraryKind === 'doc'
-                  ? t('promptLibrary.externalAssetsExportTargetPathPlaceholder')
-                  : t('promptLibrary.externalAssetsExportTargetNamePlaceholder')}
-                placeholderTextColor={theme.colors.input.placeholder}
-                value={targetInput}
-                onChangeText={setTargetInput}
-                style={styles.input}
-              />
-            )}
-            subtitleLines={0}
-            icon={<Icon name={artifactState?.libraryKind === 'bundle' ? 'sparkle' : 'file-text'} size={29} color={theme.colors.text.secondary} />}
+            testID="promptAssetExport.linked"
+            title={t('promptLibrary.externalAssetsLinkedTitle')}
+            subtitle={describePromptExternalLinkSubtitle({
+              link: currentLink,
+              machines,
+              scopeLabel: currentLink.scope === 'project'
+                ? t('promptLibrary.externalAssetsProjectScope')
+                : t('promptLibrary.externalAssetsUserScope'),
+            })}
+            detail={describePromptExternalLinkTitle(currentLink)}
             mode="info"
             showChevron={false}
           />
-
-          {currentLink ? (
-            <Item
-              testID="promptAssetExport.linked"
-              title={t('promptLibrary.externalAssetsLinkedTitle')}
-              subtitle={describePromptExternalLinkSubtitle({
-                link: currentLink,
-                machines,
-                scopeLabel: currentLink.scope === 'project'
-                  ? t('promptLibrary.externalAssetsProjectScope')
-                  : t('promptLibrary.externalAssetsUserScope'),
-              })}
-              icon={<Icon name="link" size={29} color={theme.colors.text.secondary} />}
-              detail={describePromptExternalLinkTitle(currentLink)}
-              showChevron={false}
-            />
-          ) : null}
-        </ItemGroup>
-
-        <SettingsActionFooter
-          primaryLabel={t('promptLibrary.externalAssetsExportAction')}
-          onPrimaryPress={() => { void exportAsset(); }}
-          primaryDisabled={busy || !artifactState || !executionTarget || !currentType || targetInput.trim().length === 0 || (scope === 'project' && !resolveProjectDirectory(workspacePath))}
-          primaryTestID="promptAssetExport.export"
-          secondaryLabel={currentLink ? t('common.delete') : undefined}
-          onSecondaryPress={currentLink ? (() => { void deleteExport(); }) : undefined}
-          secondaryTestID={currentLink ? 'promptAssetExport.delete' : undefined}
-          secondaryTone="destructive"
-        />
-      </ItemList>
-    </View>
+        ) : null}
+      </ItemGroup>
+    </ItemList>
   );
 });
 

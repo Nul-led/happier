@@ -25,7 +25,8 @@ function isContentEnvelope(value: unknown): value is ContentEnvelope {
 function isReviewCommentSnapshot(value: unknown): value is ReviewCommentSnapshotV1 {
     const record = recordValue(value);
     const kind = record?.kind;
-    return kind === 'text'
+    return kind === 'none'
+        || kind === 'text'
         || kind === 'binary'
         || kind === 'submodule'
         || kind === 'symlink'

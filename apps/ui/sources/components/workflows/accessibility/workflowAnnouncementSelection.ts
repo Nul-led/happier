@@ -36,6 +36,10 @@ export type WorkflowAnnouncementState = Readonly<{
   changedRowCount: number;
   /** True when the currently selected row is one of the changed rows. */
   selectedRowChanged: boolean;
+  /** True when the paged attention window has more pages beyond the loaded rows. */
+  attentionHasMore: boolean;
+  /** True when the loaded invocation history is a partial window of the run. */
+  historyIncomplete: boolean;
 }>;
 
 export const EMPTY_WORKFLOW_ANNOUNCEMENT_STATE: WorkflowAnnouncementState = {
@@ -46,17 +50,19 @@ export const EMPTY_WORKFLOW_ANNOUNCEMENT_STATE: WorkflowAnnouncementState = {
   terminal: null,
   changedRowCount: 0,
   selectedRowChanged: false,
+  attentionHasMore: false,
+  historyIncomplete: false,
 };
 
 export type WorkflowAnnouncement =
-  | Readonly<{ kind: 'terminal'; terminal: WorkflowAnnouncementTerminalKind; attentionCount: number }>
-  | Readonly<{ kind: 'attention'; attentionCount: number }>
+  | Readonly<{ kind: 'terminal'; terminal: WorkflowAnnouncementTerminalKind; attentionCount: number; attentionHasMore: boolean }>
+  | Readonly<{ kind: 'attention'; attentionCount: number; attentionHasMore: boolean }>
   | Readonly<{ kind: 'validation'; issueCode: WorkflowValidationIssueCode; blockId?: string }>
   | Readonly<{ kind: 'inserted'; blockId: string; position: number; total: number }>
   | Readonly<{ kind: 'removed'; blockId: string; total: number }>
   | Readonly<{ kind: 'reordered'; blockId: string; position: number; total: number }>
   | Readonly<{ kind: 'selectedRowUpdated'; blockId: string }>
-  | Readonly<{ kind: 'progress'; changedRowCount: number; attentionCount: number }>;
+  | Readonly<{ kind: 'progress'; changedRowCount: number; attentionCount: number; attentionHasMore: boolean; historyIncomplete: boolean }>;
 
 function firstStructuralDifference(
   previous: readonly string[],
@@ -93,11 +99,16 @@ export function selectWorkflowAnnouncement(
   next: WorkflowAnnouncementState,
 ): WorkflowAnnouncement | null {
   if (next.terminal !== null && next.terminal !== previous.terminal) {
-    return { kind: 'terminal', terminal: next.terminal, attentionCount: next.attentionCount };
+    return {
+      kind: 'terminal',
+      terminal: next.terminal,
+      attentionCount: next.attentionCount,
+      attentionHasMore: next.attentionHasMore,
+    };
   }
 
   if (next.attentionCount > previous.attentionCount) {
-    return { kind: 'attention', attentionCount: next.attentionCount };
+    return { kind: 'attention', attentionCount: next.attentionCount, attentionHasMore: next.attentionHasMore };
   }
 
   const previousIssue = previous.blockingIssue;
@@ -128,7 +139,13 @@ export function selectWorkflowAnnouncement(
   }
 
   if (next.changedRowCount > 0) {
-    return { kind: 'progress', changedRowCount: next.changedRowCount, attentionCount: next.attentionCount };
+    return {
+      kind: 'progress',
+      changedRowCount: next.changedRowCount,
+      attentionCount: next.attentionCount,
+      attentionHasMore: next.attentionHasMore,
+      historyIncomplete: next.historyIncomplete,
+    };
   }
 
   return null;

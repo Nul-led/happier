@@ -62,6 +62,7 @@ function registerPlainEnrollmentExternalAuth(
 ): void {
   app.get('/v1/account/security', async () => ({
     v: 1,
+    terminalPresentUserPolicy: 'allowed',
     encryptionMode: 'plain',
     nativeEmail: null,
     password: { status: 'not_enrolled', revision: null },
@@ -152,7 +153,7 @@ describe('trusted interactive CLI Account Security vertical', () => {
     const app = fastify();
     app.get('/v1/account/security', async (request) => {
       expect(request.headers.authorization).toBe('Bearer interactive');
-      return { v: 1, encryptionMode: 'plain', nativeEmail: 'ada@example.test', password: { status: 'enrolled', revision: 3 } };
+      return { v: 1, terminalPresentUserPolicy: 'allowed', encryptionMode: 'plain', nativeEmail: 'ada@example.test', password: { status: 'enrolled', revision: 3 } };
     });
     const restore = installAxiosFastifyAdapter({ app, origin: 'http://account.test' });
     const output = captureConsoleText();
@@ -173,6 +174,66 @@ describe('trusted interactive CLI Account Security vertical', () => {
     }
   });
 
+  it('reads and changes CLI approval policy through the security owners', async () => {
+    vi.spyOn(process, 'exit').mockImplementation(() => { throw new Error('CLI command exited before policy operation'); });
+    const app = fastify();
+    let policy = 'allowed';
+    app.get('/v1/account/security', async () => ({
+      v: 1, encryptionMode: 'plain', nativeEmail: null,
+      password: { status: 'not_enrolled', revision: null }, terminalPresentUserPolicy: policy,
+    }));
+    app.post('/v1/account/security/terminal-present-user', async (request) => {
+      expect(request.headers.authorization).toBe('Bearer interactive');
+      expect(request.body).toEqual({ policy: 'disallowed' });
+      policy = 'disallowed';
+      return { policy };
+    });
+    const restore = installAxiosFastifyAdapter({ app, origin: 'http://account.test' });
+    const output = captureConsoleText();
+    try {
+      const { writeCredentialsTokenOnly } = await import('@/persistence');
+      await writeCredentialsTokenOnly({ token: 'interactive' });
+      const { handleAuthCommand } = await import('./auth');
+      await handleAuthCommand(['cli-approvals', 'get', '--json']);
+      expect(JSON.parse(output.text()).error).toBeUndefined();
+      expect(JSON.parse(output.text())).toMatchObject({ ok: true, data: { policy: 'allowed' } });
+      output.lines.length = 0;
+      await handleAuthCommand(['cli-approvals', 'set', 'disallowed', '--yes', '--json']);
+      expect(JSON.parse(output.text())).toMatchObject({ ok: true, data: { policy: 'disallowed' } });
+      expect(policy).toBe('disallowed');
+    } finally {
+      output.restore();
+      restore();
+      await app.close();
+    }
+  });
+
+  it('refuses invalid, unconfirmed and API-token CLI approval-policy mutations before HTTP writes', async () => {
+    const app = fastify();
+    let writes = 0;
+    app.post('/v1/account/security/terminal-present-user', async () => {
+      writes += 1;
+      return { policy: 'allowed' };
+    });
+    const restore = installAxiosFastifyAdapter({ app, origin: 'http://account.test' });
+    const output = captureConsoleText();
+    try {
+      const { writeCredentialsTokenOnly } = await import('@/persistence');
+      await writeCredentialsTokenOnly({ token: 'interactive' });
+      const { handleAuthCliApprovals } = await import('./auth/accountSecurity');
+      await handleAuthCliApprovals(['set', 'invalid', '--yes', '--json']);
+      expect(JSON.parse(output.text())).toMatchObject({ ok: false, error: { code: 'invalid_arguments' } });
+      output.lines.length = 0;
+      await handleAuthCliApprovals(['set', 'allowed', '--json']);
+      expect(JSON.parse(output.text())).toMatchObject({ ok: false, error: { code: 'confirmation_declined' } });
+      env.patch({ HAPPIER_TOKEN: `hap_v1_12345678-1234-4234-8234-123456789abc_${'A'.repeat(43)}` });
+      output.lines.length = 0;
+      await handleAuthCliApprovals(['set', 'allowed', '--yes', '--json']);
+      expect(JSON.parse(output.text())).toMatchObject({ ok: false, error: { code: 'present_user_required' } });
+      expect(writes).toBe(0);
+    } finally { output.restore(); restore(); await app.close(); }
+  });
+
   it('reads the safe Account security projection with an authenticated API token', async () => {
     const app = fastify();
     const tokenId = '12345678-1234-4234-8234-123456789abc';
@@ -181,6 +242,7 @@ describe('trusted interactive CLI Account Security vertical', () => {
       expect(request.headers.authorization).toBe(`Bearer ${apiToken}`);
       return {
         v: 1,
+        terminalPresentUserPolicy: 'allowed',
         encryptionMode: 'plain',
         nativeEmail: 'automation@example.test',
         password: { status: 'enrolled', revision: 2 },
@@ -380,6 +442,7 @@ describe('trusted interactive CLI Account Security vertical', () => {
     let preparations = 0;
     app.get('/v1/account/security', async () => ({
       v: 1,
+      terminalPresentUserPolicy: 'allowed',
       encryptionMode: 'e2ee',
       nativeEmail: null,
       password: { status: 'not_enrolled', revision: null },
@@ -426,6 +489,7 @@ describe('trusted interactive CLI Account Security vertical', () => {
       let mutations = 0;
       app.get('/v1/account/security', async () => ({
         v: 1,
+        terminalPresentUserPolicy: 'allowed',
         encryptionMode: 'e2ee',
         nativeEmail: 'person@example.test',
         password: { status: 'enrolled', revision: 3 },
@@ -520,6 +584,7 @@ describe('trusted interactive CLI Account Security vertical', () => {
     let finalBody: unknown;
     app.get('/v1/account/security', async () => ({
       v: 1,
+      terminalPresentUserPolicy: 'allowed',
       encryptionMode: 'plain',
       nativeEmail: null,
       password: { status: 'not_enrolled', revision: null },
@@ -610,6 +675,7 @@ describe('trusted interactive CLI Account Security vertical', () => {
     const app = fastify();
     app.get('/v1/account/security', async () => ({
       v: 1,
+      terminalPresentUserPolicy: 'allowed',
       encryptionMode: 'plain',
       nativeEmail: 'person@example.test',
       password: { status: 'enrolled', revision: 3 },
@@ -658,6 +724,7 @@ describe('trusted interactive CLI Account Security vertical', () => {
     const newPassword = '  replacement password with spaces  ';
     app.get('/v1/account/security', async () => ({
       v: 1,
+      terminalPresentUserPolicy: 'allowed',
       encryptionMode: 'plain',
       nativeEmail: 'person@example.test',
       password: { status: 'enrolled', revision: 4 },
@@ -701,6 +768,7 @@ describe('trusted interactive CLI Account Security vertical', () => {
     let mutations = 0;
     app.get('/v1/account/security', async () => ({
       v: 1,
+      terminalPresentUserPolicy: 'allowed',
       encryptionMode: 'plain',
       nativeEmail: 'person@example.test',
       password: { status: 'enrolled', revision: 1 },
@@ -753,6 +821,7 @@ describe('trusted interactive CLI Account Security vertical', () => {
     let preparedEnvelope: unknown;
     app.get('/v1/account/security', async () => ({
       v: 1,
+      terminalPresentUserPolicy: 'allowed',
       encryptionMode: 'e2ee',
       nativeEmail: 'person@example.test',
       password: { status: 'enrolled', revision: 4 },
@@ -834,6 +903,7 @@ describe('trusted interactive CLI Account Security vertical', () => {
     let preparedEnvelope: unknown;
     app.get('/v1/account/security', async () => ({
       v: 1,
+      terminalPresentUserPolicy: 'allowed',
       encryptionMode: 'e2ee',
       nativeEmail: null,
       password: { status: 'not_enrolled', revision: null },
@@ -919,6 +989,7 @@ describe('trusted interactive CLI Account Security vertical', () => {
     const secret = new Uint8Array(32).fill(31);
     app.get('/v1/account/security', async () => ({
       v: 1,
+      terminalPresentUserPolicy: 'allowed',
       encryptionMode: 'e2ee',
       nativeEmail: 'person@example.test',
       password: { status: 'enrolled', revision: 9 },

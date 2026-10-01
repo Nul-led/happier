@@ -1,14 +1,18 @@
 import * as React from 'react';
 
-import { useUnistyles } from 'react-native-unistyles';
-
 import { Switch } from '@/components/ui/forms/Switch';
+import { RoundButton } from '@/components/ui/buttons/RoundButton';
 import { Item } from '@/components/ui/lists/Item';
+import { SegmentedChoiceItem } from '@/components/ui/lists/SegmentedChoiceItem';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
 import type { AttentionDeviceOverridesV1 } from '@/sync/domains/settings/attentionDeviceOverridesV1';
 import { t } from '@/text';
 import { PUSH_NOTIFICATION_SOUND_IDS, type AttentionDeliveryPolicyV1 } from '@happier-dev/protocol';
-import { Icon } from '@/components/ui/icons/Icon';
+import { SettingAnchor, SettingRow } from '@/components/settings/shell/SettingRow';
+import { NOTIFICATIONS_SETTINGS } from '@/components/settings/notifications/notificationsSettings';
+
+/** `custom` is a sound set the presets do not describe; it is shown, never offered. */
+type SoundPresetChoice = 'happier' | 'system' | 'silent' | 'custom';
 
 type NotificationSoundsSectionProps = Readonly<{
     policy: AttentionDeliveryPolicyV1;
@@ -27,7 +31,6 @@ export function NotificationSoundsSection({
     setDeviceSoundsEnabled,
     previewSound,
 }: NotificationSoundsSectionProps): React.ReactElement {
-    const { theme } = useUnistyles();
     const accountSoundId = policy.sounds.defaultSoundId;
     const permissionRequestSoundId =
         policy.sounds.eventSoundIds.permission_request
@@ -40,43 +43,38 @@ export function NotificationSoundsSection({
         && permissionRequestSoundId === PUSH_NOTIFICATION_SOUND_IDS.urgent
         && userActionRequestSoundId === PUSH_NOTIFICATION_SOUND_IDS.urgent;
 
+    const preset: SoundPresetChoice = usesHappierSounds
+        ? 'happier'
+        : accountSoundId === PUSH_NOTIFICATION_SOUND_IDS.systemDefault
+            ? 'system'
+            : accountSoundId === PUSH_NOTIFICATION_SOUND_IDS.none ? 'silent' : 'custom';
+
     return (
         <ItemGroup
             title={t('settingsNotifications.sounds.title')}
-            footer={t('settingsNotifications.sounds.footer')}
+            description={t('settingsNotifications.sounds.footer')}
         >
-            <Item
-                testID="settings-notifications-sounds-account-happier"
-                title={t('settingsNotifications.sounds.accountHappierTitle')}
-                subtitle={t('settingsNotifications.sounds.accountHappierSubtitle')}
-                icon={<Icon name="sparkle" size={29} color={theme.colors.accent.blue} />}
-                selected={usesHappierSounds}
-                onPress={() => setAccountSoundPreset('happier')}
-                showChevron={false}
-            />
-            <Item
-                testID="settings-notifications-sounds-account-system"
-                title={t('settingsNotifications.sounds.accountDefaultTitle')}
-                subtitle={t('settingsNotifications.sounds.accountDefaultSubtitle')}
-                icon={<Icon name="speaker-high" size={29} color={theme.colors.accent.blue} />}
-                selected={accountSoundId === PUSH_NOTIFICATION_SOUND_IDS.systemDefault}
-                onPress={() => setAccountSoundPreset('system')}
-                showChevron={false}
-            />
-            <Item
-                testID="settings-notifications-sounds-account-silent"
-                title={t('settingsNotifications.sounds.accountSilentTitle')}
-                subtitle={t('settingsNotifications.sounds.accountSilentSubtitle')}
-                icon={<Icon name="speaker-slash" size={29} color={theme.colors.text.secondary} />}
-                selected={accountSoundId === PUSH_NOTIFICATION_SOUND_IDS.none}
-                onPress={() => setAccountSoundPreset('silent')}
-                showChevron={false}
-            />
-            <Item
+            <SettingAnchor setting={NOTIFICATIONS_SETTINGS.settings.soundPreset}>
+                <SegmentedChoiceItem<SoundPresetChoice>
+                    // Remount when the sounds leave the presets so no stale selection stays drawn.
+                    key={preset === 'custom' ? 'custom' : 'preset'}
+                    testID="settings-notifications-sounds-account"
+                    testIDPrefix="settings-notifications-sounds-account"
+                    title={t(NOTIFICATIONS_SETTINGS.settings.soundPreset.titleKey)}
+                    subtitle={t('settingsNotifications.sounds.customSubtitle')}
+                    subtitleLines={0}
+                    value={preset}
+                    onChange={(next) => { if (next !== 'custom') setAccountSoundPreset(next); }}
+                    options={[
+                        { id: 'happier', label: t('settingsNotifications.sounds.accountHappierShort'), description: t('settingsNotifications.sounds.accountHappierSubtitle') },
+                        { id: 'system', label: t('settingsNotifications.sounds.accountDefaultShort'), description: t('settingsNotifications.sounds.accountDefaultSubtitle') },
+                        { id: 'silent', label: t('settingsNotifications.sounds.accountSilentTitle'), description: t('settingsNotifications.sounds.accountSilentSubtitle') },
+                    ]}
+                />
+            </SettingAnchor>
+            <SettingRow
                 testID="settings-notifications-sounds-device-enabled"
-                title={t('settingsNotifications.sounds.deviceEnabledTitle')}
-                subtitle={t('settingsNotifications.sounds.deviceEnabledSubtitle')}
-                icon={<Icon name="device-mobile" size={29} color={theme.colors.text.secondary} />}
+                setting={NOTIFICATIONS_SETTINGS.settings.deviceEnabled}
                 rightElement={(
                     <Switch
                         value={deviceOverrides.sounds.enabled !== false}
@@ -87,11 +85,18 @@ export function NotificationSoundsSection({
             />
             {previewSupported ? (
                 <Item
-                    testID="settings-notifications-sounds-preview"
                     title={t('settingsNotifications.sounds.previewTitle')}
                     subtitle={t('settingsNotifications.sounds.previewSubtitle')}
-                    icon={<Icon name="play-circle" size={29} color={theme.colors.accent.blue} />}
-                    onPress={previewSound}
+                    showChevron={false}
+                    rightElement={(
+                        <RoundButton
+                            testID="settings-notifications-sounds-preview"
+                            size="small"
+                            display="secondary"
+                            title={t('settingsNotifications.sounds.previewAction')}
+                            onPress={previewSound}
+                        />
+                    )}
                 />
             ) : null}
         </ItemGroup>

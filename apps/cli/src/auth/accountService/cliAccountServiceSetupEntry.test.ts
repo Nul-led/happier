@@ -258,6 +258,8 @@ async function configureProductionJourney(options: Readonly<{
   immediateRedemption?: boolean;
 }> = {}): Promise<Readonly<{
   redemptionCount(): number;
+  assertionRequestCount(): number;
+  redeemedAssertions(): readonly unknown[];
   waitForApproval(): Promise<void>;
   readPersistedSession(): Promise<Record<string, unknown>>;
   continueMachineAndService: ReturnType<typeof vi.fn>;
@@ -268,6 +270,7 @@ async function configureProductionJourney(options: Readonly<{
     activeServerId: string;
   }>[];
   setModeStatus(status: number): void;
+  setAuthenticatedObservationProvenance(provenance: 'authenticated' | 'public'): void;
 }>> {
   const happyHomeDir = await mkdtemp(join(tmpdir(), 'happier-account-service-approval-'));
   roots.push(happyHomeDir);
@@ -278,6 +281,7 @@ async function configureProductionJourney(options: Readonly<{
   await session.selectService(accountService);
   await session.replaceCredential({ service: accountService, credential: { token: 'account-service-token' } });
 
+  let authenticatedObservationProvenance = options.authenticatedObservationProvenance ?? 'authenticated';
   fetchServerFeaturesSnapshotMock.mockImplementation(async (input: Readonly<{ serverUrl: string; token?: string }>) => {
     if (input.serverUrl === accountService.endpoint) {
       return {
@@ -307,7 +311,7 @@ async function configureProductionJourney(options: Readonly<{
     }
     return {
       status: 'ready',
-      provenance: input.token ? options.authenticatedObservationProvenance ?? 'authenticated' : 'public',
+      provenance: input.token ? authenticatedObservationProvenance : 'public',
       serverIdentityId: home.homeServerIdentityId,
       features: {
         features: {},
@@ -329,6 +333,8 @@ async function configureProductionJourney(options: Readonly<{
   });
 
   let requesterPublicKeyBase64 = '';
+  let assertionRequests = 0;
+  const redeemedAssertions: unknown[] = [];
   const directoryHome = options.selection === 'sole' || options.selection === 'explicit' || options.selection === 'chooser'
     ? { ...home, preferred: false }
     : home;
@@ -360,6 +366,7 @@ async function configureProductionJourney(options: Readonly<{
       });
     }
     if (url.endsWith(`/v1/account-directory/homes/${home.homeServerIdentityId}/login-assertion`)) {
+      assertionRequests += 1;
       const body = JSON.parse(String(init?.body)) as { clientBoxPublicKeyBase64: string };
       requesterPublicKeyBase64 = body.clientBoxPublicKeyBase64;
       return Response.json({
@@ -378,6 +385,7 @@ async function configureProductionJourney(options: Readonly<{
     }
     if (url.endsWith('/v1/auth/home-login')) {
       redemptions += 1;
+      redeemedAssertions.push((JSON.parse(String(init?.body)) as { assertion: unknown }).assertion);
       if (redemptions === 1 && !options.immediateRedemption) {
         resolveApproval();
         return Response.json({
@@ -418,6 +426,8 @@ async function configureProductionJourney(options: Readonly<{
 
   return {
     redemptionCount: () => redemptions,
+    assertionRequestCount: () => assertionRequests,
+    redeemedAssertions: () => redeemedAssertions,
     waitForApproval: async () => await approvalIssued,
     readPersistedSession: async () => JSON.parse(
       await readFile(resolveCliAccountServiceSessionRecordPath(happyHomeDir), 'utf8'),
@@ -426,6 +436,9 @@ async function configureProductionJourney(options: Readonly<{
     activeServerIdBeforeJourney,
     modeRequests,
     setModeStatus: (status) => { modeStatus = status; },
+    setAuthenticatedObservationProvenance: (provenance) => {
+      authenticatedObservationProvenance = provenance;
+    },
   };
 }
 
@@ -671,6 +684,70 @@ describe('production CLI Account Service approval continuation', () => {
       (profile) => profile.homeConnectionDescriptor?.homeServerIdentityId === home.homeServerIdentityId,
     );
     expect(persisted?.homeConnectionDescriptorAuthority).toBe('advisory');
+  });
+
+  it('retries a post-redemption observation failure with the same bounded invocation and commits once', async () => {
+    const harness = await configureProductionJourney({
+      authenticatedObservationProvenance: 'public',
+      immediateRedemption: true,
+    });
+    const controller = new AbortController();
+    const failed = await runCliAccountServiceSetupEntry({
+      endpoint: accountService.endpoint,
+      promptInputFn: async () => 'k',
+      promptSecretInputFn: async () => encodeBase64(new Uint8Array(32), 'base64url'),
+      signal: controller.signal,
+      timeoutMs: 10_000,
+      continueMachineAndService: harness.continueMachineAndService,
+    });
+
+    expect(failed).toMatchObject({
+      kind: 'failure',
+      stage: 'enter',
+      homeServerIdentityId: home.homeServerIdentityId,
+      homeCredentialCommitted: false,
+      recovery: 'retry_stage',
+      retry: expect.any(Function),
+    });
+    expect(harness.assertionRequestCount()).toBe(1);
+    expect(harness.redemptionCount()).toBe(1);
+    expect(writeCredentialsTokenOnlyForServerIdMock).not.toHaveBeenCalled();
+    if (failed.kind !== 'failure' || !failed.retry) throw new Error('Expected post-redemption retry');
+
+    harness.setAuthenticatedObservationProvenance('authenticated');
+    const retried = await failed.retry();
+
+    expect(retried).toMatchObject({
+      kind: 'home_entered',
+      homeServerIdentityId: home.homeServerIdentityId,
+    });
+    expect(harness.assertionRequestCount()).toBe(1);
+    expect(harness.redemptionCount()).toBe(2);
+    expect(harness.redeemedAssertions()[1]).toEqual(harness.redeemedAssertions()[0]);
+    expect(writeCredentialsTokenOnlyForServerIdMock).toHaveBeenCalledOnce();
+    expect(harness.continueMachineAndService).toHaveBeenCalledOnce();
+  });
+
+  it('does not re-enter a retained post-redemption invocation after caller cancellation', async () => {
+    const harness = await configureProductionJourney({
+      authenticatedObservationProvenance: 'public',
+      immediateRedemption: true,
+    });
+    const controller = new AbortController();
+    const failed = await runCliAccountServiceSetupEntry({
+      endpoint: accountService.endpoint,
+      promptInputFn: async () => 'k',
+      promptSecretInputFn: async () => encodeBase64(new Uint8Array(32), 'base64url'),
+      signal: controller.signal,
+      timeoutMs: 10_000,
+    });
+    if (failed.kind !== 'failure' || !failed.retry) throw new Error('Expected post-redemption retry');
+
+    controller.abort();
+    await expect(failed.retry()).resolves.toEqual({ kind: 'cancelled' });
+    expect(harness.assertionRequestCount()).toBe(1);
+    expect(harness.redemptionCount()).toBe(1);
+    expect(writeCredentialsTokenOnlyForServerIdMock).not.toHaveBeenCalled();
   });
 
   it('uses the exact self Home carrier for discovery, authentication, and Directory requests', async () => {
@@ -1355,7 +1432,14 @@ describe('production CLI Account Service approval continuation', () => {
     await harness.waitForApproval();
     await vi.advanceTimersByTimeAsync(1_250);
 
-    await expect(result).resolves.toEqual({ kind: 'home_unavailable' });
+    await expect(result).resolves.toMatchObject({
+      kind: 'failure',
+      stage: 'enter',
+      homeServerIdentityId: home.homeServerIdentityId,
+      homeCredentialCommitted: false,
+      recovery: 'retry_stage',
+      retry: expect.any(Function),
+    });
     expect(writeCredentialsTokenOnlyForServerIdMock).not.toHaveBeenCalled();
     expect(authAndSetupMachineIfNeededMock).not.toHaveBeenCalled();
     const retained = (await listServerProfiles()).find((profile) => profile.id === existing.profile.id);
@@ -1764,6 +1848,46 @@ describe('production CLI Account Service approval continuation', () => {
     expect(authenticateCliAccountServiceMock).toHaveBeenCalledOnce();
     await expect(session.readCredential(accountService)).resolves.toEqual({
       token: 'replacement-account-service-token',
+    });
+  });
+
+  it('signs in and stops before the Home directory when only sign-in is requested', async () => {
+    const happyHomeDir = await mkdtemp(join(tmpdir(), 'happier-account-service-sign-in-only-'));
+    roots.push(happyHomeDir);
+    process.env.HAPPIER_HOME_DIR = happyHomeDir;
+    reloadConfiguration();
+    const activeServerIdBefore = configuration.activeServerId;
+    const session = createCliAccountServiceSessionOwner({ happyHomeDir });
+
+    fetchServerFeaturesSnapshotMock.mockResolvedValue(readyAccountServiceFeatures(accountService));
+    authenticateCliAccountServiceMock.mockResolvedValue({
+      kind: 'authenticated',
+      credential: { token: 'signed-in-account-service-token' },
+    });
+    const fetchMock = vi.fn(async (urlInput: string | URL | Request) => {
+      const url = String(urlInput);
+      // A sole preferred Home is linked: a journey that kept going would enter and focus it.
+      if (url.endsWith('/v1/account-directory/homes')) {
+        return Response.json({ v: 1, homes: [home], preferredHomeServerIdentityId: home.homeServerIdentityId });
+      }
+      return new Response(null, { status: 404 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(runCliAccountServiceSetupEntry({
+      endpoint: accountService.endpoint,
+      stopAfter: 'sign_in',
+      promptInputFn: async () => 'k',
+      promptSecretInputFn: async () => encodeBase64(new Uint8Array(32), 'base64url'),
+      timeoutMs: 10_000,
+    })).resolves.toEqual({ kind: 'signed_in', endpoint: accountService.endpoint });
+
+    expect(fetchMock.mock.calls.map(([url]) => String(url)))
+      .not.toContainEqual(expect.stringContaining('/v1/account-directory/homes'));
+    expect(configuration.activeServerId).toBe(activeServerIdBefore);
+    await expect(session.readSelection()).resolves.toEqual(accountServiceAuthority);
+    await expect(session.readCredential(accountService)).resolves.toEqual({
+      token: 'signed-in-account-service-token',
     });
   });
 

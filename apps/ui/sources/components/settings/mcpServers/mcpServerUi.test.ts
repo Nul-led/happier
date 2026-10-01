@@ -44,3 +44,11 @@ describe('formatDetectedWarning', () => {
             .toBe('gemini \u00b7 parse_failed');
     });
 });
+
+describe('describeMachine', () => {
+    it('names an unnamed machine as unnamed, never by its id', async () => {
+        const { describeMachine } = await import('./mcpServerUi');
+        const machines = [{ id: 'f98b860d-63e0', metadata: {} }] as unknown as Parameters<typeof describeMachine>[1];
+        expect(describeMachine('f98b860d-63e0', machines)).toBe('tx:machine.unnamedMachine');
+    });
+});

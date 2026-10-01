@@ -3,6 +3,7 @@ import { act } from 'react-test-renderer';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { renderScreen } from '@/dev/testkit';
+import { SettingsShell } from './SettingsShell';
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -84,7 +85,6 @@ describe('SettingsShell', () => {
     it('renders children without the sidebar on non-tablet layouts', async () => {
         windowDimsState.width = 390;
         windowDimsState.height = 844;
-        const { SettingsShell } = await import('./SettingsShell');
         const screen = await renderScreen(
             React.createElement(SettingsShell, null, React.createElement('Child', { testID: 'child' }))
         );
@@ -94,7 +94,6 @@ describe('SettingsShell', () => {
     });
 
     it('renders the settings sidebar on tablet/desktop layouts', async () => {
-        const { SettingsShell } = await import('./SettingsShell');
         const screen = await renderScreen(
             React.createElement(SettingsShell, null, React.createElement('Child', { testID: 'child' }))
         );
@@ -104,7 +103,6 @@ describe('SettingsShell', () => {
     });
 
     it('docks the nav rail on the left, with the resize handle on its inner (right) edge', async () => {
-        const { SettingsShell } = await import('./SettingsShell');
         const screen = await renderScreen(
             React.createElement(SettingsShell, null, React.createElement('Child', { testID: 'child' }))
         );
@@ -117,7 +115,6 @@ describe('SettingsShell', () => {
     it('uses the default sidebar width when the local width setting is missing', async () => {
         localSettingsState.values.delete('settingsNavSidebarWidthPx');
         windowDimsState.width = 1600;
-        const { SettingsShell } = await import('./SettingsShell');
         const screen = await renderScreen(
             React.createElement(SettingsShell, null, React.createElement('Child', { testID: 'child' }))
         );
@@ -128,7 +125,6 @@ describe('SettingsShell', () => {
 
     it('hides the settings sidebar when disabled by local settings', async () => {
         localSettingsState.values.set('settingsNavSidebarEnabled', false);
-        const { SettingsShell } = await import('./SettingsShell');
         const screen = await renderScreen(
             React.createElement(SettingsShell, null, React.createElement('Child', { testID: 'child' }))
         );
@@ -137,22 +133,28 @@ describe('SettingsShell', () => {
         expect(screen.findByTestId('child')).toBeTruthy();
     });
 
-    it('can switch from phone to desktop layout without changing hook order', async () => {
-        windowDimsState.width = 390;
-        windowDimsState.height = 844;
-        const { SettingsShell } = await import('./SettingsShell');
+    it('preserves the current page and its draft when viewport or sidebar visibility changes', async () => {
+        function DraftPage() {
+            const [draft, setDraft] = React.useState('');
+            return React.createElement('DraftField', { testID: 'draft', value: draft, onChangeText: setDraft });
+        }
+        const content = () => React.createElement(SettingsShell, null, React.createElement(DraftPage));
         const screen = await renderScreen(
-            React.createElement(SettingsShell, null, React.createElement('Child', { testID: 'child' })),
+            content(),
         );
+        const draft = screen.findByTestId('draft');
+        await act(async () => {
+            draft!.props.onChangeText('Unsaved settings edit');
+        });
 
-        windowDimsState.width = 1600;
-        windowDimsState.height = 900;
-
-        await expect(act(async () => {
-            screen.tree.update(
-                React.createElement(SettingsShell, null, React.createElement('Child', { testID: 'child' })),
-            );
-        })).resolves.toBeUndefined();
-        expect(screen.findByTestId('settings-sidebar')).toBeTruthy();
+        for (const [width, sidebarEnabled] of [[390, true], [1600, true], [1600, false], [1600, true]] as const) {
+            windowDimsState.width = width;
+            localSettingsState.values.set('settingsNavSidebarEnabled', sidebarEnabled);
+            await act(async () => {
+                screen.tree.update(content());
+            });
+            expect(screen.findByTestId('draft')?.props.value).toBe('Unsaved settings edit');
+            expect(screen.findByTestId('draft')).toBe(draft);
+        }
     });
 });

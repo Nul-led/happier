@@ -1,6 +1,6 @@
 import * as React from 'react';
 import { View, Platform } from 'react-native';
-import { useRouter } from 'expo-router';
+import { useRouter } from '@/components/appShell/workspace/destinationRoute';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 import { type ActionSettingsActionId, type ActionsSettingsV1 } from '@happier-dev/protocol';
@@ -36,6 +36,7 @@ import {
 } from './resolveActionSettingsEntryStatusSummary';
 import { useActionSettingsNarrowLayout } from './useActionSettingsNarrowLayout';
 import { Icon } from '@/components/ui/icons/Icon';
+import { SettingsPageHeader } from '@/components/settings/shell/SettingsPageHeader';
 
 const stylesheet = StyleSheet.create((theme) => ({
     actionRightAccessory: {
@@ -62,15 +63,6 @@ const stylesheet = StyleSheet.create((theme) => ({
         height: Platform.select({ ios: 24, default: 24 }),
         alignItems: 'center',
         justifyContent: 'center',
-    },
-    emptyState: {
-        paddingHorizontal: Platform.select({ ios: 16, default: 14 }),
-        paddingVertical: Platform.select({ ios: 16, default: 18 }),
-    },
-    emptyText: {
-        color: theme.colors.text.secondary,
-        fontSize: Platform.select({ ios: 15, default: 14 }),
-        lineHeight: 20,
     },
 }));
 
@@ -106,7 +98,7 @@ function ActionSettingsRowAccessory(props: Readonly<{
                 accessibilityRole="image"
                 accessibilityLabel={t('settingsActions.configureActionAccessibilityLabel')}
             >
-                <Icon name="sliders-horizontal" size={20} color={theme.colors.text.secondary} />
+                <Icon name="caret-right" size={16} color={theme.colors.text.secondary} />
             </View>
         </View>
     );
@@ -129,7 +121,6 @@ function getActionSettingsEntryStatusText(
 }
 
 export const ActionsSettingsView = React.memo(function ActionsSettingsView() {
-    const { theme } = useUnistyles();
     const router = useRouter();
     const styles = stylesheet;
     const compactLayout = useActionSettingsNarrowLayout();
@@ -190,8 +181,6 @@ export const ActionsSettingsView = React.memo(function ActionsSettingsView() {
     // configure each family (browser, simulator, plugins, local services, …) together. The per-row
     // enable toggle + per-action approval controls (detail view) are unchanged.
     const familySections = React.useMemo(() => groupActionSettingsEntriesByFamily(entries), [entries]);
-    const contributedMachineSelectionTitle = t('settingsActions.contributed.machineSelectionTitle');
-    const contributedMachineSelectionBody = t('settingsActions.contributed.machineSelectionBody');
 
     const commitSettings = React.useCallback((next: unknown) => {
         setRawSettings(normalizeActionsSettings(next));
@@ -206,7 +195,6 @@ export const ActionsSettingsView = React.memo(function ActionsSettingsView() {
     }, [router]);
 
     const renderEntryRow = React.useCallback((entry: ActionSettingsEntry) => {
-        const actionEnabled = entry.enabled;
         const actionTestIdPrefix = `settings-actions:action:${entry.actionId}`;
         const statusText = getActionSettingsEntryStatusText(entry, settings);
 
@@ -225,13 +213,6 @@ export const ActionsSettingsView = React.memo(function ActionsSettingsView() {
                         {statusText}
                     </Text>
                 ) : null}
-                icon={(
-                    <Icon
-                        name={actionEnabled ? 'lightning' : 'minus-circle'}
-                        size={29}
-                        color={actionEnabled ? theme.colors.state.success.foreground : theme.colors.state.danger.foreground}
-                    />
-                )}
                 rightElement={(
                     <ActionSettingsRowAccessory
                         entry={entry}
@@ -246,15 +227,19 @@ export const ActionsSettingsView = React.memo(function ActionsSettingsView() {
                 onPress={() => openActionDetails(entry.actionId)}
             />
         );
-    }, [compactLayout, handleActionEnabledChange, openActionDetails, settings, styles.actionStatusSubtitle, theme.colors.state.danger.foreground, theme.colors.state.success.foreground]);
+    }, [compactLayout, handleActionEnabledChange, openActionDetails, settings, styles.actionStatusSubtitle]);
 
     return (
-        <ItemList style={{ paddingTop: 0 }}>
-            <MachineAdministrationTargetSelector
-                selection={administrationTargetSelection}
-                testIDPrefix="settings.actions.administration.target"
-                groupTitle={contributedMachineSelectionTitle}
-                unselectedTitle={contributedMachineSelectionBody}
+        <ItemList presentation="page">
+            <SettingsPageHeader
+                description={t('settings.actionsSubtitle')}
+                actions={(
+                    <MachineAdministrationTargetSelector
+                        selection={administrationTargetSelection}
+                        testIDPrefix="settings.actions.administration.target"
+                        presentation="chip"
+                    />
+                )}
             />
             <SearchHeader
                 value={searchQuery}
@@ -264,18 +249,17 @@ export const ActionsSettingsView = React.memo(function ActionsSettingsView() {
 
             {familySections.length === 0 ? (
                 <ItemGroup>
-                    <View style={styles.emptyState}>
-                        <Text style={styles.emptyText}>{t('settingsActions.noResults')}</Text>
-                    </View>
+                    <Item
+                        testID="settings-actions:no-results"
+                        title={t('settingsActions.noResults')}
+                        mode="info"
+                        showChevron={false}
+                    />
                 </ItemGroup>
             ) : null}
 
-            {familySections.map((section, index) => (
-                <ItemGroup
-                    key={section.family}
-                    title={t(section.titleKey)}
-                    footer={index === familySections.length - 1 ? t('settingsActions.aboutFooter') : undefined}
-                >
+            {familySections.map((section) => (
+                <ItemGroup key={section.family} title={t(section.titleKey)}>
                     {section.entries.map((entry) => renderEntryRow(entry))}
                 </ItemGroup>
             ))}

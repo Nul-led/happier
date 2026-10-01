@@ -15,6 +15,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { reloadConfiguration } from '@/configuration';
 import type { PinnedHttpStreamTransport } from '@/network/pinnedHttp';
 import { createPluginRegistryStateStore } from '@/plugins/store/registry/currentState';
+import { createPluginRuntimeOccurrenceId } from '@/plugins/runtime/runtimeSlots';
 import { resolvePluginStorePaths } from '@/plugins/store/paths';
 import { readCurrentCommittedPluginGenerations } from '@/plugins/store/registry/generationStore';
 import {
@@ -40,19 +41,22 @@ function createDaemonPublicVoiceModelPackRuntime(
 ): ReturnType<typeof createProductionDaemonPublicVoiceModelPackRuntime> {
   return createProductionDaemonPublicVoiceModelPackRuntime({
     ...params,
-    readPluginFinalPolicyCurrentGenerations: async () => {
+    readPluginFinalPolicyCurrentRuntimes: async () => {
       const committed = await readCurrentCommittedPluginGenerations(resolvePluginStorePaths({
         happyHomeDir: params.happyHomeDir,
       }));
       if (!committed) return null;
-      return new Map([...committed.generations].map(([pluginId, generation]) => [pluginId, {
-        immutableGenerationId: generation.immutableGenerationId,
-        desiredImmutableGenerationId: generation.immutableGenerationId,
-        appliedImmutableGenerationId: generation.immutableGenerationId,
-        distribution: generation.installation?.source.distribution ?? 'bundled',
-        applied: true,
-        selectedAccess: generation.installation?.optionalAccess ?? [],
-      }]));
+      return new Map([...committed.generations].map(([pluginId, generation]) => {
+        const occurrenceId = createPluginRuntimeOccurrenceId(pluginId);
+        return [pluginId, {
+          occurrenceId,
+          sourceCustody: { kind: 'managed' as const, immutableGenerationId: generation.immutableGenerationId, installSource: 'archive' as const },
+          desiredOccurrenceId: occurrenceId,
+          appliedOccurrenceId: occurrenceId,
+          applied: true,
+          selectedAccess: generation.installation?.optionalAccess ?? [],
+        }];
+      }));
     },
   });
 }

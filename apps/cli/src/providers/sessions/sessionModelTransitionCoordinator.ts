@@ -1,4 +1,6 @@
 import {
+  isModelRefGrantedV1,
+  type CallerInputConstraintsV1,
   ProviderBoundModelRefSchema,
   type ModelSelectionApplyPolicy,
   type ProviderBoundModelRef,
@@ -76,6 +78,7 @@ export function mapRuntimeConfigUpdateOutcomeToSessionModelTransitionApplyResult
 }
 
 type Proposal = {
+  callerInputConstraints?: CallerInputConstraintsV1;
   selection: ProviderBoundModelRef;
   source: 'command' | 'metadata' | 'prompt';
   runWithActiveSelection: ((
@@ -224,6 +227,7 @@ export function createSessionModelTransitionCoordinator(params: Readonly<{
   checkCurrentPublisherAuthority: () => Promise<boolean>;
   authorize: (
     selection: ProviderBoundModelRef,
+    callerInputConstraints?: CallerInputConstraintsV1,
   ) => Promise<AuthorizedSessionModelTransitionTarget>;
   publishIntent: (
     selection: ProviderBoundModelRef,
@@ -258,6 +262,7 @@ export function createSessionModelTransitionCoordinator(params: Readonly<{
     selection: ProviderBoundModelRef,
     context: Readonly<{
       source: Proposal['source'];
+      callerInputConstraints?: CallerInputConstraintsV1;
       runWithActiveSelection?: NonNullable<Proposal['runWithActiveSelection']>;
     }>,
   ) => Promise<SessionModelTransitionResultV1>;
@@ -796,7 +801,7 @@ export function createSessionModelTransitionCoordinator(params: Readonly<{
     }
     let target: AuthorizedSessionModelTransitionTarget;
     try {
-      target = await params.authorize(proposal.selection);
+      target = await params.authorize(proposal.selection, proposal.callerInputConstraints);
     } catch (error) {
       if (await settleIfInterruptedBeforeRuntimeEffect(proposal)) return;
       await settleBeforeRuntimeEffect(proposal, failure(
@@ -1831,10 +1836,14 @@ export function createSessionModelTransitionCoordinator(params: Readonly<{
     rawSelection: ProviderBoundModelRef,
     context: Readonly<{
       source: Proposal['source'];
+      callerInputConstraints?: CallerInputConstraintsV1;
       runWithActiveSelection?: NonNullable<Proposal['runWithActiveSelection']>;
     }>,
   ): Promise<SessionModelTransitionResultV1> => {
     const selection = ProviderBoundModelRefSchema.parse(rawSelection);
+    if (context.callerInputConstraints && !isModelRefGrantedV1(context.callerInputConstraints, selection)) {
+      return Promise.resolve(failure('unsupported', activeTarget.selection, selection, 'model_not_granted'));
+    }
     if (selection.agentTargetKey !== params.agentTargetKey) {
       return Promise.resolve(failure(
         'unsupported',
@@ -1906,6 +1915,7 @@ export function createSessionModelTransitionCoordinator(params: Readonly<{
       reject = fail;
     });
     const proposal: Proposal = {
+      ...(context.callerInputConstraints ? { callerInputConstraints: context.callerInputConstraints } : {}),
       selection,
       source: context.source,
       runWithActiveSelection,

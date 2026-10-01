@@ -6,7 +6,6 @@ import type { HomeSignInServicePolicyV1 } from '@happier-dev/protocol';
 
 import type { AccountDirectoryAuthTransport } from '@/auth/accountDirectory/accountDirectoryAuthClient';
 import { fetchHomeAuthEntry } from '@/auth/entry/authEntryClient';
-import { getAuthProvider } from '@/auth/providers/registry';
 import { useActiveServerSnapshot } from '@/hooks/server/useActiveServerSnapshot';
 import {
     getCachedServerFeaturesSnapshot,
@@ -18,21 +17,20 @@ import { createServerUrlComparableKey } from '@/sync/domains/server/url/serverUr
 import { t } from '@/text';
 import { getServerRetentionPolicy } from '@/sync/api/capabilities/serverRetentionPolicyClient';
 import { formatServerRetentionDisclosure } from '@/sync/domains/server/retention/formatServerRetentionPolicy';
-import { getServerProfileById } from '@/sync/domains/server/serverProfiles';
+import type { RelayRetentionDisclosureState } from '@/components/onboarding/unauthShell/RelayRetentionDisclosure';
+import {
+    getServerProfileById,
+    isServerProfilePersonalHomeBootstrapCompleted,
+} from '@/sync/domains/server/serverProfiles';
 import { getActiveServerHomeCarrier, getActiveServerSnapshot } from '@/sync/domains/server/serverRuntime';
 import {
-    normalizeAuthenticationProviderId,
     projectAuthEntryMethodCapabilities,
     projectAuthenticationMethodCapabilities,
     type HomeAuthenticationAction,
 } from '@/auth/capabilities/authMethodCapabilities';
+import { resolveHomeDisplayLabel } from '@/components/settings/server/homeDisplayName';
 
 type AuthEntryServerAvailability = 'loading' | 'ready' | 'legacy' | 'unavailable' | 'incompatible';
-
-export type AuthEntryPrimaryAction = Readonly<{
-    kind: 'anonymous' | 'provider-keyed' | 'mtls' | 'keyless';
-    title: string;
-}>;
 
 export type AuthEntryOptions = Readonly<{
     authenticationCatalog?: ProjectedAuthenticationCatalog;
@@ -42,6 +40,8 @@ export type AuthEntryOptions = Readonly<{
     requestedHomeTarget?: HomeTargetInput;
     homeTarget?: HomeTargetInput;
     homeLabel?: string;
+    /** Identity-bound receipt that this target is this device's managed Personal Home. */
+    isPersonalHome?: true;
     homeTransport?: AccountDirectoryAuthTransport;
     signInServicePolicy?: HomeSignInServicePolicyV1;
     observedHomeServerIdentityId?: string;
@@ -54,28 +54,8 @@ export type AuthEntryOptions = Readonly<{
     authEntryUnavailable: boolean;
     serverUrlForCopy: string;
     showAuthActions: boolean;
-    showProviderSignup: boolean;
-    showAnonymousSignup: boolean;
-    showMtlsLogin: boolean;
-    showKeylessProviderLogin: boolean;
-    providerId: string | null;
-    keylessProviderId: string | null;
-    providerSignupTitle: string;
-    providerKeylessTitle: string;
-    anonymousSignupTitle: string;
-    mtlsTitle: string;
-    primaryAction: AuthEntryPrimaryAction | null;
-    mtlsPrimary: boolean;
-    keylessPrimary: boolean;
-    retentionSummary?: string | null;
-    autoRedirect: Readonly<{
-        enabled: boolean;
-        providerId: string | null;
-        toKeyedProvision: boolean;
-        toKeylessLogin: boolean;
-        toMtls: boolean;
-        toLegacySignupProvider: boolean;
-    }>;
+    /** What the Home deletes, or that it could not be checked; never absent once the Home answered. */
+    retentionDisclosure?: RelayRetentionDisclosureState | null;
     retryServerCheck: () => void;
 }>;
 
@@ -88,21 +68,7 @@ type ObservedAuthEntryOptions = Pick<
     | 'keyChallengeV2Available'
     | 'signInServicePolicy'
     | 'observedHomeServerIdentityId'
-    | 'showProviderSignup'
-    | 'showAnonymousSignup'
-    | 'showMtlsLogin'
-    | 'showKeylessProviderLogin'
-    | 'providerId'
-    | 'keylessProviderId'
-    | 'providerSignupTitle'
-    | 'providerKeylessTitle'
-    | 'anonymousSignupTitle'
-    | 'mtlsTitle'
-    | 'primaryAction'
-    | 'mtlsPrimary'
-    | 'keylessPrimary'
-    | 'retentionSummary'
-    | 'autoRedirect'
+    | 'retentionDisclosure'
 >;
 
 function createUnobservedAuthEntryOptions(): ObservedAuthEntryOptions {
@@ -114,37 +80,25 @@ function createUnobservedAuthEntryOptions(): ObservedAuthEntryOptions {
         observedHomeServerIdentityId: undefined,
         authEntryUnavailable: false,
         showAuthActions: false,
-        showProviderSignup: false,
-        showAnonymousSignup: false,
-        showMtlsLogin: false,
-        showKeylessProviderLogin: false,
-        providerId: null,
-        keylessProviderId: null,
-        providerSignupTitle: '',
-        providerKeylessTitle: '',
-        anonymousSignupTitle: t('welcome.createAccount'),
-        mtlsTitle: t('welcome.signInWithCertificate'),
-        primaryAction: null,
-        mtlsPrimary: false,
-        keylessPrimary: false,
-        retentionSummary: null,
-        autoRedirect: {
-            enabled: false,
-            providerId: null,
-            toKeyedProvision: false,
-            toKeylessLogin: false,
-            toMtls: false,
-            toLegacySignupProvider: false,
-        },
+        retentionDisclosure: null,
     };
 }
 
-type UsableAuthEntryObservation = Readonly<{
+export type UsableAuthEntryObservation = Readonly<{
     serverAvailability: Extract<AuthEntryServerAvailability, 'ready' | 'legacy'>;
-    options: ObservedAuthEntryOptions;
+    options: ObservedAuthEntryOptions & Readonly<{
+        authenticationActions: readonly HomeAuthenticationAction[];
+        keyChallengeV2Available: boolean;
+    }>;
 }>;
 
-function createUsableAuthEntryObservation(input: Readonly<{
+/**
+ * Projects a usable Home's entry actions: the auth-entry projection when the
+ * Home served one, otherwise the released feature catalog (with the legacy
+ * key-provision fallback). Shared by the focused-Home entry and exact saved-Home
+ * authentication so both advertise identical methods for the same Home.
+ */
+export function createUsableAuthEntryObservation(input: Readonly<{
     features: FeaturesResponse | null;
     entryProjection: Parameters<typeof projectAuthEntryMethodCapabilities>[0] | null;
     authEntryUnavailable: boolean;
@@ -152,10 +106,6 @@ function createUsableAuthEntryObservation(input: Readonly<{
     const authMethodCapabilities = input.entryProjection
         ? projectAuthEntryMethodCapabilities(input.entryProjection)
         : projectAuthenticationMethodCapabilities(input.features);
-    const anonymousEnabled = authMethodCapabilities.anonymousProvisionAvailable;
-    const keylessLoginMethodIds = authMethodCapabilities.keylessLoginMethodIds;
-    const mtlsEnabled = keylessLoginMethodIds.includes('mtls');
-    const keylessProviderIds = keylessLoginMethodIds.filter((id) => id !== 'mtls');
     const observedHomeServerIdentityId = input.features?.capabilities.serverIdentity?.serverIdentityId ?? undefined;
 
     if (
@@ -177,75 +127,9 @@ function createUsableAuthEntryObservation(input: Readonly<{
                 ...(observedHomeServerIdentityId ? { observedHomeServerIdentityId } : {}),
                 authEntryUnavailable: input.authEntryUnavailable,
                 showAuthActions: true,
-                showProviderSignup: false,
-                showAnonymousSignup: true,
-                showMtlsLogin: false,
-                showKeylessProviderLogin: false,
-                providerId: null,
-                keylessProviderId: null,
-                providerSignupTitle: '',
-                providerKeylessTitle: '',
-                anonymousSignupTitle: t('welcome.createAccount'),
-                mtlsTitle: t('welcome.signInWithCertificate'),
-                primaryAction: {
-                    kind: 'anonymous',
-                    title: t('welcome.createAccount'),
                 },
-                mtlsPrimary: false,
-                keylessPrimary: false,
-                autoRedirect: {
-                    enabled: false,
-                    providerId: null,
-                    toKeyedProvision: false,
-                    toKeylessLogin: false,
-                    toMtls: false,
-                    toLegacySignupProvider: false,
-                },
-            },
         };
     }
-
-    const preferredProviderId = authMethodCapabilities.configuredKeyedProvisionProviderIds[0]
-        ?? authMethodCapabilities.keyedProvisionProviderIds[0]
-        ?? null;
-    const configuredKeylessProviderId = authMethodCapabilities.configuredKeylessProviderIds[0] ?? null;
-    const preferredKeylessProviderId = configuredKeylessProviderId ?? keylessProviderIds[0] ?? null;
-    const providerSignupTitle = preferredProviderId
-        ? t('welcome.signUpWithProvider', {
-            provider: authMethodCapabilities.catalog.methods.find((method) => method.id === preferredProviderId)
-                ?.presentation?.displayName
-                ?? getAuthProvider(preferredProviderId)?.displayName
-                ?? preferredProviderId,
-        })
-        : '';
-    const providerKeylessTitle = preferredKeylessProviderId
-        ? t('welcome.signUpWithProvider', {
-            provider: authMethodCapabilities.catalog.methods.find((method) => method.id === preferredKeylessProviderId)
-                ?.presentation?.displayName
-                ?? getAuthProvider(preferredKeylessProviderId)?.displayName
-                ?? preferredKeylessProviderId,
-        })
-        : '';
-    const anonymousSignupTitle = t('welcome.createAccount');
-    const mtlsTitle = t('welcome.signInWithCertificate');
-    const mtlsPrimary = mtlsEnabled && !preferredProviderId && !anonymousEnabled;
-    const keylessPrimary = Boolean(preferredKeylessProviderId) && preferredKeylessProviderId !== preferredProviderId && !anonymousEnabled && !mtlsEnabled;
-    const primaryAction: AuthEntryPrimaryAction | null = mtlsPrimary
-        ? { kind: 'mtls', title: mtlsTitle }
-        : keylessPrimary
-            ? { kind: 'keyless', title: providerKeylessTitle }
-            : preferredProviderId
-                ? { kind: 'provider-keyed', title: providerSignupTitle }
-                : anonymousEnabled
-                    ? { kind: 'anonymous', title: anonymousSignupTitle }
-                    : null;
-    const entryAutoRedirect = input.entryProjection?.autoRedirect ?? null;
-    const legacyAutoRedirect = input.entryProjection
-        ? null
-        : input.features?.capabilities?.auth?.ui?.autoRedirect ?? null;
-    const autoRedirectProviderId = normalizeAuthenticationProviderId(
-        entryAutoRedirect?.methodId ?? legacyAutoRedirect?.providerId,
-    );
 
     return {
         serverAvailability: 'ready',
@@ -261,34 +145,7 @@ function createUsableAuthEntryObservation(input: Readonly<{
             ...(observedHomeServerIdentityId ? { observedHomeServerIdentityId } : {}),
             authEntryUnavailable: input.authEntryUnavailable,
             showAuthActions: true,
-            showProviderSignup: Boolean(preferredProviderId),
-            showAnonymousSignup: anonymousEnabled,
-            showMtlsLogin: mtlsEnabled,
-            showKeylessProviderLogin: Boolean(preferredKeylessProviderId) && preferredKeylessProviderId !== preferredProviderId,
-            providerId: preferredProviderId,
-            keylessProviderId: preferredKeylessProviderId,
-            providerSignupTitle,
-            providerKeylessTitle,
-            anonymousSignupTitle,
-            mtlsTitle,
-            primaryAction,
-            mtlsPrimary,
-            keylessPrimary,
-            retentionSummary: null,
-            autoRedirect: {
-                enabled: input.entryProjection
-                    ? Boolean(autoRedirectProviderId)
-                    : legacyAutoRedirect?.enabled === true && Boolean(autoRedirectProviderId),
-                providerId: autoRedirectProviderId || null,
-                toKeyedProvision: authMethodCapabilities.usesStructuredMethods
-                    && authMethodCapabilities.keyedProvisionProviderIds.includes(autoRedirectProviderId),
-                toKeylessLogin: authMethodCapabilities.usesStructuredMethods
-                    && authMethodCapabilities.keylessLoginMethodIds.includes(autoRedirectProviderId),
-                toMtls: autoRedirectProviderId === 'mtls' && mtlsEnabled,
-                toLegacySignupProvider: !authMethodCapabilities.usesStructuredMethods
-                    && autoRedirectProviderId.length > 0
-                    && authMethodCapabilities.legacyEnabledSignupMethodIds.includes(autoRedirectProviderId),
-            },
+            retentionDisclosure: null,
         },
     };
 }
@@ -306,6 +163,37 @@ function createCachedAuthEntryObservation(
 }
 
 const DEFAULT_WELCOME_SERVER_CHECK_TIMEOUT_MS = 6_000;
+
+/**
+ * Reads the Home's retention policy for the pre-sign-in disclosure. A policy that answered becomes
+ * its summary; a failed read becomes "could not check" with a retry that forces a new read, so the
+ * disclosure never falls silent (silence would read as "nothing is deleted").
+ */
+function readRetentionDisclosure(params: Readonly<{
+    serverId: string;
+    force: boolean;
+    isCurrent: () => boolean;
+    apply: (disclosure: RelayRetentionDisclosureState | null) => void;
+}>): void {
+    void getServerRetentionPolicy({ serverId: params.serverId, force: params.force }).then((read) => {
+        if (!params.isCurrent()) return;
+        if (read.status === 'ready') {
+            const summary = formatServerRetentionDisclosure(read.policy);
+            params.apply(summary ? { kind: 'summary', summary } : null);
+            return;
+        }
+        params.apply({ kind: 'unreadable', retry: () => readRetentionDisclosure({ ...params, force: true }) });
+    });
+}
+
+function isSameRetentionDisclosure(
+    current: RelayRetentionDisclosureState | null,
+    next: RelayRetentionDisclosureState | null,
+): boolean {
+    if (current === null || next === null) return current === next;
+    if (current.kind === 'summary' && next.kind === 'summary') return current.summary === next.summary;
+    return false;
+}
 
 function readWelcomeServerCheckTimeoutMs(): number {
     const raw = String(process.env.EXPO_PUBLIC_HAPPIER_WELCOME_SERVER_CHECK_TIMEOUT_MS ?? '').trim();
@@ -487,12 +375,16 @@ export function useAuthEntryOptions(): AuthEntryOptions {
                 });
                 commitUsableObservation(observation);
                 if (observation.serverAvailability === 'ready' && mounted) {
-                    void getServerRetentionPolicy({ serverId: activeServerSnapshot.serverId }).then((retentionPolicy) => {
-                        if (!mounted) return;
-                        const retentionSummary = formatServerRetentionDisclosure(retentionPolicy);
-                        setOptions((current) => current.retentionSummary === retentionSummary
-                            ? current
-                            : { ...current, retentionSummary });
+                    // Sign-in never waits on this: the disclosure fills in beside the actions.
+                    readRetentionDisclosure({
+                        serverId: activeServerSnapshot.serverId,
+                        force: false,
+                        isCurrent: () => mounted,
+                        apply: (retentionDisclosure) => setOptions((current) => (
+                            isSameRetentionDisclosure(current.retentionDisclosure ?? null, retentionDisclosure)
+                                ? current
+                                : { ...current, retentionDisclosure }
+                        )),
                     });
                 }
             } catch {
@@ -530,7 +422,10 @@ export function useAuthEntryOptions(): AuthEntryOptions {
             ...(activeServerSnapshot.isSelectionExplicit === true
                 ? { requestedHomeTarget: { kind: 'saved_profile', profileRef: activeServerSnapshot.serverId } as const }
                 : {}),
-            homeLabel: activeProfile?.name ?? serverUrlForCopy,
+            homeLabel: activeProfile ? resolveHomeDisplayLabel(activeProfile, activeProfile.id) : serverUrlForCopy,
+            ...(isServerProfilePersonalHomeBootstrapCompleted(activeProfile)
+                ? { isPersonalHome: true as const }
+                : {}),
             ...(exactActiveHomeCarrier
                 ? { homeTransport: { homeCarrier: exactActiveHomeCarrier } }
                 : activeServerSnapshot.runtimeOrigin

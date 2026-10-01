@@ -1,53 +1,64 @@
 import * as React from 'react';
 
-import { useUnistyles } from 'react-native-unistyles';
-
 import { Item } from '@/components/ui/lists/Item';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
 import { ItemList } from '@/components/ui/lists/ItemList';
 import { Switch } from '@/components/ui/forms/Switch';
+import { SettingsPageHeader } from '@/components/settings/shell/SettingsPageHeader';
+import { SettingRow } from '@/components/settings/shell/SettingRow';
 import { t } from '@/text';
-import { isDesktopHost } from '@/utils/platform/desktopHost';
+import { settingRendersOnHost } from '@/components/settings/catalog/settingDeclarations';
 
-import { useDesktopAutostart } from './useDesktopAutostart';
+import { useDesktopLoginStart } from './useDesktopLoginStart';
 import { DesktopOverlaySettingsSection } from './DesktopOverlaySettingsSection';
-import { DesktopSettingsIonicon } from './DesktopSettingsIonicon';
+import { DESKTOP_SETTINGS } from './desktopSettings';
 
 export const DesktopAppSettingsScreen = React.memo(function DesktopAppSettingsScreen() {
-    const { theme } = useUnistyles();
-    const autostart = useDesktopAutostart();
-    const showOverlaySettings = isDesktopHost();
-
-    if (!autostart.supported && !showOverlaySettings) {
-        return null;
-    }
+    const loginStart = useDesktopLoginStart();
+    const showOverlaySettings = settingRendersOnHost(DESKTOP_SETTINGS.settings.enabled);
 
     return (
-        <>
-            <ItemList style={{ paddingTop: 0 }}>
-                {autostart.supported ? (
-                    <ItemGroup>
-                        <Item
-                            testID="settings-desktop-autostart-enabled"
-                            title={t('settingsDesktop.startOnLoginTitle')}
-                            subtitle={autostart.error ?? t('settingsDesktop.startOnLoginSubtitle')}
-                            icon={<DesktopSettingsIonicon name="desktop-outline" size={29} color={theme.colors.accent.blue} />}
-                            rightElement={(
-                                <Switch
-                                    value={autostart.enabled}
-                                    disabled={autostart.loading}
-                                    onValueChange={(value) => {
-                                        void autostart.setEnabled(Boolean(value));
-                                    }}
-                                />
-                            )}
-                            showChevron={false}
-                        />
-                    </ItemGroup>
-                ) : null}
+        <ItemList style={{ paddingTop: 0 }} presentation="page">
+            <SettingsPageHeader description={t('settingsDesktop.footer')} />
+            {!loginStart.supported && !showOverlaySettings ? (
+                // Opened outside the desktop app (a shared link): say where these settings live.
+                <ItemGroup>
+                    <Item
+                        testID="settings-desktop-unavailable"
+                        title={t('settingsDesktop.unavailableTitle')}
+                        subtitle={t('settingsDesktop.unavailableSubtitle')}
+                        mode="info"
+                        showChevron={false}
+                    />
+                </ItemGroup>
+            ) : null}
+            {loginStart.supported ? (
+                <ItemGroup title={t('settingsDesktop.startupTitle')}>
+                    <SettingRow
+                        testID="settings-desktop-autostart-enabled"
+                        setting={DESKTOP_SETTINGS.settings.startOnLogin}
+                        subtitle={loginStart.error ?? (
+                            loginStart.installed === false
+                                ? t('settingsDesktop.loginStart.notSetUp')
+                                : loginStart.mode === null && !loginStart.loading
+                                    ? t('settingsDesktop.loginStart.unknown')
+                                    : t('settingsDesktop.loginStart.subtitle')
+                        )}
+                        rightElement={(
+                            <Switch
+                                value={loginStart.mode === 'at-login'}
+                                disabled={loginStart.loading || loginStart.mode === null}
+                                onValueChange={(value) => {
+                                    void loginStart.setMode(value ? 'at-login' : 'on-demand');
+                                }}
+                            />
+                        )}
+                        showChevron={false}
+                    />
+                </ItemGroup>
+            ) : null}
 
-                {showOverlaySettings ? <DesktopOverlaySettingsSection /> : null}
-            </ItemList>
-        </>
+            {showOverlaySettings ? <DesktopOverlaySettingsSection /> : null}
+        </ItemList>
     );
 });

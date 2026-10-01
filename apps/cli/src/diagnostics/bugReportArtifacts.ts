@@ -25,7 +25,7 @@ import { readSettings, readStoredCredentials } from '@/persistence';
 import { collectBugReportMachineDiagnosticsSnapshot, readBugReportLogTail } from '@/diagnostics/bugReportMachineDiagnostics';
 import { collectBugReportMachineDiagnosticsSnapshotForBugReport } from '@/diagnostics/bugReportMachineDiagnosticsRecipe';
 import { normalizeBaseUrl, withAbortTimeout } from '@/diagnostics/httpClient';
-import { decodeJwtPayload } from '@/cloud/decodeJwtPayload';
+import { readAccountIdFromToken } from '@/cloud/decodeJwtPayload';
 import { buildDoctorSnapshot } from '@/ui/doctorSnapshot';
 
 export type CollectBugReportDiagnosticsArtifactsInput = {
@@ -156,9 +156,7 @@ export async function collectBugReportDiagnosticsArtifacts(
     const credentials = await readStoredCredentials();
     credentialsToken = credentials?.token ?? null;
     if (credentialsToken) {
-      const payload = decodeJwtPayload(credentialsToken);
-      const sub = payload && typeof payload.sub === 'string' ? payload.sub.trim() : '';
-      if (sub) accountId = sub;
+      accountId = readAccountIdFromToken(credentialsToken) ?? accountId;
     }
   } catch {
     // optional

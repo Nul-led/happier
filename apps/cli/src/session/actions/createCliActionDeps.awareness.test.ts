@@ -21,7 +21,7 @@ function deps() { return createCliActionDeps({token:credentials.token,credential
 function collaborationFeatures() {
   return FeaturesResponseSchema.parse({
     features: {
-      sessions: { enabled: true, collaboration: { enabled: true } },
+      sessions: { enabled: true },
       sharing: { session: { enabled: true } },
     },
     capabilities: {},
@@ -29,6 +29,20 @@ function collaborationFeatures() {
 }
 describe('CLI activity compatibility awareness', () => {
   beforeEach(() => vi.clearAllMocks());
+  it('publishes only the bound child own report under fresh reportsTo and refuses workflow steps', async () => {
+    const row = createSessionRecordFixture({ id: sessionId, encryptionMode: 'plain', metadata: '{}', reportsTo: { sessionId: 'lead' } });
+    vi.mocked(axios.get).mockResolvedValue({ status: 200, data: { session: row } });
+    const committed: string[] = [];
+    const owner = createCliActionDeps({ token: credentials.token, credentials, sessionId, mode: 'plain', ctx: null,
+      publishWorkerReport: async (summary) => { committed.push(summary); return { persisted: true, localId: 'worker-report-1' }; } });
+    expect(await owner.sessionWorkerPublish!({ context, summary: 'Partial finding' })).toEqual({ sessionId, leadSessionId: 'lead', localId: 'worker-report-1' });
+    delete row.reportsTo;
+    expect(await owner.sessionWorkerPublish!({ context, summary: 'Unrelated' })).toMatchObject({ ok: false, errorCode: 'session_worker_requires_reports_to' });
+    row.reportsTo = { sessionId: 'lead' };
+    row.origin = { kind: 'run_step', runId: 'workflow-run' };
+    expect(await owner.sessionWorkerPublish!({ context, summary: 'Wrong carrier' })).toMatchObject({ ok: false, errorCode: 'session_worker_run_step_requires_publish_draft' });
+    expect(committed).toEqual(['Partial finding']);
+  });
   it('projects status through awareness while retaining released pending count fields', async () => {
     const now = Date.now();
     const row = createSessionRecordFixture({id:sessionId,encryptionMode:'plain',metadata:'{}',active:true,activeAt:now,latestTurnStatus:'in_progress',latestTurnStatusObservedAt:now,pendingCount:2,pendingPermissionRequestCount:0,pendingUserActionRequestCount:0});

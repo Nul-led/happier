@@ -1,10 +1,9 @@
 import * as React from 'react';
-import { ScrollView, View } from 'react-native';
-import { useRouter } from 'expo-router';
-import { StyleSheet, useUnistyles } from 'react-native-unistyles';
+import { View } from 'react-native';
+import { useRouter } from '@/components/appShell/workspace/destinationRoute';
+import { StyleSheet } from 'react-native-unistyles';
 
 import {
-  type MachineAdministrationTargetV1,
   type PromptRegistryAdapterDescriptorV1,
   PromptRegistryConfiguredSourceV1Schema,
   type PromptRegistryConfiguredSourceV1,
@@ -14,15 +13,15 @@ import {
 
 import { ContextBar } from '@/components/settings/contextBar/ContextBar';
 import { MachineAdministrationTargetSelector } from '@/components/settings/machines/MachineAdministrationTargetSelector';
+import { SettingsPageHeader } from '@/components/settings/shell/SettingsPageHeader';
+import { FieldTextInput } from '@/components/ui/forms/FieldTextInput';
 import { InlineAddExpander } from '@/components/ui/forms/InlineAddExpander';
-import { SETTINGS_TEXT_INPUT_METRICS } from '@/components/ui/forms/settingsTextInputMetrics';
 import { useContextBarSelection } from '@/components/settings/contextBar/useContextBarSelection';
 import { Item } from '@/components/ui/lists/Item';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
 import { ItemList } from '@/components/ui/lists/ItemList';
 import { ItemRowActions } from '@/components/ui/lists/ItemRowActions';
-import { useLayoutMaxWidthStyle } from '@/components/ui/layout/layout';
-import { Text, TextInput } from '@/components/ui/text/Text';
+import { SectionActionButton } from '@/components/ui/lists/SectionActionButton';
 import { useHappyAction } from '@/hooks/ui/useHappyAction';
 import { Modal } from '@/modal';
 import { randomUUID } from '@/platform/randomUUID';
@@ -35,86 +34,34 @@ import {
 import { importPromptRegistrySkillItem } from '@/sync/ops/promptLibrary/promptRegistrySkillImports';
 import { translatePromptLibraryMessage } from '@/sync/ops/promptLibrary/translatePromptLibraryMessage';
 import { MACHINE_ADMINISTRATION_SELECTION_KEYS_V1 } from '@/sync/domains/machines/administration/selectionPreferences';
-import { machineAdministrationTargetsEqual } from '@/sync/domains/machines/administration/targetSelection';
-import {
-  useMachineAdministrationTargetSelection,
-  type FreshMachineAdministrationExecutionTargetV1,
-} from '@/sync/domains/machines/administration/useTargetSelection';
-import { isMachineAdministrationExecutionTargetCurrent } from '@/sync/domains/machines/administration/operationCurrentness';
-import { t, type TranslationKey } from '@/text';
+import { useMachineAdministrationTargetSelection } from '@/sync/domains/machines/administration/useTargetSelection';
+import { useMachineAdministrationExecutionTargetBinding } from '@/sync/domains/machines/administration/useExecutionTargetBinding';
+import { t } from '@/text';
 import { buildPromptRegistryItemDetailsHref } from './promptRegistryItemDetailsHref';
-import { Icon } from '@/components/ui/icons/Icon';
 
-const styles = StyleSheet.create((theme) => ({
-  container: {
-    flex: 1,
-    backgroundColor: theme.colors.background.canvas,
-  },
-  content: {
-    paddingVertical: 12,
-    width: '100%',
-    alignSelf: 'center',
-  },
-  input: {
-    backgroundColor: theme.colors.input.background,
-    color: theme.colors.input.text,
-    borderRadius: 10,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    ...SETTINGS_TEXT_INPUT_METRICS,
-    marginHorizontal: 12,
-    marginBottom: 12,
-  },
-  searchInput: {
-    marginTop: 12,
-  },
-  fieldLabel: {
-    color: theme.colors.text.secondary,
-    fontSize: 14,
-    marginHorizontal: 12,
-    marginBottom: 8,
+const styles = StyleSheet.create(() => ({
+  addSourceFields: {
+    gap: 12,
   },
 }));
 
+/**
+ * `/settings/prompts/registries`: skill registries a machine can read (built in, or Git sources you
+ * add), the skills in the selected source, and importing one into the library. Everything here is
+ * read on the machine in the header chip; the configured Git sources belong to the Account.
+ */
 export const PromptRegistriesScreen = React.memo(function PromptRegistriesScreen() {
-  // Composed at render time: the module-scope stylesheet evaluates once, so a
-  // baked-in `layout.maxWidth` would freeze the user's content-width preference.
-  const contentMaxWidthStyle = useLayoutMaxWidthStyle();
-  const contentStyle = React.useMemo(() => [styles.content, contentMaxWidthStyle], [contentMaxWidthStyle]);
-  const { theme } = useUnistyles();
   const router = useRouter();
   const administrationTargetSelection = useMachineAdministrationTargetSelection(
     MACHINE_ADMINISTRATION_SELECTION_KEYS_V1.promptRegistries,
   );
   const selectedTarget = administrationTargetSelection.selectedTarget;
-  const selectionKey = selectedTarget
-    ? `${selectedTarget.serverIdentityId}\0${selectedTarget.machineId}`
-    : '';
-  const selectionKeyRef = React.useRef(selectionKey);
-  selectionKeyRef.current = selectionKey;
-  const resolveExecutionTargetRef = React.useRef(administrationTargetSelection.resolveExecutionTarget);
-  resolveExecutionTargetRef.current = administrationTargetSelection.resolveExecutionTarget;
-  const resolveExactExecutionTarget = React.useCallback((
-    expectedTarget: MachineAdministrationTargetV1 | null,
-  ): FreshMachineAdministrationExecutionTargetV1 | null => {
-    const resolved = resolveExecutionTargetRef.current();
-    return expectedTarget !== null
-      && resolved !== null
-      && machineAdministrationTargetsEqual(expectedTarget, resolved.target)
-      ? resolved
-      : null;
-  }, []);
-  const isExecutionTargetCurrent = React.useCallback((
-    requestedSelection: string,
-    executionTarget: FreshMachineAdministrationExecutionTargetV1,
-  ): boolean => {
-    return isMachineAdministrationExecutionTargetCurrent({
-      expectedTarget: executionTarget,
-      resolveCurrentTarget: resolveExecutionTargetRef.current,
-      expectedSelectionKey: requestedSelection,
-      currentSelectionKey: selectionKeyRef.current,
-    });
-  }, []);
+  const {
+    selectionKey,
+    resolveExactExecutionTarget,
+    isExecutionTargetCurrent,
+    isSelectionCurrent,
+  } = useMachineAdministrationExecutionTargetBinding(administrationTargetSelection);
   const [storedSources, setStoredSources] = useSettingMutable('promptRegistrySourcesV1');
   const {
     workspacePath,
@@ -283,7 +230,7 @@ export const PromptRegistriesScreen = React.memo(function PromptRegistriesScreen
     const requestedSelection = selectionKey;
     const nextAdapterDescriptors = await listAdapters();
     const nextSources = await listSources();
-    if (selectionKeyRef.current !== requestedSelection) return;
+    if (!isSelectionCurrent(requestedSelection)) return;
     if (nextSources.length === 0) {
       setSelectedSourceId(null);
       setItems([]);
@@ -296,7 +243,7 @@ export const PromptRegistriesScreen = React.memo(function PromptRegistriesScreen
     if (nextSelectedSourceId) {
       await scanSource(nextSelectedSourceId, searchQueryRef.current, nextSources, nextAdapterDescriptors);
     }
-  }, [listAdapters, listSources, scanSource, selectionKey]);
+  }, [isSelectionCurrent, listAdapters, listSources, scanSource, selectionKey]);
 
   const [refreshing, runRefresh] = useHappyAction(refreshSources);
 
@@ -372,181 +319,184 @@ export const PromptRegistriesScreen = React.memo(function PromptRegistriesScreen
   const executionTarget = resolveExactExecutionTarget(selectedTarget);
 
   return (
-    <View style={styles.container}>
-      <ScrollView contentContainerStyle={contentStyle} keyboardShouldPersistTaps="handled">
-        <ItemList>
+    <ItemList presentation="page" keyboardShouldPersistTaps="handled">
+      <SettingsPageHeader
+        description={t('promptLibrary.surface.registriesPageDescription')}
+        actions={(
           <MachineAdministrationTargetSelector
             selection={administrationTargetSelection}
+            presentation="chip"
             testIDPrefix="settings.promptRegistries.administration.target"
           />
-          <ItemGroup title={t('promptLibrary.registriesContext')}>
-            <ContextBar
-              mode="workspace_only"
-              workspace={{
-                value: workspacePath,
-                onChange: setWorkspacePath,
-                placeholder: t('promptLibrary.externalAssetsProjectDirectoryPlaceholder' as TranslationKey),
-                testID: 'promptRegistries.workspacePath',
-                browse: {
-                  machineId: executionTarget?.machine.id ?? null,
-                  serverId: executionTarget?.serverId ?? null,
-                  enabled: administrationTargetSelection.canExecute,
-                },
-              }}
-            />
-            <Item
-              testID="promptRegistries.refresh"
-              title={t('promptLibrary.registriesRefresh')}
-              subtitle={refreshing ? t('common.loading') : t('promptLibrary.registriesRefreshSubtitle')}
-              icon={<Icon name="arrow-clockwise" size={29} color={theme.colors.accent.purple} />}
-              disabled={refreshing || !administrationTargetSelection.canExecute}
-              onPress={runRefresh}
-              showChevron={false}
-            />
-          </ItemGroup>
+        )}
+      />
+      <ItemGroup title={t('promptLibrary.surface.projectSection')} description={t('promptLibrary.surface.registriesProjectDescription')}>
+        <ContextBar
+          mode="workspace_only"
+          workspace={{
+            value: workspacePath,
+            onChange: setWorkspacePath,
+            placeholder: t('promptLibrary.surface.projectDirectoryPlaceholder'),
+            testID: 'promptRegistries.workspacePath',
+            browse: {
+              machineId: executionTarget?.machine.id ?? null,
+              serverId: executionTarget?.serverId ?? null,
+              enabled: administrationTargetSelection.canExecute,
+            },
+          }}
+        />
+      </ItemGroup>
 
-          <ItemGroup title={t('promptLibrary.registriesSources')}>
-            {!hasLoadedOnce && refreshing ? (
-              <Item
-                testID="promptRegistries.loading"
-                title={t('common.loading')}
-                subtitle={t('promptLibrary.registriesRefreshSubtitle')}
-                icon={<Icon name="arrow-clockwise" size={29} color={theme.colors.accent.purple} />}
-                showChevron={false}
-              />
-            ) : null}
-            {sources.length > 0 ? sources.map((source, index) => (
-              <Item
-                key={source.id}
-                testID={`promptRegistries.source.${index}`}
+      <ItemGroup
+        title={t('promptLibrary.registriesSources')}
+        description={t('promptLibrary.surface.registriesSourcesDescription')}
+        action={(
+          <SectionActionButton
+            testID="promptRegistries.refresh"
+            title={t('common.refresh')}
+            icon="arrow-clockwise"
+            loading={refreshing}
+            disabled={refreshing || !administrationTargetSelection.canExecute}
+            onPress={runRefresh}
+          />
+        )}
+      >
+        {!hasLoadedOnce && refreshing ? (
+          <Item
+            testID="promptRegistries.loading"
+            title={t('common.loading')}
+            subtitle={t('promptLibrary.registriesRefreshSubtitle')}
+            mode="info"
+            showChevron={false}
+          />
+        ) : null}
+        {sources.length > 0 ? sources.map((source, index) => (
+          <Item
+            key={source.id}
+            testID={`promptRegistries.source.${index}`}
+            title={source.title}
+            subtitle={source.subtitle || source.id}
+            selected={source.id === selectedSourceId}
+            onPress={() => void scanSource(source.id)}
+            rightElement={source.origin === 'user' ? (
+              <ItemRowActions
                 title={source.title}
-                subtitle={source.subtitle || source.id}
-                selected={source.id === selectedSourceId}
-                icon={<Icon name="git-branch" size={29} color={theme.colors.text.secondary} />}
-                onPress={() => void scanSource(source.id)}
-                rightElement={source.origin === 'user' ? (
-                  <ItemRowActions
-                    title={source.title}
-                    compactActionIds={['delete']}
-                    actions={[
-                      {
-                        id: 'delete',
-                        title: t('common.delete'),
-                        icon: 'trash',
-                        destructive: true,
-                        onPress: () => removeSource(source.id),
-                      },
-                    ]}
-                  />
-                ) : undefined}
+                compactActionIds={['delete']}
+                actions={[
+                  {
+                    id: 'delete',
+                    title: t('common.delete'),
+                    icon: 'trash',
+                    destructive: true,
+                    onPress: () => removeSource(source.id),
+                  },
+                ]}
               />
-            )) : (
-              <Item
-                testID="promptRegistries.sources.empty"
-                title={t('promptLibrary.registriesNoSources')}
-                subtitle={t('promptLibrary.registriesNoSourcesSubtitle')}
-                icon={<Icon name="stack" size={29} color={theme.colors.text.secondary} />}
-                showChevron={false}
-              />
-            )}
-          </ItemGroup>
+            ) : undefined}
+          />
+        )) : hasLoadedOnce || !refreshing ? (
+          <Item
+            testID="promptRegistries.sources.empty"
+            title={t('promptLibrary.registriesNoSources')}
+            subtitle={t('promptLibrary.registriesNoSourcesSubtitle')}
+            mode="info"
+            showChevron={false}
+          />
+        ) : null}
+        <InlineAddExpander
+          isOpen={isAddGitSourceOpen}
+          onOpenChange={setIsAddGitSourceOpen}
+          triggerTestID="promptRegistries.addGitSource"
+          title={t('promptLibrary.registriesAddGitSource')}
+          subtitle={t('promptLibrary.registriesAddGitSourceSubtitle')}
+          onCancel={() => {
+            setSourceTitle('');
+            setSourceUrl('');
+            setIsAddGitSourceOpen(false);
+          }}
+          onSave={addGitSource}
+          saveDisabled={sourceTitle.trim().length === 0 || sourceUrl.trim().length === 0}
+          cancelLabel={t('common.cancel')}
+          saveLabel={t('common.save')}
+        >
+          <View style={styles.addSourceFields}>
+            <FieldTextInput
+              testID="promptRegistries.sourceTitle"
+              accessibilityLabel={t('promptLibrary.registriesSourceTitleLabel')}
+              placeholder={t('promptLibrary.registriesSourceTitlePlaceholder')}
+              value={sourceTitle}
+              onChangeText={setSourceTitle}
+            />
+            <FieldTextInput
+              testID="promptRegistries.sourceUrl"
+              accessibilityLabel={t('promptLibrary.registriesSourceUrlLabel')}
+              placeholder={t('promptLibrary.registriesSourceUrlPlaceholder')}
+              value={sourceUrl}
+              onChangeText={setSourceUrl}
+              autoCapitalize="none"
+              monospace
+            />
+          </View>
+        </InlineAddExpander>
+      </ItemGroup>
 
-          <ItemGroup>
-            <InlineAddExpander
-              isOpen={isAddGitSourceOpen}
-              onOpenChange={setIsAddGitSourceOpen}
-              triggerTestID="promptRegistries.addGitSource"
-              title={t('promptLibrary.registriesAddGitSource')}
-              subtitle={t('promptLibrary.registriesAddGitSourceSubtitle')}
-              icon={<Icon name="plus-circle" size={29} color={theme.colors.accent.blue} />}
-              onCancel={() => {
-                setSourceTitle('');
-                setSourceUrl('');
-                setIsAddGitSourceOpen(false);
-              }}
-              onSave={addGitSource}
-              saveDisabled={sourceTitle.trim().length === 0 || sourceUrl.trim().length === 0}
-              cancelLabel={t('common.cancel')}
-              saveLabel={t('common.save')}
-            >
-              <Text style={styles.fieldLabel}>{t('promptLibrary.registriesSourceTitleLabel')}</Text>
-              <TextInput
-                testID="promptRegistries.sourceTitle"
-                placeholder={t('promptLibrary.registriesSourceTitlePlaceholder')}
-                placeholderTextColor={theme.colors.input.placeholder}
-                value={sourceTitle}
-                onChangeText={setSourceTitle}
-                style={styles.input}
-              />
-              <Text style={styles.fieldLabel}>{t('promptLibrary.registriesSourceUrlLabel')}</Text>
-              <TextInput
-                testID="promptRegistries.sourceUrl"
-                placeholder={t('promptLibrary.registriesSourceUrlPlaceholder')}
-                placeholderTextColor={theme.colors.input.placeholder}
-                value={sourceUrl}
-                onChangeText={setSourceUrl}
-                style={styles.input}
-                autoCapitalize="none"
-                autoCorrect={false}
-              />
-            </InlineAddExpander>
-          </ItemGroup>
-
-          <ItemGroup title={t('promptLibrary.registriesItems')}>
-            <TextInput
+      <ItemGroup title={t('promptLibrary.registriesItems')} description={t('promptLibrary.surface.registriesItemsDescription')}>
+        <Item
+          title={t('promptLibrary.registriesSearchLabel')}
+          accessoryLayout="adaptive"
+          showChevron={false}
+          rightElement={(
+            <FieldTextInput
               testID="promptRegistries.searchQuery"
+              accessibilityLabel={t('promptLibrary.registriesSearchLabel')}
               placeholder={t('promptLibrary.registriesSearchPlaceholder')}
-              placeholderTextColor={theme.colors.input.placeholder}
               value={searchQuery}
               onChangeText={setSearchQuery}
               onSubmitEditing={runSearchSelectedSource}
-              style={[styles.input, styles.searchInput]}
               autoCapitalize="none"
-              autoCorrect={false}
               returnKeyType="search"
             />
-            {items.length > 0 ? items.map((item, index) => (
-              <Item
-                key={item.itemId}
-                testID={`promptRegistries.item.${index}`}
+          )}
+        />
+        {items.length > 0 ? items.map((item, index) => (
+          <Item
+            key={item.itemId}
+            testID={`promptRegistries.item.${index}`}
+            title={item.title}
+            subtitle={item.description || item.displayPath}
+            onPress={() => openItemDetails(item)}
+            rightElement={(
+              <ItemRowActions
                 title={item.title}
-                subtitle={item.description || item.displayPath}
-                icon={<Icon name="sparkle" size={29} color={theme.colors.accent.indigo} />}
-                onPress={() => openItemDetails(item)}
-                rightElement={(
-                  <ItemRowActions
-                    title={item.title}
-                    compactActionIds={['details', 'import']}
-                    actions={[
-                      {
-                        id: 'details',
-                        title: t('common.details'),
-                        icon: 'eye',
-                        onPress: () => openItemDetails(item),
-                      },
-                      {
-                        id: 'import',
-                        title: t('promptLibrary.externalAssetsImportAction'),
-                        icon: 'download',
-                        disabled: searching,
-                        onPress: () => { void importItem(item); },
-                      },
-                    ]}
-                  />
-                )}
-              />
-            )) : (
-              <Item
-                testID="promptRegistries.items.empty"
-                title={t('promptLibrary.registriesNoItems')}
-                subtitle={t('promptLibrary.registriesNoItemsSubtitle')}
-                icon={<Icon name="sparkle" size={29} color={theme.colors.text.secondary} />}
-                showChevron={false}
+                compactActionIds={['details', 'import']}
+                actions={[
+                  {
+                    id: 'details',
+                    title: t('common.details'),
+                    icon: 'eye',
+                    onPress: () => openItemDetails(item),
+                  },
+                  {
+                    id: 'import',
+                    title: t('promptLibrary.externalAssetsImportAction'),
+                    icon: 'download',
+                    disabled: searching,
+                    onPress: () => { void importItem(item); },
+                  },
+                ]}
               />
             )}
-          </ItemGroup>
-        </ItemList>
-      </ScrollView>
-    </View>
+          />
+        )) : (
+          <Item
+            testID="promptRegistries.items.empty"
+            title={t('promptLibrary.registriesNoItems')}
+            subtitle={t('promptLibrary.registriesNoItemsSubtitle')}
+            mode="info"
+            showChevron={false}
+          />
+        )}
+      </ItemGroup>
+    </ItemList>
   );
 });

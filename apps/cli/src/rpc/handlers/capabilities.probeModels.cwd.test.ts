@@ -18,6 +18,7 @@ vi.mock('./capabilitiesProbeContext', () => ({
 }));
 
 vi.mock('@/agent/catalog/registry', () => ({
+  resolveCatalogAgentConnectedServiceIds: () => [],
   AGENTS: {
     opencode: { id: 'opencode' },
     codex: { id: 'codex', needsAccountSettingsForProbes: true },
@@ -283,7 +284,7 @@ describe('capabilities.invoke(cli.* probeModels)', () => {
       models: [{ id: 'claude-account-model', name: 'Account model' }],
     }));
     const result = await createCall({
-      getAgentCatalogObservation: () => ({ machineId: 'machine-test', service: { observe } }),
+      getAgentCatalogObservation: () => ({ machineId: 'machine-test', service: { observe, observeNative: vi.fn() } }),
     })(RPC_METHODS.CAPABILITIES_INVOKE, {
       id: 'cli.claude',
       method: 'probeModels',
@@ -324,6 +325,40 @@ describe('capabilities.invoke(cli.* probeModels)', () => {
     expect(mocks.probeModels).not.toHaveBeenCalled();
   });
 
+  it('skips all Claude model observation when dynamic probing is disabled in account settings', async () => {
+    mocks.resolveProbeBackendContext.mockResolvedValue({
+      backendTarget: undefined,
+      credentials: { token: 'token', encryption: null },
+      accountSettings: { claudeDynamicModelProbeEnabled: false },
+    });
+    mocks.probeModels.mockResolvedValue({
+      agentId: 'claude',
+      availableModels: [{ id: 'default', name: 'Default' }],
+      supportsFreeform: true,
+      source: 'static',
+    });
+    const observe = vi.fn();
+    const observeNative = vi.fn();
+    const resolveNativeCatalogBearer = vi.fn();
+
+    const result = await createCall({
+      getAgentCatalogObservation: () => ({
+        machineId: 'machine-test',
+        service: { observe, observeNative },
+      }),
+      resolveNativeCatalogBearer,
+    })(RPC_METHODS.CAPABILITIES_INVOKE, {
+      id: 'cli.claude',
+      method: 'probeModels',
+      params: {},
+    });
+
+    expect(result).toMatchObject({ ok: true, result: { source: 'static' } });
+    expect(resolveNativeCatalogBearer).not.toHaveBeenCalled();
+    expect(observe).not.toHaveBeenCalled();
+    expect(observeNative).not.toHaveBeenCalled();
+  });
+
   it('threads exact RPC request currentness into the native model observation', async () => {
     let markStarted: (() => void) | null = null;
     const started = new Promise<void>((resolve) => { markStarted = resolve; });
@@ -337,7 +372,7 @@ describe('capabilities.invoke(cli.* probeModels)', () => {
       });
     });
     const client = createClient({
-      getAgentCatalogObservation: () => ({ machineId: 'machine-test', service: { observe } }),
+      getAgentCatalogObservation: () => ({ machineId: 'machine-test', service: { observe, observeNative: vi.fn() } }),
     });
     const pending = client.manager.invokeLocal(RPC_METHODS.CAPABILITIES_INVOKE, {
       id: 'cli.claude', method: 'probeModels',

@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { useRouter } from 'expo-router';
+import { useRouter } from '@/components/appShell/workspace/destinationRoute';
 
 import { Item } from '@/components/ui/lists/Item';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
@@ -40,7 +40,7 @@ export const TeamMemberSignInLinkSection = React.memo(function TeamMemberSignInL
         return (
             <ItemGroup
                 title={t('teams.authentication.memberSignIn.section')}
-                footer={t('teams.authentication.memberSignIn.unavailableBody')}
+                description={t('teams.authentication.memberSignIn.unavailableBody')}
             >
                 <Item
                     testID="team-member-sign-in-unavailable"

@@ -19,6 +19,7 @@ import {
 } from './client';
 import { createCustomProviderDraft, buildCustomProviderTemplate } from '@/providers/authoring/state';
 import { createProviderErrorV1 } from '@happier-dev/protocol';
+import { RPC_ERROR_CODES } from '@happier-dev/protocol/rpc';
 
 function createReviewedMapping() {
     const template = buildCustomProviderTemplate({
@@ -76,10 +77,17 @@ describe('provider settings RPC client', () => {
             });
     });
 
-    it('classifies failed machine transport separately from a typed Provider endpoint failure', async () => {
+    it('preserves typed machine unavailability and classifies untyped transport failures', async () => {
+        const machineUnavailable = createProviderErrorV1('provider_machine_unavailable', {
+            machineId: 'machine-a',
+        });
+        machineRpcWithServerScope.mockRejectedValueOnce(machineUnavailable);
+        await expect(describeProviderConnections({ machineId: 'machine-a', serverId: 'server-a' }))
+            .rejects.toEqual(machineUnavailable);
+
         machineRpcWithServerScope.mockRejectedValueOnce(new Error('selected machine disconnected'));
         await expect(describeProviderConnections({ machineId: 'machine-a', serverId: 'server-a' }))
-            .rejects.toEqual(createProviderErrorV1('provider_machine_unavailable', {
+            .rejects.toEqual(createProviderErrorV1('agent_error', {
                 machineId: 'machine-a',
             }));
 
@@ -90,6 +98,26 @@ describe('provider settings RPC client', () => {
         await expect(describeProviderConnections({
             machineId: 'machine-a', serverId: 'server-a', connectionId: 'pc_a',
         })).rejects.toEqual(endpointFailure);
+    });
+
+    it.each([
+        ['machine offline', Object.assign(new Error('machine is offline'), { code: 'machine_offline' }), 'machine_offline'],
+        ['machine transport unavailable', Object.assign(new Error('Machine encryption unavailable'), { rpcErrorCode: 'MACHINE_ENCRYPTION_UNAVAILABLE' }), 'machine_offline'],
+        ['machine socket disconnected', new Error('Socket not connected'), 'machine_offline'],
+        ['machine encryption missing', new Error('Machine encryption not found'), 'machine_offline'],
+        ['machine RPC timeout', Object.assign(new Error('Machine RPC timed out'), { code: 'MACHINE_RPC_TIMEOUT' }), 'agent_timeout'],
+        ['transport timeout', Object.assign(new Error('request timed out'), { code: 'ETIMEDOUT' }), 'agent_timeout'],
+        ['daemon method not available', Object.assign(new Error('RPC method not available'), { rpcErrorCode: RPC_ERROR_CODES.METHOD_NOT_AVAILABLE }), 'agent_unavailable'],
+        ['daemon method not found', Object.assign(new Error('Method not found'), { rpcErrorCode: RPC_ERROR_CODES.METHOD_NOT_FOUND }), 'agent_unavailable'],
+        ['unexpected transport failure', new Error('socket closed before the response arrived'), 'agent_error'],
+    ] as const)('maps %s to a distinct typed transport outcome', async (_name, failure, code) => {
+        machineRpcWithServerScope.mockRejectedValueOnce(failure);
+
+        await expect(describeProviderConnections({ machineId: 'machine-a', serverId: 'server-a' }))
+            .rejects.toMatchObject({
+                code,
+                machineId: 'machine-a',
+            });
     });
 
     it.each([
@@ -111,7 +139,7 @@ describe('provider settings RPC client', () => {
         },
         {
             name: 'model projection', kind: 'read', invoke: () => describeProviderModels({
-                machineId: 'machine-a', serverId: 'server-a', agentTargetKey: 'backend:codex',
+                machineId: 'machine-a', serverId: 'server-a', agentTargetKey: 'agent:happier.agent.codex/codex',
             }),
         },
         {
@@ -137,10 +165,10 @@ describe('provider settings RPC client', () => {
             name: 'binding status', kind: 'read', invoke: () => describeProviderBindingStatus({
                 serverId: 'server-a',
                 request: {
-                    machineId: 'machine-a', agentTargetKey: 'backend:codex',
+                    machineId: 'machine-a', agentTargetKey: 'agent:happier.agent.codex/codex',
                     selection: {
                         v: 1, updatedAt: 1,
-                        ref: { agentTargetKey: 'backend:codex', providerConnectionId: 'pc_a', modelId: 'model-a' },
+                        ref: { agentTargetKey: 'agent:happier.agent.codex/codex', providerConnectionId: 'pc_a', modelId: 'model-a' },
                     },
                     launchBinding: {
                         v: 1, connectionId: 'pc_a', contributionKey: null, connectionRevision: 1,
@@ -260,7 +288,7 @@ describe('provider settings RPC client', () => {
             name: 'one Provider connection',
             changes: [
                 {
-                    ref: { scope: 'agent' as const, agentTargetKey: 'backend:codex', providerConnectionId: 'pc_a', modelId: 'model-a' },
+                    ref: { scope: 'agent' as const, agentTargetKey: 'agent:happier.agent.codex/codex', providerConnectionId: 'pc_a', modelId: 'model-a' },
                     hidden: true,
                 },
                 {
@@ -274,11 +302,11 @@ describe('provider settings RPC client', () => {
             name: 'native and Provider models',
             changes: [
                 {
-                    ref: { scope: 'agent' as const, agentTargetKey: 'backend:codex', providerConnectionId: null, modelId: 'native-a' },
+                    ref: { scope: 'agent' as const, agentTargetKey: 'agent:happier.agent.codex/codex', providerConnectionId: null, modelId: 'native-a' },
                     hidden: true,
                 },
                 {
-                    ref: { scope: 'agent' as const, agentTargetKey: 'backend:codex', providerConnectionId: 'pc_a', modelId: 'model-a' },
+                    ref: { scope: 'agent' as const, agentTargetKey: 'agent:happier.agent.codex/codex', providerConnectionId: 'pc_a', modelId: 'model-a' },
                     hidden: true,
                 },
             ],
@@ -352,12 +380,12 @@ describe('provider settings RPC client', () => {
 
     it('requests the canonical machine-and-agent model projection', async () => {
         machineRpcWithServerScope.mockResolvedValueOnce({
-            status: 'success', agentTargetKey: 'backend:codex', groups: [],
+            status: 'success', agentTargetKey: 'agent:happier.agent.codex/codex', groups: [],
         });
-        await describeProviderModels({ machineId: 'machine-a', serverId: 'server-a', agentTargetKey: 'backend:codex' });
+        await describeProviderModels({ machineId: 'machine-a', serverId: 'server-a', agentTargetKey: 'agent:happier.agent.codex/codex' });
         expect(machineRpcWithServerScope).toHaveBeenCalledWith(expect.objectContaining({
             method: 'daemon.providers.model.projection',
-            payload: { machineId: 'machine-a', agentTargetKey: 'backend:codex' },
+            payload: { machineId: 'machine-a', agentTargetKey: 'agent:happier.agent.codex/codex' },
         }));
     });
 
@@ -405,8 +433,8 @@ describe('provider settings RPC client', () => {
         await describeProviderBindingStatus({
             serverId: 'server-a',
             request: {
-                machineId: 'machine-a', agentTargetKey: 'backend:codex',
-                selection: { v: 1, updatedAt: 1, ref: { agentTargetKey: 'backend:codex', providerConnectionId: 'pc_a', modelId: 'm' } },
+                machineId: 'machine-a', agentTargetKey: 'agent:happier.agent.codex/codex',
+                selection: { v: 1, updatedAt: 1, ref: { agentTargetKey: 'agent:happier.agent.codex/codex', providerConnectionId: 'pc_a', modelId: 'm' } },
                 launchBinding: {
                     v: 1, connectionId: 'pc_a', contributionKey: null, connectionRevision: 1,
                     protocol: 'openai-responses', materialization: 'engineConfig',

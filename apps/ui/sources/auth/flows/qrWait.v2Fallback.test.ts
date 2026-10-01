@@ -342,7 +342,7 @@ describe('authQRWait explicit-target enrollment', () => {
         const keypair = generateAuthKeyPair();
         await expect(authQRWait(keypair, HOME_B_TARGET)).resolves.toEqual({
             ok: false,
-            reason: 'legacy_provisioning_unavailable',
+            reason: 'update_required',
         });
         expect(endpointFetchMock).not.toHaveBeenCalled();
         expect(serverFetchMock).not.toHaveBeenCalled();

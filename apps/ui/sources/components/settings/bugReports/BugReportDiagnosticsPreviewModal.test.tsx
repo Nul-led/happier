@@ -98,7 +98,34 @@ describe('BugReportDiagnosticsPreviewModal', () => {
             expect.objectContaining({
                 kind: 'card',
                 title: 'app-context.json',
+                subtitle: 'ui-mobile · application/json · 10 B',
             }),
         );
+        // The title band already carries the artifact's facts; the body shows only its content.
+        expect(textContent).not.toContain('ui-mobile');
     });
+    it('exposes an export action for the complete artifact set', async () => {
+        const { BugReportDiagnosticsPreviewModal } = await import('./BugReportDiagnosticsPreviewModal');
+
+        const onExport = vi.fn(async () => {});
+        const screen = await renderScreen(
+            <BugReportDiagnosticsPreviewModal
+                artifacts={[]}
+                onClose={vi.fn()}
+                setChrome={vi.fn()}
+                onExport={onExport}
+            />,
+        );
+
+        const exportButton = screen.find((node) => (
+            node.props?.accessibilityRole === 'button'
+            && String(node.props?.accessibilityLabel ?? '').includes('saveAs')
+        ));
+        act(() => {
+            pressTestInstance(exportButton, 'export diagnostics');
+        });
+        await Promise.resolve();
+        expect(onExport).toHaveBeenCalledTimes(1);
+    });
+
 });

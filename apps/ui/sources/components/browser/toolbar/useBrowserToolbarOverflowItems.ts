@@ -1,6 +1,7 @@
 import * as React from 'react';
 
 import type { BrowserAnnotationController } from '@/components/browser/annotation/useBrowserAnnotationController';
+import type { BrowserRecordingControl } from '@/components/browser/recording';
 import type { BrowserControlViewState } from '@/sync/domains/browser/control';
 import { resolvePluginBrowserPolicyDecision } from '@/sync/domains/plugins/browser/policy';
 import { resolvePluginUiIconName } from '@/components/plugins/surfaces/iconToken/resolvePluginUiIconToken';
@@ -14,20 +15,25 @@ import type { BrowserPluginActions } from '../useBrowserPluginActions';
 import type { BrowserToolbarOverflowItem } from './BrowserToolbarOverflowMenu';
 
 /**
- * The toolbar's secondary, single-shot tools.
+ * The chrome's `⋯`: the rare, one-shot tools.
  *
- * Live-status controls (privacy / recording / automation) are NOT here: they convey ongoing state,
- * so they stay visible. Everything in this menu is a one-tap action whose absence from the row is
- * what keeps the toolbar at four clusters and one line in a 380px pane.
+ * What is used on most pages lives in the row itself (back, forward, reload, the address, Mark up,
+ * Attach page), and live state docks there only while it is live (a running recording). Everything
+ * here is a single tap that does not need to stay on screen: start a recording (or discard the one
+ * running), open the page in the user's own browser, devtools, and plugin actions.
  *
  * Every disabled entry carries a reason. An affordance that is greyed out with no explanation is
  * indistinguishable from a broken one.
  */
 export function useBrowserToolbarOverflowItems(input: Readonly<{
     activeView: BrowserControlViewState | null;
-    annotation: BrowserAnnotationController;
-    /** Whether the shell was given a browser-context host at all. */
-    browserContextPresent: boolean;
+    /** While the page is being marked up, the whole-page capture stays one tap away here. */
+    annotation: BrowserAnnotationController | null;
+    recording: BrowserRecordingControl | null;
+    onStartRecording?: () => void;
+    onDiscardRecording?: () => void;
+    /** Present when the active page has an address the user's own browser can open. */
+    onOpenInYourBrowser?: (() => void) | null;
     desktopNativeDevtoolsAvailable: boolean;
     onOpenDesktopDevtools: () => void;
     plugins: BrowserPluginActions;
@@ -37,7 +43,10 @@ export function useBrowserToolbarOverflowItems(input: Readonly<{
     const {
         activeView,
         annotation,
-        browserContextPresent,
+        recording,
+        onStartRecording,
+        onDiscardRecording,
+        onOpenInYourBrowser,
         desktopNativeDevtoolsAvailable,
         onOpenDesktopDevtools,
         pluginActionsEnabled,
@@ -47,6 +56,49 @@ export function useBrowserToolbarOverflowItems(input: Readonly<{
 
     return React.useMemo<readonly BrowserToolbarOverflowItem[]>(() => {
         const items: BrowserToolbarOverflowItem[] = [];
+        if (annotation?.active) {
+            items.push({
+                id: 'capture-annotation',
+                iconName: 'check',
+                label: t('browserContext.composer.attachAnnotation'),
+                onPress: () => { void annotation.capture(); },
+                disabled: annotation.contextButtonDisabled || !annotation.draftAvailable,
+                disabledReason: annotation.contextButtonDisabled
+                    ? annotation.contextDisabledReason
+                    : !annotation.draftAvailable
+                        ? annotation.captureDisabledReason
+                        : null,
+            });
+        }
+        if (recording && activeView) {
+            if (recording.activeRecording) {
+                items.push({
+                    id: 'discard-recording',
+                    iconName: 'trash',
+                    label: t('browserPresence.recording.discard'),
+                    onPress: () => onDiscardRecording?.(),
+                    disabled: !onDiscardRecording,
+                    destructive: true,
+                });
+            } else {
+                items.push({
+                    id: 'start-recording',
+                    iconName: 'circle',
+                    label: t('browserRecording.actions.start'),
+                    onPress: () => onStartRecording?.(),
+                    disabled: !recording.startRequest || !onStartRecording,
+                    disabledReason: recording.unavailable?.message ?? null,
+                });
+            }
+        }
+        if (onOpenInYourBrowser) {
+            items.push({
+                id: 'open-in-your-browser',
+                iconName: 'arrow-square-out',
+                label: t('browserPresence.openInYourBrowser'),
+                onPress: onOpenInYourBrowser,
+            });
+        }
         if (desktopNativeDevtoolsAvailable) {
             items.push({
                 id: 'open-devtools',
@@ -54,54 +106,6 @@ export function useBrowserToolbarOverflowItems(input: Readonly<{
                 label: t('browserShell.toolbar.openNativeDevtools'),
                 onPress: onOpenDesktopDevtools,
             });
-        }
-        if (browserContextPresent) {
-            items.push({
-                id: 'attach-context',
-                iconName: 'globe',
-                label: t('browserContext.composer.attachPageReference'),
-                onPress: annotation.attachPageReference,
-                disabled: annotation.contextButtonDisabled,
-                disabledReason: annotation.contextButtonDisabled ? annotation.contextDisabledReason : null,
-            });
-            if (annotation.supported) {
-                if (annotation.active) {
-                    items.push({
-                        id: 'capture-annotation',
-                        iconName: 'check',
-                        label: t('browserContext.composer.attachAnnotation'),
-                        onPress: () => { void annotation.capture(); },
-                        disabled: annotation.contextButtonDisabled || !annotation.draftAvailable,
-                        disabledReason: annotation.contextButtonDisabled
-                            ? annotation.contextDisabledReason
-                            : !annotation.draftAvailable
-                                ? annotation.captureDisabledReason
-                                : null,
-                        tone: 'active',
-                    });
-                    items.push({
-                        id: 'cancel-annotation',
-                        iconName: 'x',
-                        label: t('browserContext.composer.cancelAnnotation'),
-                        onPress: annotation.cancel,
-                        disabled: annotation.contextButtonDisabled,
-                        disabledReason: annotation.contextButtonDisabled ? annotation.contextDisabledReason : null,
-                    });
-                } else {
-                    items.push({
-                        id: 'start-annotation',
-                        iconName: 'pencil-simple',
-                        label: t('browserContext.composer.startAnnotation'),
-                        onPress: annotation.start,
-                        disabled: annotation.contextButtonDisabled || annotation.captureProducerUnavailable,
-                        disabledReason: annotation.contextButtonDisabled
-                            ? annotation.contextDisabledReason
-                            : annotation.captureProducerUnavailable
-                                ? annotation.captureDisabledReason
-                                : null,
-                    });
-                }
-            }
         }
         if (activeView && pluginActionsEnabled) {
             for (const action of plugins.toolbarActions) {
@@ -129,7 +133,10 @@ export function useBrowserToolbarOverflowItems(input: Readonly<{
     }, [
         activeView,
         annotation,
-        browserContextPresent,
+        recording,
+        onStartRecording,
+        onDiscardRecording,
+        onOpenInYourBrowser,
         desktopNativeDevtoolsAvailable,
         onOpenDesktopDevtools,
         pluginActionsEnabled,

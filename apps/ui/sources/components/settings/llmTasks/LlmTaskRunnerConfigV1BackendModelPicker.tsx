@@ -1,11 +1,20 @@
+import { useAuthoringMemoryField } from '@/sync/domains/state/storage';
 import * as React from 'react';
 
 import { View } from 'react-native';
 import { useUnistyles } from 'react-native-unistyles';
 
-import type { AcpCatalogSettingsV1, LlmTaskRunnerConfigV1 } from '@happier-dev/protocol';
+import {
+  convertBackendTargetRefV2ToV1,
+  type AcpCatalogSettingsV1,
+  type BackendTargetRefV2,
+  type LlmTaskRunnerConfigV1,
+} from '@happier-dev/protocol';
 
-import { getResolvedBackendCatalogEntries } from '@/agents/backendCatalog/getResolvedBackendCatalogEntries';
+import {
+  getResolvedBackendCatalogEntries,
+  type ResolvedBackendCatalogEntry,
+} from '@/agents/backendCatalog/getResolvedBackendCatalogEntries';
 import { resolveBackendTargetKeyV2 } from '@/agents/backendCatalog/backendTargetKeyV2';
 import { getAgentCore } from '@/agents/catalog/catalog';
 import { useEnabledAgentIds } from '@/agents/hooks/useEnabledAgentIds';
@@ -29,6 +38,14 @@ function normalizeNonEmptyString(value: unknown): string | null {
   return trimmed.length > 0 ? trimmed : null;
 }
 
+function resolveTaskRunnerBackendTarget(entry: ResolvedBackendCatalogEntry): BackendTargetRefV2 {
+  if (entry.backendTarget.kind === 'backend') return entry.backendTarget;
+  return entry.compatibilityBackendTargets?.[0] ?? {
+    kind: 'backend',
+    backendId: entry.backendId,
+  };
+}
+
 export function LlmTaskRunnerConfigV1BackendModelPicker(props: Readonly<{
   value: LlmTaskRunnerConfigV1 | null;
   onChange: (next: LlmTaskRunnerConfigV1 | null) => void;
@@ -43,7 +60,7 @@ export function LlmTaskRunnerConfigV1BackendModelPicker(props: Readonly<{
   const acpCatalogSettings = useSetting('acpCatalogSettingsV1') as AcpCatalogSettingsV1 | undefined;
   const backendEnabledByTargetKey = useSetting('backendEnabledByTargetKey') as Record<string, boolean> | undefined;
   const machines = useAllMachines();
-  const recentMachinePaths = useSetting('recentMachinePaths') as any[] | undefined;
+  const recentMachinePaths = useAuthoringMemoryField('recentMachinePaths');
   const [openMenu, setOpenMenu] = React.useState<null | 'backend' | 'model'>(null);
 
   const modelId = normalizeNonEmptyString(props.value?.modelId) ?? 'default';
@@ -79,12 +96,12 @@ export function LlmTaskRunnerConfigV1BackendModelPicker(props: Readonly<{
   const selectedBackendEntry = React.useMemo(() => {
     const target = props.value?.backendTarget;
     if (!target) return null;
-    const targetKey = resolveBackendTargetKeyV2(target as any);
+    const targetKey = resolveBackendTargetKeyV2(target);
     return backendEntries.find((entry) => entry.backendTargetKey === targetKey) ?? null;
   }, [backendEntries, props.value?.backendTarget]);
 
   const selectedBackendTargetForModelOptions = React.useMemo(() => {
-    return selectedBackendEntry?.backendTarget ?? null;
+    return selectedBackendEntry ? resolveTaskRunnerBackendTarget(selectedBackendEntry) : null;
   }, [selectedBackendEntry]);
 
   const preflightModels = useNewSessionPreflightModelsState({
@@ -140,9 +157,11 @@ export function LlmTaskRunnerConfigV1BackendModelPicker(props: Readonly<{
     return opt?.title ?? trimmed;
   }, [modelId, selectableModelMenuItems]);
 
+  // Without labels the two selects are rows of the caller's section: no wrapper, a divider between them.
+  const Wrapper = showLabels ? LabelledPickerStack : React.Fragment;
   return (
     <>
-      <View style={{ gap: 8 }}>
+      <Wrapper>
         {showLabels ? (
           <Text style={{ fontSize: 12, fontWeight: '500', color: theme.colors.text.secondary }}>
             {t('settingsSession.replayResume.summaryRunner.backendTitle')}
@@ -164,7 +183,7 @@ export function LlmTaskRunnerConfigV1BackendModelPicker(props: Readonly<{
           title: t('settingsSession.replayResume.summaryRunner.backendTitle'),
           subtitle: t('settingsSession.replayResume.summaryRunner.backendPlaceholder'),
           detailFormatter: () => selectedBackendLabel,
-          itemProps: { testID: props.backendTestID },
+          itemProps: { testID: props.backendTestID, ...(showLabels ? {} : { showDivider: true }) },
         }}
         items={backendMenuItems as any}
         onSelect={(id) => {
@@ -182,10 +201,10 @@ export function LlmTaskRunnerConfigV1BackendModelPicker(props: Readonly<{
           }
           props.onChange({
             v: 1,
-            backendTarget: nextBackendEntry.backendTarget,
+            backendTarget: convertBackendTargetRefV2ToV1(resolveTaskRunnerBackendTarget(nextBackendEntry)),
             modelId: 'default',
             permissionMode: 'no_tools',
-          } as any);
+          });
           setOpenMenu(null);
         }}
       />
@@ -237,10 +256,10 @@ export function LlmTaskRunnerConfigV1BackendModelPicker(props: Readonly<{
               const nextModelId = String(raw).trim();
               props.onChange({
                 v: 1,
-                backendTarget: selectedBackendEntry.backendTarget,
+                backendTarget: convertBackendTargetRefV2ToV1(resolveTaskRunnerBackendTarget(selectedBackendEntry)),
                 modelId: nextModelId || 'default',
                 permissionMode: 'no_tools',
-              } as any);
+              });
             })(), { tag: 'LlmTaskRunnerConfigV1BackendModelPicker.prompt.modelId' });
             return;
           }
@@ -249,14 +268,18 @@ export function LlmTaskRunnerConfigV1BackendModelPicker(props: Readonly<{
           if (!nextModelId) return;
           props.onChange({
             v: 1,
-            backendTarget: selectedBackendEntry.backendTarget,
+            backendTarget: convertBackendTargetRefV2ToV1(resolveTaskRunnerBackendTarget(selectedBackendEntry)),
             modelId: nextModelId,
             permissionMode: 'no_tools',
-          } as any);
+          });
           setOpenMenu(null);
         }}
       />
-      </View>
+      </Wrapper>
     </>
   );
+}
+
+function LabelledPickerStack(props: Readonly<{ children?: React.ReactNode }>) {
+  return <View style={{ gap: 8 }}>{props.children}</View>;
 }

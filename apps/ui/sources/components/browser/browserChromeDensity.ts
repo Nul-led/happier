@@ -1,6 +1,8 @@
 import * as React from 'react';
-import { useWindowDimensions, type LayoutChangeEvent } from 'react-native';
+import { Platform, useWindowDimensions, type LayoutChangeEvent } from 'react-native';
 
+import { ICON_SIZE } from '@/components/ui/icons/Icon';
+import { isTouchPrimaryPointer, resolveMinimumInteractiveTargetSize } from '@/components/ui/interactiveTargetSize';
 import { resolveViewportClass } from '@/utils/platform/viewportClass';
 
 /**
@@ -12,22 +14,25 @@ import { resolveViewportClass } from '@/utils/platform/viewportClass';
  * participates — it is what separates a narrow pane inside a large window from a phone, where the
  * surface owns the whole screen and its safe areas.
  *
- * - `phone` — narrow, and the device itself is compact. Collapsed chrome, full-bleed content.
- * - `pane`  — narrow, embedded in a larger window. Collapsed chrome, constrained content.
- * - `wide`  — the full toolbar fits.
+ * - `phone` — narrow, and the device itself is compact. The chrome RECOMPOSES rather than shrinks
+ *   (H-UX §5, lab `browser` Qp): the address is one tappable capsule at the top that names the host,
+ *   and back · forward · reload · Mark up · Attach page · `⋯` move to a bottom bar in thumb reach.
+ * - `pane`  — narrow, embedded in a larger window. One collapsed row (Attach page as its glyph).
+ * - `wide`  — the full row fits, with the labelled Attach page.
  */
 export type BrowserChromeDensity = 'phone' | 'pane' | 'wide';
 
 /**
  * The one width at which the toolbar stops collapsing.
  *
- * Derived, not picked: at `wide` the row carries navigation (3 × 34 + 2 × 6 = 114), the address
- * field at its usable floor (`BROWSER_CHROME_WIDTH.addressFloor`), the security/origin chip
- * (`BROWSER_CHROME_WIDTH.chip`) and the overflow button (34), plus four 8px gaps and 20px of
- * horizontal padding — 114 + 240 + 220 + 34 + 32 + 20 = 660. Below that something has to leave the
- * row, so below that the chrome collapses.
+ * Derived, not picked: at `wide` the row carries navigation (3 × 34 + 2 × 2 = 106), the address
+ * field at its usable floor (`BROWSER_CHROME_WIDTH.addressFloor`), Mark up (34), the labelled small
+ * Attach page button (≈ 120 at the body size) and the overflow button (34), plus five 4px gaps, the
+ * field's 8px margins and 16px of row padding — 106 + 240 + 34 + 120 + 34 + 20 + 8 + 16 = 578,
+ * rounded up to 600 for a longer translated label. That is the Details column's own width (lab W),
+ * so the labelled button shows there. Below it Attach page folds to its glyph.
  */
-const BROWSER_CHROME_WIDE_MIN_PX = 660;
+const BROWSER_CHROME_WIDE_MIN_PX = 600;
 
 /**
  * The chrome's width scale.
@@ -47,6 +52,52 @@ export const BROWSER_CHROME_WIDTH = Object.freeze({
     panel: 360,
     /** A centred terminal card inside the frame. */
     card: 520,
+});
+
+export type BrowserChromeControlMetrics = Readonly<{
+    /** The drawn size of a chrome icon control. */
+    size: number;
+    iconSize: number;
+    /**
+     * The press target a control grows to (`IconButton minimumInteractiveTargetSize`): the platform's
+     * finger floor under touch, none under a precise pointer (the shared target-size owner decides).
+     */
+    touchTargetFloorPx: number | null;
+    /** The address field's geometry (`BrowserUrlField` density). */
+    addressDensity: 'toolbar' | 'toolbarPrecise' | 'capsule';
+    /** The chrome row's vertical padding around its 28/34 px controls. */
+    rowPaddingVerticalPx: number;
+}>;
+
+/**
+ * The browser chrome's one metric owner, reconciling the lab's desktop-dense scale with touch.
+ *
+ * - Precise pointer (desktop web, Tauri), any non-phone density: the lab `browser` Q scale — 28 px
+ *   controls with 16 px glyphs beside a 30 px address field, in a 44 px row, and no touch floor (a
+ *   hover tint the size of a finger target reads as a mobile control on a desktop).
+ * - Touch pointer, `pane`/`wide` (a tablet): 34 px controls, the 34 px field, the platform touch floor.
+ * - `phone`: the bottom bar is a thumb surface — 44 px controls, the standard header glyph.
+ *
+ * `touch` defaults to the shared pointer owner (`isTouchPrimaryPointer`), the same decision the
+ * configuration-page rows use for their desktop vs touch metrics.
+ */
+export function resolveBrowserChromeControlMetrics(
+    density: BrowserChromeDensity,
+    options?: Readonly<{ touch?: boolean }>,
+): BrowserChromeControlMetrics {
+    const touch = options?.touch ?? isTouchPrimaryPointer();
+    const floor = touch ? resolveMinimumInteractiveTargetSize(Platform.OS) : null;
+    if (density === 'phone') return { size: 44, iconSize: ICON_SIZE.md, touchTargetFloorPx: floor, addressDensity: 'capsule', rowPaddingVerticalPx: 6 };
+    if (!touch) return PRECISE_CHROME_METRICS;
+    return { size: 34, iconSize: ICON_SIZE.sm, touchTargetFloorPx: floor, addressDensity: 'toolbar', rowPaddingVerticalPx: 6 };
+}
+
+const PRECISE_CHROME_METRICS: BrowserChromeControlMetrics = Object.freeze({
+    size: 28,
+    iconSize: ICON_SIZE.sm,
+    touchTargetFloorPx: null,
+    addressDensity: 'toolbarPrecise',
+    rowPaddingVerticalPx: 7,
 });
 
 /**
@@ -83,7 +134,7 @@ export type BrowserChromeDensityHandle = Readonly<{
     containerHeightPx: number | null;
     /** Attach to the chrome's outermost view. */
     onLayout: (event: LayoutChangeEvent) => void;
-    /** Convenience: `phone` or `pane`. */
+    /** Convenience: `phone` or `pane` (Attach page folds to its glyph). */
     collapsed: boolean;
 }>;
 

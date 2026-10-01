@@ -7,7 +7,6 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   createProtocolSystemTasksRunnerAdapter,
   createSystemTasksCapability,
-  systemTasksCapability,
 } from './toolSystemTasks';
 import { createDaemonSshTunnelEnsureTaskKind } from '../systemTasks/ssh/daemonSshTunnelSystemTasks';
 import { createSystemTasksRunner } from '../systemTasks/systemTasksRunner';
@@ -31,8 +30,18 @@ async function waitForResult(
 }
 
 describe('systemTasksCapability', () => {
+  it('advertises the remote cli.update.v1 only where this machine can update its CLI remotely (K5)', async () => {
+    const detect = async (canUpdate: boolean) => await createSystemTasksCapability(undefined, () => canUpdate).detect({
+      request: { id: 'tool.systemTasks' },
+      context: { cliSnapshot: null },
+    }) as { kinds: string[] };
+    expect((await detect(true)).kinds).toContain('cli.update.v1');
+    expect((await detect(false)).kinds).not.toContain('cli.update.v1');
+  });
+
   it('detects the supported methods and kinds', async () => {
-    await expect(systemTasksCapability.detect({
+    // The remote CLI update kind depends on this host's CLI install; its own test covers it.
+    await expect(createSystemTasksCapability(undefined, () => false).detect({
       request: { id: 'tool.systemTasks' },
       context: { cliSnapshot: null },
     })).resolves.toEqual({
@@ -55,6 +64,10 @@ describe('systemTasksCapability', () => {
         'relay.runtime.personal_home.verify_backup.v1',
         'relay.runtime.personal_home.restore.v1',
         'relay.runtime.personal_home.erase.v1',
+        'relay.runtime.personal_home.relocation_destination.stage.v1',
+        'relay.runtime.personal_home.relocation_destination.status.v1',
+        'relay.runtime.personal_home.relocation_destination.commit.v1',
+        'relay.runtime.personal_home.relocation_destination.abort.v1',
       ],
       methods: ['start', 'poll', 'respond'],
       taskGroups: [

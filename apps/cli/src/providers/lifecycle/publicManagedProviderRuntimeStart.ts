@@ -10,6 +10,7 @@ import type {
 import {
   PROVIDER_WIRE_PROTOCOL_LIMITS_V1,
   ProviderConnectionIdSchema,
+  pluginSourceCustodyV1Equal,
   type PluginContributionIdentityV1,
 } from '@happier-dev/protocol';
 
@@ -105,8 +106,8 @@ function sameRuntime(
 ): boolean {
   return right !== null
     && right.runtime === left.runtime
-    && right.activationGeneration === left.activationGeneration
-    && right.immutableGenerationId === left.immutableGenerationId
+    && right.activationOccurrenceId === left.activationOccurrenceId
+    && pluginSourceCustodyV1Equal(right.sourceCustody, left.sourceCustody)
     && readsCurrent(left.isCurrent)
     && readsCurrent(right.isCurrent);
 }

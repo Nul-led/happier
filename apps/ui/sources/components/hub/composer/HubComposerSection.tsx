@@ -1,0 +1,70 @@
+import * as React from 'react';
+import { View } from 'react-native';
+import { StyleSheet } from 'react-native-unistyles';
+
+import { ComposerBannerCollapseProvider } from '@/components/sessions/composerBanners/ComposerBannerCollapseProvider';
+import { NewSessionScreen } from '@/components/sessions/new/NewSessionScreen';
+import { NewSessionEmbeddedHostProvider } from '@/components/sessions/new/navigation/newSessionHost';
+import { useNewSessionEmbeddedHostState } from '@/components/sessions/new/navigation/useNewSessionEmbeddedHostState';
+import { ItemGroup } from '@/components/ui/lists/ItemGroup';
+
+import { HubComposerSuggestions, type HomeComposerSuggestionFill } from './suggestions/HubComposerSuggestions';
+
+/**
+ * Home's "Start a session": the real New Session composer (the same surface and model as `/new`,
+ * embedded through `NewSessionEmbeddedHostProvider`) at the page column's width, with suggestions
+ * under it that fill it.
+ *
+ * Home starts on the ordinary-entry draft, the one "+" opens, so a draft begun in either place
+ * continues in the other. Typing and Enter start the session here; the app then opens it, and the
+ * next time Home is shown it holds a fresh draft.
+ *
+ * The composer's chips issue no machine RPCs until the person shows intent (focus, hover, touch or
+ * a suggestion); until then they show cached state.
+ */
+export const HubComposerSection = React.memo(function HubComposerSection() {
+    const { host, markDemanded } = useNewSessionEmbeddedHostState();
+    const draftId = typeof host.params.draftId === 'string' ? host.params.draftId : 'home-composer';
+    const setHostParams = host.setParams;
+
+    const fill = React.useCallback((suggestion: HomeComposerSuggestionFill) => {
+        markDemanded();
+        setHostParams({
+            // The deep-link prompt param: an explicit fill that replaces what is typed, never a send.
+            prompt: suggestion.prompt,
+            ...(suggestion.placement
+                ? {
+                    spawnServerId: suggestion.placement.serverId ?? undefined,
+                    machineId: suggestion.placement.machineId,
+                    directory: suggestion.placement.directory,
+                }
+                : {}),
+        });
+    }, [markDemanded, setHostParams]);
+
+    return (
+        <ItemGroup surface="none">
+            <View testID="hub-composer" style={styles.stack}>
+                <View
+                    testID="hub-composer.intent"
+                    onFocus={markDemanded}
+                    onPointerEnter={markDemanded}
+                    onTouchStart={markDemanded}
+                >
+                    <NewSessionEmbeddedHostProvider host={host}>
+                        <ComposerBannerCollapseProvider key={draftId}>
+                            <NewSessionScreen presentation="embedded" />
+                        </ComposerBannerCollapseProvider>
+                    </NewSessionEmbeddedHostProvider>
+                </View>
+                <HubComposerSuggestions onFill={fill} />
+            </View>
+        </ItemGroup>
+    );
+});
+
+const styles = StyleSheet.create(() => ({
+    stack: {
+        gap: 10,
+    },
+}));

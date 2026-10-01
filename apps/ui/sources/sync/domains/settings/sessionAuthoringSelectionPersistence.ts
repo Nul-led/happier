@@ -1,6 +1,8 @@
 import {
     ACCOUNT_SETTING_DEFINITIONS,
+    LegacyRememberedEngineSelectionsByScopeV1Schema,
     type AccountSettingsDefaults,
+    type RetainedRememberedEngineSelectionsByScopeV1,
 } from '@happier-dev/protocol';
 
 import {
@@ -18,19 +20,16 @@ import {
 /** Protocol-owned bounded JSON carrier retained for Settings writeback. */
 export type RetainedFavoriteModelSelectionsV1 = AccountSettingsDefaults['favoriteModelSelectionsV1'];
 
-/** Protocol-owned bounded JSON carrier retained for Settings writeback. */
-export type RetainedRememberedEngineSelectionsByScopeV1 =
-    AccountSettingsDefaults['lastEngineSelectionsByScopeV1'];
+/** Protocol-owned retained engine carrier, now materialized from reserved authoring rows. */
+export type { RetainedRememberedEngineSelectionsByScopeV1 } from '@happier-dev/protocol';
 
 type SettingsWithRetainedSessionAuthoringSelections = Readonly<{
     favoriteModelSelectionsV1?: RetainedFavoriteModelSelectionsV1;
-    lastEngineSelectionsByScopeV1?: RetainedRememberedEngineSelectionsByScopeV1;
 }>;
 
 /** The sole typed runtime view of the retained Session-authoring carriers. */
 export type CurrentSessionAuthoringSelectionsRuntimeProjection = Readonly<{
     currentFavoriteModelSelectionsV1: readonly FavoriteModelSelectionV1[];
-    currentRememberedEngineSelectionsByScopeV1: RememberedEngineSelectionsByScopeV1;
 }>;
 
 function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
@@ -45,14 +44,6 @@ export function readRetainedFavoriteModelSelectionsV1(
     return Array.isArray(value) ? value : [];
 }
 
-/** Read retained raw JSON only at the persistence-facing Settings boundary. */
-export function readRetainedRememberedEngineSelectionsByScopeV1(
-    settings: object,
-): RetainedRememberedEngineSelectionsByScopeV1 {
-    const value = (settings as SettingsWithRetainedSessionAuthoringSelections).lastEngineSelectionsByScopeV1;
-    return isRecord(value) ? value : {};
-}
-
 function readCurrentFavoriteModelSelections(
     value: RetainedFavoriteModelSelectionsV1,
 ): readonly FavoriteModelSelectionV1[] {
@@ -60,13 +51,6 @@ function readCurrentFavoriteModelSelections(
         const parsed = FavoriteModelSelectionV1Schema.safeParse(candidate);
         return parsed.success ? [parsed.data] : [];
     });
-}
-
-function readCurrentRememberedEngineSelections(
-    value: RetainedRememberedEngineSelectionsByScopeV1,
-): RememberedEngineSelectionsByScopeV1 {
-    const parsed = RememberedEngineSelectionsByScopeV1Schema.safeParse(value);
-    return parsed.success ? parsed.data : {};
 }
 
 /**
@@ -82,14 +66,6 @@ export function attachCurrentSessionAuthoringSelectionsRuntimeProjection<T exten
             configurable: false,
             enumerable: false,
             value: readCurrentFavoriteModelSelections(readRetainedFavoriteModelSelectionsV1(value)),
-            writable: false,
-        },
-        currentRememberedEngineSelectionsByScopeV1: {
-            configurable: false,
-            enumerable: false,
-            value: readCurrentRememberedEngineSelections(
-                readRetainedRememberedEngineSelectionsByScopeV1(value),
-            ),
             writable: false,
         },
     });
@@ -232,16 +208,14 @@ function rawRememberedScopeStillMatchesBase(params: Readonly<{
 /**
  * The remembered-selection runtime schema intentionally retains nested
  * forward-compatible override data. Before that typed value crosses back into
- * the raw Settings carrier, ask the Protocol-owned setting definition whether
- * it is still a bounded persisted value. Its recovery schema yields `{}` for
- * an invalid present value, which lets this boundary fail closed without
- * replacing the CAS winner.
+ * its retained carrier, validate it through the retained JSON schema. A
+ * non-persistable edit cannot replace the CAS winner.
  */
-function retainRememberedEngineSelectionForSettings(
+function retainRememberedEngineSelection(
     scopeKey: string,
     selection: RememberedEngineSelectionsByScopeV1[string],
 ): RetainedRememberedEngineSelectionsByScopeV1[string] | null {
-    const parsed = ACCOUNT_SETTING_DEFINITIONS.lastEngineSelectionsByScopeV1.schema.safeParse({
+    const parsed = LegacyRememberedEngineSelectionsByScopeV1Schema.safeParse({
         [scopeKey]: selection,
     });
     if (!parsed.success) return null;
@@ -285,7 +259,7 @@ export function mergeCurrentRememberedEngineSelectionsIntoRaw(params: Readonly<{
 
         const retainedSelection = proposed === undefined
             ? null
-            : retainRememberedEngineSelectionForSettings(scopeKey, proposed);
+            : retainRememberedEngineSelection(scopeKey, proposed);
         if (proposed !== undefined && retainedSelection === null) continue;
         for (const rawScopeKey of rawScopeKeys) delete retained[rawScopeKey];
         if (retainedSelection !== null) retained[scopeKey] = retainedSelection;
@@ -310,25 +284,6 @@ export function replayFavoriteModelSelectionReplacementIntent(params: Readonly<{
             rawFavorites: readRetainedFavoriteModelSelectionsV1(params.raw),
             currentFavorites: params.base,
             nextFavorites: params.proposed,
-        }),
-    };
-}
-
-/**
- * Replays one typed remembered-selection replacement intent against the raw
- * CAS winner without granting the editor authority over opaque scope values.
- */
-export function replayRememberedEngineSelectionReplacementIntent(params: Readonly<{
-    raw: Readonly<Record<string, unknown>>;
-    base: RememberedEngineSelectionsByScopeV1;
-    proposed: RememberedEngineSelectionsByScopeV1;
-}>): Record<string, unknown> {
-    return {
-        ...params.raw,
-        lastEngineSelectionsByScopeV1: mergeCurrentRememberedEngineSelectionsIntoRaw({
-            rawSelections: readRetainedRememberedEngineSelectionsByScopeV1(params.raw),
-            currentSelections: params.base,
-            nextSelections: params.proposed,
         }),
     };
 }

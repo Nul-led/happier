@@ -54,6 +54,6 @@ export function resolveDaemonMemorySearchTarget(
 }
 
 /** Live binding of {@link resolveDaemonMemorySearchTarget} to the selection owner. */
-export function useDaemonMemorySearchTargetSelection(): MachineAdministrationTargetSelectionV1 {
-    return useMachineAdministrationTargetSelection(MACHINE_ADMINISTRATION_SELECTION_KEYS_V1.memory);
+export function useDaemonMemorySearchTargetSelection(enabled = true): MachineAdministrationTargetSelectionV1 {
+    return useMachineAdministrationTargetSelection(MACHINE_ADMINISTRATION_SELECTION_KEYS_V1.memory, { enabled });
 }

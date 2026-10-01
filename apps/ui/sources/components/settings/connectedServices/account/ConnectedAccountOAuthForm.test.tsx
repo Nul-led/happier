@@ -153,6 +153,36 @@ describe('ConnectedAccountOAuthForm', () => {
         expect(error.props.accessibilityLiveRegion).toBe('polite');
     });
 
+    it('confirms locally that a pasted answer has the shape a sign-in returns, before anything is sent (G5)', async () => {
+        const onSubmit = vi.fn();
+        const { ConnectedAccountOAuthForm } = await import('./ConnectedAccountOAuthForm');
+        const tree = (await renderScreen(
+            <ConnectedAccountOAuthForm
+                authorizationUrl="https://claude.example/oauth/authorize"
+                callbackUrl="https://platform.claude.example/oauth/code/callback"
+                submitting={false}
+                onSubmit={onSubmit}
+            />,
+        )).tree;
+        const callback = tree.find(
+            (node) => node.type === ('TextInput' as never) && node.props.testID === 'connected-account-oauth:callback',
+        );
+        const shapeOk = () => tree.findAll((node) => node.props.testID === 'connected-account-oauth:callback.shape-ok');
+
+        await act(async () => {
+            callback.props.onChangeText('not a code');
+        });
+        expect(shapeOk()).toHaveLength(0);
+        expect(onSubmit).not.toHaveBeenCalled();
+
+        // The page Claude shows after approval: "<code>#<state>".
+        await act(async () => {
+            callback.props.onChangeText('Xk3p9QwZt7#a9f2c1');
+        });
+        expect(shapeOk()).not.toHaveLength(0);
+        expect(onSubmit).not.toHaveBeenCalled();
+    });
+
     it('registers a pasted OAuth callback draft with the shared shell-navigation guard', async () => {
         const { ConnectedAccountOAuthForm } = await import('./ConnectedAccountOAuthForm');
         const tree = (await renderScreen(

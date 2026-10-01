@@ -8,7 +8,8 @@ import { verifyTerminalAuthEnrollmentRuntime } from './terminalAuthEnrollmentCli
 import { acquireTerminalAuthEnrollmentRuntime } from './terminalAuthEnrollmentRuntime';
 
 export type ActiveServerStoredTokenValidationResult = Readonly<
-  | { state: 'valid'; httpStatus: number }
+  /** `accountLabel`: a readable name for the validated account (username, else display name), never an email. */
+  | { state: 'valid'; httpStatus: number; accountLabel?: string | null }
   | { state: 'invalid'; httpStatus: number; reasonCode: string }
   | { state: 'unknown'; httpStatus: number | null; reasonCode: string }
 >;
@@ -25,6 +26,21 @@ function readResponseCode(body: unknown, fallback: string): string {
   return typeof (body as { code?: unknown })?.code === 'string' && (body as { code: string }).code.trim()
     ? (body as { code: string }).code.trim()
     : fallback;
+}
+
+function readTrimmedString(value: unknown): string {
+  return typeof value === 'string' ? value.trim() : '';
+}
+
+/** Username, else the display name, else null. The profile's email is never used as a label. */
+function readAccountProfileLabel(body: unknown): string | null {
+  const profile = (body ?? {}) as { username?: unknown; firstName?: unknown; lastName?: unknown };
+  const username = readTrimmedString(profile.username);
+  if (username) return username;
+  const displayName = [readTrimmedString(profile.firstName), readTrimmedString(profile.lastName)]
+    .filter(Boolean)
+    .join(' ');
+  return displayName || null;
 }
 
 async function readJsonBody(response: Response): Promise<unknown> {
@@ -71,7 +87,7 @@ export async function validateStoredAuthTokenAgainstServer(
     if (response.ok) {
       const accountId = (body as { id?: unknown } | null)?.id;
       if (typeof accountId === 'string' && accountId.trim().length > 0) {
-        return { state: 'valid', httpStatus: response.status };
+        return { state: 'valid', httpStatus: response.status, accountLabel: readAccountProfileLabel(body) };
       }
       return { state: 'unknown', httpStatus: response.status, reasonCode: 'invalid-profile-response' };
     }

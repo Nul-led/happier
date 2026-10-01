@@ -2,13 +2,14 @@ import * as React from 'react';
 
 import {
     WEBVIEW_LOAD_FAILED_ERROR_CODE,
-    type BrowserControlViewState,
     type BrowserViewLifecycleEmitter,
-} from '@/sync/domains/browser/control';
+} from '@/sync/domains/browser/control/lifecycle';
+import type { BrowserControlViewState } from '@/sync/domains/browser/control/state';
 
 import { BrowserFrameUnavailable } from '../frame/BrowserFrameUnavailable';
 import { BrowserViewFrame } from '../frame/BrowserViewFrame.native';
 import type {
+    BrowserAutomationEngineBridgeConfig,
     BrowserDiagnosticsEngineBridgeConfig,
     BrowserFrameNavigationCommand,
 } from '../frame/types';
@@ -31,6 +32,7 @@ export function ExternalUrlTarget(props: Readonly<{
     view?: BrowserControlViewState | null;
     profileId?: string | null;
     diagnostics?: BrowserDiagnosticsEngineBridgeConfig | null;
+    automation?: BrowserAutomationEngineBridgeConfig;
     navigationKey?: string;
     navigationCommand?: BrowserFrameNavigationCommand;
     onLifecycle?: BrowserViewLifecycleEmitter;
@@ -64,6 +66,7 @@ export function ExternalUrlTarget(props: Readonly<{
                         ...navigationState,
                     }),
                     ...(props.diagnostics ? { diagnostics: props.diagnostics } : {}),
+                    ...(props.automation ? { automation: props.automation } : {}),
                 }}
             />
         );

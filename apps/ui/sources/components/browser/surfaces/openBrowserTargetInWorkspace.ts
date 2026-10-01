@@ -23,6 +23,9 @@ import {
 import type { BrowserViewState } from '@/sync/domains/browser/types';
 import type { LocalServicePreviewState } from '@/sync/domains/local/services/preview/store';
 import { selectLocalServicePreviewByBrowserTarget } from '@/sync/domains/local/services/preview/store';
+import { openOrCreateLocalServicePreviewViaMachineRpc } from '@/sync/domains/local/services/preview/machineRpc';
+import { normalizeLocalServicePreviewSnapshotPayload } from '@/sync/domains/local/services/preview/api';
+import { publishLocalServicePreviewSnapshot } from '@/sync/domains/local/services/preview/sharedStore';
 
 import {
     createBrowserViewDetailsTab,
@@ -147,7 +150,7 @@ export function resolveBrowserTargetOpenOptions(params: Readonly<{
     currentUrl?: string;
     currentUrlExpiresAt?: number;
 }>): Parameters<typeof openBrowserTarget>[2] {
-    if (params.target.kind === 'externalUrl') {
+    if (params.target.kind === 'externalUrl' || params.target.kind === 'streamedBrowser') {
         const targetPolicyDecision = evaluateBrowserTargetPolicy({
             target: params.target,
             // The in-app browser engines carry no daemon-issued profile; fall back to the host-local
@@ -344,52 +347,94 @@ export function createOpenBrowserTargetInWorkspace(
 
 /**
  * PR-14 binding helper — the ONE place a Services `LocalServiceLaunchTarget` becomes a
- * `BrowserViewTargetV1`. Reuses the launch target's own `browserTarget`; when absent, builds the
- * canonical `localServicePreview` fallback (mirroring the launchpad builder) from the launch
- * target's own identity. Returns `null` when no openable target can be formed (caller no-ops).
+ * `BrowserViewTargetV1`. Preview identity comes from registration. A launch target without
+ * a browser target is an intent to register, never a second preview identity.
  */
 export function mapLocalServiceLaunchTargetToBrowserTarget(
     target: LocalServiceLaunchTargetV1,
 ): BrowserViewTargetV1 | null {
-    if (target.browserTarget) {
-        return target.browserTarget;
-    }
-    const machineId = target.machineId.trim();
-    const sessionId = target.sessionId?.trim();
-    if (!machineId || !sessionId) {
-        return null;
-    }
-    const title = target.title.trim();
-    if (!title) {
-        return null;
-    }
-    const addressLabel = target.subtitle?.trim();
-    return {
-        kind: 'localServicePreview',
-        targetId: target.id,
-        sessionId,
-        machineId,
-        display: {
-            title,
-            ...(addressLabel ? { addressLabel } : {}),
-        },
-    };
+    return target.browserTarget ?? null;
 }
 
 /**
  * The exact value a mount site passes as FP-LSV-HOST-1's `onOpenServiceInBrowser` prop: maps the
- * Services launch target to a browser target, then opens BOTH records through the canonical opener
- * (no-op when the target cannot be mapped).
+ * Services launch target to a browser target, then admits it through the canonical opener.
+ * Returns the action outcome; admission does not claim the preview page has loaded.
  */
+export type ServicesOpenInBrowserResult =
+    | Readonly<{ status: 'succeeded' }>
+    | Readonly<{ status: 'denied'; reasonCode: string }>;
+
+type ServicesOpenInBrowserDeps = (CreateOpenBrowserTargetInWorkspaceDeps | Readonly<{
+    onOpenTarget: OpenBrowserViewTarget;
+    platform: BrowserPlatformV1;
+}>) & Readonly<{
+    serverId?: string | null;
+    sessionId?: string | null;
+}>;
+
 export function bindServicesOpenInBrowser(
-    deps: CreateOpenBrowserTargetInWorkspaceDeps,
-): (target: LocalServiceLaunchTargetV1) => void {
-    const openBrowserViewTarget = createOpenBrowserTargetInWorkspace(deps);
-    return (target: LocalServiceLaunchTargetV1): void => {
+    deps: ServicesOpenInBrowserDeps,
+): (target: LocalServiceLaunchTargetV1) => Promise<ServicesOpenInBrowserResult> {
+    const openBrowserViewTarget = 'onOpenTarget' in deps ? deps.onOpenTarget : createOpenBrowserTargetInWorkspace(deps);
+    return async (target: LocalServiceLaunchTargetV1): Promise<ServicesOpenInBrowserResult> => {
+        if (target.state === 'unavailable' || !target.machineId.trim()) {
+            return { status: 'denied', reasonCode: 'browser_target_unavailable' };
+        }
         const browserTarget = mapLocalServiceLaunchTargetToBrowserTarget(target);
+        if (target.actions.includes('register_preview') || browserTarget?.kind === 'localServicePreview') {
+            const inventoryEntryId = target.sourceClass?.kind === 'inventory_entry'
+                ? target.sourceClass.inventoryEntryId
+                : target.source === 'inventory_entry' && target.id.startsWith('inventory:')
+                    ? target.id.slice('inventory:'.length)
+                    : undefined;
+            // A new inventory registration belongs to the viewing context. An existing
+            // preview keeps its own resource scope, including an explicitly sessionless one.
+            const sessionId = inventoryEntryId
+                ? deps.sessionId ?? target.sessionId
+                : browserTarget?.kind === 'localServicePreview' ? browserTarget.sessionId : target.sessionId;
+            const targetReference = inventoryEntryId
+                ? { inventoryEntryId }
+                : { launchTargetId: browserTarget?.kind === 'localServicePreview' ? browserTarget.targetId : target.id };
+            const result = await openOrCreateLocalServicePreviewViaMachineRpc({
+                serverId: deps.serverId,
+                request: {
+                    machineId: target.machineId,
+                    ...(sessionId ? { sessionId } : {}),
+                    ...targetReference,
+                },
+            });
+            if (!result.ok) {
+                return {
+                    status: 'denied',
+                    reasonCode: result.reason.startsWith('refused:')
+                        ? result.reason.slice('refused:'.length)
+                        : 'preview_registration_failed',
+                };
+            }
+            const snapshot = normalizeLocalServicePreviewSnapshotPayload(result.response.snapshot, target.machineId);
+            if (!snapshot) return { status: 'denied', reasonCode: 'preview_registration_failed' };
+            publishLocalServicePreviewSnapshot({ machineId: target.machineId, serverId: deps.serverId }, snapshot);
+            const preview = result.response.preview;
+            const registeredTarget: BrowserViewTargetV1 = preview.resource.browserTarget ?? {
+                kind: 'localServicePreview',
+                targetId: preview.previewId,
+                machineId: preview.resource.machineId,
+                ...(preview.resource.sessionId ? { sessionId: preview.resource.sessionId } : {}),
+                display: preview.resource.display,
+            };
+            // Admission expires; an admitted viewer remains live with its registration.
+            // A no-private-route row opens the existing runs-elsewhere and Share state.
+            openBrowserViewTarget(registeredTarget, {
+                platform: deps.platform,
+                ...(preview.accessUrl ? { currentUrl: preview.accessUrl } : {}),
+            });
+            return { status: 'succeeded' };
+        }
         if (!browserTarget) {
-            return;
+            return { status: 'denied', reasonCode: 'browser_target_unavailable' };
         }
         openBrowserViewTarget(browserTarget);
+        return { status: 'succeeded' };
     };
 }

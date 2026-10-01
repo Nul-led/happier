@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { useLocalSearchParams, useRouter } from 'expo-router';
+import { useLocalSearchParams, useRouter } from '@/components/appShell/workspace/destinationRoute';
 
 import { useProjectedConnectedServicesRegistry } from '@/components/appShell/plugins/AppShellPluginUiProjection';
 import { Item } from '@/components/ui/lists/Item';
@@ -7,6 +7,7 @@ import { ItemGroup } from '@/components/ui/lists/ItemGroup';
 import { ItemList } from '@/components/ui/lists/ItemList';
 import {
     buildConnectedAccountSettingsRoute,
+    readConnectedAccountAddRequest,
     resolveConnectedAccountSettingsRoute,
 } from '@/sync/domains/connectedServices/connectedAccountSettingsRoute';
 import { t } from '@/text';
@@ -21,6 +22,7 @@ export const ConnectedAccountLegacyRouteRedirect = React.memo(
         const params = useLocalSearchParams();
         const router = useRouter();
         const registry = useProjectedConnectedServicesRegistry();
+        const addRequested = readConnectedAccountAddRequest(params);
         const resolved = React.useMemo(
             () => resolveConnectedAccountSettingsRoute(
                 {
@@ -38,8 +40,9 @@ export const ConnectedAccountLegacyRouteRedirect = React.memo(
             router.replace(buildConnectedAccountSettingsRoute(
                 resolved.service,
                 resolved.focus,
+                { add: addRequested },
             ));
-        }, [resolved, router]);
+        }, [addRequested, resolved, router]);
 
         return (
             <ItemList>

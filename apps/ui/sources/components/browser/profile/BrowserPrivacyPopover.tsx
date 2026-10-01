@@ -1,27 +1,17 @@
 import * as React from 'react';
-import { Pressable, View } from 'react-native';
-import { StyleSheet, useUnistyles } from 'react-native-unistyles';
+import { Platform, View } from 'react-native';
+import { StyleSheet } from 'react-native-unistyles';
 
+import { IconButton } from '@/components/ui/buttons/IconButton';
+import { ICON_SIZE } from '@/components/ui/icons/Icon';
+import { resolveMinimumInteractiveTargetSize } from '@/components/ui/interactiveTargetSize';
 import { FloatingOverlay } from '@/components/ui/overlays/FloatingOverlay';
 import { MODAL_AWARE_FLOATING_POPOVER_PORTAL_OPTIONS, Popover } from '@/components/ui/popover';
 import { t } from '@/text';
 
 import { BrowserProfileStatus, type BrowserProfileStatusModel } from './BrowserProfileStatus';
-import { Icon } from '@/components/ui/icons/Icon';
 
 const stylesheet = StyleSheet.create((theme) => ({
-    trigger: {
-        width: 34,
-        // `minHeight`, not `height`. Q2 measured that the app's `uiFontScale` GROWS the line box —
-        // a fixed-height container is what actually clips scaled text, not a missing `lineHeight`.
-        minHeight: 34,
-        borderRadius: 6,
-        alignItems: 'center',
-        justifyContent: 'center',
-        borderWidth: 1,
-        borderColor: theme.colors.border.default,
-        backgroundColor: theme.colors.surface.base,
-    },
     body: {
         padding: 10,
         minWidth: 0,
@@ -39,23 +29,29 @@ export function BrowserPrivacyPopover(props: Readonly<{
     model: BrowserProfileStatusModel;
     testID: string;
 }>): React.ReactElement {
-    const { theme } = useUnistyles();
     const [open, setOpen] = React.useState(false);
     const anchorRef = React.useRef<View>(null);
 
     return (
         <>
-            <Pressable
-                ref={anchorRef}
-                testID={props.testID}
-                accessibilityRole="button"
-                accessibilityLabel={t('browserShell.privacy.title')}
-                accessibilityState={{ expanded: open }}
-                onPress={() => setOpen((value) => !value)}
-                style={stylesheet.trigger}
-            >
-                <Icon name="shield-check" size={16} color={theme.colors.text.primary} />
-            </Pressable>
+            {/* A plain glyph like the rest of the chrome row — not a bordered tile around a glyph. */}
+            <View ref={anchorRef} collapsable={false}>
+                <IconButton
+                    testID={props.testID}
+                    iconName="shield-check"
+                    variant="plain"
+                    iconSize={ICON_SIZE.sm}
+                    size={34}
+                    accessibilityLabel={t('browserShell.privacy.title')}
+                    tooltip={t('browserShell.privacy.title')}
+                    tooltipHidden={open}
+                    expanded={open}
+                    hasPopup="dialog"
+                    minimumInteractiveTargetSize={resolveMinimumInteractiveTargetSize(Platform.OS)}
+                    interactiveTargetGapPx={4}
+                    onPress={() => setOpen((value) => !value)}
+                />
+            </View>
             {open ? (
                 <Popover
                     open={open}

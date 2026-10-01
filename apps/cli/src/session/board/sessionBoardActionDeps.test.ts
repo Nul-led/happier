@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import fastify from 'fastify';
 import axios from 'axios';
 import {
+  API_TOKEN_FULL_GRANT_V1,
   EXTERNAL_ACTION_EFFECT_ACTION_HEADER,
   EXTERNAL_ACTION_EXECUTION_AUTHORIZATION_HEADER,
   EXTERNAL_ACTION_MACHINE_SIGNATURE_HEADER,
@@ -236,6 +237,7 @@ describe('CLI Board Action family', () => {
       token: 'execution-proof',
       binding: {
         serverIdentityId: 'home-a', accountId: 'account-1', principalId: 'principal-1', credentialId: 'credential-1',
+        grant: API_TOKEN_FULL_GRANT_V1,
         machineId: 'machine-1', actionId: 'session.board.get', requestId: 'request-1',
         requestEnvelopeDigest: 'd'.repeat(43), target,
       },
@@ -300,7 +302,7 @@ describe('CLI Board Action family', () => {
     await expect(deps.sessionBoardAction!({
       actionId: 'session.board.get',
       context: {
-        externalActionCredential: { accountId: 'account-1', principalId: 'principal-1', credentialId: 'credential-1' },
+        externalActionCredential: { accountId: 'account-1', principalId: 'principal-1', credentialId: 'credential-1', grant: authorization.binding.grant },
         externalActionExecutionAuthorization: authorization,
         externalActionTarget: target,
       },
@@ -317,17 +319,18 @@ describe('CLI Board Action family', () => {
       token: 'board-create-proof',
       binding: {
         serverIdentityId: 'home-a', accountId: 'account-1', principalId: 'principal-1', credentialId: 'credential-1',
+        grant: API_TOKEN_FULL_GRANT_V1,
         machineId: 'machine-caller', actionId: 'session.board.item.upsert', requestId: 'board-create-request',
         requestEnvelopeDigest: 'd'.repeat(43), target,
       },
     };
     const context = {
-      externalActionCredential: { accountId: 'account-1', principalId: 'principal-1', credentialId: 'credential-1' },
+      externalActionCredential: { accountId: 'account-1', principalId: 'principal-1', credentialId: 'credential-1', grant: authorization.binding.grant },
       externalActionExecutionAuthorization: authorization,
       externalActionTarget: target,
     };
     const installed = { ...item, source: { kind: 'installedSurface', surface: { pluginId: 'acme.widgets', localId: 'status' } } } as const;
-    const binding = normalizePluginUiInlineSurfaceBindingV1({ pluginId: 'acme.widgets', surfaceId: 'status', rendererId: 'native', role: 'sessionWidget', target: { kind: 'session' } });
+    const binding = normalizePluginUiInlineSurfaceBindingV1({ pluginId: 'acme.widgets', surfaceId: 'status', rendererId: 'native', role: 'widget', target: { kind: 'session' } });
     if (!binding) throw new Error('invalid fixture');
     let available = true;
     let writes = 0;

@@ -1,16 +1,18 @@
 import type {
-    BrowserAutomationActionKindV1,
-    BrowserAutomationAdapterCapabilityKindV1,
     BrowserProfileV1,
     BrowserRenderEngineKindV1,
 } from '@happier-dev/protocol';
+import { browserViewKey } from '@happier-dev/protocol';
 import * as React from 'react';
 import { View } from 'react-native';
 import { StyleSheet } from 'react-native-unistyles';
 
 import { BrowserFrameUnavailable } from '@/components/browser/frame/BrowserFrameUnavailable';
+import { BrowserFrameLoading } from '@/components/browser/frame/BrowserFrameLoading';
+import { BrowserLocalPreviewElsewhere, BrowserLocalPreviewPublicLinkControls } from '@/components/browser/frame/BrowserLocalPreviewElsewhere';
 import { resolveBrowserAdapterUnavailableReason } from '@/sync/domains/browser/adapters/availability';
 import type { BrowserAutomationControlService } from '@/sync/domains/browser/automation';
+import { INJECTED_PAGE_AUTOMATION_ACTIONS } from '@/sync/domains/browser/automation/injectedPageActions';
 import { resolveHostedPluginBrowserPolicyUnavailableReason } from '@/sync/domains/browser/policy/evaluate';
 import type {
     BrowserControlCommandEffect,
@@ -26,15 +28,20 @@ import type { SimulatorPreviewSurfaceRuntime } from '@/sync/domains/devices/simu
 import {
     selectLocalServicePreviewByBrowserTarget,
     type LocalServicePreviewState,
+    type LocalServicePreviewRow,
 } from '@/sync/domains/local/services/preview/store';
+import { useNativeDirectPreview } from '@/sync/domains/local/services/preview/useNativeDirectPreview';
 import type { PluginUiProjectionModel } from '@/sync/domains/plugins/ui/projection';
 
+import { BrowserStreamedTarget, type BrowserStreamedPageRect, type BrowserStreamedSurfaceRuntime } from './adapters/BrowserStreamedTarget';
 import { ExternalUrlTarget } from './adapters/ExternalUrlTarget';
+import { useBrowserSessionAgentIdentity, type BrowserShellAgentPresence } from './copresence/BrowserShellPresence';
 import { LocalPreviewTarget } from './adapters/LocalPreviewTarget';
 import { SimulatorPreviewTarget } from './adapters/SimulatorPreviewTarget';
 import type {
     BrowserAutomationEngineBridgeConfig,
     BrowserDiagnosticsEngineBridgeConfig,
+    BrowserFrameNavigationCommand,
 } from './frame/types';
 import type { BrowserSurfaceLifecycleState } from './surfaces/browserSurfaceLifecycle';
 
@@ -47,26 +54,12 @@ const stylesheet = StyleSheet.create(() => ({
 
 const EMPTY_SIMULATOR_PREVIEW_ACTIONS: Partial<SimulatorPreviewActions> = Object.freeze({});
 
-const INJECTED_PAGE_AUTOMATION_ACTIONS: ReadonlyArray<Readonly<{
-    action: BrowserAutomationActionKindV1;
-    capability: BrowserAutomationAdapterCapabilityKindV1;
-}>> = [
-    { action: 'snapshot', capability: 'snapshot' },
-    { action: 'semanticSnapshot', capability: 'semanticSnapshot' },
-    { action: 'queryElements', capability: 'locatorQuery' },
-    { action: 'click', capability: 'click' },
-    { action: 'tap', capability: 'tap' },
-    { action: 'type', capability: 'type' },
-    { action: 'setValue', capability: 'type' },
-    { action: 'scroll', capability: 'scroll' },
-    { action: 'waitFor', capability: 'waitFor' },
-] as const;
-
 type BrowserViewRenderKind =
     | 'localPreview'
     | 'hostedPlugin'
     | 'externalUrl'
     | 'simulatorPreview'
+    | 'streamedBrowser'
     | 'unavailable';
 
 type BrowserClientLocalNavigationEffect = Extract<BrowserControlCommandEffect, { kind: 'clientLocalNavigation' }>;
@@ -83,7 +76,9 @@ function resolveBrowserViewRenderKind(view: BrowserControlViewState): BrowserVie
             return view.target.kind === 'simulatorPreview' ? 'simulatorPreview' : 'unavailable';
         case 'chromiumSidecar':
         case 'streamedBrowserSurface':
-            return 'unavailable';
+            // A browser that runs on a machine (the agent's managed Chromium): shown as its live
+            // stream, never as an embedded page.
+            return 'streamedBrowser';
     }
 }
 
@@ -145,7 +140,8 @@ function resolveViewAutomationBridge(input: Readonly<{
     if (!automation || automation.enabled === false) {
         return undefined;
     }
-    if (input.view.engineKind !== 'webIframe' && input.view.engineKind !== 'nativeWebView') {
+    if (input.view.engineKind !== 'webIframe' && input.view.engineKind !== 'nativeWebView'
+        && input.view.engineKind !== 'desktopWebView') {
         return undefined;
     }
     const bridge = resolveViewDiagnosticsBridge({
@@ -260,6 +256,17 @@ function resolveFrameNavigationCommand(
     } as const;
 }
 
+/** The agent's streamed browser, named for its agent (the identity leaf reads the session). */
+function StreamedBrowserView(props: Readonly<{
+    runtime: BrowserStreamedSurfaceRuntime | null;
+    agent: BrowserShellAgentPresence | null;
+    onPageRectChange?: (rect: BrowserStreamedPageRect | null) => void;
+    testID: string;
+}>): React.ReactElement {
+    const identity = useBrowserSessionAgentIdentity(props.agent);
+    return <BrowserStreamedTarget runtime={props.runtime} agentName={identity.name} onPageRectChange={props.onPageRectChange} testID={props.testID} />;
+}
+
 function buildViewLifecycleEmitter(input: Readonly<{
     view: BrowserControlViewState;
     onViewLifecycle?: (target: BrowserViewLifecycleTarget, signal: BrowserViewLifecycleSignal) => void;
@@ -275,6 +282,60 @@ function buildViewLifecycleEmitter(input: Readonly<{
     return (signal) => onViewLifecycle(target, signal);
 }
 
+/** Target access stays mounted while its snapshot and navigation projection change. */
+function LocalPreviewView(props: Readonly<{
+    view: BrowserControlViewState;
+    target: Extract<BrowserControlViewState['target'], { kind: 'localServicePreview' }>;
+    preview: LocalServicePreviewRow | null;
+    serverId?: string | null;
+    profileId?: string | null;
+    lifecycleState?: BrowserSurfaceLifecycleState;
+    diagnostics?: BrowserDiagnosticsEngineBridgeConfig;
+    automation?: BrowserAutomationEngineBridgeConfig;
+    navigationKey?: string;
+    navigationCommand?: BrowserFrameNavigationCommand;
+    onLifecycle?: BrowserViewLifecycleEmitter;
+    testID: string;
+}>): React.ReactElement {
+    const { view, preview, target, testID } = props;
+    const noServerRoute = preview?.accessUnavailableReasonCode === 'preview_private_route_unavailable';
+    const lifecycleAllowsLease = props.lifecycleState !== 'suspended'
+        && props.lifecycleState !== 'closed' && props.lifecycleState !== 'orphaned';
+    const access = useNativeDirectPreview({
+        previewId: preview?.nativeDirect?.previewId ?? null,
+        machineId: preview?.nativeDirect?.machineId ?? null,
+        serverId: props.serverId,
+        enabled: lifecycleAllowsLease && (view.engineKind === 'nativeWebView' || view.engineKind === 'desktopWebView'),
+        fallbackUrl: noServerRoute ? null : preview?.accessUrl ?? null,
+        requestedUrl: noServerRoute && !preview?.nativeDirect ? null : view.pendingUrl ?? view.currentUrl,
+        initialPath: preview ? preview.resource.initialPath.pathname + preview.resource.initialPath.search : undefined,
+    });
+    const title = view.title ?? target.display?.title ?? preview?.resource.display?.title
+        ?? target.display?.addressLabel ?? target.targetId;
+    const nativeOrigin = access.localOrigin && access.url?.startsWith(`${access.localOrigin}/`) ? access.localOrigin : null;
+    const diagnostics = React.useMemo(() => nativeOrigin && props.diagnostics
+        ? { ...props.diagnostics, sourceOrigin: nativeOrigin } : props.diagnostics, [nativeOrigin, props.diagnostics]);
+    const automation = React.useMemo(() => nativeOrigin && props.automation
+        ? { ...props.automation, sourceOrigin: nativeOrigin } : props.automation, [nativeOrigin, props.automation]);
+    return <View testID={testID} style={stylesheet.root}>
+        {access.acquiring ? <BrowserFrameLoading testID={testID} host={title} /> : access.url ? <LocalPreviewTarget
+            title={title}
+            url={access.url}
+            view={view}
+            profileId={props.profileId}
+            lifecycleState={props.lifecycleState}
+            testID={`${testID}-frame`}
+            navigationKey={props.navigationKey}
+            navigationCommand={props.navigationCommand}
+            diagnostics={diagnostics}
+            automation={automation}
+            onLifecycle={props.onLifecycle}
+        /> : noServerRoute ? <BrowserLocalPreviewElsewhere testID={testID} serviceTitle={title} machineId={target.machineId} />
+                : <BrowserFrameUnavailable testID={testID} reasonCode={resolveBrowserViewUnavailableReasonCode(view)} />}
+        <BrowserLocalPreviewPublicLinkControls target={target} serviceTitle={title} serverId={props.serverId} testID={`${testID}-public-link`} />
+    </View>;
+}
+
 export function BrowserViewHost(props: Readonly<{
     view: BrowserControlViewState | null;
     /**
@@ -285,6 +346,7 @@ export function BrowserViewHost(props: Readonly<{
     lifecycleState?: BrowserSurfaceLifecycleState;
     navigationEffect?: BrowserControlCommandEffect | null;
     localServicePreviewState?: LocalServicePreviewState | null;
+    localServicePreviewServerId?: string | null;
     pluginUiProjection?: PluginUiProjectionModel | null;
     projectionInteractionEnabled?: boolean;
     simulatorPreviewRuntime?: SimulatorPreviewSurfaceRuntime | null;
@@ -298,6 +360,12 @@ export function BrowserViewHost(props: Readonly<{
         onRejectedMessage?: (reasonCode: string) => void;
     }> | null;
     browserProfile?: BrowserProfileV1 | null;
+    /** The live stream of a browser that runs on a machine, for `chromiumSidecar`/streamed views. */
+    streamedBrowserRuntime?: BrowserStreamedSurfaceRuntime | null;
+    /** The session whose agent drives the page, to name it in the streamed states. */
+    agent?: BrowserShellAgentPresence | null;
+    /** Where a streamed view's page is drawn inside this host, for the agent cursor. */
+    onStreamedPageRectChange?: (rect: BrowserStreamedPageRect | null) => void;
     nowMs?: () => number;
     testID?: string;
 }>): React.ReactElement {
@@ -326,24 +394,22 @@ export function BrowserViewHost(props: Readonly<{
     const localPreview = renderKind === 'localPreview' && view.target.kind === 'localServicePreview' && props.localServicePreviewState
         ? selectLocalServicePreviewByBrowserTarget(props.localServicePreviewState, view.target)
         : null;
-    const localPreviewUrl = renderKind === 'localPreview'
-        ? view.pendingUrl ?? view.currentUrl ?? localPreview?.accessUrl ?? null
-        : null;
-    if (renderKind === 'localPreview' && view.target.kind === 'localServicePreview' && localPreviewUrl) {
-        return (
-            <View testID={testID} style={stylesheet.root}>
-                <LocalPreviewTarget
-                    title={view.title ?? view.target.display?.title ?? localPreview?.resource.display?.title ?? localPreviewUrl}
-                    url={localPreviewUrl}
-                    testID={`${testID}-frame`}
-                    navigationKey={frameNavigationKey}
-                    navigationCommand={frameNavigationCommand}
-                    diagnostics={diagnosticsBridge}
-                    automation={automationBridge}
-                    onLifecycle={onViewLifecycle}
-                />
-            </View>
-        );
+    if (renderKind === 'localPreview' && view.target.kind === 'localServicePreview') {
+        return <LocalPreviewView
+            key={browserViewKey(view)}
+            view={view}
+            target={view.target}
+            preview={localPreview}
+            serverId={props.localServicePreviewServerId}
+            profileId={props.browserProfile?.profileId}
+            lifecycleState={props.lifecycleState}
+            testID={testID}
+            navigationKey={frameNavigationKey}
+            navigationCommand={frameNavigationCommand}
+            diagnostics={diagnosticsBridge}
+            automation={automationBridge}
+            onLifecycle={onViewLifecycle}
+        />;
     }
     if (renderKind === 'hostedPlugin' && view.target.kind === 'hostedPluginWeb') {
         const policyUnavailableReason = resolveHostedPluginBrowserPolicyUnavailableReason({
@@ -358,11 +424,10 @@ export function BrowserViewHost(props: Readonly<{
                 />
             );
         }
-        // Browser navigation URLs are display/navigation state, never proof that
-        // hosted-plugin bytes were selected and verified. This specialized route
-        // stays unavailable until the Availability owner supplies the exact
-        // artifact admission and selected destination binding needed to mount the
-        // bound controller without inventing endpoint or method authority.
+        // This target carries no selected destination binding or current surface
+        // scope. Plugin browser contributions currently produce externalUrl targets.
+        // Navigation URLs cannot substitute for the exact artifact admission and
+        // mount context owned by PluginSurfaceHost.
         return (
             <BrowserFrameUnavailable
                 testID={testID}
@@ -377,6 +442,7 @@ export function BrowserViewHost(props: Readonly<{
                 view={view}
                 profileId={props.browserProfile?.profileId ?? null}
                 diagnostics={diagnosticsBridge}
+                automation={automationBridge}
                 navigationKey={frameNavigationKey}
                 navigationCommand={frameNavigationCommand}
                 onLifecycle={onViewLifecycle}
@@ -384,6 +450,18 @@ export function BrowserViewHost(props: Readonly<{
                 nowMs={props.nowMs}
                 reasonCode={resolveBrowserViewUnavailableReasonCode(view)}
             />
+        );
+    }
+    if (renderKind === 'streamedBrowser') {
+        return (
+            <View testID={testID} style={stylesheet.root}>
+                <StreamedBrowserView
+                    runtime={props.streamedBrowserRuntime ?? null}
+                    agent={props.agent ?? null}
+                    onPageRectChange={props.onStreamedPageRectChange}
+                    testID={`${testID}-streamed`}
+                />
+            </View>
         );
     }
     if (renderKind === 'simulatorPreview') {

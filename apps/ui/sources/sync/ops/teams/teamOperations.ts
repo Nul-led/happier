@@ -227,12 +227,16 @@ export function setTeamLogo(params: Readonly<{
     scope: ServerAccountScope;
     address: TeamAddress;
     image: TeamLogoSourceV1;
+    onApprovalSucceeded?: (team: TeamSummaryV1) => void | Promise<void>;
+    onApprovalFailed?: (code: string) => void;
 }>): Promise<TeamMutationOutcome> {
     return mutateTeam({
         scope: params.scope,
         address: params.address,
         actionId: 'teams.logo.set',
         input: { v: 1, teamId: params.address.teamId, image: params.image },
+        onApprovalSucceeded: params.onApprovalSucceeded,
+        onApprovalFailed: params.onApprovalFailed,
     });
 }
 

@@ -14,7 +14,7 @@ import {
 describe('workflow Run as targets', () => {
     it('offers the detached runtime once the canonical capability owner reports support', () => {
         const targets = resolveWorkflowRunAsTargets({ detachedExecutionRun: 'supported' });
-        expect(targets.map((target) => target.kind)).toEqual(['session', 'attached_run', 'detached_run']);
+        expect(targets.map((target) => target.kind)).toEqual(['session', 'detached_run']);
         expect(targets.find((target) => target.kind === 'detached_run')).toEqual({
             kind: 'detached_run',
             available: true,
@@ -45,11 +45,10 @@ describe('workflow Run as targets', () => {
         });
     });
 
-    it('never reports the Session and attached runtimes as blocked by the detached probe', () => {
+    it('never reports Session execution as blocked by the detached probe', () => {
         for (const detachedExecutionRun of ['supported', 'unsupported', 'unknown', 'machine_not_selected'] as const) {
             const targets = resolveWorkflowRunAsTargets({ detachedExecutionRun });
             expect(isWorkflowRunAsTargetAvailable(targets, 'session')).toBe(true);
-            expect(isWorkflowRunAsTargetAvailable(targets, 'attached_run')).toBe(true);
         }
     });
 
@@ -58,8 +57,6 @@ describe('workflow Run as targets', () => {
         // The plausible wrong implementation falls back to the protocol default,
         // which would repeat effectful work under different execution semantics.
         expect(resolveAdmittedWorkflowExecutionTarget({ selected: 'detached_run', targets })).toBeNull();
-        expect(resolveAdmittedWorkflowExecutionTarget({ selected: 'attached_run', targets }))
-            .toEqual({ kind: 'attached_run' });
         expect(resolveAdmittedWorkflowExecutionTarget({ selected: 'session', targets }))
             .toEqual({ kind: 'session' });
     });

@@ -4,7 +4,7 @@ import { resolveMachinePickerPresence } from '@/sync/domains/machines/identity/r
 import { resolveServerScopedMachines } from '@/sync/domains/machines/resolveServerScopedMachines';
 import type { Machine } from '@/sync/domains/state/storageTypes';
 import type { ServerProfile } from '@/sync/domains/server/serverProfiles';
-import { getMachineDisplayName } from '@/utils/sessions/machineUtils';
+import { readMachineName } from '@/utils/sessions/machineDisplayNames';
 import type {
     ServerMachineInventorySnapshotV1,
 } from '@/sync/domains/machines/machineInventorySnapshots';
@@ -76,7 +76,7 @@ export function buildMachineAdministrationCandidateInventoryRowsFromSnapshots(pa
                 : undefined;
             const candidate: MachineAdministrationCandidateV1 = Object.freeze({
                 target: Object.freeze(parsedTarget.data),
-                displayName: getMachineDisplayName(machine) ?? machine.id,
+                displayName: readMachineName(machine) ?? machine.id,
                 serverLabel: snapshot.serverName,
                 availability,
                 observation: snapshot.observation,
@@ -152,7 +152,7 @@ export function buildMachineAdministrationCandidateInventoryRows(params: Readonl
                 : undefined;
             const candidate: MachineAdministrationCandidateV1 = Object.freeze({
                 target: Object.freeze(target),
-                displayName: getMachineDisplayName(machine) ?? machine.id,
+                displayName: readMachineName(machine) ?? machine.id,
                 serverLabel: profile.name || profile.serverUrl || profile.id,
                 availability,
                 observation: 'live',

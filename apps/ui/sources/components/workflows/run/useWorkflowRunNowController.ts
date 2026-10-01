@@ -10,12 +10,10 @@ import {
 
 import { resolveWorkflowProblemPresentation } from '@/components/workflows/presentation/workflowProblemPresentation';
 import { Modal } from '@/modal';
-import { WorkflowActionError } from '@/sync/domains/workflows/workflowActionError';
-import { captureActiveServerAccountScopeLifetime } from '@/sync/domains/scope/activeServerAccountScope';
 import {
-    serverAccountScopedStorageKey,
-    type ServerAccountScope,
-} from '@/sync/domains/scope/serverAccountScope';
+    useTransientCommandAcknowledgement,
+    type TransientCommandState,
+} from '@/hooks/ui/useTransientCommandAcknowledgement';
 import { storage } from '@/sync/domains/state/storageStore';
 import { callWorkflowAction } from '@/sync/domains/workflows/callWorkflowAction';
 import { workflowRunRowFromSummary } from '@/sync/store/domains/workflowRuns';
@@ -28,9 +26,10 @@ import { projectAcceptedWorkflowRunTarget } from './projectAcceptedWorkflowRunTa
  * `acknowledged` means the server accepted the admission — it is not a Run
  * state. Whether that Run is queued, running, waiting for an approval or
  * already finished is read from the canonical Run projection, never inferred
- * from this vocabulary.
+ * from this vocabulary. The machine itself is the shared transient-command
+ * owner, so this press and the Automation one cannot drift apart.
  */
-export type WorkflowRunNowState = 'idle' | 'submitting' | 'acknowledged';
+export type WorkflowRunNowState = TransientCommandState;
 
 export type WorkflowRunNowRequest = Readonly<{
     /**
@@ -55,6 +54,11 @@ export type WorkflowRunNowRequest = Readonly<{
     onComplete?: WorkflowRunStartRequestV1['onComplete'];
     /** Exact page-selected project, stamped as host context rather than Action input. */
     project?: WorkflowProjectTargetV1;
+    /**
+     * The invoking session, stamped as host context `defaultSessionId`: FIN's one origin producer
+     * records it as the Run's `origin.originSessionId` (`origin_session` steps, result delivery).
+     */
+    originSessionId?: string;
     /** Whether the pressing surface is still mounted/current, for error presentation only. */
     isInvocationCurrent?: () => boolean;
 }>;
@@ -71,102 +75,35 @@ export type WorkflowRunNowController = Readonly<{
     runNow: (request: WorkflowRunNowRequest) => Promise<WorkflowRunStartResultV1 | null>;
 }>;
 
-const ACKNOWLEDGEMENT_MS = 2500;
-
-/**
- * Module-scoped so route changes and list/detail remounts cannot create
- * competing guards for the same admission. Keys are Account/server scoped, so
- * one Run id under two Accounts can never share or clear the other's state.
- */
-const stateByKey = new Map<string, WorkflowRunNowState>();
-const inFlightKeys = new Set<string>();
-const listeners = new Set<() => void>();
-let snapshotVersion = 0;
-
-
-function resolveRunNowStateKey(scope: ServerAccountScope, runId: string): string {
-    return serverAccountScopedStorageKey(runId, scope);
-}
-
-function publishState(stateKey: string, state: WorkflowRunNowState): void {
-    if (state === 'idle') stateByKey.delete(stateKey);
-    else stateByKey.set(stateKey, state);
-    snapshotVersion += 1;
-    for (const listener of listeners) listener();
-}
-
-function subscribe(listener: () => void): () => void {
-    listeners.add(listener);
-    return () => listeners.delete(listener);
-}
-
-async function startWorkflowRun(
-    request: WorkflowRunNowRequest,
-    stateKey: string,
-    options: Readonly<{
-        isInvocationCurrent?: () => boolean;
-        isAuthorityCurrent: () => boolean;
-    }>,
-): Promise<WorkflowRunStartResultV1 | null> {
-    // A second press while the first is still unsettled is the same intent, not
-    // a second Run: the identical `runId` is already in flight.
-    if (inFlightKeys.has(stateKey)) return null;
-    inFlightKeys.add(stateKey);
-    const isCurrent = options.isInvocationCurrent ?? (() => true);
-    try {
-        const input = WorkflowRunStartRequestV1Schema.parse({
-            runId: request.runId,
-            source: request.source,
-            ...(request.metadata === undefined ? {} : { metadata: request.metadata }),
-            ...(request.inputs === undefined ? {} : { inputs: request.inputs }),
-            ...(request.executionTarget === undefined || request.executionTarget.kind === 'session'
-                ? {}
-                : { executionTarget: request.executionTarget }),
-            ...(request.onComplete === undefined ? {} : { onComplete: request.onComplete }),
-        });
-        publishState(stateKey, 'submitting');
-        // Dispatch and failure mapping stay at the one shared workflow Action seam.
-        const result = await callWorkflowAction({
-            actionId: 'workflow.run.start',
-            input,
-            parseResult: (value) => WorkflowRunStartResultV1Schema.parse(value),
-            fallbackMessage: 'Workflow run request failed',
-            ...(request.project === undefined
-                ? {}
-                : { context: { externalActionTarget: {
-                    kind: 'machine',
+async function startWorkflowRun(request: WorkflowRunNowRequest): Promise<WorkflowRunStartResultV1> {
+    const input = WorkflowRunStartRequestV1Schema.parse({
+        runId: request.runId,
+        source: request.source,
+        ...(request.metadata === undefined ? {} : { metadata: request.metadata }),
+        ...(request.inputs === undefined ? {} : { inputs: request.inputs }),
+        ...(request.executionTarget === undefined || request.executionTarget.kind === 'session'
+            ? {}
+            : { executionTarget: request.executionTarget }),
+        ...(request.onComplete === undefined ? {} : { onComplete: request.onComplete }),
+    });
+    // Dispatch and failure mapping stay at the one shared workflow Action seam.
+    const result = await callWorkflowAction({
+        actionId: 'workflow.run.start',
+        input,
+        parseResult: (value) => WorkflowRunStartResultV1Schema.parse(value),
+        fallbackMessage: 'Workflow run request failed',
+        ...(request.project === undefined && request.originSessionId === undefined
+            ? {}
+            : { context: {
+                ...(request.originSessionId === undefined ? {} : { defaultSessionId: request.originSessionId }),
+                ...(request.project === undefined ? {} : { externalActionTarget: {
+                    kind: 'machine' as const,
                     machineId: request.project.machineId,
                     project: projectAcceptedWorkflowRunTarget(request.project),
-                } } }),
-        });
-        if (!options.isAuthorityCurrent()) {
-            // The Account or server changed while this was in flight. A stale
-            // success must not navigate or expose another Account's Run.
-            publishState(stateKey, 'idle');
-            return null;
-        }
-        storage.getState().upsertWorkflowRuns([workflowRunRowFromSummary(
-            result.run,
-            request.metadata ? { kind: 'available', value: request.metadata } : null,
-        )]);
-        publishState(stateKey, 'acknowledged');
-        setTimeout(() => {
-            if (stateByKey.get(stateKey) === 'acknowledged') publishState(stateKey, 'idle');
-        }, ACKNOWLEDGEMENT_MS);
-        return result;
-    } catch (error) {
-        publishState(stateKey, 'idle');
-        if (options.isAuthorityCurrent() && isCurrent()) {
-            // The Automation formatter knows no workflow code, so every
-            // admission refusal — no access, a conflicting rejoin, a definition
-            // that needs repair — read as one generic sentence.
-            const problem = resolveWorkflowProblemPresentation(error);
-            await Modal.alert(problem.title, problem.message);
-        }
-        return null;
-    } finally {
-        inFlightKeys.delete(stateKey);
-    }
+                } }),
+            } }),
+    });
+    return result;
 }
 
 /**
@@ -179,26 +116,34 @@ async function startWorkflowRun(
  * Run-state interpretation of its own.
  */
 export function useWorkflowRunNowController(): WorkflowRunNowController {
-    React.useSyncExternalStore(subscribe, () => snapshotVersion, () => snapshotVersion);
-    const accountLifetime = captureActiveServerAccountScopeLifetime();
-    const scope = accountLifetime?.scope ?? null;
+    const command = useTransientCommandAcknowledgement<WorkflowRunStartResultV1>('workflow.runNow');
 
     return React.useMemo(() => ({
-        stateFor: (runId: string) => scope === null
-            ? 'idle'
-            : stateByKey.get(resolveRunNowStateKey(scope, runId)) ?? 'idle',
-        runNow: async (request) => {
-            if (accountLifetime === null || !accountLifetime.isCurrent()) return null;
-            return startWorkflowRun(
-                request,
-                resolveRunNowStateKey(accountLifetime.scope, request.runId),
-                {
-                    ...(request.isInvocationCurrent
-                        ? { isInvocationCurrent: request.isInvocationCurrent }
-                        : {}),
-                    isAuthorityCurrent: () => accountLifetime.isCurrent(),
-                },
-            );
-        },
-    }), [accountLifetime, scope, snapshotVersion]);
+        stateFor: command.stateFor,
+        // A second press while the first is still unsettled is the same intent,
+        // not a second Run: the identical `runId` is already in flight.
+        runNow: async (request) => await command.run({
+            commandId: request.runId,
+            submit: () => startWorkflowRun(request),
+            // Merged into the existing Account-scoped Run row map only while
+            // the pressing Account is still active, so the exact route can open
+            // the settled Run immediately.
+            onAccepted: (result) => {
+                storage.getState().upsertWorkflowRuns([workflowRunRowFromSummary(
+                    result.run,
+                    request.metadata ? { kind: 'available', value: request.metadata } : null,
+                )]);
+            },
+            ...(request.isInvocationCurrent
+                ? { isInvocationCurrent: request.isInvocationCurrent }
+                : {}),
+            onError: async (error) => {
+                // The Automation formatter knows no workflow code, so every
+                // admission refusal — no access, a conflicting rejoin, a
+                // definition that needs repair — read as one generic sentence.
+                const problem = resolveWorkflowProblemPresentation(error);
+                await Modal.alert(problem.title, problem.message);
+            },
+        }),
+    }), [command]);
 }

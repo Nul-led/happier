@@ -16,14 +16,12 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
-import { registerHappierBridgeTools } from './registerHappierBridgeTools';
+import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
+import { forwardHappierBridgeTool } from './registerHappierBridgeTools';
 import { registerHappierMcpResources } from '@/mcp/resources/registerHappierMcpResources';
 import { callMcpToolWithResolvedTimeout } from '@/mcp/mcpToolCallRequestOptions';
 import { isActionEnabledByEnv } from '@/settings/actionsSettings';
-import { withMcpTimeout } from '@/mcp/runtime/withMcpTimeout';
 import { runMcpStdioBridgeLifecycle } from '@/mcp/runtime/runMcpStdioBridgeLifecycle';
-
-const MCP_BRIDGE_STARTUP_TIMEOUT_MS = 60_000;
 
 function parseArgs(argv: string[]): { url: string | null } {
   let url: string | null = null;
@@ -51,24 +49,31 @@ async function main() {
   }
 
   let httpClient: Client | null = null;
+  let httpClientPromise: Promise<Client> | null = null;
 
   async function ensureHttpClient(): Promise<Client> {
     if (httpClient) return httpClient;
-    const client = new Client(
-      { name: 'happier-stdio-bridge', version: '1.0.0' },
-      { capabilities: {} }
-    );
-
-    const transport = new StreamableHTTPClientTransport(new URL(baseUrl));
+    if (httpClientPromise) return await httpClientPromise;
+    const pending = (async () => {
+      const client = new Client(
+        { name: 'happier-stdio-bridge', version: '1.0.0' },
+        { capabilities: {} }
+      );
+      const transport = new StreamableHTTPClientTransport(new URL(baseUrl));
+      try {
+        await client.connect(transport);
+        httpClient = client;
+        return client;
+      } catch (error) {
+        await client.close().catch(() => undefined);
+        throw error;
+      }
+    })();
+    httpClientPromise = pending;
     try {
-      await withMcpTimeout(client.connect(transport), {
-        timeoutMs: MCP_BRIDGE_STARTUP_TIMEOUT_MS,
-        label: 'happier_mcp_bridge_connect_timeout',
-      });
-      httpClient = client;
-      return client;
+      return await pending;
     } catch (error) {
-      await client.close().catch(() => undefined);
+      httpClientPromise = null;
       throw error;
     }
   }
@@ -78,35 +83,40 @@ async function main() {
     name: 'Happier MCP Bridge',
     version: '1.0.0',
   });
+  // Initialize the stdio transport without waiting for two serial loopback
+  // requests. Discovery and execution still go to the exact upstream runtime.
+  server.server.registerCapabilities({ tools: { listChanged: false } });
+  server.server.setRequestHandler(ListToolsRequestSchema, async () => {
+    return await (await ensureHttpClient()).listTools();
+  });
+  server.server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
+    return await forwardHappierBridgeTool(
+      request.params.name,
+      request.params.arguments,
+      extra,
+      async (name, args, options) => {
+        const client = await ensureHttpClient();
+        return await callMcpToolWithResolvedTimeout({
+          client,
+          toolName: name,
+          args,
+          ...(options?.signal === undefined ? {} : { signal: options.signal }),
+          ...(options?.requestMetadata === undefined ? {} : { requestMetadata: options.requestMetadata }),
+          ...(options?.onprogress === undefined ? {} : { onprogress: options.onprogress }),
+        });
+      },
+    );
+  });
+  registerHappierMcpResources(server as any, {
+    isActionEnabled: (id) => isActionEnabledByEnv(id, { surface: 'agent' }),
+  });
 
   const requestedSignal = await runMcpStdioBridgeLifecycle({
     stdin: process.stdin,
     start: async () => {
-      const remoteToolCatalog = await withMcpTimeout(
-        (await ensureHttpClient()).listTools(),
-        { timeoutMs: MCP_BRIDGE_STARTUP_TIMEOUT_MS, label: 'happier_mcp_bridge_list_tools_timeout' },
-      );
-      registerHappierBridgeTools(server as any, {
-        tools: remoteToolCatalog.tools,
-        callHttpTool: async (name, args, options) => {
-          const client = await ensureHttpClient();
-          return await callMcpToolWithResolvedTimeout({
-            client,
-            toolName: name,
-            args,
-            ...(options?.signal === undefined ? {} : { signal: options.signal }),
-            ...(options?.requestMetadata === undefined ? {} : { requestMetadata: options.requestMetadata }),
-            ...(options?.onprogress === undefined ? {} : { onprogress: options.onprogress }),
-          });
-        },
-      });
-      registerHappierMcpResources(server as any, {
-        isActionEnabled: (id) => isActionEnabledByEnv(id, { surface: 'agent' }),
-      });
-
       const stdio = new StdioServerTransport();
       await server.connect(stdio);
-      return { transport: stdio, ...(httpClient ? { upstream: httpClient } : {}) };
+      return { transport: stdio };
     },
     closeServer: async () => await server.close(),
     closeUpstream: async () => await httpClient?.close(),

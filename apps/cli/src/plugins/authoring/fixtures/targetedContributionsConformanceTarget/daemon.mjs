@@ -23,17 +23,17 @@ export async function activate(api) {
           contributor: Object.freeze({
             pluginId: contribution.contributor.pluginId,
             contributionId: contribution.contributor.contributionId,
-            immutableGenerationId: contribution.contributor.immutableGenerationId,
+            occurrenceId: contribution.contributor.occurrenceId,
           }),
           result,
         }));
       }
       return Object.freeze({
-        targetGeneration: snapshot.generation,
+        targetOccurrenceId: snapshot.occurrenceId,
         contributors: Object.freeze(snapshot.contributions.map((contribution) => Object.freeze({
           pluginId: contribution.contributor.pluginId,
           contributionId: contribution.contributor.contributionId,
-          immutableGenerationId: contribution.contributor.immutableGenerationId,
+          occurrenceId: contribution.contributor.occurrenceId,
         }))),
         verifications: Object.freeze(verifications),
       });

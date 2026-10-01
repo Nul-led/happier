@@ -1,11 +1,17 @@
 import {
   createProviderErrorV1,
+  parseSavedSecretRefV1,
+  resolveProviderSecretBindingIdV1,
+  type ProviderErrorV1,
+  type ProviderSettingsV1,
   type ProviderCredentialTransportV1,
 } from '@happier-dev/protocol';
 
 import type { ActiveAccountSettingsSnapshot } from '@/settings/accountSettings/activeAccountSettingsSnapshot';
 import type { ProviderProbeCredential } from '../probe/client';
-
+import type { ResolvedProviderConnectionRecord } from '../registry/types';
+import { awaitWithinProviderOperation, ProviderOperationAbandonedError, type ProviderOperationLifetime } from '../operationLifetime';
+import { refreshSavedSecretCatalogForOperation } from '@/settings/secrets/hydrateSavedSecretCatalog';
 import {
   resolveProviderCredentialPlaintext,
   resolveProviderCredentialPlaintextAsync,
@@ -13,6 +19,58 @@ import {
 } from './credentials';
 import { TeamCredentialDirectMaterialOperationError } from '@/daemon/connectedServices/directMaterial/teamCredentialDirectMaterialClient';
 import { createProviderRedactionLease } from './redaction';
+
+/** Refresh only the selected shared credential at a new Provider operation's admission. */
+export async function admitRuntimeProviderSavedSecret(input: Readonly<{
+  connection: ResolvedProviderConnectionRecord;
+  providerSettings: ProviderSettingsV1;
+  snapshot: ActiveAccountSettingsSnapshot;
+  getAccountSettingsSnapshot: () => ActiveAccountSettingsSnapshot | null;
+  lifetime: ProviderOperationLifetime;
+}>): Promise<Readonly<
+  | { ok: true; snapshot: ActiveAccountSettingsSnapshot }
+  | { ok: false; error: ProviderErrorV1 }
+>> {
+  const { connection, snapshot } = input;
+  const context = { connectionId: connection.connectionId, machineId: connection.machineId };
+  if (!connection.authorization.authorized) {
+    return { ok: false, error: createProviderErrorV1(connection.authorization.errorCode, context) };
+  }
+  if (connection.deployment.kind === 'managedLocal') return { ok: true, snapshot };
+  const credential = connection.source.kind === 'contribution'
+    ? connection.source.definition.credential
+    : connection.source.template.credential;
+  if (!credential) return { ok: true, snapshot };
+  try {
+    const ref = resolveProviderSecretBindingIdV1(
+      input.providerSettings, connection.connectionId, connection.machineId, credential.slotId,
+    );
+    if (ref === null || parseSavedSecretRefV1(ref).kind !== 'shared_resource') {
+      return { ok: true, snapshot };
+    }
+    if (!snapshot.scopeKey) {
+      return { ok: false, error: createProviderErrorV1('provider_authorization_changed', context) };
+    }
+    const admitted = await awaitWithinProviderOperation(refreshSavedSecretCatalogForOperation({
+      expectedScopeKey: snapshot.scopeKey,
+      references: [{ ref }],
+      ...(input.lifetime.signal ? { signal: input.lifetime.signal } : {}),
+    }), input.lifetime);
+    const current = input.getAccountSettingsSnapshot();
+    if (!current || current.scopeKey !== snapshot.scopeKey
+      || current.settingsVersion !== snapshot.settingsVersion
+      || admitted.settingsVersion !== snapshot.settingsVersion
+      || admitted.settings !== snapshot.settings || current.settings !== snapshot.settings) {
+      return { ok: false, error: createProviderErrorV1('provider_authorization_changed', context) };
+    }
+    return { ok: true, snapshot: admitted };
+  } catch (error) {
+    return { ok: false, error: createProviderErrorV1(
+      error instanceof ProviderOperationAbandonedError ? 'provider_endpoint_unavailable' : 'provider_secret_missing',
+      context,
+    ) };
+  }
+}
 
 export function renderProviderProbeCredential(
   value: string,

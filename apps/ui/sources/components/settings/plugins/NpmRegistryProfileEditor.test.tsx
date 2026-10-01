@@ -2,7 +2,7 @@ import * as React from 'react';
 import { act } from 'react-test-renderer';
 import { describe, expect, it, vi } from 'vitest';
 
-import { findTestInstanceByTypeWithProps, pressTestInstanceAsync, renderScreen } from '@/dev/testkit';
+import { pressTestInstanceAsync, renderScreen } from '@/dev/testkit';
 import { ModalCardFrame } from '@/modal/components/card/ModalCardFrame';
 import { installSettingsViewCommonModuleMocks } from '../settingsViewTestHelpers';
 
@@ -26,18 +26,6 @@ installSettingsViewCommonModuleMocks({
         return createTextModuleMock({ translate: (key) => key });
     },
 });
-
-vi.mock('@/components/ui/lists/Item', () => ({
-    Item: (props: any) => React.createElement('Item', props),
-}));
-
-vi.mock('@/components/ui/forms/Switch', () => ({
-    Switch: (props: any) => React.createElement('Switch', props),
-}));
-
-vi.mock('@/components/ui/buttons/RoundButton', () => ({
-    RoundButton: (props: any) => React.createElement('RoundButton', props),
-}));
 
 type EditorModule = typeof import('./NpmRegistryProfileEditor');
 
@@ -93,10 +81,12 @@ async function renderEditor(params: Readonly<{
             screen.findByTestId(testID)?.props.onPress();
         });
     };
-    const saveButton = () => findTestInstanceByTypeWithProps(screen.tree, 'RoundButton', {
-        testID: 'settings.plugins.registries.editor.save',
-    });
-    return { screen, onResolve, onClose, setField, toggle, saveButton };
+    // The outermost instance carrying a testID is the real component this
+    // editor rendered (Item, RoundButton), so its props are what the editor
+    // handed it rather than those of the inner pressable.
+    const control = (testID: string) => screen.findAllByTestId(testID)[0] ?? null;
+    const saveButton = () => control('settings.plugins.registries.editor.save');
+    return { screen, onResolve, onClose, setField, toggle, control, saveButton };
 }
 
 describe('NpmRegistryProfileEditorModal', () => {
@@ -108,9 +98,9 @@ describe('NpmRegistryProfileEditorModal', () => {
         await editor.setField('settings.plugins.registries.editor.scopes', '@acme, @team');
         await editor.toggle('settings.plugins.registries.editor.useAsDefault');
 
-        expect(editor.screen.findByTestId('settings.plugins.registries.editor.useAsDefault')?.props.rightElementOutsidePressable)
+        expect(editor.control('settings.plugins.registries.editor.useAsDefault')?.props.rightElementOutsidePressable)
             .toBe(true);
-        expect(editor.screen.findByTestId('settings.plugins.registries.editor.allowPrivateNetwork')?.props.rightElementOutsidePressable)
+        expect(editor.control('settings.plugins.registries.editor.allowPrivateNetwork')?.props.rightElementOutsidePressable)
             .toBe(true);
 
         expect(editor.saveButton()?.props.disabled).toBe(false);
@@ -192,9 +182,7 @@ describe('NpmRegistryProfileEditorModal', () => {
         await editor.setField('settings.plugins.registries.editor.origin', 'https://registry.acme.test');
         await editor.setField('settings.plugins.registries.editor.displayName', 'Acme');
         await pressTestInstanceAsync(
-            findTestInstanceByTypeWithProps(editor.screen.tree, 'RoundButton', {
-                testID: 'settings.plugins.registries.editor.cancel',
-            }),
+            editor.control('settings.plugins.registries.editor.cancel'),
             'cancel',
         );
 

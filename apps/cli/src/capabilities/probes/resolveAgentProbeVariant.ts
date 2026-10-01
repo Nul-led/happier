@@ -1,3 +1,5 @@
+import type { RuntimeDescriptorV1 } from '@happier-dev/protocol';
+import type { AgentCatalogEntry } from '@/agent/catalog/types';
 import { AGENTS } from '@/agent/catalog/registry';
 import type { CatalogAgentLookupId } from '@/agent/catalog/ids';
 import type { BackendTargetRefV1 } from '@happier-dev/protocol';
@@ -7,8 +9,12 @@ import type { PreflightSessionControlsProbeKind } from './preflightSessionContro
 
 export async function resolveAgentProbeVariant(params: Readonly<{
   agentId: CatalogAgentLookupId;
+  catalogEntry?: AgentCatalogEntry | null;
+  runtimeCacheKey?: string;
   probeKind?: PreflightSessionControlsProbeKind;
   backendTarget?: BackendTargetRefV1;
+  runtimeDescriptorV1?: RuntimeDescriptorV1;
+  runtimeKindOverride?: string;
   accountSettings?: Readonly<Record<string, unknown>> | null;
   env?: NodeJS.ProcessEnv;
 }>): Promise<string> {
@@ -17,16 +23,19 @@ export async function resolveAgentProbeVariant(params: Readonly<{
     backendTarget: params.backendTarget,
     accountSettings: params.accountSettings,
   });
-  if (configuredAcpVariant) return configuredAcpVariant;
 
-  const entry = AGENTS[params.agentId];
+  const entry = params.catalogEntry === undefined ? AGENTS[params.agentId] : params.catalogEntry;
   const probeKind = params.probeKind ?? 'models';
   const resolveEntryVariant = entry?.resolveSessionControlsProbeVariant ?? entry?.resolveModelsProbeVariant;
-  const entryVariant = resolveEntryVariant?.({
+  const entryVariant = configuredAcpVariant ?? resolveEntryVariant?.({
     backendTarget: params.backendTarget,
+    runtimeDescriptorV1: params.runtimeDescriptorV1,
+    runtimeKindOverride: params.runtimeKindOverride,
     probeKind,
     accountSettings: params.accountSettings ?? null,
     env: params.env,
   }) ?? null;
-  return entryVariant ?? `${params.agentId}:default`;
+  const variant = configuredAcpVariant ?? entryVariant ?? `${params.agentId}:default`;
+  return params.runtimeCacheKey || params.runtimeDescriptorV1 || params.runtimeKindOverride !== undefined
+    ? JSON.stringify([params.runtimeCacheKey ?? null, variant, params.runtimeDescriptorV1 ?? null, params.runtimeKindOverride ?? null]) : variant;
 }

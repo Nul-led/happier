@@ -7,14 +7,14 @@ export const SOURCE_CONTROL_SETTINGS = defineSettingsPage({
         commits: {
             titleKey: 'settingsSourceControl.page.commits.title',
             settings: {
-                commitStrategy: {
+                commitStrategy: { storage: { scope: 'account', key: 'scmCommitStrategy', access: 'read_write' },
                     titleKey: 'settingsSourceControl.page.commitStrategy.title',
                     keywordKeys: ['settingsSourceControl.page.commitStrategy.atomic', 'settingsSourceControl.page.commitStrategy.gitStaging'],
                 },
-                commitMessageGenerator: { titleKey: 'settingsSourceControl.commitMessageGenerator.title', descriptionKey: 'settingsSourceControl.page.generator.description' },
+                commitMessageGenerator: { storage: { scope: 'account', key: 'scmCommitMessageGeneratorEnabled', access: 'read_write' }, titleKey: 'settingsSourceControl.commitMessageGenerator.title', descriptionKey: 'settingsSourceControl.page.generator.description' },
                 commitMessageAgent: { titleKey: 'settingsSourceControl.page.generator.agentTitle', descriptionKey: 'settingsSourceControl.page.generator.agentDescription' },
-                commitMessageInstructions: { titleKey: 'settingsSourceControl.page.generator.instructionsTitle', descriptionKey: 'settingsSourceControl.page.generator.instructionsDescription' },
-                includeCoAuthoredBy: { titleKey: 'settingsSourceControl.commitAttribution.includeCoAuthoredBy.title', descriptionKey: 'settingsSourceControl.page.coAuthoredByDescription' },
+                commitMessageInstructions: { storage: { scope: 'account', key: 'scmCommitMessageGeneratorInstructions', access: 'read_write' }, titleKey: 'settingsSourceControl.page.generator.instructionsTitle', descriptionKey: 'settingsSourceControl.page.generator.instructionsDescription' },
+                includeCoAuthoredBy: { storage: { scope: 'account', key: 'scmIncludeCoAuthoredBy', access: 'read_write' }, titleKey: 'settingsSourceControl.commitAttribution.includeCoAuthoredBy.title', descriptionKey: 'settingsSourceControl.page.coAuthoredByDescription' },
             },
         },
         remote: {
@@ -22,9 +22,14 @@ export const SOURCE_CONTROL_SETTINGS = defineSettingsPage({
             settings: {
                 confirmBeforePulling: { titleKey: 'settingsSourceControl.remoteConfirmation.confirmBeforePulling.title', descriptionKey: 'settingsSourceControl.remoteConfirmation.confirmBeforePulling.subtitle' },
                 confirmBeforePushing: { titleKey: 'settingsSourceControl.remoteConfirmation.confirmBeforePushing.title', descriptionKey: 'settingsSourceControl.remoteConfirmation.confirmBeforePushing.subtitle' },
-                pushRejection: {
+                pushRejection: { storage: { scope: 'account', key: 'scmPushRejectPolicy', access: 'read_write' },
                     titleKey: 'settingsSourceControl.page.pushRejection.title',
                     keywordKeys: ['settingsSourceControl.page.pushRejection.fetch'],
+                },
+                pullRequestPlacement: { storage: { scope: 'account', key: 'scmPullRequestPlacement', access: 'read_write' },
+                    titleKey: 'sessionGitPullRequest.settings.placementTitle',
+                    descriptionKey: 'sessionGitPullRequest.settings.placementDescription',
+                    keywordKeys: ['sessionGitPullRequest.settings.sidebar', 'sessionGitPullRequest.settings.details'],
                 },
             },
         },
@@ -41,17 +46,25 @@ export const SOURCE_CONTROL_SETTINGS = defineSettingsPage({
             titleKey: 'settingsSourceControl.page.files.title',
             settings: {
                 // The renderer and layout rows exist on web only (the view's `Platform.OS === 'web'`).
-                diffRenderer: { titleKey: 'settingsSourceControl.page.files.renderer', host: settingsHosts.web },
-                diffLayout: {
+                diffRenderer: { storage: { scope: 'account', key: 'filesDiffRendererMode', access: 'read_write' }, titleKey: 'settingsSourceControl.page.files.renderer', host: settingsHosts.web },
+                diffLayout: { storage: { scope: 'account', key: 'filesDiffPresentationStyle', access: 'read_write' },
                     titleKey: 'settingsSourceControl.page.files.layout',
                     host: settingsHosts.web,
                     keywordKeys: ['settingsSourceControl.page.files.unified', 'settingsSourceControl.page.files.split'],
                 },
-                syntaxHighlighting: { titleKey: 'settingsSourceControl.page.files.highlighting' },
-                changedFilesDensity: { titleKey: 'settingsSourceControl.page.files.density' },
-                showLineNumbersInDiffs: { titleKey: 'settingsAppearance.showLineNumbersInDiffs', descriptionKey: 'settingsAppearance.showLineNumbersInDiffsDescription' },
-                showLineNumbersInToolViews: { titleKey: 'settingsAppearance.showLineNumbersInToolViews', descriptionKey: 'settingsAppearance.showLineNumbersInToolViewsDescription' },
-                wrapLinesInDiffs: { titleKey: 'settingsAppearance.wrapLinesInDiffs', descriptionKey: 'settingsAppearance.wrapLinesInDiffsDescription' },
+                syntaxHighlighting: { storage: { scope: 'account', key: 'filesDiffSyntaxHighlightingMode', access: 'read_write' }, titleKey: 'settingsSourceControl.page.files.highlighting' },
+                changedFilesDensity: { storage: { scope: 'account', key: 'filesChangedFilesRowDensity', access: 'read_write' }, titleKey: 'settingsSourceControl.page.files.density' },
+                gitPaneLayout: { storage: { scope: 'account', key: 'scmGitPaneLayout', access: 'read_write' },
+                    titleKey: 'sessionGitDisplay.settingsLayout',
+                    keywordKeys: ['sessionGitDisplay.layoutUnified', 'sessionGitDisplay.layoutTabs'],
+                },
+                changedFilesLayout: { storage: { scope: 'account', key: 'scmChangedFilesLayout', access: 'read_write' },
+                    titleKey: 'sessionGitDisplay.settingsShowAs',
+                    keywordKeys: ['sessionGitDisplay.showAsList', 'sessionGitDisplay.showAsTree'],
+                },
+                showLineNumbersInDiffs: { storage: { scope: 'account', key: 'showLineNumbers', access: 'read_write' }, titleKey: 'settingsAppearance.showLineNumbersInDiffs', descriptionKey: 'settingsAppearance.showLineNumbersInDiffsDescription' },
+                showLineNumbersInToolViews: { storage: { scope: 'account', key: 'showLineNumbersInToolViews', access: 'read_write' }, titleKey: 'settingsAppearance.showLineNumbersInToolViews', descriptionKey: 'settingsAppearance.showLineNumbersInToolViewsDescription' },
+                wrapLinesInDiffs: { storage: { scope: 'account', key: 'wrapLinesInDiffs', access: 'read_write' }, titleKey: 'settingsAppearance.wrapLinesInDiffs', descriptionKey: 'settingsAppearance.wrapLinesInDiffsDescription' },
             },
         },
         backends: {
@@ -66,7 +79,7 @@ export const SOURCE_CONTROL_SETTINGS = defineSettingsPage({
         editor: {
             titleKey: 'settingsSourceControl.editor',
             settings: {
-                editorAutoSave: { titleKey: 'settingsSourceControl.editorAutoSave', descriptionKey: 'settingsSourceControl.editorAutoSaveDescription' },
+                editorAutoSave: { storage: { scope: 'account', key: 'filesEditorAutoSave', access: 'read_write' }, titleKey: 'settingsSourceControl.editorAutoSave', descriptionKey: 'settingsSourceControl.editorAutoSaveDescription' },
             },
         },
         // The same Editor section on the page; this row renders only with the rich Markdown editor.
@@ -74,7 +87,7 @@ export const SOURCE_CONTROL_SETTINGS = defineSettingsPage({
             titleKey: 'settingsSourceControl.editor',
             featureId: 'files.markdownRichEditor',
             settings: {
-                markdownEditMode: {
+                markdownEditMode: { storage: { scope: 'account', key: 'markdownDefaultEditMode', access: 'read_write' },
                     titleKey: 'settingsSourceControl.page.editor.markdownTitle',
                     keywordKeys: ['settingsSourceControl.page.editor.rich', 'settingsSourceControl.page.editor.raw'],
                 },

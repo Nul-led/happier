@@ -78,6 +78,7 @@ function installRunner(params: Readonly<{
   homeDir: string;
   state: RuntimeState;
   mutations: string[];
+  rejectPersonalHomeArtifact?: boolean;
 }>) {
   let taskSequence = 0;
   const results = new Map<string, SystemTaskResult>();
@@ -86,6 +87,18 @@ function installRunner(params: Readonly<{
     if (spec.kind === 'relay.runtime.status.v1') {
       results.set(taskId, statusResult(taskId, params.state));
     } else if (spec.kind === 'relay.runtime.installOrUpdate.v1') {
+      if (params.rejectPersonalHomeArtifact) {
+        results.set(taskId, {
+          protocolVersion: 1,
+          taskId,
+          ok: false,
+          error: {
+            code: 'personal_home_artifact_update_required',
+            message: 'The selected Happier server artifact does not support local Personal Home creation. Update Happier and try again.',
+          },
+        });
+        return { taskId };
+      }
       const taskParams = spec.params;
       if (!taskParams || typeof taskParams !== 'object' || Array.isArray(taskParams)) {
         throw new Error('Personal Home install task must carry object parameters.');
@@ -244,7 +257,7 @@ describe('createLocalPersonalHome production adapter', () => {
     });
   }, 90_000);
 
-  it('rejects an incompatible artifact before runtime, network, credential, profile, or seed mutation', async () => {
+  it('surfaces shared runtime artifact admission before runtime, network, credential, or profile mutation', async () => {
     await withTempDir('happier-local-home-admission-', async (homeDir) => {
       envScope.patch({ HAPPIER_HOME_DIR: homeDir, HAPPIER_SERVER_URL: undefined, HAPPIER_WEBAPP_URL: undefined });
       const payloadRoot = join(homeDir, 'incompatible-artifact');
@@ -257,19 +270,14 @@ describe('createLocalPersonalHome production adapter', () => {
         homeDir,
         state: { installed: false, healthy: false, dataPresent: false, anonymousSignupEnabled: null },
         mutations: [],
+        rejectPersonalHomeArtifact: true,
       });
       const fetchMock = vi.fn();
       vi.stubGlobal('fetch', fetchMock);
 
-      const [
-        { createLocalPersonalHome },
-        { listServerProfiles },
-        { readStoredCredentialsForServerId },
-      ] = await Promise.all([
-        import('./createLocalPersonalHome'),
-        import('@/server/serverProfiles'),
-        import('@/persistence'),
-      ]);
+      const { listServerProfiles } = await import('@/server/serverProfiles');
+      const { readStoredCredentialsForServerId } = await import('@/persistence');
+      const { createLocalPersonalHome } = await import('./createLocalPersonalHome');
       await expect(createLocalPersonalHome({ channel: 'stable', mode: 'user' })).rejects.toMatchObject({
         code: 'personal_home_artifact_update_required',
       });
@@ -282,7 +290,39 @@ describe('createLocalPersonalHome production adapter', () => {
       await expect(readdir(join(homeDir, 'personal-home-bootstrap'))).rejects.toMatchObject({ code: 'ENOENT' });
       expect(cleanup).toHaveBeenCalledOnce();
     });
-  });
+  }, 90_000);
+
+  it('passes cancellation into the local system-task bootstrap before starting runtime mutation', async () => {
+    await withTempDir('happier-local-home-cancel-', async (homeDir) => {
+      envScope.patch({ HAPPIER_HOME_DIR: homeDir, HAPPIER_SERVER_URL: undefined, HAPPIER_WEBAPP_URL: undefined });
+      const payloadRoot = join(homeDir, 'artifact');
+      await mkdir(payloadRoot, { recursive: true });
+      const cleanup = vi.fn(async () => undefined);
+      boundaries.prepareArtifact.mockResolvedValue({
+        componentId: 'happier-server', channel: 'publicdev', versionId: 'server-v0.3.0-dev', payloadRoot, source: null, cleanup,
+      });
+      const [{ writePersonalHomeServerArtifactCapability }, { createLocalPersonalHome }] = await Promise.all([
+        import('@happier-dev/cli-common/firstPartyRuntime'),
+        import('./createLocalPersonalHome'),
+      ]);
+      await writePersonalHomeServerArtifactCapability(payloadRoot);
+      const start = installRunner({
+        homeDir,
+        state: { installed: false, healthy: false, dataPresent: false, anonymousSignupEnabled: null },
+        mutations: [],
+      });
+      const controller = new AbortController();
+      controller.abort();
+
+      await expect(createLocalPersonalHome(
+        { channel: 'dev', mode: 'user' },
+        { allowErasedRuntimeRecreate: true, signal: controller.signal },
+      )).rejects.toMatchObject({ code: 'cancelled' });
+
+      expect(start).not.toHaveBeenCalled();
+      expect(cleanup).toHaveBeenCalledOnce();
+    });
+  }, 90_000);
 
   it('keeps credential and profile authority unchanged when account creation fails after runtime admission', async () => {
     await withTempDir('happier-local-home-account-failure-', async (homeDir) => {

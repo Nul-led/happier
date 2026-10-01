@@ -10,6 +10,10 @@ import { promisify } from 'node:util';
 
 import type { build as EsbuildBuild } from 'esbuild';
 import { describe, expect, it } from 'vitest';
+import {
+  materializePrepublicationWorkspacePackageRoots,
+  resolveWorkspaceBundlesFromPackageJson,
+} from '@happier-dev/cli-common/workspaces';
 import { ingestPluginManifestV2, type PluginManifestV2 } from '@happier-dev/protocol';
 import { PluginError, isPluginError } from '@happier-dev/plugin-sdk';
 
@@ -29,65 +33,20 @@ const publicAuthoringSourceRoot = fileURLToPath(new URL(
   '../../../../../packages/plugin-sdk/examples/public-authoring',
   import.meta.url,
 ));
-const canonicalPluginSdkRoot = fileURLToPath(new URL(
-  '../../../../../packages/plugin-sdk',
-  import.meta.url,
-));
-const canonicalPluginProtocolRoot = fileURLToPath(new URL(
-  '../../../../../packages/protocol',
-  import.meta.url,
-));
-const canonicalPluginAgentsRoot = fileURLToPath(new URL(
-  '../../../../../packages/agents',
-  import.meta.url,
-));
-const canonicalPluginCliCommonRoot = fileURLToPath(new URL(
-  '../../../../../packages/cli-common',
-  import.meta.url,
-));
-const canonicalPluginUiRoot = fileURLToPath(new URL(
-  '../../../../../packages/plugin-ui',
-  import.meta.url,
-));
+const repoRoot = fileURLToPath(new URL('../../../../../', import.meta.url));
 
 async function linkCanonicalPublicRuntimePackages(projectRoot: string): Promise<void> {
-  const scopeRoot = join(projectRoot, 'node_modules', '@happier-dev');
-  await mkdir(scopeRoot, { recursive: true });
-  for (const [packageName, packageRoot] of [
-    ['protocol', canonicalPluginProtocolRoot],
-    ['agents', canonicalPluginAgentsRoot],
-    ['cli-common', canonicalPluginCliCommonRoot],
-    ['plugin-ui', canonicalPluginUiRoot],
-  ] as const) {
-    await symlink(
-      packageRoot,
-      join(scopeRoot, packageName),
-      process.platform === 'win32' ? 'junction' : 'dir',
-    );
-  }
-  const sdkRoot = join(scopeRoot, 'plugin-sdk');
-  await mkdir(sdkRoot, { recursive: true });
-  const sdkPackageJson = JSON.parse(
-    await readFile(join(canonicalPluginSdkRoot, 'package.json'), 'utf8'),
-  ) as Record<string, unknown>;
-  const rewriteSourceExport = (value: unknown): unknown => {
-    if (typeof value === 'string') {
-      return value
-        .replace('./dist/', './src/')
-        .replace(/\.js$/u, '.ts');
-    }
-    if (Array.isArray(value)) return value.map(rewriteSourceExport);
-    if (!value || typeof value !== 'object') return value;
-    return Object.fromEntries(Object.entries(value).map(([key, child]) => [
-      key,
-      rewriteSourceExport(child),
-    ]));
-  };
-  sdkPackageJson.main = './src/index.ts';
-  sdkPackageJson.types = './src/index.ts';
-  sdkPackageJson.exports = rewriteSourceExport(sdkPackageJson.exports);
-  await writeFile(join(sdkRoot, 'package.json'), `${JSON.stringify(sdkPackageJson)}\n`, 'utf8');
-  await cp(join(canonicalPluginSdkRoot, 'src'), join(sdkRoot, 'src'), { recursive: true });
+  const bundles = resolveWorkspaceBundlesFromPackageJson({
+    repoRoot,
+    hostPackageDir: join(repoRoot, 'apps', 'cli'),
+  }).map((bundle) => ({
+    ...bundle,
+    destDir: join(projectRoot, 'node_modules', ...bundle.packageName.split('/')),
+  }));
+  materializePrepublicationWorkspacePackageRoots({
+    bundles,
+    rootPackageNames: ['@happier-dev/plugin-sdk'],
+  });
 }
 
 function fixtureEsbuildDynamicRequireHelper(
@@ -226,7 +185,7 @@ async function writeFixtureEsbuildPackage(params: Readonly<{
 }
 
 describe('bundlePluginDaemonRuntime', () => {
-  it('pins the CLI esbuild dependency to the dynamic-require helper source contract', async () => {
+  it('pins the CLI esbuild dependency version', async () => {
     const packageJson = JSON.parse(
       await readFile(new URL('../../../package.json', import.meta.url), 'utf8'),
     ) as Readonly<{ dependencies?: Readonly<Record<string, unknown>> }>;
@@ -311,10 +270,10 @@ describe('bundlePluginDaemonRuntime', () => {
     }
   });
 
-  it('rejects a same-install esbuild patch release that could emit another helper shape', async () => {
+  it('accepts a same-install esbuild patch release through supported require injection', async () => {
     const installRoot = await mkdtemp(join(tmpdir(), 'happier-plugin-bundler-npm-install-helper-shape-'));
     const runtimeRoot = join(installRoot, 'node_modules', '@happier-dev', 'cli');
-    await writeFixtureEsbuildPackage({
+    const esbuildMainPath = await writeFixtureEsbuildPackage({
       runtimeRoot,
       packageNodeModulesRoot: installRoot,
       nativePackageRoot: installRoot,
@@ -328,9 +287,9 @@ describe('bundlePluginDaemonRuntime', () => {
     }), 'utf8');
 
     try {
-      expect(() => resolvePluginAuthorBundlerMainPath({
+      expect(resolvePluginAuthorBundlerMainPath({
         runtimeAuthority: { root: runtimeRoot, provenance: 'packaged-launch' },
-      })).toThrow(PluginAuthorBundlerUnavailableError);
+      })).toBe(await realpath(esbuildMainPath));
     } finally {
       await rm(installRoot, { recursive: true, force: true });
     }
@@ -2134,6 +2093,97 @@ describe('bundlePluginDaemonRuntime', () => {
     }
   });
 
+  it('externalizes only an explicit first-party packaged workspace allowlist', async () => {
+    const parentRoot = await mkdtemp(join(tmpdir(), 'happier-plugin-pack-private-externals-'));
+    const sourceRoot = join(parentRoot, 'plugin');
+    const stagedRoot = join(parentRoot, 'staged');
+    const sdkRoot = join(parentRoot, 'workspace', 'plugin-sdk');
+    const protocolRoot = join(parentRoot, 'workspace', 'protocol');
+
+    try {
+      await mkdir(sourceRoot, { recursive: true });
+      await mkdir(join(sdkRoot, 'dist'), { recursive: true });
+      await mkdir(join(protocolRoot, 'dist'), { recursive: true });
+      await mkdir(join(stagedRoot, 'node_modules', '@happier-dev'), { recursive: true });
+      await writeFile(join(sourceRoot, 'package.json'), JSON.stringify({ type: 'module' }), 'utf8');
+      await writeFile(join(sourceRoot, 'index.ts'), [
+        "import { sdkMarker } from '@happier-dev/plugin-sdk/actions';",
+        "import { protocolMarker } from '@happier-dev/protocol/runtime';",
+        'export const result = `${sdkMarker}:${protocolMarker}`;',
+        '',
+      ].join('\n'), 'utf8');
+      await writeFile(join(sdkRoot, 'package.json'), JSON.stringify({
+        name: '@happier-dev/plugin-sdk',
+        version: '1.0.0',
+        type: 'module',
+        exports: { './actions': './dist/actions.js' },
+      }), 'utf8');
+      await writeFile(join(sdkRoot, 'dist', 'actions.js'), "export const sdkMarker = 'sdk-from-package';\n", 'utf8');
+      await writeFile(join(protocolRoot, 'package.json'), JSON.stringify({
+        name: '@happier-dev/protocol',
+        version: '1.0.0',
+        type: 'module',
+        exports: { './runtime': './dist/runtime.js' },
+      }), 'utf8');
+      await writeFile(join(protocolRoot, 'dist', 'runtime.js'), "export const protocolMarker = 'protocol-from-package';\n", 'utf8');
+
+      await symlink(sdkRoot, join(stagedRoot, 'node_modules', '@happier-dev', 'plugin-sdk'), process.platform === 'win32' ? 'junction' : 'dir');
+      await symlink(protocolRoot, join(stagedRoot, 'node_modules', '@happier-dev', 'protocol'), process.platform === 'win32' ? 'junction' : 'dir');
+
+      await stagePluginDaemonRuntime({
+        sourceRootPath: sourceRoot,
+        sourceEntryPath: join(sourceRoot, 'index.ts'),
+        stagedRootPath: stagedRoot,
+        daemonEntrypoint: './dist/index.js',
+        canonicalWorkspacePackageRoots: Object.freeze({
+          '@happier-dev/plugin-sdk': sdkRoot,
+          '@happier-dev/protocol': protocolRoot,
+        }),
+        firstPartyPackagedWorkspaceExternals: Object.freeze([
+          '@happier-dev/plugin-sdk',
+          '@happier-dev/protocol',
+        ]),
+      });
+
+      const bundled = await readFile(join(stagedRoot, 'dist', 'index.js'), 'utf8');
+      expect(bundled).toContain("from \"@happier-dev/plugin-sdk/actions\"");
+      expect(bundled).toContain("from \"@happier-dev/protocol/runtime\"");
+      expect(bundled).not.toContain('sdk-from-package');
+      expect(bundled).not.toContain('protocol-from-package');
+      const { stdout } = await execFileAsync(process.execPath, [
+        '--input-type=module',
+        '--eval',
+        `import(${JSON.stringify(pathToFileURL(join(stagedRoot, 'dist', 'index.js')).href)}).then((loaded) => process.stdout.write(loaded.result))`,
+      ], { cwd: stagedRoot });
+      expect(stdout).toBe('sdk-from-package:protocol-from-package');
+    } finally {
+      await rm(parentRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects a private packaged external outside the canonical CLI workspace closure', async () => {
+    const parentRoot = await mkdtemp(join(tmpdir(), 'happier-plugin-pack-private-external-reject-'));
+    const sourceRoot = join(parentRoot, 'plugin');
+    const stagedRoot = join(parentRoot, 'staged');
+    try {
+      await mkdir(sourceRoot, { recursive: true });
+      await mkdir(stagedRoot, { recursive: true });
+      await writeFile(join(sourceRoot, 'package.json'), JSON.stringify({ type: 'module' }), 'utf8');
+      await writeFile(join(sourceRoot, 'index.ts'), 'export const value = 1;\n', 'utf8');
+
+      await expect(stagePluginDaemonRuntime({
+        sourceRootPath: sourceRoot,
+        sourceEntryPath: join(sourceRoot, 'index.ts'),
+        stagedRootPath: stagedRoot,
+        daemonEntrypoint: './dist/index.js',
+        canonicalWorkspacePackageRoots: Object.freeze({}),
+        firstPartyPackagedWorkspaceExternals: Object.freeze(['@happier-dev/not-in-cli-closure']),
+      })).rejects.toThrow(/not-in-cli-closure.*canonical packaged CLI workspace closure/u);
+    } finally {
+      await rm(parentRoot, { recursive: true, force: true });
+    }
+  });
+
   it('uses canonical workspace import and require export conditions while staging', async () => {
     const parentRoot = await mkdtemp(join(tmpdir(), 'happier-plugin-pack-bundle-workspace-conditions-'));
     const sourceRoot = join(parentRoot, 'plugin');
@@ -2394,7 +2444,100 @@ describe('bundlePluginDaemonRuntime', () => {
     }
   });
 
-  it('supports esbuild dynamic-require helper output at byte zero', async () => {
+  it('preserves an author-only require binding without dynamic require consumers', async () => {
+    const parentRoot = await mkdtemp(join(tmpdir(), 'happier-plugin-bundle-author-require-'));
+    const sourceRoot = join(parentRoot, 'source');
+    const stagedRoot = join(parentRoot, 'staged');
+    await mkdir(sourceRoot, { recursive: true });
+    await mkdir(stagedRoot, { recursive: true });
+
+    try {
+      await writeFile(join(sourceRoot, 'package.json'), JSON.stringify({ type: 'module' }), 'utf8');
+      await writeFile(join(sourceRoot, 'index.ts'), [
+        'export const require = "author-require";',
+        'export const __happierReservedRequire = "author-reserved-require";',
+        '',
+      ].join('\n'), 'utf8');
+      await stagePluginDaemonRuntime({
+        sourceRootPath: sourceRoot,
+        sourceEntryPath: join(sourceRoot, 'index.ts'),
+        stagedRootPath: stagedRoot,
+        daemonEntrypoint: './dist/index.mjs',
+      });
+      const outputUrl = pathToFileURL(join(stagedRoot, 'dist', 'index.mjs')).href;
+      const { stdout } = await execFileAsync(process.execPath, [
+        '--input-type=module', '--eval',
+        `const bundled = await import(${JSON.stringify(outputUrl)}); process.stdout.write(JSON.stringify([bundled.require, bundled.__happierReservedRequire]));`,
+      ]);
+      expect(JSON.parse(stdout)).toEqual(['author-require', 'author-reserved-require']);
+    } finally {
+      await rm(parentRoot, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    ['first', 'second'],
+    ['second', 'first'],
+  ])('scopes dynamic require to each staged bundle loaded %s then %s', async (first, second) => {
+    const parentRoot = await mkdtemp(join(tmpdir(), 'happier-plugin-bundle-require-scope-'));
+    const outputUrls: Record<string, string> = {};
+
+    try {
+      for (const name of ['first', 'second']) {
+        const sourceRoot = join(parentRoot, name, 'source');
+        const stagedRoot = join(parentRoot, name, 'staged');
+        await mkdir(sourceRoot, { recursive: true });
+        await mkdir(join(stagedRoot, 'dist'), { recursive: true });
+        await mkdir(join(stagedRoot, 'node_modules', 'fixture-runtime'), { recursive: true });
+        await writeFile(join(sourceRoot, 'package.json'), JSON.stringify({ type: 'module' }), 'utf8');
+        await writeFile(join(sourceRoot, 'index.ts'), [
+          'declare const require: (specifier: string) => string;',
+          'export function activate() {',
+          '  const relativeSpecifier = "./value.cjs";',
+          '  const packageSpecifier = "fixture-runtime";',
+          '  return { relative: require(relativeSpecifier), package: require(packageSpecifier) };',
+          '}',
+          '',
+        ].join('\n'), 'utf8');
+        await writeFile(join(stagedRoot, 'dist', 'value.cjs'), `module.exports = ${JSON.stringify(`${name}-relative`)};\n`, 'utf8');
+        await writeFile(join(stagedRoot, 'node_modules', 'fixture-runtime', 'package.json'), JSON.stringify({
+          name: 'fixture-runtime', version: '1.0.0', main: './index.cjs',
+        }), 'utf8');
+        await writeFile(join(stagedRoot, 'node_modules', 'fixture-runtime', 'index.cjs'),
+          `module.exports = ${JSON.stringify(`${name}-package`)};\n`, 'utf8');
+        await stagePluginDaemonRuntime({
+          sourceRootPath: sourceRoot,
+          sourceEntryPath: join(sourceRoot, 'index.ts'),
+          stagedRootPath: stagedRoot,
+          daemonEntrypoint: './dist/index.mjs',
+        });
+        outputUrls[name] = pathToFileURL(join(stagedRoot, 'dist', 'index.mjs')).href;
+      }
+
+      const { stdout } = await execFileAsync(process.execPath, [
+        '--input-type=module',
+        '--eval',
+        [
+          'const hadGlobalRequire = Object.hasOwn(globalThis, "require");',
+          `const first = await import(${JSON.stringify(outputUrls[first])});`,
+          `const second = await import(${JSON.stringify(outputUrls[second])});`,
+          'process.stdout.write(JSON.stringify({',
+          '  first: first.activate(), second: second.activate(),',
+          '  globalRequireAdded: !hadGlobalRequire && Object.hasOwn(globalThis, "require"),',
+          '}));',
+        ].join('\n'),
+      ]);
+      expect(JSON.parse(stdout)).toEqual({
+        first: { relative: `${first}-relative`, package: `${first}-package` },
+        second: { relative: `${second}-relative`, package: `${second}-package` },
+        globalRequireAdded: false,
+      });
+    } finally {
+      await rm(parentRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('supports dynamic require in ESM output', async () => {
     const parentRoot = await mkdtemp(join(tmpdir(), 'happier-plugin-pack-bundle-direct-require-'));
     const sourceRoot = join(parentRoot, 'plugin');
     const stagedRoot = join(parentRoot, 'staged');
@@ -2447,7 +2590,7 @@ describe('bundlePluginDaemonRuntime', () => {
         `throw Error('Unsupported require: ' + x);`,
       )}`,
     ],
-  ])('rejects esbuild dynamic-require helper output with %s', async (_label, contents) => {
+  ])('passes esbuild dynamic-require helper-shaped output through byte-identical', async (_label, contents) => {
     const parentRoot = await mkdtemp(join(tmpdir(), 'happier-plugin-pack-bundle-helper-shape-'));
     const sourceRoot = join(parentRoot, 'plugin');
     const stagedRoot = join(parentRoot, 'staged');
@@ -2465,7 +2608,8 @@ describe('bundlePluginDaemonRuntime', () => {
         daemonEntrypoint: './dist/index.mjs',
       }, {
         build: fakeEsbuildOutput({ sourceRoot, outputPath, contents }),
-      })).rejects.toThrow(/unrecognized esbuild dynamic-require helper/u);
+      })).resolves.toEqual({ outputRelativePaths: ['dist/index.mjs'] });
+      await expect(readFile(outputPath, 'utf8')).resolves.toBe(contents);
     } finally {
       await rm(parentRoot, { recursive: true, force: true });
     }
@@ -2497,7 +2641,7 @@ describe('bundlePluginDaemonRuntime', () => {
     }
   });
 
-  it('rewrites one exact helper while preserving an unrelated matching diagnostic string', async () => {
+  it('leaves helper-shaped output byte-identical while preserving the diagnostic string', async () => {
     const parentRoot = await mkdtemp(join(tmpdir(), 'happier-plugin-pack-bundle-helper-marker-sibling-'));
     const sourceRoot = join(parentRoot, 'plugin');
     const stagedRoot = join(parentRoot, 'staged');
@@ -2523,14 +2667,13 @@ describe('bundlePluginDaemonRuntime', () => {
         build: fakeEsbuildOutput({ sourceRoot, outputPath, contents }),
       })).resolves.toEqual({ outputRelativePaths: ['dist/index.mjs'] });
       const output = await readFile(outputPath, 'utf8');
-      expect(output).toContain(fixtureEsbuildDynamicRequireError);
-      expect(output).toContain('var __require = /* @__PURE__ */ __requireFactory(import.meta.url);');
+      expect(output).toBe(contents);
     } finally {
       await rm(parentRoot, { recursive: true, force: true });
     }
   });
 
-  it('rejects more than one exact esbuild dynamic-require helper in one output', async () => {
+  it('accepts more than one helper-shaped block without private helper rewriting', async () => {
     const parentRoot = await mkdtemp(join(tmpdir(), 'happier-plugin-pack-bundle-duplicate-helper-'));
     const sourceRoot = join(parentRoot, 'plugin');
     const stagedRoot = join(parentRoot, 'staged');
@@ -2555,13 +2698,16 @@ describe('bundlePluginDaemonRuntime', () => {
             fixtureEsbuildDynamicRequireHelper('__require2'),
           ].join('\n'),
         }),
-      })).rejects.toThrow(/more than one esbuild dynamic-require helper/u);
+      })).resolves.toEqual({ outputRelativePaths: ['dist/index.mjs'] });
+      const duplicateOutput = await readFile(outputPath, 'utf8');
+      expect(duplicateOutput).toContain(fixtureEsbuildDynamicRequireHelper('__require'));
+      expect(duplicateOutput).toContain(fixtureEsbuildDynamicRequireHelper('__require2'));
     } finally {
       await rm(parentRoot, { recursive: true, force: true });
     }
   });
 
-  it('avoids an author binding that collides with the generated createRequire factory name', async () => {
+  it('preserves an author binding that matches the historical factory name', async () => {
     const parentRoot = await mkdtemp(join(tmpdir(), 'happier-plugin-pack-bundle-helper-collision-'));
     const sourceRoot = join(parentRoot, 'plugin');
     const stagedRoot = join(parentRoot, 'staged');
@@ -2590,8 +2736,7 @@ describe('bundlePluginDaemonRuntime', () => {
 
       const output = await readFile(outputPath, 'utf8');
       expect(output).toContain('var __requireFactory = "author-factory";');
-      expect(output).toContain('import { createRequire as __requireFactory2 } from "node:module";');
-      expect(output).toContain('var __require = /* @__PURE__ */ __requireFactory2(import.meta.url);');
+      expect(output).not.toContain('__requireFactory2');
     } finally {
       await rm(parentRoot, { recursive: true, force: true });
     }

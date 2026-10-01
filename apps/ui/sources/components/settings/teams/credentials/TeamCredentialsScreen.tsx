@@ -1,12 +1,10 @@
 import * as React from 'react';
-import { useRouter } from 'expo-router';
+import { useRouter } from '@/components/appShell/workspace/destinationRoute';
 import type {
     TeamCredentialResourceListFilterV1,
     TeamCredentialResourceSummaryV1,
 } from '@happier-dev/protocol/teams';
-import { useUnistyles } from 'react-native-unistyles';
 
-import { Icon } from '@/components/ui/icons/Icon';
 import { SearchHeader } from '@/components/ui/forms/SearchHeader';
 import { Item } from '@/components/ui/lists/Item';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
@@ -82,7 +80,6 @@ const ShareCredentialEntry = React.memo(function ShareCredentialEntry(props: Rea
 const CredentialsList = React.memo(function CredentialsList(props: Readonly<{
     context: TeamSectionContext;
 }>) {
-    const { theme } = useUnistyles();
     const { context } = props;
     const [search, setSearch] = React.useState('');
     const [filter, setFilter] = React.useState<TeamCredentialResourceListFilterV1>('all');
@@ -104,7 +101,7 @@ const CredentialsList = React.memo(function CredentialsList(props: Readonly<{
 
     if (!featureEnabled) {
         return (
-            <ItemGroup footer={t('teams.credentials.unavailable')}>
+            <ItemGroup description={t('teams.credentials.unavailable')}>
                 <Item
                     testID="team-credentials-unavailable"
                     title={t('teams.credentials.title')}
@@ -125,7 +122,7 @@ const CredentialsList = React.memo(function CredentialsList(props: Readonly<{
         && !projection.viewer.offerOwnCredential
         && projection.rows.length === 0) {
         return (
-            <ItemGroup footer={t('teams.credentials.forbidden')}>
+            <ItemGroup description={t('teams.credentials.forbidden')}>
                 <Item
                     testID="team-credentials-forbidden"
                     title={t('homeGovernance.forbiddenTitle')}
@@ -136,6 +133,7 @@ const CredentialsList = React.memo(function CredentialsList(props: Readonly<{
     }
 
     const rows = orderTeamCredentialResources(projection.rows);
+    const hasActiveFilter = filter !== 'all' || search.trim().length > 0;
 
     return (
         <>
@@ -168,12 +166,26 @@ const CredentialsList = React.memo(function CredentialsList(props: Readonly<{
             ) : null}
 
             {rows.length === 0 && projection.status === 'ready' ? (
-                <ItemGroup footer={t('teams.credentials.emptyBody')}>
+                <ItemGroup description={hasActiveFilter
+                    ? t('common.noMatches')
+                    : t('teams.credentials.emptyBody')}>
                     <Item
                         testID="team-credentials-empty"
-                        title={t('teams.credentials.emptyTitle')}
+                        title={hasActiveFilter ? t('common.noMatches') : t('teams.credentials.emptyTitle')}
                         showChevron={false}
                     />
+                    {hasActiveFilter ? (
+                        <Item
+                            testID="team-credentials-clear-filters"
+                            title={t('common.reset')}
+                            accessibilityLabel={`${t('common.reset')}: ${t('teams.credentials.title')}`}
+                            onPress={() => {
+                                setSearch('');
+                                setFilter('all');
+                            }}
+                            showChevron={false}
+                        />
+                    ) : null}
                     {mayOffer ? (
                         <ShareCredentialEntry context={context} testID="team-credentials-empty-share" />
                     ) : null}
@@ -181,7 +193,7 @@ const CredentialsList = React.memo(function CredentialsList(props: Readonly<{
             ) : null}
 
             {rows.length > 0 ? (
-                <ItemGroup title={t('teams.credentials.title')} footer={t('teams.credentials.subtitle')}>
+                <ItemGroup title={t('teams.credentials.title')} description={t('teams.credentials.subtitle')}>
                     {rows.map((resource) => (
                         <CredentialRow
                             key={resource.id}
@@ -212,11 +224,10 @@ const CredentialsList = React.memo(function CredentialsList(props: Readonly<{
 
             {/* Rows already read stay on screen through a failure. */}
             {projection.error ? (
-                <ItemGroup footer={t('teams.unavailable.offline')}>
+                <ItemGroup description={t('teams.unavailable.offline')}>
                     <Item
                         testID="team-credentials-retry"
                         title={t('teams.unavailable.retry')}
-                        icon={<Icon name="arrow-clockwise" size={29} color={theme.colors.text.secondary} />}
                         onPress={() => void projection.retry()}
                         showChevron={false}
                     />
@@ -231,7 +242,7 @@ export const TeamCredentialsScreen = React.memo(function TeamCredentialsScreen(p
     teamId: string;
 }>) {
     return (
-        <TeamSection serverId={props.serverId} teamId={props.teamId} title={t('teams.credentials.title')}>
+        <TeamSection serverId={props.serverId} teamId={props.teamId} title={t('teams.credentials.title')} description={t('teams.pages.credentials')}>
             {(context) => <CredentialsList context={context} />}
         </TeamSection>
     );

@@ -1,10 +1,11 @@
 import * as React from 'react';
-import { Pressable, View } from 'react-native';
+import { View } from 'react-native';
+import { HappierPressable } from '@happier-dev/plugin-ui/presentation';
 
 import { Text } from '@/components/ui/text/Text';
 import { Typography } from '@/constants/Typography';
 import { t } from '@/text';
-import { StyleSheet } from 'react-native-unistyles';
+import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 import {
     WORKFLOW_SESSION_AUTHORING_SELECTION_FIELD_IDS,
@@ -22,10 +23,10 @@ import {
     resolveWorkflowStepFieldInheritance,
 } from '@/sync/domains/workflows/workflowAuthoring';
 import type { WorkflowEditorDraft } from '@/sync/domains/workflows/workflowEditorDraft';
-import { workflowStepPromptLabel } from '@/sync/domains/workflows/workflowBlockLabel';
+import { workflowStepPromptLabel } from '@happier-dev/protocol/workflows';
 
 import { WorkflowNumberField } from './WorkflowNumberField';
-import { workflowEditorStyles } from './workflowEditorStyles';
+import { workflowEditorStyles, workflowPressFeedbackStyle } from './workflowEditorStyles';
 
 /**
  * The selected step's settings, shown in the wide inspector or the phone
@@ -76,6 +77,29 @@ const styles = StyleSheet.create((theme) => ({
     },
 }));
 
+/**
+ * A step's result-wait deadline: the exact value the author types, in the unit
+ * the field states; empty is omission ("no authored deadline").
+ */
+export function WorkflowStepTimeoutField(props: Readonly<{
+    timeoutMs: number | undefined;
+    onChange: (timeoutMs: number | undefined) => void;
+    testIDPrefix: string;
+}>): React.ReactElement {
+    return (
+        <View>
+            <WorkflowNumberField
+                label={t('workflows.editor.timeoutTitle')}
+                value={props.timeoutMs}
+                onChange={props.onChange}
+                placeholder={t('workflows.editor.noDeadline')}
+                testID={`${props.testIDPrefix}-timeout`}
+            />
+            <Text style={styles.inheritedBadge}>{t('workflows.editor.timeoutExplain')}</Text>
+        </View>
+    );
+}
+
 export type WorkflowStepInspectorFieldId = (typeof WORKFLOW_SESSION_AUTHORING_SELECTION_FIELD_IDS)[number];
 
 export function WorkflowStepInspector(props: Readonly<{
@@ -99,9 +123,10 @@ export function WorkflowStepInspector(props: Readonly<{
     ) => void;
     /**
      * The step's authored result-wait deadline. `undefined` clears it: omission
-     * means no workflow-authored deadline, never a default duration.
+     * means no workflow-authored deadline, never a default duration. Absent, the
+     * deadline is authored elsewhere (Step options keeps it under Advanced).
      */
-    onChangeTimeout: (timeoutMs: number | undefined) => void;
+    onChangeTimeout?: (timeoutMs: number | undefined) => void;
     /** Fields to show; defaults to the canonical chip order. */
     fields?: readonly WorkflowStepInspectorFieldId[];
     /**
@@ -111,6 +136,7 @@ export function WorkflowStepInspector(props: Readonly<{
     authoringFacts?: SessionAuthoringControlFacts;
     testIDPrefix?: string;
 }>): React.ReactElement {
+    const { theme } = useUnistyles();
     const testIDPrefix = props.testIDPrefix ?? 'workflow-inspector';
     const fields = props.fields ?? WORKFLOW_SESSION_AUTHORING_SELECTION_FIELD_IDS;
     const effective = React.useMemo(
@@ -128,14 +154,13 @@ export function WorkflowStepInspector(props: Readonly<{
                 {workflowStepPromptLabel(props.step) ?? props.step.id}
             </Text>
 
-            <WorkflowNumberField
-                label={t('workflows.editor.timeoutTitle')}
-                value={props.step.timeoutMs}
-                onChange={props.onChangeTimeout}
-                placeholder={t('workflows.editor.noDeadline')}
-                testID={`${testIDPrefix}-timeout`}
-            />
-            <Text style={styles.inheritedBadge}>{t('workflows.editor.timeoutExplain')}</Text>
+            {props.onChangeTimeout === undefined ? null : (
+                <WorkflowStepTimeoutField
+                    timeoutMs={props.step.timeoutMs}
+                    onChange={props.onChangeTimeout}
+                    testIDPrefix={testIDPrefix}
+                />
+            )}
 
             {fields.map((field) => {
                 const inheritance = resolveWorkflowStepFieldInheritance(props.step, field);
@@ -166,17 +191,20 @@ export function WorkflowStepInspector(props: Readonly<{
                                     : t('workflows.a11y.overridden')}
                             </Text>
                             {inheritance === 'override' ? (
-                                <Pressable
+                                <HappierPressable
                                     testID={`${fieldId}-reset`}
                                     accessibilityRole="button"
                                     accessibilityLabel={t('workflows.editor.useWorkflowDefault')}
                                     onPress={() => props.onResetField(field)}
-                                    style={workflowEditorStyles.actionTarget}
+                                    style={(state) => [
+                                        workflowEditorStyles.actionTarget,
+                                        workflowPressFeedbackStyle(state, theme.colors.border.focus),
+                                    ]}
                                 >
                                     <Text style={styles.resetAction}>
                                         {t('workflows.editor.useWorkflowDefault')}
                                     </Text>
-                                </Pressable>
+                                </HappierPressable>
                             ) : null}
                         </View>
                         {control === null || control === undefined ? null : (

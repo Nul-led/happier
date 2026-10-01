@@ -2,14 +2,21 @@ import * as React from 'react';
 import { act } from 'react-test-renderer';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { RPC_METHODS } from '@happier-dev/protocol/rpc';
+import { publishHomeAccountChange } from '@/sync/runtime/orchestration/homeAccountChange';
+import { DestinationInstanceHost } from '@/components/appShell/workspace/DestinationInstanceHost';
 
-import { createDeferred, renderScreen, standardCleanup } from '@/dev/testkit';
+import { createDeferred } from '@/dev/testkit/hooks/createDeferred';
+import { renderScreen } from '@/dev/testkit/render/renderScreen';
+import { standardCleanup } from '@/dev/testkit/cleanup/standardCleanup';
 import {
     createWorkflowDefinitionFixture,
     createWorkflowInvocationIndexFixture,
     createWorkflowRunSummaryFixture,
 } from '@/dev/testkit/fixtures/workflowRunFixtures';
 import type { WorkflowRunNowRequest } from '../run/useWorkflowRunNowController';
+import { readWorkflowReviewedRunSeed } from '@/sync/domains/workflows/workflowReviewedRunSeed';
+import { WorkflowRunScreen } from './WorkflowRunScreen';
+import type { WorkflowRunsDomain } from '@/sync/store/domains/workflowRuns';
 
 type WorkflowRunContentProps = React.ComponentProps<
     typeof import('../run/WorkflowRunContent').WorkflowRunContent
@@ -25,6 +32,23 @@ type WorkflowRunContentProps = React.ComponentProps<
  */
 
 let latestContentProps: WorkflowRunContentProps | null = null;
+
+function requireDefined<T>(value: T | undefined, message: string): T {
+    if (value === undefined) throw new Error(message);
+    return value;
+}
+/**
+ * Answers through the host's single responder. A failure belongs to the
+ * canonical card that awaits it, so the returned promise is observed here
+ * rather than left as an unhandled rejection.
+ */
+function respondToRequest(
+    response: Parameters<NonNullable<WorkflowRunContentProps['onRespondToRequest']>>[0],
+): Promise<void> | undefined {
+    const answer = latestContentProps?.onRespondToRequest?.(response);
+    answer?.catch(() => {});
+    return answer;
+}
 
 const runNowSpy = vi.hoisted(() => vi.fn<(request: WorkflowRunNowRequest) => Promise<unknown>>(async () => null));
 const routerSpy = vi.hoisted(() => ({ push: vi.fn(), back: vi.fn() }));
@@ -43,8 +67,9 @@ const detailActions = vi.hoisted(() => ({
 const storeState = vi.hoisted(() => {
     const listeners = new Set<() => void>();
     const state = {
-        workflowRunsById: {} as Record<string, unknown>,
-        workflowRunInvocationsByRunId: {} as Record<string, unknown>,
+        workflowRunsById: {} as WorkflowRunsDomain['workflowRunsById'],
+        workflowRunInvocationsByRunId: {} as WorkflowRunsDomain['workflowRunInvocationsByRunId'],
+        workflowRunListWindows: {} as WorkflowRunsDomain['workflowRunListWindows'],
     };
     return {
         state,
@@ -53,11 +78,10 @@ const storeState = vi.hoisted(() => {
         reset(): void {
             state.workflowRunsById = {};
             state.workflowRunInvocationsByRunId = {};
+            state.workflowRunListWindows = {};
         },
     };
 });
-const reviewedSeedSpy = vi.hoisted(() => vi.fn(() => 'reviewed-seed-id'));
-const createWorkflowDefinitionSpy = vi.hoisted(() => vi.fn());
 type MachineRpcCall = Readonly<{
     onIssued?: () => void;
     signal?: AbortSignal;
@@ -136,36 +160,18 @@ vi.mock('@/sync/domains/scope/activeServerAccountScope', () => ({
     captureActiveServerAccountScopeLifetime: () => accountScopeHarness.capture(),
 }));
 vi.mock('@/sync/domains/state/storage', async () => {
-    // The shared row owner's merge is pure and is what decides that a settled
-    // control's newer revision is not undone by a delayed read of an older one;
-    // the fake keeps that rule rather than overwriting rows.
-    const { mergeWorkflowRunBodies } = await import('@/sync/store/domains/workflowRuns');
-    const api = {
-        getState: () => ({
-            upsertWorkflowRuns: (rows: ReadonlyArray<{ id: string }>) => {
-                storeState.state.workflowRunsById = mergeWorkflowRunBodies(
-                    storeState.state.workflowRunsById as never,
-                    rows as never,
-                );
-                storeState.emit();
-            },
-            removeWorkflowRun: (runId: string) => {
-                delete storeState.state.workflowRunsById[runId];
-                storeState.emit();
-            },
-            applyWorkflowRunInvocationPage: (input: Record<string, any>) => {
-                const existing = (storeState.state.workflowRunInvocationsByRunId[input.runId] as any)?.invocations ?? [];
-                storeState.state.workflowRunInvocationsByRunId[input.runId] = {
-                    invocations: input.mode === 'append' ? [...existing, ...input.invocations] : input.invocations,
-                    nextCursor: input.nextCursor,
-                    parentRevision: input.parentRevision,
-                    loaded: true,
-                };
-                storeState.emit();
-            },
-            upsertWorkflowRunInvocation: () => {},
-        }),
-    };
+    // Only the environment's storage subscription is replaced; all Run/index
+    // merging stays in the real canonical store owner.
+    const { createWorkflowRunsDomain } = await import('@/sync/store/domains/workflowRuns');
+    const domain: WorkflowRunsDomain = createWorkflowRunsDomain<WorkflowRunsDomain>({
+        get: () => ({ ...domain, ...storeState.state }),
+        set: (update) => {
+            const next = typeof update === 'function' ? update({ ...domain, ...storeState.state }) : update;
+            Object.assign(storeState.state, next);
+            storeState.emit();
+        },
+    });
+    const api = { getState: () => ({ ...domain, ...storeState.state }) };
     const useStore = (selector: (state: unknown) => unknown) => React.useSyncExternalStore(
         (listener: () => void) => {
             storeState.listeners.add(listener);
@@ -192,9 +198,6 @@ vi.mock('@/utils/runtime/useHostActivelyViewed', () => ({ useHostActivelyViewed:
 vi.mock('@/components/ui/layout/layout', () => ({ useLayoutMaxWidthStyle: () => ({ maxWidth: 960 }) }));
 vi.mock('@/components/projects/useOpenProject', () => ({ useOpenProject: () => () => true }));
 vi.mock('@/utils/ui/clipboard', () => ({ setClipboardStringSafe: async () => true }));
-vi.mock('@/sync/domains/workflows/workflowDefinitionActions', () => ({
-    createWorkflowDefinition: createWorkflowDefinitionSpy,
-}));
 vi.mock('@/hooks/session/sessionRouteServerScope', () => ({
     buildScopedSessionRouteHref: () => '/session/s-1',
 }));
@@ -206,13 +209,9 @@ vi.mock('@/sync/runtime/orchestration/serverScopedRpc/serverScopedMachineRpc', (
 vi.mock('../run/useWorkflowRunNowController', () => ({
     useWorkflowRunNowController: () => ({ runNow: runNowSpy, stateFor: () => 'idle' }),
 }));
-vi.mock('../run/useWorkflowRunInputModal', () => ({ useWorkflowRunInputModal: () => {} }));
+vi.mock('../run/useWorkflowRunComposerModal', () => ({ useWorkflowRunComposerModal: () => {} }));
 vi.mock('../run/useWorkflowCompletionMoment', () => ({ useWorkflowCompletionMoment: () => false }));
 vi.mock('../accessibility/useWorkflowAnnouncements', () => ({ useWorkflowAnnouncements: () => {} }));
-vi.mock('@/sync/domains/workflows/workflowReviewedRunSeed', () => ({
-    buildWorkflowReviewedRunSeed: (input: unknown) => input,
-    storeWorkflowReviewedRunSeed: reviewedSeedSpy,
-}));
 vi.mock('../run/WorkflowRunContent', () => ({
     WorkflowRunContent: (props: WorkflowRunContentProps) => {
         latestContentProps = props;
@@ -236,7 +235,7 @@ const ACCEPTED_CONTEXT = {
     source: { kind: 'inline' as const },
     inputs: {},
     machineId: 'machine-1',
-    executionTarget: { kind: 'attached_run' as const },
+    executionTarget: { kind: 'detached_run' as const },
     workspaceTarget: {
         project: { machineId: 'machine-1', directory: '/Users/me/project' },
     },
@@ -251,11 +250,12 @@ function permissionInvocationResponse(params: Readonly<{
     index: ReturnType<typeof createWorkflowInvocationIndexFixture>;
     requestIds: readonly string[];
     executionRunId?: string;
+    parentRevision?: number;
 }>) {
     return {
         invocation: {
             index: params.index,
-            parentRevision: 1,
+            parentRevision: params.parentRevision ?? 1,
             progress: {
                 kind: 'happier.workflow-progress.v1',
                 invocationPath: { blockId: 'analyze', scope: [] },
@@ -280,11 +280,11 @@ function permissionInvocationResponse(params: Readonly<{
  * Two are needed because the contract is per-request: a decision in flight for
  * one request may not disable — or settle — the other.
  */
-async function renderSelectedPermissionRequests() {
+async function renderSelectedPermissionRequests(contentRevision = '0') {
     const invocations = [
         createWorkflowInvocationIndexFixture({ id: 'root', parentRecordId: null, memberOrdinal: '0', sequence: '0' }),
         createWorkflowInvocationIndexFixture({
-            id: 'analyze-row', parentRecordId: 'root', memberOrdinal: '0', sequence: '1', lifecycle: 'waiting_for_approval',
+            id: 'analyze-row', parentRecordId: 'root', memberOrdinal: '0', sequence: '1', lifecycle: 'waiting_for_approval', contentRevision,
         }),
     ];
     detailActions.getInvocation.mockResolvedValue(permissionInvocationResponse({
@@ -313,6 +313,7 @@ async function renderRunScreen(overrides: Readonly<{
     historyNextCursor?: string;
     acceptedContext?: unknown;
     invocationListFailure?: Error;
+    wrap?: (screen: React.ReactElement) => React.ReactElement;
 }> = {}) {
     const run = overrides.run ?? createWorkflowRunSummaryFixture({
         id: 'run-1',
@@ -347,8 +348,8 @@ async function renderRunScreen(overrides: Readonly<{
     } else {
         detailActions.listInvocations.mockRejectedValue(overrides.invocationListFailure);
     }
-    const { WorkflowRunScreen } = await import('./WorkflowRunScreen');
-    const screen = await renderScreen(React.createElement(WorkflowRunScreen));
+    const element = React.createElement(WorkflowRunScreen);
+    const screen = await renderScreen(overrides.wrap ? overrides.wrap(element) : element);
     await act(async () => {});
     return screen;
 }
@@ -361,8 +362,6 @@ beforeEach(() => {
     runNowSpy.mockClear();
     routerSpy.push.mockClear();
     routerSpy.back.mockClear();
-    reviewedSeedSpy.mockClear();
-    createWorkflowDefinitionSpy.mockReset();
     machineRpcSpy.mockReset();
     machineRpcSpy.mockResolvedValue({ ok: true });
     for (const action of Object.values(detailActions)) action.mockReset();
@@ -533,35 +532,24 @@ describe('WorkflowRunScreen', () => {
         expect(routerSpy.push).not.toHaveBeenCalled();
     });
 
-    it('does not let a late Save-as-workflow completion navigate after this mounted screen changes Runs', async () => {
-        const save = createDeferred<Readonly<{ definitionId: string }>>();
-        createWorkflowDefinitionSpy.mockImplementationOnce(async () => save.promise);
-        const screen = await renderRunScreen();
+    it('opens Save as workflow as a reviewed unsaved draft without creating an Artifact', async () => {
+        await renderRunScreen({ acceptedContext: { ...ACCEPTED_CONTEXT, metadata: { title: 'Release review', description: 'Accepted description' } } });
         const saveAsWorkflow = latestContentProps?.onSaveAsWorkflow;
 
         act(() => { saveAsWorkflow?.(); });
-        expect(createWorkflowDefinitionSpy).toHaveBeenCalledTimes(1);
-
-        routeState.runId = 'run-2';
-        const runB = createWorkflowRunSummaryFixture({
-            id: 'run-2', state: 'running', origin: { kind: 'direct' },
-        });
-        detailActions.getRun.mockResolvedValue({
-            run: runB,
+        await act(async () => {});
+        const route = routerSpy.push.mock.calls.at(-1)?.[0] as {
+            pathname: string; params: { reviewedRunSeedId: string };
+        } | undefined;
+        expect(route).toEqual({ pathname: '/workflows/new', params: { reviewedRunSeedId: expect.any(String) } });
+        if (route === undefined) throw new Error('Expected the unsaved review route');
+        expect(readWorkflowReviewedRunSeed(route.params.reviewedRunSeedId)).toMatchObject({
             definition: DEFINITION,
-            acceptedContext: ACCEPTED_CONTEXT,
-            checkpoint: null,
-            availability: runB.availability,
+            name: 'Release review', description: 'Accepted description',
+            project: ACCEPTED_CONTEXT.workspaceTarget.project,
+            inputs: ACCEPTED_CONTEXT.inputs,
         });
-        detailActions.listInvocations.mockResolvedValue(invocationPage([]));
-        await screen.update(React.createElement((await import('./WorkflowRunScreen')).WorkflowRunScreen));
-        await act(async () => {});
-
-        save.resolve({ definitionId: 'saved-from-a' });
-        await act(async () => {});
-
-        expect(routerSpy.push).not.toHaveBeenCalled();
-        expect(latestContentProps?.run.id).toBe('run-2');
+        expect(machineRpcSpy).not.toHaveBeenCalled();
         expect(latestContentProps?.saveAsWorkflowPending).toBe(false);
     });
 
@@ -626,12 +614,12 @@ describe('WorkflowRunScreen', () => {
         await renderRunScreen();
         expect(latestContentProps?.onRunAgain).toBeTypeOf('function');
 
-        await act(async () => latestContentProps?.onRunAgain());
+        await act(async () => requireDefined(latestContentProps?.onRunAgain, 'Expected a Run again handler')());
         await act(async () => {});
 
         expect(runNowSpy).toHaveBeenCalledTimes(1);
         expect(runNowSpy.mock.calls[0]?.[0]).toMatchObject({
-            executionTarget: { kind: 'attached_run' },
+            executionTarget: { kind: 'detached_run' },
             project: { machineId: 'machine-1', directory: '/Users/me/project' },
         });
     });
@@ -697,17 +685,23 @@ describe('WorkflowRunScreen', () => {
         // Exactly one D4 arm: no restoration producer exists here, so the screen
         // hands down no restore handler either.
         expect(latestContentProps?.onRestoreWorkspace).toBeUndefined();
-        await act(async () => latestContentProps?.onStartReviewedNewRun());
+        await act(async () => requireDefined(
+            latestContentProps?.onStartReviewedNewRun,
+            'Expected a reviewed-new-Run handler',
+        )());
         await act(async () => {});
 
         // When exact restoration is unavailable, D4 opens a reviewed new Run.
         // Nothing may be admitted before the person presses Run there.
         expect(runNowSpy).not.toHaveBeenCalled();
-        expect(reviewedSeedSpy).toHaveBeenCalledTimes(1);
-        expect(routerSpy.push).toHaveBeenCalledWith(expect.objectContaining({
-            pathname: '/workflows/new',
-            params: expect.objectContaining({ reviewedRunSeedId: 'reviewed-seed-id' }),
-        }));
+        const route = routerSpy.push.mock.calls.at(-1)?.[0] as {
+            pathname: string; params: { reviewedRunSeedId: string };
+        } | undefined;
+        expect(route).toMatchObject({ pathname: '/workflows/new', params: { reviewedRunSeedId: expect.any(String) } });
+        if (route === undefined) throw new Error('Expected the reviewed Run route');
+        expect(readWorkflowReviewedRunSeed(route.params.reviewedRunSeedId)).toMatchObject({
+            definition: DEFINITION, supersededRunId: 'run-1',
+        });
     });
 
     it('restores the selected invocation workspace on the Run Machine without silently starting a new Run', async () => {
@@ -747,9 +741,16 @@ describe('WorkflowRunScreen', () => {
                         },
                     },
                 },
+                recoveryAvailability: {
+                    reattach: { kind: 'unavailable', reason: 'execution_not_admitted' },
+                    retry: { kind: 'unavailable', reason: 'workspace_unavailable' },
+                    continueSameConversation: { kind: 'unavailable', reason: 'workspace_unavailable' },
+                    continueFreshAgent: { kind: 'unavailable', reason: 'workspace_unavailable' },
+                    restoreWorkspace: { kind: 'available' },
+                },
             },
         });
-        const run = createWorkflowRunSummaryFixture({
+        const run = createWorkflowRunSummaryFixture({ sourceArtifactId: null, ownerAccountId: 'account-1', visibleTeamId: null,
             id: 'run-1', state: 'interrupted', revision: 1, machineId: 'machine-1', origin: { kind: 'direct' },
             workflowCustodyState: 'settled',
             availability: { cancel: false, pause: false, restoreWorkspace: true },
@@ -781,14 +782,14 @@ describe('WorkflowRunScreen', () => {
             }],
         }, 'machine-1');
         expect(runNowSpy).not.toHaveBeenCalled();
-        expect(reviewedSeedSpy).not.toHaveBeenCalled();
+        expect(routerSpy.push).not.toHaveBeenCalledWith(expect.objectContaining({ pathname: '/workflows/new' }));
     });
 
     it('requires acknowledgement of an uncertain prior attempt before it will submit a retry', async () => {
         const invocations = [
             createWorkflowInvocationIndexFixture({ id: 'root', parentRecordId: null, memberOrdinal: '0', sequence: '0' }),
             createWorkflowInvocationIndexFixture({
-                id: 'analyze-row', parentRecordId: 'root', memberOrdinal: '0', sequence: '1', lifecycle: 'outcome_uncertain',
+                id: 'analyze-row', parentRecordId: 'root', memberOrdinal: '0', sequence: '1', lifecycle: 'needs_attention',
             }),
         ];
         detailActions.getInvocation.mockResolvedValue({
@@ -801,6 +802,13 @@ describe('WorkflowRunScreen', () => {
                     blockKind: 'step',
                     attempt: '0',
                     logicalInvocationRecordId: 'analyze-row',
+                    uncertainPriorEffects: { activity: 'stopped' },
+                },
+                recoveryAvailability: {
+                    reattach: { kind: 'unavailable', reason: 'invocation_not_recoverable' },
+                    retry: { kind: 'available', causalInvocationIds: ['analyze-row'] },
+                    continueSameConversation: { kind: 'available' },
+                    continueFreshAgent: { kind: 'unavailable', reason: 'recovery_not_prepared' },
                 },
             },
         });
@@ -817,25 +825,47 @@ describe('WorkflowRunScreen', () => {
         await act(async () => latestContentProps?.onSelectInvocation('analyze-row'));
         await act(async () => {});
 
-        await act(async () => latestContentProps?.onRetrySameConversation());
+        const replacement = {
+            conversation: 'same_conversation' as const,
+            document: { text: 'Retry the reviewed objective', references: [], attachments: [] },
+            input: ['reviewed context'],
+        };
+        await act(async () => requireDefined(
+            latestContentProps?.onRetryWithReplacement,
+            'Expected a same-conversation replacement retry handler',
+        )(replacement));
         await act(async () => {});
         expect(detailActions.retryInvocation).not.toHaveBeenCalled();
 
-        await act(async () => latestContentProps?.onAcknowledgeUncertainPriorEffects());
-        await act(async () => latestContentProps?.onRetrySameConversation());
+        await act(async () => requireDefined(
+            latestContentProps?.onAcknowledgeUncertainPriorEffects,
+            'Expected an uncertain-effects acknowledgement handler',
+        )());
+        await act(async () => requireDefined(
+            latestContentProps?.onRetryWithReplacement,
+            'Expected a same-conversation replacement retry handler',
+        )(replacement));
         await act(async () => {});
         expect(detailActions.retryInvocation).toHaveBeenCalledTimes(1);
         expect(detailActions.retryInvocation.mock.calls[0]?.[0]).toMatchObject({
             acknowledgeUncertainPriorEffects: true,
-            input: { kind: 'original' },
+            causalInvocationIds: ['analyze-row'],
+            conversation: 'same_conversation',
+            input: {
+                kind: 'replacement',
+                value: { document: replacement.document, input: replacement.input },
+            },
         });
     });
 
-    it('submits a prepared continuation with the replacement input the person reviewed', async () => {
+    it('submits a prepared continuation with every reviewed causal row and replacement input', async () => {
         const invocations = [
             createWorkflowInvocationIndexFixture({ id: 'root', parentRecordId: null, memberOrdinal: '0', sequence: '0' }),
             createWorkflowInvocationIndexFixture({
                 id: 'analyze-row', parentRecordId: 'root', memberOrdinal: '0', sequence: '1', lifecycle: 'needs_attention',
+            }),
+            createWorkflowInvocationIndexFixture({
+                id: 'cancelled-row', parentRecordId: 'root', memberOrdinal: '1', sequence: '2', lifecycle: 'cancelled',
             }),
         ];
         detailActions.getInvocation.mockResolvedValue({
@@ -859,15 +889,24 @@ describe('WorkflowRunScreen', () => {
                         },
                     },
                 },
+                recoveryAvailability: {
+                    reattach: { kind: 'unavailable', reason: 'invocation_not_recoverable' },
+                    retry: { kind: 'available', causalInvocationIds: ['root', 'analyze-row', 'cancelled-row'] },
+                    continueSameConversation: { kind: 'available' },
+                    continueFreshAgent: { kind: 'unavailable', reason: 'recovery_not_prepared' },
+                },
             },
         });
         detailActions.resumeRun.mockResolvedValue({
             run: createWorkflowRunSummaryFixture({ id: 'run-1', state: 'running' }),
         });
+        detailActions.retryInvocation.mockResolvedValue({
+            run: createWorkflowRunSummaryFixture({ id: 'run-1', state: 'running' }),
+        });
         await renderRunScreen({
             run: createWorkflowRunSummaryFixture({
                 id: 'run-1', state: 'interrupted', origin: { kind: 'direct' },
-                availability: { cancel: false, pause: false, recoverSameConversation: true },
+                availability: { cancel: false, pause: false,  },
             }),
             invocations,
         });
@@ -875,25 +914,31 @@ describe('WorkflowRunScreen', () => {
         await act(async () => {});
 
         expect(latestContentProps?.preparedRecovery).toMatchObject({ conversation: 'same_conversation' });
-        await act(async () => latestContentProps?.onContinuePrepared({
+        await act(async () => requireDefined(
+            latestContentProps?.onContinuePrepared,
+            'Expected a prepared-continuation handler',
+        )({
             conversation: 'same_conversation',
             document: { text: 'Continue, but skip the migration step', references: [], attachments: [] },
             input: ['recorded context'],
         }));
         await act(async () => {});
 
-        expect(detailActions.resumeRun).toHaveBeenCalledTimes(1);
-        expect(detailActions.resumeRun.mock.calls[0]?.[0]).toMatchObject({
-            mode: 'recover',
-            invocations: [{
-                kind: 'continue',
-                invocation: { recordId: 'analyze-row' },
-                conversation: 'same_conversation',
-                input: {
+        expect(detailActions.resumeRun).not.toHaveBeenCalled();
+        expect(detailActions.retryInvocation).toHaveBeenCalledTimes(1);
+        expect(detailActions.retryInvocation.mock.calls[0]?.[0]).toMatchObject({
+            runId: 'run-1',
+            expectedRevision: 1,
+            invocation: { recordId: 'analyze-row' },
+            causalInvocationIds: ['root', 'analyze-row', 'cancelled-row'],
+            conversation: 'same_conversation',
+            input: {
+                kind: 'replacement',
+                value: {
                     document: { text: 'Continue, but skip the migration step' },
                     input: ['recorded context'],
                 },
-            }],
+            },
         });
     });
 
@@ -1010,10 +1055,10 @@ describe('WorkflowRunScreen', () => {
         });
         await renderSelectedPermissionRequests();
 
-        expect(latestContentProps?.onRespondPermission).toBeTypeOf('function');
+        expect(latestContentProps?.onRespondToRequest).toBeTypeOf('function');
         const exactReadsBeforeDecision = detailActions.getInvocation.mock.calls.length;
         detailActions.getInvocation.mockImplementationOnce(async () => reconciliation.promise);
-        act(() => { latestContentProps?.onRespondPermission?.({ requestId: 'permission-1', approved: true }); });
+        act(() => { void respondToRequest({ requestId: 'permission-1', approved: true }); });
         await act(async () => {});
 
         expect(machineRpcSpy).toHaveBeenCalledTimes(1);
@@ -1022,10 +1067,10 @@ describe('WorkflowRunScreen', () => {
             payload: { runId: 'exec-1', requestId: 'permission-1', approved: true },
         });
         // Only the answered request is withdrawn; the other stays decidable.
-        expect([...(latestContentProps?.pendingPermissionRequestIds ?? [])]).toEqual(['permission-1']);
+        expect([...(latestContentProps?.pendingRequestIds ?? [])]).toEqual(['permission-1']);
 
         // The opposite press must not race a competing response for the same request.
-        act(() => { latestContentProps?.onRespondPermission?.({ requestId: 'permission-1', approved: false }); });
+        act(() => { void respondToRequest({ requestId: 'permission-1', approved: false }); });
         await act(async () => {});
         expect(machineRpcSpy).toHaveBeenCalledTimes(1);
 
@@ -1035,8 +1080,8 @@ describe('WorkflowRunScreen', () => {
         expect(detailActions.getInvocation).toHaveBeenCalledTimes(exactReadsBeforeDecision + 1);
         // An acknowledgement is not settlement. The request stays withdrawn
         // while the exact canonical content read is unresolved.
-        expect([...(latestContentProps?.pendingPermissionRequestIds ?? [])]).toEqual(['permission-1']);
-        act(() => { latestContentProps?.onRespondPermission?.({ requestId: 'permission-1', approved: false }); });
+        expect([...(latestContentProps?.pendingRequestIds ?? [])]).toEqual(['permission-1']);
+        act(() => { void respondToRequest({ requestId: 'permission-1', approved: false }); });
         await act(async () => {});
         expect(machineRpcSpy).toHaveBeenCalledTimes(1);
 
@@ -1048,17 +1093,37 @@ describe('WorkflowRunScreen', () => {
         }));
         await act(async () => {});
 
-        expect([...(latestContentProps?.pendingPermissionRequestIds ?? [])]).toEqual([]);
+        expect([...(latestContentProps?.pendingRequestIds ?? [])]).toEqual([]);
+    });
+
+    it('keeps an issued permission decision pending when reconciliation returns an older row token', async () => {
+        await renderSelectedPermissionRequests('2');
+        machineRpcSpy.mockImplementationOnce(async (params) => {
+            params.onIssued?.();
+            return { ok: true };
+        });
+        detailActions.getInvocation.mockResolvedValueOnce(permissionInvocationResponse({
+            index: createWorkflowInvocationIndexFixture({
+                id: 'analyze-row', parentRecordId: 'root', memberOrdinal: '0', sequence: '1',
+                lifecycle: 'running', contentRevision: '1',
+            }),
+            requestIds: [],
+        }));
+
+        await act(async () => { await respondToRequest({ requestId: 'permission-1', approved: true }); });
+
+        expect([...(latestContentProps?.pendingRequestIds ?? [])]).toEqual(['permission-1']);
+        expect(storeState.state.workflowRunInvocationsByRunId['run-1']?.factsById['analyze-row']?.contentRevision).toBe('2');
     });
 
     it('sends structured question answers through the same exact detached-run request response RPC', async () => {
         await renderSelectedPermissionRequests();
 
-        expect(latestContentProps?.onAnswerQuestion).toBeTypeOf('function');
-        await act(async () => latestContentProps?.onAnswerQuestion?.({
+        expect(latestContentProps?.onRespondToRequest).toBeTypeOf('function');
+        await act(async () => { await respondToRequest({
             requestId: 'permission-1',
             answers: { branch: ['dev'] },
-        }));
+        })?.catch(() => {}); });
 
         expect(machineRpcSpy).toHaveBeenCalledWith(expect.objectContaining({
             machineId: 'machine-1',
@@ -1079,13 +1144,16 @@ describe('WorkflowRunScreen', () => {
         await renderSelectedPermissionRequests();
         const exactReadsBeforeDecision = detailActions.getInvocation.mock.calls.length;
 
-        await act(async () => latestContentProps?.onRespondPermission?.({ requestId: 'permission-1', approved: true }));
+        let answer: Promise<void> | undefined;
+        await act(async () => { answer = respondToRequest({ requestId: 'permission-1', approved: true }); });
         await act(async () => {});
 
         expect(detailActions.getInvocation).toHaveBeenCalledTimes(exactReadsBeforeDecision + 1);
-        expect(latestContentProps?.errorLabel).toBeTruthy();
-        expect([...(latestContentProps?.pendingPermissionRequestIds ?? [])]).toEqual(['permission-1']);
-        act(() => { latestContentProps?.onRespondPermission?.({ requestId: 'permission-1', approved: false }); });
+        // The failure is the answering card's to show, once — not a second screen error.
+        await expect(answer).rejects.toThrow();
+        expect(latestContentProps?.errorLabel ?? null).toBeNull();
+        expect([...(latestContentProps?.pendingRequestIds ?? [])]).toEqual(['permission-1']);
+        act(() => { void respondToRequest({ requestId: 'permission-1', approved: false }); });
         await act(async () => {});
         expect(machineRpcSpy).toHaveBeenCalledTimes(1);
     });
@@ -1098,13 +1166,16 @@ describe('WorkflowRunScreen', () => {
         await renderSelectedPermissionRequests();
         const exactReadsBeforeDecision = detailActions.getInvocation.mock.calls.length;
 
-        await act(async () => latestContentProps?.onRespondPermission?.({ requestId: 'permission-1', approved: true }));
+        let answer: Promise<void> | undefined;
+        await act(async () => { answer = respondToRequest({ requestId: 'permission-1', approved: true }); });
         await act(async () => {});
 
         expect(detailActions.getInvocation).toHaveBeenCalledTimes(exactReadsBeforeDecision + 1);
-        expect(latestContentProps?.errorLabel).toBeTruthy();
-        expect([...(latestContentProps?.pendingPermissionRequestIds ?? [])]).toEqual(['permission-1']);
-        act(() => { latestContentProps?.onRespondPermission?.({ requestId: 'permission-1', approved: false }); });
+        // The failure is the answering card's to show, once — not a second screen error.
+        await expect(answer).rejects.toThrow();
+        expect(latestContentProps?.errorLabel ?? null).toBeNull();
+        expect([...(latestContentProps?.pendingRequestIds ?? [])]).toEqual(['permission-1']);
+        act(() => { void respondToRequest({ requestId: 'permission-1', approved: false }); });
         await act(async () => {});
         expect(machineRpcSpy).toHaveBeenCalledTimes(1);
     });
@@ -1115,10 +1186,10 @@ describe('WorkflowRunScreen', () => {
         await renderSelectedPermissionRequests();
         detailActions.getInvocation.mockImplementationOnce(async () => reconciliation.promise);
 
-        act(() => { latestContentProps?.onRespondPermission?.({ requestId: 'permission-1', approved: true }); });
+        act(() => { void respondToRequest({ requestId: 'permission-1', approved: true }); });
         await act(async () => {});
 
-        expect([...(latestContentProps?.pendingPermissionRequestIds ?? [])]).toEqual(['permission-1']);
+        expect([...(latestContentProps?.pendingRequestIds ?? [])]).toEqual(['permission-1']);
         reconciliation.resolve(permissionInvocationResponse({
             index: createWorkflowInvocationIndexFixture({
                 id: 'analyze-row', parentRecordId: 'root', memberOrdinal: '0', sequence: '1', lifecycle: 'waiting_for_approval',
@@ -1127,8 +1198,8 @@ describe('WorkflowRunScreen', () => {
         }));
         await act(async () => {});
 
-        expect([...(latestContentProps?.pendingPermissionRequestIds ?? [])]).toEqual([]);
-        await act(async () => latestContentProps?.onRespondPermission?.({ requestId: 'permission-1', approved: false }));
+        expect([...(latestContentProps?.pendingRequestIds ?? [])]).toEqual([]);
+        await act(async () => { await respondToRequest({ requestId: 'permission-1', approved: false })?.catch(() => {}); });
         expect(machineRpcSpy).toHaveBeenCalledTimes(2);
     });
 
@@ -1139,11 +1210,11 @@ describe('WorkflowRunScreen', () => {
         });
         await renderSelectedPermissionRequests();
 
-        await act(async () => latestContentProps?.onRespondPermission?.({ requestId: 'permission-1', approved: true }));
+        await act(async () => { await respondToRequest({ requestId: 'permission-1', approved: true })?.catch(() => {}); });
         await act(async () => {});
 
-        expect([...(latestContentProps?.pendingPermissionRequestIds ?? [])]).toEqual(['permission-1']);
-        act(() => { latestContentProps?.onRespondPermission?.({ requestId: 'permission-1', approved: false }); });
+        expect([...(latestContentProps?.pendingRequestIds ?? [])]).toEqual(['permission-1']);
+        act(() => { void respondToRequest({ requestId: 'permission-1', approved: false }); });
         await act(async () => {});
         expect(machineRpcSpy).toHaveBeenCalledTimes(1);
     });
@@ -1161,7 +1232,7 @@ describe('WorkflowRunScreen', () => {
                 return replacementDecision.promise;
             });
         const screen = await renderSelectedPermissionRequests();
-        act(() => { latestContentProps?.onRespondPermission?.({ requestId: 'permission-1', approved: true }); });
+        act(() => { void respondToRequest({ requestId: 'permission-1', approved: true }); });
         await act(async () => {});
         expect(machineRpcSpy).toHaveBeenCalledTimes(1);
         const firstSignal = machineRpcSpy.mock.calls[0]?.[0].signal;
@@ -1186,16 +1257,16 @@ describe('WorkflowRunScreen', () => {
         await act(async () => {});
         await act(async () => latestContentProps?.onSelectInvocation('analyze-row'));
         await act(async () => {});
-        act(() => { latestContentProps?.onRespondPermission?.({ requestId: 'permission-1', approved: false }); });
+        act(() => { void respondToRequest({ requestId: 'permission-1', approved: false }); });
         await act(async () => {});
         expect(machineRpcSpy).toHaveBeenCalledTimes(2);
-        expect([...(latestContentProps?.pendingPermissionRequestIds ?? [])]).toEqual(['permission-1']);
+        expect([...(latestContentProps?.pendingRequestIds ?? [])]).toEqual(['permission-1']);
 
         decision.reject(new Error('machine unreachable'));
         await act(async () => {});
 
         expect(latestContentProps?.errorLabel ?? null).toBeNull();
-        expect([...(latestContentProps?.pendingPermissionRequestIds ?? [])]).toEqual(['permission-1']);
+        expect([...(latestContentProps?.pendingRequestIds ?? [])]).toEqual(['permission-1']);
 
         replacementDecision.reject(new Error('replacement machine unreachable'));
         await act(async () => {});
@@ -1330,5 +1401,286 @@ describe('WorkflowRunScreen', () => {
         // Run A's lost page belongs to nobody on screen once Run B is mounted.
         expect(latestContentProps?.loadMoreInvocationsFailed).toBe(false);
         expect(latestContentProps?.errorLabel ?? null).toBeNull();
+    });
+
+    /**
+     * Exact reread evidence for the selected invocation.
+     *
+     * The last-known private content stays visible while it is re-asked for,
+     * but no permission or recovery callback may act on it until a response
+     * for this exact Run, record, revision and attempt confirms it. A response
+     * that lost its race is ignored rather than published.
+     */
+    describe('selected invocation evidence', () => {
+        function selectedRows() {
+            return [
+                createWorkflowInvocationIndexFixture({ id: 'root', parentRecordId: null, memberOrdinal: '0', sequence: '0' }),
+                createWorkflowInvocationIndexFixture({
+                    id: 'analyze-row', parentRecordId: 'root', memberOrdinal: '0', sequence: '1', lifecycle: 'waiting_for_approval',
+                }),
+            ];
+        }
+
+        function openRequestResponse(index: ReturnType<typeof createWorkflowInvocationIndexFixture>, parentRevision: number) {
+            return permissionInvocationResponse({ index, requestIds: ['permission-1'], parentRevision });
+        }
+
+        it('does not confirm a stale row blob when its parent revision is unchanged', async () => {
+            const invocations = selectedRows();
+            invocations[1] = { ...invocations[1]!, contentRevision: '2' };
+            detailActions.getInvocation.mockResolvedValue(openRequestResponse({ ...invocations[1]!, contentRevision: '1' }, 1));
+            await renderRunScreen({
+                run: createWorkflowRunSummaryFixture({ id: 'run-1', state: 'running', revision: 1 }),
+                invocations,
+            });
+            await act(async () => latestContentProps?.onSelectInvocation('analyze-row'));
+            await act(async () => {});
+            expect(latestContentProps?.selectedContentUnavailable).toBe(true);
+            expect(latestContentProps?.selectedInvocationProgress).toBeNull();
+            expect(latestContentProps?.onRespondToRequest).toBeUndefined();
+        });
+
+        it('refreshes selected evidence on a row token change without a timestamp or parent change', async () => {
+            const invocations = selectedRows();
+            const newer = { ...invocations[1]!, contentRevision: '1' };
+            const refreshedRead = createDeferred<unknown>();
+            detailActions.getInvocation.mockResolvedValueOnce(openRequestResponse(invocations[1]!, 1));
+            detailActions.getInvocation.mockReturnValueOnce(refreshedRead.promise);
+            const { getStorage } = await import('@/sync/domains/state/storage');
+            await renderRunScreen({
+                run: createWorkflowRunSummaryFixture({ id: 'run-1', state: 'running', revision: 1 }),
+                invocations,
+            });
+            await act(async () => latestContentProps?.onSelectInvocation('analyze-row'));
+            expect(latestContentProps?.selectedContentUnavailable).toBe(false);
+            act(() => getStorage().getState().upsertWorkflowRunInvocation({
+                runId: 'run-1', invocation: newer, parentRevision: 1,
+            }));
+            await act(async () => {});
+            expect(detailActions.getInvocation).toHaveBeenCalledTimes(2);
+            expect(latestContentProps?.selectedContentUnavailable).toBe(true);
+            expect(latestContentProps?.onRespondToRequest).toBeUndefined();
+            refreshedRead.resolve(openRequestResponse(newer, 1));
+            await act(async () => {});
+            expect(latestContentProps?.selectedContentUnavailable).toBe(false);
+            expect(latestContentProps?.onRespondToRequest).toBeTypeOf('function');
+        });
+
+        it('refreshes row-only attention and the exact selection while visible, and reads current facts on reopening', async () => {
+            const invocations = selectedRows();
+            let destinationVisible = true;
+            const wrap = (screen: React.ReactElement) => React.createElement(DestinationInstanceHost, {
+                tabId: 'workflow-run-tab',
+                ref: { kind: 'workflowRun', params: { runId: 'run-1' } },
+                pathname: '/workflows/runs/run-1',
+                focused: destinationVisible,
+                visible: destinationVisible,
+                navigation: { ...routerSpy, replace: vi.fn() },
+                children: screen,
+            });
+            detailActions.getInvocation.mockResolvedValue(openRequestResponse(invocations[1]!, 1));
+            const screen = await renderRunScreen({
+                run: createWorkflowRunSummaryFixture({ id: 'run-1', state: 'running' }),
+                invocations,
+                wrap,
+            });
+            await act(async () => latestContentProps?.onSelectInvocation('analyze-row'));
+            expect(latestContentProps?.selectedContentUnavailable).toBe(false);
+
+            const refreshedRead = createDeferred<unknown>();
+            detailActions.getInvocation.mockReturnValueOnce(refreshedRead.promise);
+            const offPageApproval = createWorkflowInvocationIndexFixture({
+                id: 'off-page-approval', sequence: '99', parentRecordId: 'root', lifecycle: 'waiting_for_approval',
+            });
+            detailActions.listInvocations.mockImplementation(async (input: Readonly<{ lifecycles?: readonly string[] }>) => (
+                invocationPage(input.lifecycles === undefined ? invocations : [offPageApproval])
+            ));
+            await act(async () => publishHomeAccountChange('server-a', ['workflow-run:run-1']));
+            expect(latestContentProps?.invocations.some((row) => row.id === offPageApproval.id)).toBe(true);
+            expect(latestContentProps?.selectedContentUnavailable).toBe(true);
+            expect(latestContentProps?.selectedInvocationProgress).not.toBeNull();
+            expect(latestContentProps?.run.revision).toBe(1);
+            refreshedRead.resolve(openRequestResponse(invocations[1]!, 1));
+            await act(async () => {});
+            expect(latestContentProps?.selectedContentUnavailable).toBe(false);
+
+            // A retained workspace tab is hidden even while the host remains visible.
+            destinationVisible = false;
+            await screen.update(wrap(React.createElement(WorkflowRunScreen)));
+            detailActions.listInvocations.mockClear();
+            detailActions.getInvocation.mockClear();
+            await act(async () => publishHomeAccountChange('server-a', ['workflow-run:run-1']));
+            expect(detailActions.listInvocations).not.toHaveBeenCalled();
+            expect(detailActions.getInvocation).not.toHaveBeenCalled();
+
+            destinationVisible = true;
+            await screen.update(wrap(React.createElement(WorkflowRunScreen)));
+            expect(detailActions.listInvocations).toHaveBeenCalled();
+            expect(detailActions.getInvocation).toHaveBeenCalled();
+        });
+
+        it('withholds selected callbacks while the exact re-read is in flight but keeps last-known content visible', async () => {
+            const invocations = selectedRows();
+            const firstRead = createDeferred<unknown>();
+            const secondRead = createDeferred<unknown>();
+            let reads = 0;
+            detailActions.getInvocation.mockImplementation(async () => {
+                reads += 1;
+                return reads === 1 ? firstRead.promise : secondRead.promise;
+            });
+            const { getStorage } = await import('@/sync/domains/state/storage');
+            await renderRunScreen({
+                run: createWorkflowRunSummaryFixture({
+                    id: 'run-1', state: 'running', machineId: 'machine-1', origin: { kind: 'direct' },
+                }),
+                invocations,
+            });
+            await act(async () => latestContentProps?.onSelectInvocation('analyze-row'));
+            await act(async () => {});
+            expect(detailActions.getInvocation).toHaveBeenCalledTimes(1);
+
+            firstRead.resolve(openRequestResponse(invocations[1]!, 1));
+            await act(async () => {});
+            // The matching first read confirms the evidence its callbacks act on.
+            expect(latestContentProps?.selectedContentUnavailable).toBe(false);
+            expect(latestContentProps?.onRespondToRequest).toBeTypeOf('function');
+
+            // A newer index row for the same selection re-asks for it. The
+            // evidence is unconfirmed before that request answers, while
+            // everything the last confirmed read established stays on screen.
+            const newerIndex = { ...invocations[1]!, contentRevision: '1', updatedAt: '2026-09-08T11:00:00.000Z' };
+            act(() => {
+                getStorage().getState().applyWorkflowRunInvocationPage({
+                    runId: 'run-1',
+                    invocations: [newerIndex],
+                    nextCursor: null,
+                    parentRevision: 1,
+                    mode: 'replace',
+                });
+            });
+            await act(async () => {});
+            expect(detailActions.getInvocation).toHaveBeenCalledTimes(2);
+            expect(latestContentProps?.selectedContentUnavailable).toBe(true);
+            expect(latestContentProps?.onRespondToRequest).toBeUndefined();
+            expect(latestContentProps?.run.id).toBe('run-1');
+            expect(latestContentProps?.selectedInvocationProgress).toMatchObject({
+                execution: { kind: 'detached_run', runId: 'exec-1' },
+            });
+
+            secondRead.resolve(openRequestResponse(newerIndex, 1));
+            await act(async () => {});
+            expect(latestContentProps?.selectedContentUnavailable).toBe(false);
+            expect(latestContentProps?.onRespondToRequest).toBeTypeOf('function');
+        });
+
+        it('ignores an exact response for another record instead of publishing it under the selection', async () => {
+            const invocations = selectedRows();
+            detailActions.getInvocation.mockResolvedValue({
+                invocation: {
+                    index: createWorkflowInvocationIndexFixture({ id: 'intruder-row', sequence: '9' }),
+                    parentRevision: 1,
+                    progress: {
+                        kind: 'happier.workflow-progress.v1',
+                        invocationPath: { blockId: 'analyze', scope: [] },
+                        blockKind: 'step', attempt: '0',
+                        logicalInvocationRecordId: 'intruder-row',
+                    },
+                },
+            });
+            await renderRunScreen({
+                run: createWorkflowRunSummaryFixture({
+                    id: 'run-1', state: 'running', machineId: 'machine-1', origin: { kind: 'direct' },
+                }),
+                invocations,
+            });
+            await act(async () => latestContentProps?.onSelectInvocation('analyze-row'));
+            await act(async () => {});
+
+            // Another record's answer is nobody's evidence here: nothing is
+            // published under the selection and no callback is armed by it.
+            expect(latestContentProps?.selectedContentUnavailable).toBe(true);
+            expect(latestContentProps?.selectedInvocationProgress).toBeNull();
+            expect(latestContentProps?.onRespondToRequest).toBeUndefined();
+        });
+
+        it('confirms only on a response at least as fresh as the issued revision', async () => {
+            const invocations = selectedRows();
+            const staleRead = createDeferred<unknown>();
+            const freshRead = createDeferred<unknown>();
+            let reads = 0;
+            detailActions.getInvocation.mockImplementation(async () => {
+                reads += 1;
+                return reads === 1 ? staleRead.promise : freshRead.promise;
+            });
+            await renderRunScreen({
+                run: createWorkflowRunSummaryFixture({
+                    id: 'run-1', state: 'running', revision: 2, machineId: 'machine-1', origin: { kind: 'direct' },
+                }),
+                invocations,
+            });
+            await act(async () => latestContentProps?.onSelectInvocation('analyze-row'));
+            await act(async () => {});
+
+            staleRead.resolve(openRequestResponse(invocations[1]!, 1));
+            await act(async () => {});
+            // Issued at revision 2, answered from revision 1: superseded.
+            expect(latestContentProps?.selectedContentUnavailable).toBe(true);
+            expect(latestContentProps?.onRespondToRequest).toBeUndefined();
+
+            // Re-asking re-arms the flight; the answer from revision 2 matches.
+            await act(async () => requireDefined(
+                latestContentProps?.onDeselectInvocation,
+                'Expected an invocation deselection handler',
+            )());
+            await act(async () => latestContentProps?.onSelectInvocation('analyze-row'));
+            await act(async () => {});
+            expect(detailActions.getInvocation).toHaveBeenCalledTimes(2);
+            expect(latestContentProps?.selectedContentUnavailable).toBe(true);
+            expect(latestContentProps?.onRespondToRequest).toBeUndefined();
+
+            freshRead.resolve(openRequestResponse(invocations[1]!, 2));
+            await act(async () => {});
+            expect(latestContentProps?.selectedContentUnavailable).toBe(false);
+            expect(latestContentProps?.onRespondToRequest).toBeTypeOf('function');
+        });
+
+        it('re-arms selected callbacks once a matching read succeeds after a failure', async () => {
+            const invocations = selectedRows();
+            const retryRead = createDeferred<unknown>();
+            let reads = 0;
+            detailActions.getInvocation.mockImplementation(async () => {
+                reads += 1;
+                return reads === 1 ? Promise.reject(new Error('offline')) : retryRead.promise;
+            });
+            await renderRunScreen({
+                run: createWorkflowRunSummaryFixture({
+                    id: 'run-1', state: 'running', machineId: 'machine-1', origin: { kind: 'direct' },
+                }),
+                invocations,
+            });
+            await act(async () => latestContentProps?.onSelectInvocation('analyze-row'));
+            await act(async () => {});
+            expect(latestContentProps?.selectedContentUnavailable).toBe(true);
+            expect(latestContentProps?.onRespondToRequest).toBeUndefined();
+
+            // Leaving and returning to the row re-asks for it. The evidence
+            // stays unconfirmed through that flight — every effect run marks
+            // it so before requesting — and only the matching answer re-arms
+            // the callbacks the failure withdrew.
+            await act(async () => requireDefined(
+                latestContentProps?.onDeselectInvocation,
+                'Expected an invocation deselection handler',
+            )());
+            await act(async () => latestContentProps?.onSelectInvocation('analyze-row'));
+            await act(async () => {});
+            expect(detailActions.getInvocation).toHaveBeenCalledTimes(2);
+            expect(latestContentProps?.selectedContentUnavailable).toBe(true);
+            expect(latestContentProps?.onRespondToRequest).toBeUndefined();
+
+            retryRead.resolve(openRequestResponse(invocations[1]!, 1));
+            await act(async () => {});
+            expect(latestContentProps?.selectedContentUnavailable).toBe(false);
+            expect(latestContentProps?.onRespondToRequest).toBeTypeOf('function');
+        });
     });
 });

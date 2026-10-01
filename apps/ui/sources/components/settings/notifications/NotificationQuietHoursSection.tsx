@@ -1,13 +1,12 @@
 import * as React from 'react';
 
-import { useUnistyles } from 'react-native-unistyles';
-
-import { Item } from '@/components/ui/lists/Item';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
+import { SegmentedChoiceItem } from '@/components/ui/lists/SegmentedChoiceItem';
+import { SettingAnchor } from '@/components/settings/shell/SettingRow';
+import { NOTIFICATIONS_SETTINGS } from '@/components/settings/notifications/notificationsSettings';
 import type { AttentionDeviceOverridesV1 } from '@/sync/domains/settings/attentionDeviceOverridesV1';
 import { t } from '@/text';
 import type { AttentionDeliveryPolicyV1 } from '@happier-dev/protocol';
-import { Icon } from '@/components/ui/icons/Icon';
 import {
     isNightlyQuietHoursWindowSet,
     NIGHTLY_QUIET_HOURS_WINDOW,
@@ -15,6 +14,9 @@ import {
 
 type QuietHoursOverride = AttentionDeviceOverridesV1['quietHoursOverride'];
 type QuietHoursPolicy = AttentionDeliveryPolicyV1['quietHours'];
+/** `custom` is a schedule the presets do not describe; it is shown, never offered. */
+type AccountQuietHoursChoice = 'off' | 'nightly' | 'custom';
+type DeviceQuietHoursChoice = 'account' | 'disabled' | 'nightly' | 'custom';
 
 type NotificationQuietHoursSectionProps = Readonly<{
     policy: AttentionDeliveryPolicyV1;
@@ -58,7 +60,6 @@ export function NotificationQuietHoursSection({
     setAccountQuietHours,
     setDeviceQuietHoursOverride,
 }: NotificationQuietHoursSectionProps): React.ReactElement {
-    const { theme } = useUnistyles();
     const accountEnabled = policy.quietHours.enabled === true;
     // Selected means "this row IS the configured schedule", so a foreign or richer schedule is
     // neither mislabelled nor silently replaced by pressing the preset.
@@ -102,58 +103,69 @@ export function NotificationQuietHoursSection({
         });
     }, [policy, setDeviceQuietHoursOverride]);
 
+    const accountChoice: AccountQuietHoursChoice = !accountEnabled ? 'off' : accountNightlySelected ? 'nightly' : 'custom';
+    const deviceChoice: DeviceQuietHoursChoice = deviceOverride.mode === 'account'
+        ? 'account'
+        : deviceOverride.mode === 'disabled'
+            ? 'disabled'
+            : deviceNightlySelected ? 'nightly' : 'custom';
+    const withZone = (text: string, zone: string | undefined) => (zone ? `${text} · ${zone}` : text);
+
     return (
         <ItemGroup
             title={t('settingsNotifications.quietHours.title')}
-            footer={t('settingsNotifications.quietHours.footer')}
+            description={t('settingsNotifications.quietHours.footer')}
         >
-            <Item
-                testID="settings-notifications-quiet-hours-account-off"
-                title={t('settingsNotifications.quietHours.accountOffTitle')}
-                subtitle={t('settingsNotifications.quietHours.accountOffSubtitle')}
-                icon={<Icon name="bell" size={29} color={theme.colors.accent.blue} />}
-                selected={!accountEnabled}
-                onPress={setAccountOff}
-                showChevron={false}
-            />
-            <Item
-                testID="settings-notifications-quiet-hours-account-nightly"
-                title={t('settingsNotifications.quietHours.accountNightlyTitle')}
-                subtitle={t('settingsNotifications.quietHours.accountNightlySubtitle')}
-                icon={<Icon name="moon" size={29} color={theme.colors.text.secondary} />}
-                detail={accountScheduleTimezone}
-                selected={accountNightlySelected}
-                onPress={setAccountNightly}
-                showChevron={false}
-            />
-            <Item
-                testID="settings-notifications-quiet-hours-device-account"
-                title={t('settingsNotifications.quietHours.deviceAccountTitle')}
-                subtitle={t('settingsNotifications.quietHours.deviceAccountSubtitle')}
-                icon={<Icon name="device-mobile" size={29} color={theme.colors.text.secondary} />}
-                selected={deviceOverride.mode === 'account'}
-                onPress={() => setDeviceQuietHoursOverride({ mode: 'account' })}
-                showChevron={false}
-            />
-            <Item
-                testID="settings-notifications-quiet-hours-device-disabled"
-                title={t('settingsNotifications.quietHours.deviceDisabledTitle')}
-                subtitle={t('settingsNotifications.quietHours.deviceDisabledSubtitle')}
-                icon={<Icon name="bell-slash" size={29} color={theme.colors.text.secondary} />}
-                selected={deviceOverride.mode === 'disabled'}
-                onPress={() => setDeviceQuietHoursOverride({ mode: 'disabled' })}
-                showChevron={false}
-            />
-            <Item
-                testID="settings-notifications-quiet-hours-device-custom-nightly"
-                title={t('settingsNotifications.quietHours.deviceCustomNightlyTitle')}
-                subtitle={t('settingsNotifications.quietHours.deviceCustomNightlySubtitle')}
-                icon={<Icon name="moon" size={29} color={theme.colors.text.secondary} />}
-                detail={deviceScheduleTimezone}
-                selected={deviceNightlySelected}
-                onPress={setDeviceCustomNightly}
-                showChevron={false}
-            />
+            <SettingAnchor setting={NOTIFICATIONS_SETTINGS.settings.quietHoursAccount}>
+                <SegmentedChoiceItem<AccountQuietHoursChoice>
+                    // Remount when the schedule leaves the presets so no stale selection stays drawn.
+                    key={accountChoice === 'custom' ? 'account-custom' : 'account-preset'}
+                    testID="settings-notifications-quiet-hours-account"
+                    testIDPrefix="settings-notifications-quiet-hours-account"
+                    title={t(NOTIFICATIONS_SETTINGS.settings.quietHoursAccount.titleKey)}
+                    // A schedule these presets do not describe is shown as such; choosing a preset replaces it.
+                    subtitle={t('settingsNotifications.quietHours.customSubtitle')}
+                    subtitleLines={0}
+                    value={accountChoice}
+                    onChange={(next) => {
+                        if (next === 'off') setAccountOff();
+                        else if (next === 'nightly') setAccountNightly();
+                    }}
+                    options={[
+                        { id: 'off', label: t('settingsNotifications.quietHours.offShort'), description: t('settingsNotifications.quietHours.accountOffSubtitle') },
+                        {
+                            id: 'nightly',
+                            label: t('settingsNotifications.quietHours.nightlyShort'),
+                            description: withZone(t('settingsNotifications.quietHours.accountNightlySubtitle'), accountScheduleTimezone),
+                        },
+                    ]}
+                />
+            </SettingAnchor>
+            <SettingAnchor setting={NOTIFICATIONS_SETTINGS.settings.quietHoursDevice}>
+                <SegmentedChoiceItem<DeviceQuietHoursChoice>
+                    key={deviceChoice === 'custom' ? 'device-custom' : 'device-preset'}
+                    testID="settings-notifications-quiet-hours-device"
+                    testIDPrefix="settings-notifications-quiet-hours-device"
+                    title={t(NOTIFICATIONS_SETTINGS.settings.quietHoursDevice.titleKey)}
+                    subtitle={t('settingsNotifications.quietHours.customSubtitle')}
+                    subtitleLines={0}
+                    value={deviceChoice}
+                    onChange={(next) => {
+                        if (next === 'account') setDeviceQuietHoursOverride({ mode: 'account' });
+                        else if (next === 'disabled') setDeviceQuietHoursOverride({ mode: 'disabled' });
+                        else if (next === 'nightly') setDeviceCustomNightly();
+                    }}
+                    options={[
+                        { id: 'account', label: t('settingsNotifications.quietHours.syncedShort'), description: t('settingsNotifications.quietHours.deviceAccountSubtitle') },
+                        { id: 'disabled', label: t('settingsNotifications.quietHours.offShort'), description: t('settingsNotifications.quietHours.deviceDisabledSubtitle') },
+                        {
+                            id: 'nightly',
+                            label: t('settingsNotifications.quietHours.nightlyShort'),
+                            description: withZone(t('settingsNotifications.quietHours.deviceCustomNightlySubtitle'), deviceScheduleTimezone),
+                        },
+                    ]}
+                />
+            </SettingAnchor>
         </ItemGroup>
     );
 }

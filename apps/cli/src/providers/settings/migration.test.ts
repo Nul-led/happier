@@ -1,4 +1,6 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import axios from 'axios';
+import { vi } from 'vitest';
 
 import type { Credentials } from '@/persistence';
 import {
@@ -89,6 +91,65 @@ function guidedRawProfile() {
 }
 
 describe('migrateProviderSettings', () => {
+  beforeEach(() => {
+    // Only the Account HTTP boundary is replaced; Settings CAS and all
+    // authoring-memory parsing/import logic beneath it remain real.
+    vi.spyOn(axios, 'get').mockImplementation(async (url) => {
+      if (String(url).endsWith('/v1/account/encryption')) return { status: 200, data: { mode: 'plain', updatedAt: 1 } };
+      if (String(url).endsWith('/v2/account/settings')) return { status: 200, data: { content: null, version: 1 } };
+      return { status: 200, data: { status: 'present', revision: 1, content: { t: 'plain', v: null } } };
+    });
+  });
+  afterEach(() => vi.restoreAllMocks());
+  it.each([false, true])('clears only the removed Profile after Settings CAS, repairs interrupted clear (%s), and preserves a newer selection', async (interruptClear) => {
+    let selected = 'deepseek';
+    let revision = 1;
+    let raw: Record<string, unknown> = {
+      profiles: [{ id: 'deepseek', name: 'DeepSeek', environmentVariables: [], createdAt: 1, updatedAt: 1 }],
+    };
+    let version = 1;
+    const events: string[] = [];
+    let interruptNextClear = interruptClear;
+    const get = vi.spyOn(axios, 'get').mockImplementation(async (url) => {
+      if (String(url).endsWith('/v1/account/encryption')) return { status: 200, data: { mode: 'plain', updatedAt: 1 } };
+      if (String(url).endsWith('/v2/account/settings')) return { status: 200, data: { content: { t: 'plain', v: raw }, version } };
+      return { status: 200, data: { status: 'present', revision, content: { t: 'plain', v: selected } } };
+    });
+    const post = vi.spyOn(axios, 'post').mockImplementation(async (url, input) => {
+      const body = input as { expectedVersion?: number; expectedRevision?: number; content: { t: 'plain'; v: unknown } };
+      if (String(url).endsWith('/v2/account/settings')) {
+        events.push('settings');
+        raw = body.content.v as Record<string, unknown>;
+        version += 1;
+        return { status: 200, data: { success: true, version } };
+      }
+      events.push('memory');
+      if (interruptNextClear) {
+        interruptNextClear = false;
+        throw new Error('Interrupted after Settings committed');
+      }
+      expect(body.expectedRevision).toBe(revision);
+      selected = body.content.v as string;
+      revision += 1;
+      return { status: 200, data: { status: 'updated', revision, cursor: revision } };
+    });
+    try {
+      if (interruptClear) {
+        await expect(migrateProviderSettings({ credentials: credentials(), ...migrationParams('pc-deepseek') }))
+          .rejects.toThrow('Interrupted after Settings committed');
+        expect(selected).toBe('deepseek');
+        expect(raw).not.toHaveProperty('lastUsedProfile');
+      }
+      await migrateProviderSettings({ credentials: credentials(), ...migrationParams('pc-deepseek') });
+      expect(events).toEqual(interruptClear ? ['settings', 'memory', 'memory'] : ['settings', 'memory']);
+      expect(selected).toBeNull();
+      expect(raw).not.toHaveProperty('lastUsedProfile');
+      selected = 'newer-profile';
+      await migrateProviderSettings({ credentials: credentials(), ...migrationParams('pc-deepseek') });
+      expect(selected).toBe('newer-profile');
+    } finally { get.mockRestore(); post.mockRestore(); }
+  });
+
   it('previews a guided mapping from the latest raw account state without writing or returning settings', async () => {
     const reviewedMapping = guidedReviewedMapping();
     const raw = guidedRawProfile();
@@ -107,7 +168,7 @@ describe('migrateProviderSettings', () => {
     });
     expect(result).toEqual({
       version: 7,
-      sourceFingerprint: createLegacyProfileMigrationSourceFingerprintV1({
+      sourceFingerprint: createLegacyProfileMigrationSourceFingerprintV1({ authoringMemory: { lastUsedProfile: null },
         rawSettings: raw, sourceProfileId: 'company', reviewedMapping,
       }),
     });
@@ -160,7 +221,7 @@ describe('migrateProviderSettings', () => {
   it('refuses a changed guided source at its single evaluation without submitting a CAS', async () => {
     const reviewedMapping = guidedReviewedMapping();
     const displayedRaw = guidedRawProfile();
-    const fingerprint = createLegacyProfileMigrationSourceFingerprintV1({
+    const fingerprint = createLegacyProfileMigrationSourceFingerprintV1({ authoringMemory: { lastUsedProfile: null },
       rawSettings: displayedRaw, sourceProfileId: 'company', reviewedMapping,
     });
     let updates = 0;
@@ -186,7 +247,7 @@ describe('migrateProviderSettings', () => {
   it('reports a concurrent guided-confirmation source change as a typed conflict without post-conflict callback replay', async () => {
     const reviewedMapping = guidedReviewedMapping();
     const raw = guidedRawProfile();
-    const fingerprint = createLegacyProfileMigrationSourceFingerprintV1({
+    const fingerprint = createLegacyProfileMigrationSourceFingerprintV1({ authoringMemory: { lastUsedProfile: null },
       rawSettings: raw, sourceProfileId: 'company', reviewedMapping,
     });
     const updates: Array<{ expectedVersion: number }> = [];

@@ -12,6 +12,8 @@ import {
   AccountPasswordChangeRequestV1Schema,
   AccountPasswordRemoveRequestV1Schema,
   AccountSecurityGetResponseV1Schema,
+  AccountTerminalPresentUserPolicySetRequestV1Schema,
+  AccountTerminalPresentUserPolicySetResponseV1Schema,
   AccountSecurityRouteErrorV1Schema,
   PasswordMutationPreparationRequestV1Schema,
   PasswordMutationPreparationResponseV1Schema,
@@ -27,19 +29,23 @@ import {
   normalizeVerifiedEmail,
   type ActionExecuteResult,
   type ActionId,
+  type AccountSecurityGetResponseV1,
+  type AccountTerminalPresentUserPolicySetResponseV1,
 } from '@happier-dev/protocol';
 
 import { isAuthenticationError } from '@/api/client/httpStatusError';
 import { configuration } from '@/configuration';
 import { fetchServerFeaturesSnapshot } from '@/features/serverFeaturesClient';
 import { hasStoredSessionCredentialProvenance, readStoredCredentials, type StoredCredentials } from '@/persistence';
-import { assertCommandArguments, readFlagValue, readRawFlagValue } from '@/cli/commands/shared/argvFlags';
+import { assertCommandArguments, readCommandPositionals, readFlagValue, readRawFlagValue } from '@/cli/commands/shared/argvFlags';
 import { printJsonEnvelope, wantsJson, writeJsonStdout } from '@/cli/output/jsonEnvelope';
 import { applyServerSelectionFromArgs } from '@/server/serverSelection';
 import { createExternalAuthProof } from '@/auth/externalAuthProof';
 
 export const ACCOUNT_SECURITY_USAGE =
   'Usage: happier auth security get [--json] | happier auth password change [--current-password <password>] --new-password <password> [--recover] [--json] | happier auth password remove [--current-password <password>] [--json] | happier auth password enroll-email-request --email <email> [--json] | happier auth password enroll --email <email> --password <password> [--verification-token <token>] [--json] | happier auth email change-request --email <email> [--json]';
+
+const CLI_APPROVALS_USAGE = 'Usage: happier auth cli-approvals get [--json] | set allowed|disallowed [--yes] [--json]';
 
 class AccountSecurityCommandError extends Error {
   constructor(
@@ -76,7 +82,6 @@ async function createAccountSecurityActionRuntime(
   const serverApiUrl = configuration.apiServerUrl;
   const context = {
     surface: 'cli' as const,
-    authority: 'present_user' as const,
     actionCaller: { kind: 'host' as const },
     serverId,
     ...(signal ? { signal } : {}),
@@ -96,7 +101,7 @@ async function readAccountSecurityRoute(
   serverApiUrl: string,
   credentials: StoredCredentials,
   signal?: AbortSignal,
-): Promise<unknown> {
+): Promise<AccountSecurityGetResponseV1> {
   signal?.throwIfAborted();
   const response = await axios.get<unknown>(`${serverApiUrl}/v1/account/security`, {
     headers: { Authorization: `Bearer ${credentials.token}`, 'Content-Type': 'application/json' },
@@ -123,6 +128,13 @@ async function readAccountSecurityProjection(
   return AccountSecurityGetResponseV1Schema.parse(
     unwrap(await runtime.executor.execute('account.security.get', {}, runtime.context)),
   );
+}
+
+async function readSelectedAccountSecurity(credentials: StoredCredentials, signal?: AbortSignal) {
+  if (hasStoredSessionCredentialProvenance(credentials)) {
+    return await readAccountSecurityProjection(await createAccountSecurityActionRuntime(credentials, signal));
+  }
+  return await readAccountSecurityRoute(configuration.apiServerUrl, credentials, signal);
 }
 
 function requireRecoverySecret(credentials: StoredCredentials): Uint8Array {
@@ -387,6 +399,51 @@ async function confirmDangerousAction(message: string, args: readonly string[]):
   if (!confirmed) throw new AccountSecurityCommandError('confirmation_declined');
 }
 
+export async function handleAuthCliApprovals(args: string[], signal?: AbortSignal): Promise<void> {
+  const kind = `auth_cli_approvals_${args[0] ?? 'help'}`;
+  try {
+    args = await applyServerSelectionFromArgs(args);
+    signal?.throwIfAborted();
+    const command = args[0];
+    if (!command || command === 'help' || args.includes('--help') || args.includes('-h')) {
+      console.log(CLI_APPROVALS_USAGE);
+      return;
+    }
+    if (command !== 'get' && command !== 'set') throw new AccountSecurityCommandError('invalid_arguments', CLI_APPROVALS_USAGE);
+    try {
+      assertCommandArguments(args, { usage: CLI_APPROVALS_USAGE, startIndex: 1,
+        booleanFlags: command === 'get' ? ['--json'] : ['--json', '--yes'], valueFlags: [],
+        maxPositionals: command === 'get' ? 0 : 1 });
+    } catch { throw new AccountSecurityCommandError('invalid_arguments', CLI_APPROVALS_USAGE); }
+    const input = command === 'set'
+      ? AccountTerminalPresentUserPolicySetRequestV1Schema.safeParse({ policy: readCommandPositionals(args, { startIndex: 1 })[0] })
+      : null;
+    if (input && !input.success) throw new AccountSecurityCommandError('invalid_arguments', CLI_APPROVALS_USAGE);
+    const credentials = await readStoredCredentials();
+    if (!credentials) throw new AccountSecurityCommandError('not_authenticated');
+    let data: AccountTerminalPresentUserPolicySetResponseV1;
+    if (command === 'get') {
+      const security = await readSelectedAccountSecurity(credentials, signal);
+      data = { policy: security.terminalPresentUserPolicy };
+    } else {
+      if (!hasStoredSessionCredentialProvenance(credentials)) throw new AccountSecurityCommandError('present_user_required');
+      if (!input?.success) throw new AccountSecurityCommandError('invalid_arguments', CLI_APPROVALS_USAGE);
+      await confirmDangerousAction(`Set CLI and daemon approval authority to ${input.data.policy}?`, args);
+      signal?.throwIfAborted();
+      const runtime = await createAccountSecurityActionRuntime(credentials, signal, 'account.security.terminalPresentUser.set');
+      data = AccountTerminalPresentUserPolicySetResponseV1Schema.parse(unwrap(await runtime.executor.execute(
+        'account.security.terminalPresentUser.set', input.data, runtime.mutationContext,
+      )));
+    }
+    if (wantsJson(args)) await printJsonEnvelope({ ok: true, kind, data });
+    else await writeJsonStdout(data, { pretty: true });
+  } catch (error) {
+    const { code, message } = projectAccountSecurityFailure(error);
+    if (wantsJson(args)) await printJsonEnvelope({ ok: false, kind, error: { code, message } });
+    else { console.error(message); process.exitCode = 1; }
+  }
+}
+
 export async function handleAuthSecurityGet(args: string[], signal?: AbortSignal): Promise<void> {
   const kind = 'auth_security_get';
   try {
@@ -415,12 +472,7 @@ export async function handleAuthSecurityGet(args: string[], signal?: AbortSignal
     // credentials or a PAT. Mutations below retain the stricter provenance
     // check. PAT reads use the canonical authenticated route directly; the
     // shared Action remains the interactive host adapter for the same owner.
-    const data = hasStoredSessionCredentialProvenance(credentials)
-      ? unwrap(await (async () => {
-          const runtime = await createAccountSecurityActionRuntime(credentials, signal);
-          return await runtime.executor.execute('account.security.get', {}, runtime.context);
-        })())
-      : await readAccountSecurityRoute(configuration.apiServerUrl, credentials, signal);
+    const data = await readSelectedAccountSecurity(credentials, signal);
     if (wantsJson(args)) await printJsonEnvelope({ ok: true, kind, data });
     else await writeJsonStdout(data, { pretty: true });
   } catch (error) {

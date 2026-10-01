@@ -16,6 +16,7 @@ const en = {
     count: ({ count }: { count: number }) => (count === 1 ? '1 machine' : `${count} machines`),
     daemonTitle: 'Background service',
     daemonDescription: 'Runs your sessions on this computer and keeps it connected to your Home.',
+    unreadableTitle: ({ home }: { home: string }) => `Couldn’t read the machines on ${home}`,
 };
 
 const de: typeof en = {
@@ -32,6 +33,7 @@ const de: typeof en = {
     count: ({ count }: { count: number }) => (count === 1 ? '1 Maschine' : `${count} Maschinen`),
     daemonTitle: 'Hintergrunddienst',
     daemonDescription: 'Führt deine Sitzungen auf diesem Computer aus und hält ihn mit deinem Home verbunden.',
+    unreadableTitle: ({ home }: { home: string }) => `Die Maschinen auf ${home} konnten nicht gelesen werden`,
 };
 
 const es: typeof en = {
@@ -48,6 +50,7 @@ const es: typeof en = {
     count: ({ count }: { count: number }) => (count === 1 ? '1 máquina' : `${count} máquinas`),
     daemonTitle: 'Servicio en segundo plano',
     daemonDescription: 'Ejecuta tus sesiones en este ordenador y lo mantiene conectado a tu Home.',
+    unreadableTitle: ({ home }: { home: string }) => `No se pudieron leer las máquinas de ${home}`,
 };
 
 const fr: typeof en = {
@@ -64,6 +67,7 @@ const fr: typeof en = {
     count: ({ count }: { count: number }) => (count === 1 ? '1 machine' : `${count} machines`),
     daemonTitle: 'Service d’arrière-plan',
     daemonDescription: 'Exécute vos sessions sur cet ordinateur et le garde connecté à votre Home.',
+    unreadableTitle: ({ home }: { home: string }) => `Impossible de lire les machines de ${home}`,
 };
 
 const it: typeof en = {
@@ -80,6 +84,7 @@ const it: typeof en = {
     count: ({ count }: { count: number }) => (count === 1 ? '1 macchina' : `${count} macchine`),
     daemonTitle: 'Servizio in background',
     daemonDescription: 'Esegue le tue sessioni su questo computer e lo mantiene collegato alla tua Home.',
+    unreadableTitle: ({ home }: { home: string }) => `Impossibile leggere le macchine di ${home}`,
 };
 
 const ja: typeof en = {
@@ -96,6 +101,7 @@ const ja: typeof en = {
     count: ({ count }: { count: number }) => `${count} 台のマシン`,
     daemonTitle: 'バックグラウンドサービス',
     daemonDescription: 'このコンピューターでセッションを実行し、Home との接続を保ちます。',
+    unreadableTitle: ({ home }: { home: string }) => `${home} のマシンを読み込めませんでした`,
 };
 
 const pl: typeof en = {
@@ -117,6 +123,7 @@ const pl: typeof en = {
     },
     daemonTitle: 'Usługa w tle',
     daemonDescription: 'Uruchamia Twoje sesje na tym komputerze i utrzymuje jego połączenie z Home.',
+    unreadableTitle: ({ home }: { home: string }) => `Nie udało się odczytać maszyn w ${home}`,
 };
 
 const pt: typeof en = {
@@ -133,6 +140,7 @@ const pt: typeof en = {
     count: ({ count }: { count: number }) => (count === 1 ? '1 máquina' : `${count} máquinas`),
     daemonTitle: 'Serviço em segundo plano',
     daemonDescription: 'Executa as suas sessões neste computador e mantém-no ligado ao seu Home.',
+    unreadableTitle: ({ home }: { home: string }) => `Não foi possível ler as máquinas de ${home}`,
 };
 
 const ru: typeof en = {
@@ -155,6 +163,7 @@ const ru: typeof en = {
     },
     daemonTitle: 'Фоновая служба',
     daemonDescription: 'Выполняет ваши сессии на этом компьютере и поддерживает его связь с Home.',
+    unreadableTitle: ({ home }: { home: string }) => `Не удалось прочитать машины в ${home}`,
 };
 
 const ca: typeof en = {
@@ -171,6 +180,7 @@ const ca: typeof en = {
     count: ({ count }: { count: number }) => (count === 1 ? '1 màquina' : `${count} màquines`),
     daemonTitle: 'Servei en segon pla',
     daemonDescription: 'Executa les teves sessions en aquest ordinador i el manté connectat al teu Home.',
+    unreadableTitle: ({ home }: { home: string }) => `No s’han pogut llegir les màquines de ${home}`,
 };
 
 const zhHans: typeof en = {
@@ -187,6 +197,7 @@ const zhHans: typeof en = {
     count: ({ count }: { count: number }) => `${count} 台机器`,
     daemonTitle: '后台服务',
     daemonDescription: '在这台计算机上运行你的会话，并保持它与 Home 的连接。',
+    unreadableTitle: ({ home }: { home: string }) => `无法读取 ${home} 上的机器`,
 };
 
 const zhHant: typeof en = {
@@ -203,6 +214,7 @@ const zhHant: typeof en = {
     count: ({ count }: { count: number }) => `${count} 台機器`,
     daemonTitle: '背景服務',
     daemonDescription: '在這台電腦上執行你的工作階段，並保持它與 Home 的連線。',
+    unreadableTitle: ({ home }: { home: string }) => `無法讀取 ${home} 上的機器`,
 };
 
 export const settingsMachinesTranslations = {

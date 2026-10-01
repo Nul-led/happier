@@ -19,6 +19,7 @@ import { usageMeterFill, usageSignatureAccent, withUsageAccentAlpha } from '../u
 import { MiniSparkline } from '../charts/MiniSparkline';
 import { USAGE_ROW_MIN_HEIGHT, USAGE_ROW_PAD_V } from '../UsageStatRow';
 import { dimensionLabel, formatCount, formatIdentifierLabel } from './shared';
+import { motionTokens } from '@/components/ui/motion/motionTokens';
 
 /**
  * Band 5 "What" dimension pivot (E-1, replaces the Leaders block). ONE segmented
@@ -190,7 +191,7 @@ const styles = StyleSheet.create((theme) => ({
         minHeight: USAGE_ROW_MIN_HEIGHT,
     },
     rowPressed: {
-        opacity: 0.6,
+        opacity: motionTokens.press.opacity,
     },
     rank: {
         ...Typography.default(),

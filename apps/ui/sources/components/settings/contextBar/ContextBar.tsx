@@ -1,14 +1,13 @@
 import * as React from 'react';
 import { View } from 'react-native';
-import { StyleSheet, useUnistyles } from 'react-native-unistyles';
+import { StyleSheet } from 'react-native-unistyles';
 
 import { DropdownMenu, type DropdownMenuItem } from '@/components/ui/forms/dropdown/DropdownMenu';
 import { Item } from '@/components/ui/lists/Item';
-import { TextInput } from '@/components/ui/text/Text';
+import { FieldTextInput } from '@/components/ui/forms/FieldTextInput';
 import { PathInputBrowseButton } from '@/components/ui/pathBrowser/PathInputBrowseButton';
 import { openMachinePathBrowserModal } from '@/components/ui/pathBrowser/openMachinePathBrowserModal';
 import { t } from '@/text';
-import { Icon } from '@/components/ui/icons/Icon';
 
 export type ContextBarMode = 'machine_only' | 'workspace_only' | 'machine_and_workspace';
 
@@ -35,32 +34,21 @@ type ContextBarProps = Readonly<{
     }>;
 }>;
 
-const styles = StyleSheet.create((theme) => ({
+const styles = StyleSheet.create(() => ({
     container: {
         gap: 10,
     },
-    input: {
-        backgroundColor: theme.colors.input.background,
-        color: theme.colors.input.text,
-        borderRadius: 10,
-        paddingHorizontal: 12,
-        paddingVertical: 10,
-        borderWidth: 1,
-        borderColor: theme.colors.border.default,
-        width: '100%',
-    },
-    inputWrapper: {
-        flex: 1,
-    },
     workspaceInputRow: {
         flexDirection: 'row',
-        alignItems: 'center',
+        alignItems: 'flex-start',
         gap: 8,
+    },
+    workspaceInput: {
+        flex: 1,
     },
 }));
 
 export const ContextBar = React.memo(function ContextBar(props: ContextBarProps) {
-    const { theme } = useUnistyles();
     const [machineMenuOpen, setMachineMenuOpen] = React.useState(false);
 
     const showMachine = props.mode === 'machine_only' || props.mode === 'machine_and_workspace';
@@ -91,7 +79,6 @@ export const ContextBar = React.memo(function ContextBar(props: ContextBarProps)
                     itemTrigger={{
                         title: props.machine.title ?? t('promptLibrary.externalAssetsMachine'),
                         subtitle: props.machine.subtitle,
-                        icon: <Icon name="laptop" size={29} color={theme.colors.accent.blue} />,
                     }}
                     rowKind="item"
                     connectToTrigger
@@ -102,15 +89,19 @@ export const ContextBar = React.memo(function ContextBar(props: ContextBarProps)
             {showWorkspace && props.workspace ? (
                 <Item
                     title={t('promptLibrary.externalAssetsProjectDirectory')}
-                    subtitle={(
+                    accessoryLayout="stacked"
+                    showChevron={false}
+                    rightElement={(
                         <View style={styles.workspaceInputRow}>
-                            <TextInput
+                            <FieldTextInput
                                 testID={props.workspace.testID}
-                                style={[styles.input, styles.inputWrapper]}
+                                style={styles.workspaceInput}
                                 value={props.workspace.value}
                                 onChangeText={props.workspace.onChange}
+                                accessibilityLabel={t('promptLibrary.externalAssetsProjectDirectory')}
                                 placeholder={props.workspace.placeholder}
-                                placeholderTextColor={theme.colors.input.placeholder}
+                                autoCapitalize="none"
+                                monospace
                             />
                             {props.workspace.browse?.enabled !== false ? (
                                 <PathInputBrowseButton
@@ -120,10 +111,6 @@ export const ContextBar = React.memo(function ContextBar(props: ContextBarProps)
                             ) : null}
                         </View>
                     )}
-                    subtitleLines={0}
-                    icon={<Icon name="folder" size={29} color={theme.colors.accent.indigo} />}
-                    mode="info"
-                    showChevron={false}
                 />
             ) : null}
         </View>

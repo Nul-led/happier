@@ -1,97 +1,32 @@
 import * as React from 'react';
-import { Platform, Pressable, View } from 'react-native';
+import { Pressable, View } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
-import { useRouter } from 'expo-router';
 
-import { Item } from '@/components/ui/lists/Item';
 import { ItemList } from '@/components/ui/lists/ItemList';
-import { TextInput } from '@/components/ui/text/Text';
-import { Eyebrow } from '@/components/ui/text/Eyebrow';
-import { Typography } from '@/constants/Typography';
+import {
+    CollectionList,
+    CollectionListGroupLabel,
+    CollectionNavigationRow,
+} from '@/components/ui/lists/collection/CollectionList';
 import { t } from '@/text';
 
 import { useResolvedSettingsPageCatalog } from '@/components/settings/catalog/runtime/useResolvedSettingsPageCatalog';
 import type { ResolvedSettingsPageNode } from '@/components/settings/catalog/types';
-import { runGuardedNavigation } from '@/utils/navigation/runGuardedNavigation';
-import { fireAndForget } from '@/utils/system/fireAndForget';
+import { SettingsSearchResults, useSettingsSearch } from '@/components/settings/shell/SettingsSearchResults';
 import { Icon, ICON_SIZE } from '@/components/ui/icons/Icon';
 import { useScrollEdgeFades } from '@/components/ui/scroll/useScrollEdgeFades';
 import { ScrollEdgeFades } from '@/components/ui/scroll/ScrollEdgeFades';
 import { ScrollEdgeIndicators } from '@/components/ui/scroll/ScrollEdgeIndicators';
 
-/**
- * Rail geometry.
- *
- * The rail is a gutter plus a content column. The gutter is the air between the rail's edge and
- * the selected row's chip; the content inset is measured from the rail edge to the icons, so a
- * row's own horizontal padding is the difference — that keeps every icon on the same optical x
- * whether or not its row is wearing the chip.
- *
- * These restate `theme.margins.md` (12) and `theme.margins.xl` (20). They are constants rather
- * than token reads because the row insets are computed in plain arithmetic at the call site,
- * outside the Unistyles callback where `theme` is in scope.
- */
-const RAIL_GUTTER_PX = 12; // theme.margins.md
-const RAIL_CONTENT_LEFT_PX = 20; // theme.margins.xl
-const RAIL_CONTENT_RIGHT_PX = 20; // theme.margins.xl
-/** Label-to-first-row gap. Deliberately off the margin scale: no step sits between xs and sm. */
-const RAIL_LABEL_TO_ROW_GAP_PX = 6;
-const RAIL_ROW_RADIUS_PX = 8;
+/** The indent of each disclosed level. */
 const RAIL_INDENT_STEP_PX = 12;
 
-/**
- * The row content inset, shared by the tree rows and the search-result rows so the two views
- * cannot drift apart — they were duplicated expressions and had already diverged once.
- */
-function resolveRailRowPadding(indentPx: number) {
-    return {
-        paddingLeft: RAIL_CONTENT_LEFT_PX - RAIL_GUTTER_PX + indentPx,
-        paddingRight: RAIL_CONTENT_RIGHT_PX - RAIL_GUTTER_PX,
-    };
-}
-
-const stylesheet = StyleSheet.create((theme) => ({
+const stylesheet = StyleSheet.create(() => ({
+    // The settings navigation lies on its host's plane (the app shell's column, or the settings
+    // shell's own column): it paints no ground of its own.
     root: {
         flex: 1,
         minHeight: 0,
-        // Product decision: the settings rail is the raised plane and the content pane beside it
-        // is the recessed field, so the selected row reads as a recess cut into the rail. This
-        // deliberately inverts the app shell's own left rail, which stays on the canvas plane.
-        backgroundColor: theme.colors.surface.base,
-        paddingTop: theme.margins.md,
-    },
-    searchContainer: {
-        // Same gutter as the rows, so the well and the chips share one left edge.
-        paddingHorizontal: RAIL_GUTTER_PX,
-        paddingBottom: theme.margins.md,
-    },
-    searchBar: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        borderRadius: theme.borderRadius.lg,
-        // Lands the magnifying glass on the same optical x as every row icon below it.
-        paddingHorizontal: RAIL_CONTENT_LEFT_PX - RAIL_GUTTER_PX,
-        paddingVertical: 8,
-        // A recessed well cut into the raised rail. It cannot use the base surface any more —
-        // that is now the rail's own plane, and in dark mode the hairline alone (5% white) is
-        // far too faint to carry a field that is otherwise the same colour as its background.
-        backgroundColor: theme.colors.surface.inset,
-        borderWidth: StyleSheet.hairlineWidth,
-        borderColor: theme.colors.border.default,
-    },
-    sectionHeader: {
-        paddingLeft: RAIL_CONTENT_LEFT_PX,
-        paddingRight: RAIL_CONTENT_RIGHT_PX,
-        paddingTop: theme.margins.xl,
-        paddingBottom: RAIL_LABEL_TO_ROW_GAP_PX,
-    },
-    // The first label follows the home row rather than another group, so it needs less air.
-    sectionHeaderFirst: {
-        paddingTop: theme.margins.md,
-    },
-    row: {
-        marginHorizontal: RAIL_GUTTER_PX,
-        borderRadius: RAIL_ROW_RADIUS_PX,
     },
     /**
      * The scrolling region's own host. Both edge overlays are absolutely positioned against
@@ -103,39 +38,10 @@ const stylesheet = StyleSheet.create((theme) => ({
         minHeight: 0,
         position: 'relative',
     },
-    // `ItemList` unconditionally paints the canvas plane and covers the rail below the search
-    // field, so the rail's own colour has to be restated here or the flip above does nothing.
+    // `ItemList` paints the canvas unless told otherwise; on the plane it stays transparent.
     listSurface: {
         paddingTop: 0,
-        backgroundColor: theme.colors.surface.base,
-    },
-    // The selected fill is ~1.06:1 against the rail, far below the 3:1 WCAG 1.4.11 asks of a
-    // non-text indicator, so the title's weight carries the state as well. The fill itself is
-    // `Item`'s own `surface.selected`; the rail must not become a second owner of that decision.
-    rowTitleSelected: {
-        ...Typography.default('semiBold'),
-    },
-    searchIcon: {
-        marginRight: 8,
-    },
-    searchInput: {
-        flex: 1,
-        padding: 0,
-        margin: 0,
-        minHeight: 20,
-        color: theme.colors.text.primary,
-        ...(Platform.select({
-            web: {
-                outline: 'none',
-                outlineStyle: 'none',
-                outlineWidth: 0,
-                outlineColor: 'transparent',
-                boxShadow: 'none',
-                WebkitBoxShadow: 'none',
-                WebkitAppearance: 'none',
-            },
-            default: {},
-        }) as object),
+        backgroundColor: 'transparent',
     },
 }));
 
@@ -171,10 +77,9 @@ function collectAncestors(id: string, parents: ParentMap): string[] {
 
 export const SettingsSidebar = React.memo(function SettingsSidebar() {
     const { theme } = useUnistyles();
-    const router = useRouter();
     const styles = stylesheet;
     const resolved = useResolvedSettingsPageCatalog();
-    const [query, setQuery] = React.useState('');
+    const search = useSettingsSearch(resolved, { clearOnOpen: true, tag: 'SettingsSidebar.search' });
     const scrollFades = useScrollEdgeFades({ enabledEdges: { top: true, bottom: true } });
 
     const parents = React.useMemo(() => buildParentMap(resolved.tree), [resolved.tree]);
@@ -217,28 +122,6 @@ export const SettingsSidebar = React.memo(function SettingsSidebar() {
         });
     }, [parents, resolved.activePageId]);
 
-    const normalizedQuery = query.trim();
-    const results = React.useMemo(() => {
-        if (!normalizedQuery) return [];
-        return resolved.search(normalizedQuery);
-    }, [normalizedQuery, resolved]);
-
-    const routeNodes = React.useMemo(() => {
-        const out: Array<ResolvedSettingsPageNode & { route: string }> = [];
-        const visit = (items: readonly ResolvedSettingsPageNode[]) => {
-            for (const item of items) {
-                if (typeof item.route === 'string' && item.route.length > 0) {
-                    out.push(item as ResolvedSettingsPageNode & { route: string });
-                }
-                if (item.children) {
-                    visit(item.children);
-                }
-            }
-        };
-        visit(resolved.tree);
-        return out;
-    }, [resolved.tree]);
-
     const toggleExpanded = React.useCallback((id: string) => {
         setExpandedIds((current) => {
             const next = new Set(current);
@@ -251,15 +134,8 @@ export const SettingsSidebar = React.memo(function SettingsSidebar() {
         });
     }, []);
 
-    const navigateToRoute = React.useCallback((route: string, options?: Readonly<{ clearQuery?: boolean }>) => {
-        const result = runGuardedNavigation(() => {
-            if (options?.clearQuery) setQuery('');
-            router.navigate(route as never);
-        });
-        if (result !== true) {
-            fireAndForget(result, { tag: 'SettingsSidebar.navigate' });
-        }
-    }, [router]);
+    // Rail rows and search results open pages the same guarded way.
+    const navigateToRoute = search.openRoute;
 
     /**
      * Renders one catalog node and its descendants.
@@ -275,7 +151,7 @@ export const SettingsSidebar = React.memo(function SettingsSidebar() {
     const renderTreeNode = React.useCallback((
         node: ResolvedSettingsPageNode,
         level: number,
-        options?: Readonly<{ expandable?: boolean; sectionIndex?: number }>,
+        options?: Readonly<{ expandable?: boolean }>,
     ): React.ReactNode => {
         const childCount = node.children?.length ?? 0;
         const isSectionHeader = childCount > 0 && !node.route;
@@ -283,16 +159,10 @@ export const SettingsSidebar = React.memo(function SettingsSidebar() {
         if (isSectionHeader) {
             return (
                 <React.Fragment key={node.id}>
-                    <Eyebrow
+                    <CollectionListGroupLabel
                         testID={`settings-sidebar.section.${node.id}`}
-                        accessibilityRole="header"
-                        style={[
-                            styles.sectionHeader,
-                            (options?.sectionIndex ?? 0) === 0 ? styles.sectionHeaderFirst : null,
-                        ]}
-                    >
-                        {readSettingsPageTitle(node)}
-                    </Eyebrow>
+                        title={readSettingsPageTitle(node)}
+                    />
                     {node.children!.map((child) => renderTreeNode(child, level))}
                 </React.Fragment>
             );
@@ -338,7 +208,7 @@ export const SettingsSidebar = React.memo(function SettingsSidebar() {
 
         return (
             <React.Fragment key={node.id}>
-                <Item
+                <CollectionNavigationRow
                     testID={`settings-sidebar.item.${node.id}`}
                     title={readSettingsPageTitle(node)}
                     {...(hasChildren
@@ -349,12 +219,8 @@ export const SettingsSidebar = React.memo(function SettingsSidebar() {
                         : {
                             icon: resolvedIconNode,
                         })}
-                    density="compact"
                     selected={selected}
-                    showChevron={false}
-                    pressableStyle={styles.row}
-                    titleStyle={selected ? styles.rowTitleSelected : undefined}
-                    style={resolveRailRowPadding(indentPx)}
+                    indentPx={indentPx}
                     onPress={() => {
                         if (node.route) {
                             navigateToRoute(node.route);
@@ -370,7 +236,7 @@ export const SettingsSidebar = React.memo(function SettingsSidebar() {
                     : null}
             </React.Fragment>
         );
-    }, [expandedIds, navigateToRoute, resolved.activePageId, styles, theme, toggleExpanded]);
+    }, [expandedIds, navigateToRoute, resolved.activePageId, theme, toggleExpanded]);
 
     /**
      * The catalog root is the home row: a plain destination with no disclosure and no label
@@ -383,78 +249,60 @@ export const SettingsSidebar = React.memo(function SettingsSidebar() {
         return (
             <React.Fragment key={node.id}>
                 {renderTreeNode(node, 0, { expandable: false })}
-                {groups.map((group, index) => renderTreeNode(group, 0, { sectionIndex: index }))}
+                {groups.map((group) => renderTreeNode(group, 0))}
             </React.Fragment>
         );
     }, [renderTreeNode]);
 
     return (
-            <View testID="settings-sidebar" style={styles.root}>
-            <View style={styles.searchContainer}>
-                <View style={styles.searchBar}>
-                    <View style={styles.searchIcon}>
-                        <Icon name="magnifying-glass" size={ICON_SIZE.xs} color={theme.colors.text.secondary} />
-                    </View>
-                    <TextInput
-                        testID="settings-sidebar.searchInput"
-                        placeholder={t('settingsSearch.placeholder')}
-                        placeholderTextColor={theme.colors.input.placeholder}
-                        value={query}
-                        onChangeText={setQuery}
-                        autoCapitalize="none"
-                        autoCorrect={false}
-                        style={styles.searchInput}
-                    />
-                </View>
-            </View>
-
-            {/*
-              * The rail scrolls, so it carries the app's canonical edge affordances: a fade into
-              * the rail's own colour plus a caret at whichever end still has content behind it.
-              */}
-            <View style={styles.listHost}>
-                <ItemList
-                    style={styles.listSurface}
-                    onLayout={scrollFades.onViewportLayout}
-                    onContentSizeChange={scrollFades.onContentSizeChange}
-                    onScroll={scrollFades.onScroll}
-                    onMomentumScrollEnd={scrollFades.onMomentumScrollEnd}
-                    scrollEventThrottle={16}
-                >
-                    {normalizedQuery
-                        ? results.map((result) => {
-                            const node = routeNodes.find((candidate) => candidate.id === result.id);
-                            return (
-                                <Item
-                                    key={result.id}
-                                    testID={`settings-sidebar.searchResult.${result.id}`}
-                                    title={node ? readSettingsPageTitle(node) : String(result.id)}
-                                    icon={<Icon name="magnifying-glass" size={ICON_SIZE.xs} color={theme.colors.text.secondary} />}
-                                    density="compact"
-                                    showChevron={false}
-                                    pressableStyle={styles.row}
-                                    style={resolveRailRowPadding(0)}
-                                    onPress={() => {
-                                        navigateToRoute(result.route, { clearQuery: true });
-                                    }}
+        <View testID="settings-sidebar" style={styles.root}>
+            <CollectionList
+                surface="plane"
+                title={t('settings.title')}
+                search={{
+                    testID: 'settings-sidebar.searchInput',
+                    placeholder: t('settingsSearch.placeholder'),
+                    value: search.query,
+                    onChangeText: search.setQuery,
+                }}
+                scrollContent={(
+                    // The rail scrolls, so it carries the app's canonical edge affordances: a fade into
+                    // the plane's colour plus a caret at whichever end still has content behind it.
+                    <View style={styles.listHost}>
+                        <ItemList
+                            style={styles.listSurface}
+                            onLayout={scrollFades.onViewportLayout}
+                            onContentSizeChange={scrollFades.onContentSizeChange}
+                            onScroll={scrollFades.onScroll}
+                            onMomentumScrollEnd={scrollFades.onMomentumScrollEnd}
+                            scrollEventThrottle={16}
+                        >
+                            {search.active ? (
+                                <SettingsSearchResults
+                                    presentation="rail"
+                                    results={search.results}
+                                    tree={resolved.tree}
+                                    testIDPrefix="settings-sidebar.searchResult"
+                                    emptyTestID="settings-sidebar.searchEmpty"
+                                    onOpen={search.openRoute}
                                 />
-                            );
-                        })
-                        : resolved.tree.map((node) => renderRail(node))}
-                </ItemList>
+                            ) : resolved.tree.map((node) => renderRail(node))}
+                        </ItemList>
 
-                <ScrollEdgeFades
-                    color={theme.colors.surface.base}
-                    size={18}
-                    edges={scrollFades.visibility}
-                />
-                <ScrollEdgeIndicators
-                    edges={scrollFades.visibility}
-                    color={theme.colors.text.secondary}
-                    size={ICON_SIZE.xs}
-                    opacity={0.35}
-                />
-            </View>
+                        <ScrollEdgeFades
+                            color={theme.colors.surface.inset}
+                            size={18}
+                            edges={scrollFades.visibility}
+                        />
+                        <ScrollEdgeIndicators
+                            edges={scrollFades.visibility}
+                            color={theme.colors.text.secondary}
+                            size={ICON_SIZE.xs}
+                            opacity={0.35}
+                        />
+                    </View>
+                )}
+            />
         </View>
     );
 });

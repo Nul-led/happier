@@ -4,7 +4,10 @@ import {
     type KeyChallengeV2Audience,
 } from '@happier-dev/protocol';
 
-import { getServerProfileById } from '@/sync/domains/server/serverProfiles';
+import {
+    getServerProfileById,
+    isServerProfilePersonalHomeBootstrapCompleted,
+} from '@/sync/domains/server/serverProfiles';
 
 export type ResolvedHomeAuthenticationTarget = Readonly<{
     endpointUrl: string;
@@ -49,6 +52,15 @@ export function resolveHomeAuthenticationTarget(target: HomeTargetInput): Resolv
         };
     }
     return null;
+}
+
+/**
+ * Personal Home presentation must follow the identity-bound bootstrap receipt.
+ * Descriptors and URLs deliberately do not imply purpose from their address or name.
+ */
+export function isPersonalHomeAuthenticationTarget(target: HomeTargetInput): boolean {
+    return target.kind === 'saved_profile'
+        && isServerProfilePersonalHomeBootstrapCompleted(getServerProfileById(target.profileRef));
 }
 
 /**

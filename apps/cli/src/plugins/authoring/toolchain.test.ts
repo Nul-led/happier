@@ -11,8 +11,8 @@ import { describe, expect, it, vi } from 'vitest';
 import { createPluginManifestV2Fixture } from '../testkit/manifestV2Fixture';
 import { ensureManagedJavaScriptRuntimeCommand } from '@/packagedRuntime/js/managedJavaScriptRuntime';
 import { PluginAuthorBundlerUnavailableError } from './bundleDaemonRuntime';
+import { assertPluginAuthorPrepublicationRuntimeDeclarations } from './hostSdkResolution';
 import {
-  assertPluginAuthorPrepublicationRuntimeDeclarations,
   classifyPluginAuthorDaemonBuild,
   cleanupPluginAuthorGeneratedArtifacts,
   normalizePluginSdkRegistryOrigin,
@@ -535,7 +535,7 @@ describe('runPluginAuthorToolchain', () => {
     });
   });
 
-  it('runs the project-local Plugin UI builder before bundling a build that declares a UI target', async () => {
+  it('materializes the daemon-owned manifest before building declared Plugin UI artifacts', async () => {
     const spawn = vi.fn(successfulSpawn);
     const bundlePluginDaemonRuntime = vi.fn(async () => undefined);
     const result = await runPluginAuthorToolchain({
@@ -565,12 +565,12 @@ describe('runPluginAuthorToolchain', () => {
       cwd: '/fixture/plugin',
       env: {},
     });
-    expect(spawn.mock.invocationCallOrder[2]).toBeLessThan(
-      bundlePluginDaemonRuntime.mock.invocationCallOrder[0]!,
+    expect(bundlePluginDaemonRuntime.mock.invocationCallOrder[0]).toBeLessThan(
+      spawn.mock.invocationCallOrder[2]!,
     );
   });
 
-  it('does not publish a daemon bundle when the declared Plugin UI build fails', async () => {
+  it('reports a Plugin UI build failure after materializing the manifest it consumes', async () => {
     const spawn = vi.fn()
       .mockImplementationOnce(successfulSpawn)
       .mockImplementationOnce(successfulSpawn)
@@ -604,7 +604,10 @@ describe('runPluginAuthorToolchain', () => {
         message: expect.stringContaining('invalid Plugin UI target'),
       })],
     });
-    expect(bundlePluginDaemonRuntime).not.toHaveBeenCalled();
+    expect(bundlePluginDaemonRuntime).toHaveBeenCalledWith('/fixture/plugin');
+    expect(bundlePluginDaemonRuntime.mock.invocationCallOrder[0]).toBeLessThan(
+      spawn.mock.invocationCallOrder[2]!,
+    );
   });
 
   it('installs dependencies through the canonical managed pnpm owner with fixture-scoped registry configuration', async () => {
@@ -719,16 +722,12 @@ describe('runPluginAuthorToolchain', () => {
       expect(triageSourceEntrypoints.createTriageSourceV1Fixture).toEqual(expect.any(Function));
 
       // The installed manifest must keep `bin`: it is the only declaration that
-      // makes `happier-plugin-build-ui` discoverable, so every `--ui` author's
-      // `author build` and `plugins dev` UI stage depend on it surviving the
-      // bundled-package sanitizer. Assert it unconditionally — reading the same
-      // field into a branch condition would let a regression skip the proof.
+      // makes the conventional UI compiler discoverable during author builds.
       const installedSdkManifest = JSON.parse(await readFile(join(installedSdkRoot, 'package.json'), 'utf8')) as {
         bin?: Record<string, unknown>;
       };
       expect(installedSdkManifest.bin?.['happier-plugin-build-ui']).toEqual(expect.any(String));
 
-      await writeFile(join(projectRoot, 'pluginUiBuild.mjs'), 'export default { targets: [] };\n', 'utf8');
       const builderPath = resolvePluginUiBuildBin(projectRoot);
       expect(builderPath).not.toBeNull();
       const managedRuntimeCommand = await ensureManagedJavaScriptRuntimeCommand(process.env);
@@ -1435,11 +1434,6 @@ describe('runPluginAuthorToolchain', () => {
       await writeFile(join(projectRoot, 'package.json'), JSON.stringify({
         scripts: { build: 'happier plugins dev build .' },
       }), 'utf8');
-      await writeFile(
-        join(projectRoot, 'pluginUiBuild.mjs'),
-        'export default { targets: [] };\n',
-        'utf8',
-      );
       await writeFile(join(packageRoot, 'package.json'), JSON.stringify({
         name: '@happier-dev/plugin-sdk',
         bin: { 'happier-plugin-build-ui': './dist/ui/build/bin.js' },
@@ -1459,9 +1453,10 @@ describe('runPluginAuthorToolchain', () => {
     }
   });
 
-  it('does not require the Plugin UI builder when the project declares no UI build target', async () => {
+  it('requires the canonical Plugin UI builder even when a project has no hand-authored UI config', async () => {
     const projectRoot = await mkdtemp(join(tmpdir(), 'happier-author-no-ui-builder-'));
     try {
+      await mkdir(join(projectRoot, 'node_modules', '@happier-dev'), { recursive: true });
       await writeFile(join(projectRoot, 'package.json'), JSON.stringify({
         scripts: {
           build: 'happier plugins dev build .',
@@ -1469,7 +1464,7 @@ describe('runPluginAuthorToolchain', () => {
         },
       }), 'utf8');
 
-      expect(resolvePluginUiBuildBin(projectRoot)).toBeNull();
+      expect(() => resolvePluginUiBuildBin(projectRoot)).toThrow(/plugin-sdk/u);
     } finally {
       await rm(projectRoot, { recursive: true, force: true });
     }

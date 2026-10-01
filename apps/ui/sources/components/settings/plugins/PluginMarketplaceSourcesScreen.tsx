@@ -1,22 +1,22 @@
 import * as React from 'react';
-import { useIsFocused } from '@react-navigation/native';
-import { useUnistyles } from 'react-native-unistyles';
+import { useIsFocused } from '@/components/appShell/workspace/destinationRoute';
 import type { MarketplaceSourceV1 } from '@happier-dev/protocol/marketplace';
 
 import { MachineAdministrationTargetSelector } from '@/components/settings/machines/MachineAdministrationTargetSelector';
 import { createActionInputForm } from '@/components/plugins/actions/actionInputForm';
 import { presentActionInputForm } from '@/components/plugins/actions/presentActionInputForm';
 import { Switch } from '@/components/ui/forms/Switch';
-import { Icon } from '@/components/ui/icons/Icon';
 import { Item } from '@/components/ui/lists/Item';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
 import { ItemList } from '@/components/ui/lists/ItemList';
+import { SectionActionButton } from '@/components/ui/lists/SectionActionButton';
 import { buildActionRowAccessibilityLabel } from '@/components/ui/lists/actionRowAccessibility';
 import { Modal } from '@/modal';
 import { t } from '@/text';
 
 import { NpmRegistryProfilesSection } from './NpmRegistryProfilesSection';
 import { usePluginSettingsScreenState } from './model/usePluginSettingsScreenState';
+import { SettingsPageHeader } from '@/components/settings/shell/SettingsPageHeader';
 
 /**
  * The incumbent failure presentation for administration mutations: one modal
@@ -58,7 +58,6 @@ async function readSourceDraft(): Promise<Readonly<{
 
 export const PluginMarketplaceSourcesScreen = React.memo(function PluginMarketplaceSourcesScreen() {
     const isFocused = useIsFocused();
-    const { theme } = useUnistyles();
     const state = usePluginSettingsScreenState({ focused: isFocused });
     const [busySourceId, setBusySourceId] = React.useState<string | null>(null);
     const configuredSources = state.marketplaceSourceRegistry?.sources ?? [];
@@ -145,21 +144,35 @@ export const PluginMarketplaceSourcesScreen = React.memo(function PluginMarketpl
     }, [state]);
 
     return (
-        <ItemList>
-            <MachineAdministrationTargetSelector
-                selection={state.administrationTargetSelection}
-                testIDPrefix="settings.plugins.sources.target"
+        <ItemList presentation="page">
+            <SettingsPageHeader
+                description={t('settingsPlugins.sourceAdministration.subtitle')}
+                actions={(
+                    <MachineAdministrationTargetSelector
+                        selection={state.administrationTargetSelection}
+                        testIDPrefix="settings.plugins.sources.target"
+                        presentation="chip"
+                    />
+                )}
             />
 
             <ItemGroup
-                title={t('settingsPlugins.sourceAdministration.title')}
-                footer={t('settingsPlugins.sourceAdministration.subtitle')}
+                title={t('settingsPlugins.sourceAdministration.configuredTitle')}
+                action={(
+                    <SectionActionButton
+                        testID="settings.plugins.sources.add"
+                        title={t('settingsPlugins.sourceAdministration.add')}
+                        icon="plus"
+                        onPress={() => { void add(); }}
+                        disabled={mutationsDisabled || state.marketplaceSourceRegistry === null}
+                        loading={busySourceId === 'new'}
+                    />
+                )}
             >
                 <Item
                     testID="settings.plugins.sources.communityNpm"
                     title={t('settingsPlugins.sourceAdministration.communityTitle')}
                     subtitle={t('settingsPlugins.sourceAdministration.communitySubtitle')}
-                    icon={<Icon name="globe" size={29} color={theme.colors.accent.indigo} />}
                     mode="info"
                     showChevron={false}
                     accessibilityLabel={`${t('settingsPlugins.sourceAdministration.communityTitle')}. ${t('settingsPlugins.sourceAdministration.communitySubtitle')}`}
@@ -182,18 +195,6 @@ export const PluginMarketplaceSourcesScreen = React.memo(function PluginMarketpl
                         showChevron={false}
                     />
                 ) : null}
-                <Item
-                    testID="settings.plugins.sources.add"
-                    title={t('settingsPlugins.sourceAdministration.add')}
-                    icon={<Icon name="plus" size={29} color={theme.colors.accent.green} />}
-                    onPress={() => { void add(); }}
-                    disabled={mutationsDisabled || state.marketplaceSourceRegistry === null}
-                    loading={busySourceId === 'new'}
-                    showChevron={false}
-                />
-            </ItemGroup>
-
-            <ItemGroup title={t('settingsPlugins.sourceAdministration.configuredTitle')}>
                 {/* Rows render only from the authoritative registry. While the
                     one registry owner is loading, its loading truth is shown
                     beside any retained last-known rows instead of presenting a

@@ -45,6 +45,10 @@ export function WorkflowNumberField(props: Readonly<{
     required?: boolean;
     /** Shown in the empty optional field, naming what omission means. */
     placeholder?: string;
+    /** Words after the field when the label reads as a sentence around it ("Stop after [4] rounds"). */
+    suffix?: string;
+    /** The field's spoken name when the visible label is only the start of that sentence. */
+    accessibilityLabel?: string;
     testID: string;
 }>): React.ReactElement {
     const { onChange, required, value } = props;
@@ -77,7 +81,7 @@ export function WorkflowNumberField(props: Readonly<{
                     style={workflowEditorStyles.inlineValue}
                     value={text}
                     keyboardType="number-pad"
-                    accessibilityLabel={props.label}
+                    accessibilityLabel={props.accessibilityLabel ?? props.label}
                     // The repair reaches assistive technology on the field itself,
                     // not only as nearby text.
                     {...(invalid ? { accessibilityHint: invalidMessage } : {})}
@@ -87,6 +91,9 @@ export function WorkflowNumberField(props: Readonly<{
                         onChange(valueMeant(next));
                     }}
                 />
+                {props.suffix !== undefined ? (
+                    <Text style={workflowEditorStyles.metaText}>{props.suffix}</Text>
+                ) : null}
                 {value === undefined && props.placeholder !== undefined ? (
                     <Text testID={`${props.testID}-omitted`} style={workflowEditorStyles.groupSummary}>
                         {props.placeholder}

@@ -81,7 +81,10 @@ describe('Channels public protocol atomic cutover', () => {
         const selection = {
             target: {
                 pluginId: 'happier.channels',
-                immutableGenerationId: 'generation-channels-1',
+                sourceCustody: {
+                    kind: 'bundled_first_party',
+                    packagedRuntime: { kind: 'cli_version_root', versionRootId: 'cli-version-1' },
+                },
             },
             point: {
                 pointId: 'providers',
@@ -90,7 +93,11 @@ describe('Channels public protocol atomic cutover', () => {
             contributor: {
                 pluginId: 'happier.channel.telegram',
                 contributionId: 'provider',
-                immutableGenerationId: 'generation-telegram-1',
+                sourceCustody: {
+                    kind: 'managed',
+                    immutableGenerationId: 'generation-telegram-1',
+                    installSource: 'npm',
+                },
             },
         } as const;
         const input = {

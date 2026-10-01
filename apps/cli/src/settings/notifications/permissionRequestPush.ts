@@ -7,6 +7,7 @@ import type { PushNotificationDeliveryOptions } from '@/api/pushNotifications';
 import { serializeAxiosErrorForLog } from '@/api/client/serializeAxiosErrorForLog';
 import type { AgentRequestKind } from '@/agent/permissions/requestKind';
 import { dispatchActivityNotificationAsync } from '@/notifications/activity/dispatchActivityNotification';
+import type { SessionNotificationContextReader } from '@/notifications/activity/sessionActivityNotificationEligibility';
 import {
   resolveLiveActivityRemoteSender,
   type LiveActivityRemoteSenderCandidate,
@@ -14,7 +15,7 @@ import {
 import { logger } from '@/ui/logger';
 import { getActiveAccountSettingsSnapshot } from '@/settings/accountSettings/activeAccountSettingsSnapshot';
 
-export type PermissionRequestPushSender = LiveActivityRemoteSenderCandidate & Readonly<{
+export type PermissionRequestPushSender = LiveActivityRemoteSenderCandidate & SessionNotificationContextReader & Readonly<{
   sendToAllDevicesAsync: (
     title: string,
     body: string,
@@ -48,6 +49,7 @@ export async function sendAgentRequestPushNotificationAsync(params: Readonly<{
       settings: params.settings,
       settingsSecretsReadKeys: params.settingsSecretsReadKeys,
       expoPushSender: params.pushSender,
+      fetchSessionNotificationContext: params.pushSender.fetchSessionNotificationContext?.bind(params.pushSender),
       liveActivityRemoteSender: resolveLiveActivityRemoteSender(params.pushSender),
       event: {
         topic: params.kind === 'user_action' ? 'user_action_request' : 'permission_request',

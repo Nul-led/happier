@@ -95,6 +95,9 @@ export function buildTeamCredentialBrokerMachineSelection(params: Readonly<{
         storedTarget: selectedTarget,
         candidates,
         allowSoleCandidate: false,
+        // The Home's eligible list is the settled answer here: a selected machine it still lists is
+        // only not in this device's rows yet, never gone; one it no longer lists has left the choice.
+        isInventoryKnown: () => params.selectedMachineId === null || !eligibleByMachineId.has(params.selectedMachineId),
     });
     const selection: MachineAdministrationTargetSelectionV1 = {
         candidates,

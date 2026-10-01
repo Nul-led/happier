@@ -1,10 +1,10 @@
 import * as React from 'react';
-import { useNavigation, useRouter } from 'expo-router';
+import { useNavigation, useRouter } from '@/components/appShell/workspace/destinationRoute';
 import type { TeamCredentialSessionUsePolicyV1 } from '@happier-dev/protocol/teams';
 
+import { FieldTextInput } from '@/components/ui/forms/FieldTextInput';
 import { Item } from '@/components/ui/lists/Item';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
-import { TextInput } from '@/components/ui/text/Text';
 import { isTeamActionApprovalPendingError } from '@/sync/ops/teams/teamActionClient';
 import { updateTeamCredentialResource } from '@/sync/ops/teams/teamCredentialOperations';
 import {
@@ -36,7 +36,7 @@ import {
     teamCredentialUsageLimitDeltaFromDraft,
     useTeamCredentialResourceDraft,
 } from './teamCredentialEditorDraft';
-import { useTeamCredentialDraftNavigationGuard } from './useTeamCredentialDraftNavigationGuard';
+import { useUnsavedDraftNavigationGuard } from '@/utils/navigation/useUnsavedDraftNavigationGuard';
 import { TeamCredentialAudienceEditorSection } from './TeamCredentialAudienceEditorSection';
 import { TeamCredentialLimitsEditorSection } from './TeamCredentialLimitsEditorSection';
 import {
@@ -176,7 +176,7 @@ const CredentialEditor = React.memo(function CredentialEditor(props: Readonly<{
         resourceDraft.reset(teamCredentialResourceDraftFromSummary(resource, limits.rows));
         setNotice(null);
     }, [limits.rows, resource, resourceDraft]);
-    const allowSavedNavigation = useTeamCredentialDraftNavigationGuard({
+    const { allowSavedNavigation } = useUnsavedDraftNavigationGuard({
         navigation,
         isDirty,
         onDiscard: discardDraft,
@@ -185,7 +185,7 @@ const CredentialEditor = React.memo(function CredentialEditor(props: Readonly<{
 
     if (!view.featureEnabled || (view.resolved && resource === null)) {
         return (
-            <ItemGroup footer={view.featureEnabled
+            <ItemGroup description={view.featureEnabled
                 ? t('teams.credentials.detail.notFound')
                 : t('teams.credentials.unavailable')}>
                 <Item
@@ -200,7 +200,7 @@ const CredentialEditor = React.memo(function CredentialEditor(props: Readonly<{
     if (resource === null || basis === null) {
         if (resource !== null && resource.capabilities.manageLimits && limits.status === 'error') {
             return (
-                <ItemGroup footer={limits.error ? credentialFailureMessage(limits.error) : undefined}>
+                <ItemGroup description={limits.error ? credentialFailureMessage(limits.error) : undefined}>
                     <Item
                         testID="team-credential-edit-limits-retry"
                         title={t('teams.unavailable.retry')}
@@ -212,7 +212,7 @@ const CredentialEditor = React.memo(function CredentialEditor(props: Readonly<{
         }
         if (view.error) {
             return (
-                <ItemGroup footer={credentialFailureMessage(view.error)}>
+                <ItemGroup description={credentialFailureMessage(view.error)}>
                     <Item
                         testID="team-credential-edit-resource-retry"
                         title={t('teams.unavailable.retry')}
@@ -241,7 +241,7 @@ const CredentialEditor = React.memo(function CredentialEditor(props: Readonly<{
         || resource.capabilities.narrowDisclosure;
     if (!canEdit || !context.mutationsAvailable || context.archived) {
         return (
-            <ItemGroup footer={t('teams.credentials.forbidden')}>
+            <ItemGroup description={t('teams.credentials.forbidden')}>
                 <Item
                     testID="team-credential-edit-forbidden"
                     title={t('homeGovernance.forbiddenTitle')}
@@ -300,21 +300,13 @@ const CredentialEditor = React.memo(function CredentialEditor(props: Readonly<{
     return (
         <>
             {props.section === undefined && resource.capabilities.managePolicy ? <ItemGroup title={t('teams.credentials.edit.nameLabel')}>
-                <TextInput
-                    testID="team-credential-edit-name"
-                    value={name}
-                    onChangeText={(value) => patchResourceDraft({ name: value })}
-                    placeholder={t('teams.credentials.edit.namePlaceholder')}
-                    accessibilityLabel={t('teams.credentials.edit.nameLabel')}
-                    maxLength={NAME_MAX_LENGTH}
-                    editable={!busy}
-                />
+                <Item title={t('teams.credentials.edit.nameLabel')} accessoryLayout="adaptive" showChevron={false} rightElement={<FieldTextInput testID="team-credential-edit-name" value={name} onChangeText={(value) => patchResourceDraft({ name: value })} placeholder={t('teams.credentials.edit.namePlaceholder')} accessibilityLabel={t('teams.credentials.edit.nameLabel')} maxLength={NAME_MAX_LENGTH} editable={!busy} />} />
             </ItemGroup> : null}
 
             {props.section === undefined && sourceCustodian ? (
                 <ItemGroup
                     title={t('teams.credentials.detail.sourceLabel')}
-                    footer={sourceCandidates.error ? credentialFailureMessage(sourceCandidates.error) : undefined}
+                    description={sourceCandidates.error ? credentialFailureMessage(sourceCandidates.error) : undefined}
                 >
                     <TeamCredentialSourcePicker
                         candidates={sourceCandidates.candidates}
@@ -339,6 +331,13 @@ const CredentialEditor = React.memo(function CredentialEditor(props: Readonly<{
                             })();
                         }}
                     />
+                    {sourceCandidates.error ? <Item
+                        testID="team-credential-edit-source-retry"
+                        title={t('common.retry')}
+                        disabled={busy || sourceCandidates.status === 'loading'}
+                        onPress={() => { void sourceCandidates.reload(); }}
+                        showChevron={false}
+                    /> : null}
                 </ItemGroup>
             ) : null}
 
@@ -356,7 +355,7 @@ const CredentialEditor = React.memo(function CredentialEditor(props: Readonly<{
 
             {props.section === undefined && resource.capabilities.managePolicy ? <ItemGroup
                 title={t('teams.credentials.usePolicy.label')}
-                footer={usePolicy === 'team_visibility_required'
+                description={usePolicy === 'team_visibility_required'
                     ? t('teams.credentials.usePolicy.visibilityNote')
                     : undefined}
                 accessibilityRole="radiogroup"
@@ -381,7 +380,7 @@ const CredentialEditor = React.memo(function CredentialEditor(props: Readonly<{
                 is confirmed before it is drafted. */}
             {props.section === undefined && (resource.capabilities.narrowDisclosure || resource.capabilities.widenDisclosure) ? <ItemGroup
                 title={t('teams.credentials.edit.ceilingLabel')}
-                footer={t('teams.credentials.edit.ceilingNote')}
+                description={t('teams.credentials.edit.ceilingNote')}
                 accessibilityRole="radiogroup"
                 accessibilityLabel={t('teams.credentials.edit.ceilingLabel')}
             >
@@ -446,7 +445,7 @@ const CredentialEditor = React.memo(function CredentialEditor(props: Readonly<{
                             : { status: 'unavailable', reason: 'model_catalog_unavailable' }}
                         busy={busy}
                     />
-                    {requestPolicySupport.status !== 'ready' ? <ItemGroup footer={requestPolicySupport.error
+                    {requestPolicySupport.status !== 'ready' ? <ItemGroup description={requestPolicySupport.error
                         ? credentialFailureMessage(requestPolicySupport.error)
                         : undefined}>
                     <Item
@@ -485,7 +484,7 @@ const CredentialEditor = React.memo(function CredentialEditor(props: Readonly<{
               * so every refusal of a Focused Access, Request-policy or Limits
               * save was written and never shown.
               */}
-            <ItemGroup footer={notice ?? (movedUnderEditor
+            <ItemGroup description={notice ?? (movedUnderEditor
                 ? t('teams.credentials.edit.conflict')
                 : view.writesSuspended ? t('teams.credentials.approvalPending') : undefined)}>
                 <Item
@@ -587,7 +586,7 @@ const CredentialEditor = React.memo(function CredentialEditor(props: Readonly<{
             </ItemGroup>
 
             {view.error ? (
-                <ItemGroup footer={credentialFailureMessage(view.error)}>
+                <ItemGroup description={credentialFailureMessage(view.error)}>
                     <Item
                         testID="team-credential-edit-resource-retry"
                         title={t('teams.unavailable.retry')}
@@ -615,7 +614,7 @@ export const TeamCredentialEditScreen = React.memo(function TeamCredentialEditSc
                 ? t('teams.credentials.limits.title')
                 : t('teams.credentials.edit.title');
     return (
-        <TeamSection serverId={props.serverId} teamId={props.teamId} title={title}>
+        <TeamSection serverId={props.serverId} teamId={props.teamId} title={title} description={t('teams.pages.credentialEdit')}>
             {(context) => <CredentialEditor context={context} resourceId={props.resourceId} section={props.section} />}
         </TeamSection>
     );

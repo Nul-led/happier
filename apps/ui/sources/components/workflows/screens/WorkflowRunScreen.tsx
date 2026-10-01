@@ -1,6 +1,6 @@
 import * as React from 'react';
 import { View } from 'react-native';
-import { useLocalSearchParams, useRouter } from 'expo-router';
+import { useDestinationParams, useDestinationRouter, useDestinationVisibility } from '@/components/appShell/workspace/DestinationInstanceHost';
 import { randomUUID } from 'expo-crypto';
 import { StyleSheet } from 'react-native-unistyles';
 
@@ -8,24 +8,28 @@ import type {
     JsonValue,
     StructuredQuestionAnswersV1,
     WorkflowAuthoredInputV1,
-    WorkflowDefinitionV1,
     WorkflowProgressEnvelopeV1,
-    WorkflowRunInvocationIndexV1,
-    WorkflowRunAcceptedContextV1,
+    WorkflowInvocationRecoveryAvailabilityV1,
     WorkflowRunSummaryV1,
 } from '@happier-dev/protocol';
 import { RPC_METHODS } from '@happier-dev/protocol/rpc';
 
-import { ActivitySpinner } from '@/components/ui/feedback/ActivitySpinner';
 import { SurfaceStateCard } from '@/components/ui/surfaces/SurfaceStateCard';
 import { Text } from '@/components/ui/text/Text';
-import { Typography } from '@/constants/Typography';
 import { t } from '@/text';
 import { workflowBlockReferenceLabel } from '@/sync/domains/workflows/workflowBlockLabel';
-import { walkWorkflowBlocks } from '@/sync/domains/workflows/workflowEditorDraft';
+import { walkWorkflowBlocks } from '@happier-dev/protocol/workflows/workflowDefinitionEditV1';
 import { getStorage, useActiveServerAccountScope, useMachine, useWorkflowRun } from '@/sync/domains/state/storage';
-import { workflowRunRowFromSummary } from '@/sync/store/domains/workflowRuns';
+import {
+    isWorkflowInvocationFactOlder,
+    refreshLoadedAttentionSpan,
+    resolveVisibleWorkflowInvocations,
+    selectWorkflowRunFirstFailedInvocation,
+    selectWorkflowRunWindowInvocations,
+    workflowRunRowFromSummary,
+} from '@/sync/store/domains/workflowRuns';
 import { workflowRunDetailActions } from '@/sync/domains/workflows/workflowRunDetailActions';
+import { subscribeVisibleWorkflowRunListInvalidation } from '@/sync/domains/workflows/workflowRunListInvalidation';
 import { captureActiveServerAccountScopeLifetime } from '@/sync/domains/scope/activeServerAccountScope';
 import { serverAccountScopeKeySuffix } from '@/sync/domains/scope/serverAccountScope';
 import { Modal } from '@/modal';
@@ -59,26 +63,28 @@ import {
 } from '@/components/workflows/presentation/workflowLifecyclePresentation';
 import { useWorkflowRunNowController } from '../run/useWorkflowRunNowController';
 import {
-    useWorkflowRunInputModal,
-    type WorkflowRunInputModalProps,
-} from '../run/useWorkflowRunInputModal';
+    useWorkflowRunComposerModal,
+    type WorkflowRunComposerModalProps,
+} from '../run/useWorkflowRunComposerModal';
 import { projectAcceptedWorkflowRunTarget } from '../run/projectAcceptedWorkflowRunTarget';
 import { createMachineExecutionRunRoute } from '@/sync/domains/workflows/workflowRunRoute';
-import { formatWorkflowProblemMessage } from '@/components/workflows/presentation/workflowProblemPresentation';
+import {
+    resolveWorkflowProblemPresentation,
+    type WorkflowProblemPresentation,
+} from '@/components/workflows/presentation/workflowProblemPresentation';
 import { readWorkflowInvocationId, readWorkflowRunId } from '@/sync/domains/workflows/workflowRunRoute';
 import { useOpenProject } from '@/components/projects/useOpenProject';
 import { setClipboardStringSafe } from '@/utils/ui/clipboard';
-import { getMachineDisplayName } from '@/utils/sessions/machineUtils';
+import { getMachineDisplayName, isMachineOnline } from '@/utils/sessions/machineUtils';
 import { normalizeResultPreview } from '../presentation/resultPreview';
 import { formatWorkflowUsageLabel } from '../presentation/workflowUsagePresentation';
 import {
     formatWorkflowRunDisplayName,
     resolveWorkflowRunDisplayName,
 } from '../presentation/workflowRunDisplayName';
-import { createWorkflowDefinition } from '@/sync/domains/workflows/workflowDefinitionActions';
-import { workflowDefinitionPromptTitle } from '@/sync/domains/workflows/workflowBlockLabel';
 import { buildScopedSessionRouteHref } from '@/hooks/session/sessionRouteServerScope';
 import { machineRpcWithServerScope } from '@/sync/runtime/orchestration/serverScopedRpc/serverScopedMachineRpc';
+import type { ExecutionRunPromptResponse } from '@/components/tools/shell/permissions/executionRunPromptResponseTarget';
 
 /**
  * The exact managed Run route.
@@ -107,19 +113,8 @@ const styles = StyleSheet.create((theme) => ({
         gap: theme.margins.sm,
         paddingHorizontal: theme.margins.lg,
     },
-    stateTitle: {
-        ...Typography.default('semiBold'),
-        color: theme.colors.text.primary,
-        textAlign: 'center',
-    },
-    stateBody: {
-        ...Typography.default('regular'),
-        color: theme.colors.text.secondary,
-        textAlign: 'center',
-    },
 }));
 
-const EMPTY_INVOCATIONS: readonly WorkflowRunInvocationIndexV1[] = Object.freeze([]);
 const EMPTY_PROGRESS_BY_INVOCATION_ID: ReadonlyMap<string, WorkflowProgressEnvelopeV1> = new Map();
 type ActiveAccountScopeLifetime = NonNullable<ReturnType<typeof captureActiveServerAccountScopeLifetime>>;
 type ExactInvocationResponse = Awaited<ReturnType<typeof workflowRunDetailActions.getInvocation>>;
@@ -135,6 +130,26 @@ type PendingPermissionDecision = Readonly<{
 
 const EMPTY_PERMISSION_DECISIONS: ReadonlyMap<string, PendingPermissionDecision> = new Map();
 const EMPTY_PERMISSION_REQUEST_IDS: ReadonlySet<string> = new Set();
+
+/**
+ * The exact invocation read this screen has issued and not seen settle.
+ *
+ * The selected row keeps its last-known content visible while the read is in
+ * flight, but no permission or recovery callback may act on it until the
+ * matching response confirms it. This token is the issuing authority: only
+ * the latest issued read for this Account, Run and selection may publish and
+ * confirm, so a response that lost its race is ignored rather than
+ * regressing fresher content or arming callbacks from superseded evidence.
+ * The record id is the physical attempt's identity, so matching it plus a
+ * parent revision at least as fresh as the issued one is the complete match.
+ */
+type PendingExactInvocationRead = Readonly<{
+    contentIdentity: string;
+    runId: string;
+    invocationId: string;
+    revision: number;
+    contentRevision: string | null;
+}>;
 
 /**
  * The one durable Run operation this screen has issued and not seen settle.
@@ -161,7 +176,7 @@ type PendingRunOperation = Readonly<{
  * the same next page again rather than reloading the Run. Routed through
  * `controlError` it borrowed the outcome region's voice, outlived the page it
  * described and was cleared by the next unrelated control — this is the same
- * shape the Workflows collection already uses at `WorkflowsHostScreen`. Keying
+ * shape the Workflows library reads use (`workflowLibraryReads`). Keying
  * it by the content identity is what retires it with everything else private to
  * this Run when the Account or the Run changes.
  */
@@ -196,10 +211,10 @@ function isDefinitivePermissionDecisionPreIssuanceResponse(response: Readonly<{
 
 function resolveAnnouncementTerminal(
     state: WorkflowRunSummaryV1['state'],
-    failedInvocationCount: number,
+    knownFailure: boolean,
 ): WorkflowAnnouncementTerminalKind | null {
     switch (state) {
-        case 'succeeded': return failedInvocationCount > 0 ? 'completed_with_failures' : 'completed';
+        case 'succeeded': return knownFailure ? 'completed_with_failures' : 'completed';
         case 'failed': return 'failed';
         case 'outcome_uncertain': return 'outcome_uncertain';
         case 'paused': return 'paused';
@@ -210,11 +225,13 @@ function resolveAnnouncementTerminal(
 
 export function WorkflowRunScreen(): React.ReactElement {
     const mountedRef = useMountedRef();
-    const router = useRouter();
+    const router = useDestinationRouter();
     const openProject = useOpenProject();
-    const activelyViewed = useHostActivelyViewed();
+    const hostActivelyViewed = useHostActivelyViewed();
+    const destinationVisible = useDestinationVisibility();
+    const activelyViewed = hostActivelyViewed && destinationVisible;
     const runNow = useWorkflowRunNowController();
-    const params = useLocalSearchParams<{ runId?: string | string[]; invocationId?: string | string[] }>();
+    const params = useDestinationParams<{ runId?: string | string[]; invocationId?: string | string[] }>();
     const runId = readWorkflowRunId(firstParam(params.runId));
     const requestedInvocationId = readWorkflowInvocationId(firstParam(params.invocationId));
     const activeAccountScope = useActiveServerAccountScope();
@@ -243,17 +260,34 @@ export function WorkflowRunScreen(): React.ReactElement {
     const [contentScopeKey, setContentScopeKey] = React.useState<string | null>(null);
     const contentScopeKeyRef = React.useRef(contentScopeKey);
     contentScopeKeyRef.current = contentScopeKey;
-    const [definition, setDefinition] = React.useState<WorkflowDefinitionV1 | null>(null);
-    // `null` is a valid authored JSON result; only `undefined` means absent.
-    const [result, setResult] = React.useState<JsonValue | undefined>(undefined);
-    const [finalOutputInvocationId, setFinalOutputInvocationId] = React.useState<string | null>(null);
-    const [firstFailedInvocation, setFirstFailedInvocation] = React.useState<WorkflowRunInvocationIndexV1 | null>(null);
     const [firstFailedInvocationResolution, setFirstFailedInvocationResolution] = React.useState<'loading' | 'resolved' | 'error'>('loading');
-    const [acceptedContext, setAcceptedContext] = React.useState<WorkflowRunAcceptedContextV1 | null>(null);
-    const [usageLabel, setUsageLabel] = React.useState<string | null>(null);
-    const [attentionInvocations, setAttentionInvocations] = React.useState<readonly WorkflowRunInvocationIndexV1[]>([]);
-    const [attentionNextCursor, setAttentionNextCursor] = React.useState<string | null>(null);
-    const [progressByInvocationId, setProgressByInvocationId] = React.useState<ReadonlyMap<string, WorkflowProgressEnvelopeV1>>(new Map());
+    const detail = cachedRow?.detail;
+    const definition = detail?.definition ?? null;
+    const acceptedContext = detail?.acceptedContext ?? null;
+    const result = detail?.result;
+    const finalOutputInvocationId = detail?.finalOutputInvocationId ?? null;
+    const usageLabel = detail?.usage === undefined ? null : formatWorkflowUsageLabel(detail.usage, {
+        tokens: t('usage.tokens'), input: t('usage.tokenMix.input'), output: t('usage.tokenMix.output'),
+    });
+    /** How many attention pages produced the loaded span; bounds the background refresh. */
+    const attentionPageCountRef = React.useRef(0);
+    // Private content and its row token are one exact observation, never
+    // separately refreshed maps that could arm a new row with an old blob.
+    const invocationFacts = getStorage()((state) => activelyViewed && runId
+        ? state.workflowRunInvocationsByRunId[runId]?.factsById ?? null : null);
+    const invocationEvidenceById = React.useMemo(() => new Map(Object.entries(invocationFacts ?? {}).flatMap(
+        ([id, fact]) => fact.opened ? [[id, fact.opened] as const] : [],
+    )), [invocationFacts]);
+    const progressByInvocationId = React.useMemo(() => new Map(
+        [...invocationEvidenceById].map(([id, evidence]) => [id, evidence.progress]),
+    ), [invocationEvidenceById]);
+    const recoveryAvailabilityByInvocationId = React.useMemo(() => {
+        const next = new Map<string, WorkflowInvocationRecoveryAvailabilityV1>();
+        for (const [id, evidence] of invocationEvidenceById) {
+            if (evidence.recoveryAvailability) next.set(id, evidence.recoveryAvailability);
+        }
+        return next;
+    }, [invocationEvidenceById]);
     const [loadState, setLoadState] = React.useState<'loading' | 'ready' | 'failed'>('loading');
     /**
      * Asking for the Run again.
@@ -264,6 +298,7 @@ export function WorkflowRunScreen(): React.ReactElement {
      * is the same explicit attempt counter the editor and Session adapters use.
      */
     const [loadAttempt, setLoadAttempt] = React.useState(0);
+    const [invocationInvalidationToken, setInvocationInvalidationToken] = React.useState(0);
     const [view, setView] = React.useState<WorkflowRunDetailView>('activity');
     const [selectedInvocationId, setSelectedInvocationId] = React.useState<string | null>(requestedInvocationId);
     const [pendingOperation, setPendingOperation] = React.useState<PendingRunOperation | null>(null);
@@ -286,7 +321,15 @@ export function WorkflowRunScreen(): React.ReactElement {
      */
     const pendingAttentionPageRef = React.useRef<object | null>(null);
     const [pagingFailure, setPagingFailure] = React.useState<WorkflowRunPagingFailure | null>(null);
-    const [controlError, setControlError] = React.useState<string | null>(null);
+    const [controlError, setControlError] = React.useState<WorkflowProblemPresentation | null>(null);
+    /**
+     * A cancellation this screen submitted and the canonical owner accepted.
+     *
+     * It covers the window before the invocation index reports the durable
+     * `cancel_requested` rows; from then on that index is the authority and
+     * this only agrees with it.
+     */
+    const [cancelRequestReceipt, setCancelRequestReceipt] = React.useState(false);
     /**
      * The permission decisions this screen has sent and not seen settle.
      *
@@ -297,10 +340,12 @@ export function WorkflowRunScreen(): React.ReactElement {
      */
     const [pendingPermissionDecisions, setPendingPermissionDecisions] = React.useState<ReadonlyMap<string, PendingPermissionDecision>>(EMPTY_PERMISSION_DECISIONS);
     const pendingPermissionDecisionsRef = React.useRef(pendingPermissionDecisions);
-    const [selectedContentUnavailable, setSelectedContentUnavailable] = React.useState(false);
+    /** The latest exact invocation read; older responses belong to nobody on screen. */
+    const exactInvocationRequestRef = React.useRef<PendingExactInvocationRead | null>(null);
+    const [selectedReadUnavailable, setSelectedContentUnavailable] = React.useState(true);
     const [runAgainInputOpen, setRunAgainInputOpen] = React.useState(false);
     const [runAgainValues, setRunAgainValues] = React.useState<Readonly<Record<string, JsonValue | undefined>>>({});
-    const [saveAsWorkflowPending, setSaveAsWorkflowPending] = React.useState(false);
+    const [runAgainRawTextValues, setRunAgainRawTextValues] = React.useState<Readonly<Record<string, string>>>({});
     /**
      * The exact attempt whose unknown prior effects the person acknowledged.
      * Storing the id rather than a boolean is what keeps the acknowledgement
@@ -310,6 +355,15 @@ export function WorkflowRunScreen(): React.ReactElement {
     const pendingRunAgainIdRef = React.useRef<string | null>(null);
     /** Which (Run, Account) pair the shared row currently holds, for exact retirement. */
     const loadedRunAccountScopeRef = React.useRef<Readonly<{ runId: string; accountScopeKey: string | null }> | null>(null);
+    /**
+     * What the last completed load observed, so a background invalidation knows
+     * whether it still has to open the Run's private half at all.
+     */
+    const loadedDetailRef = React.useRef<Readonly<{
+        contentIdentity: string;
+        revision: number | null;
+        terminal: boolean;
+    }> | null>(null);
     /**
      * The lifecycle each invocation had at the last committed observation, and
      * whether announcements have a baseline yet. Both belong to one Run: carried
@@ -332,19 +386,16 @@ export function WorkflowRunScreen(): React.ReactElement {
         setObservedContentIdentity(contentIdentity);
         setContentScopeKey(null);
         contentScopeKeyRef.current = null;
-        setDefinition(null);
-        setResult(undefined);
-        setFinalOutputInvocationId(null);
-        setFirstFailedInvocation(null);
-        setAcceptedContext(null);
-        setUsageLabel(null);
-        setAttentionInvocations([]);
-        setAttentionNextCursor(null);
-        setProgressByInvocationId(EMPTY_PROGRESS_BY_INVOCATION_ID);
-        setSelectedContentUnavailable(false);
+        attentionPageCountRef.current = 0;
+        // Nothing about the next Run is confirmed yet; the exact read marks
+        // it so before requesting rather than exposing armed callbacks for a
+        // frame beside the new Run's cached lifecycle row.
+        exactInvocationRequestRef.current = null;
+        setSelectedContentUnavailable(true);
         pendingOperationRef.current = null;
         setPendingOperation(null);
         setControlError(null);
+        setCancelRequestReceipt(false);
         setPendingPermissionDecisions(EMPTY_PERMISSION_DECISIONS);
         pendingPermissionDecisionsRef.current = EMPTY_PERMISSION_DECISIONS;
         setLoadingMoreInvocations(false);
@@ -353,25 +404,79 @@ export function WorkflowRunScreen(): React.ReactElement {
         setPagingFailure(null);
         setRunAgainInputOpen(false);
         setRunAgainValues({});
-        setSaveAsWorkflowPending(false);
+        setRunAgainRawTextValues({});
         setAcknowledgedUncertainInvocationId(null);
         setSelectedInvocationId(requestedInvocationId);
         setView('activity');
         setLoadState('loading');
         pendingRunAgainIdRef.current = null;
         previousLifecyclesRef.current = new Map();
+        loadedDetailRef.current = null;
         setAnnouncementsEnabled(false);
     }
 
-    const storedInvocationWindow = getStorage()((state) => (runId ? state.workflowRunInvocationsByRunId[runId] ?? null : null));
+    // The Run's one invocation fact map and the windows over it (03 §6.2); this
+    // screen holds no fact copies, only route paging state.
+    const storedInvocations = getStorage()((state) => (activelyViewed && runId ? state.workflowRunInvocationsByRunId[runId] ?? null : null));
     const contentBelongsToActiveScope = contentScopeKey === contentIdentity;
-    const invocationWindow = contentBelongsToActiveScope ? storedInvocationWindow : null;
+    const visibleInvocations = contentBelongsToActiveScope ? storedInvocations : null;
+    const invocationWindow = visibleInvocations?.history ?? null;
+    const attentionNextCursor = visibleInvocations?.attention.nextCursor ?? null;
+
+    const observedRevision = cachedRow?.summary?.revision ?? null;
+    const observedTerminal = cachedRow?.summary === undefined || cachedRow.summary === null
+        ? false
+        : isTerminalWorkflowRunState(cachedRow.summary.state);
+    /**
+     * A revision this screen has published but not yet read.
+     *
+     * The load cannot simply depend on the shared row's revision: its own read
+     * writes that row, so the first load would immediately retire itself and
+     * start over. Until a load records what it observed there is nothing to
+     * refresh — the load in progress is what will read it — and once one has,
+     * only a revision it has not seen re-triggers the effect.
+     */
+    const loadedDetail = loadedDetailRef.current;
+    const pendingRefreshRevision = loadedDetail !== null
+        && loadedDetail.contentIdentity === contentIdentity
+        && loadedDetail.revision !== observedRevision
+        ? observedRevision
+        : null;
 
     React.useEffect(() => {
-        if (runId === null) return;
+        if (!activelyViewed || runId === null) return;
+        const lifetime = captureActiveServerAccountScopeLifetime();
+        if (lifetime === null) return;
+        return subscribeVisibleWorkflowRunListInvalidation({
+            lifetime,
+            runId,
+            // Detail is demanded even while its first read is in flight. A
+            // row wake must retire that read rather than publish stale facts.
+            isVisibleWindowLoaded: () => true,
+            invalidate: () => setInvocationInvalidationToken((token) => token + 1),
+        });
+    }, [accountScopeKey, activelyViewed, runId]);
+
+    React.useEffect(() => {
+        if (!activelyViewed || runId === null) return;
         const lifetime = captureActiveServerAccountScopeLifetime();
         if (lifetime === null) return;
         const requestScopeKey = contentIdentity;
+        /**
+         * A background invalidation restates what changed; it does not reopen
+         * the Run.
+         *
+         * The private half of Run detail is frozen at admission — definition,
+         * accepted context, inputs — except for the result, its exact producer
+         * and usage, which a Run writes once when it settles. Re-reading all of
+         * it on every revision bump made an ordinary progress update scan and
+         * decrypt the whole Run, and replaced the loaded index pages with their
+         * first page. The canonical Account-change owner has already refreshed
+         * the shared summary row this screen renders from.
+         */
+        const isBackgroundRefresh = loadedDetail !== null && loadedDetail.contentIdentity === contentIdentity;
+        const needsExactDetail = !isBackgroundRefresh
+            || (observedTerminal && loadedDetail?.terminal === false);
         let cancelled = false;
         const controller = new AbortController();
         const retirement = lifetime.onRetire(() => controller.abort());
@@ -380,60 +485,130 @@ export function WorkflowRunScreen(): React.ReactElement {
                 ? current
                 : 'loading'
         ));
-        setFirstFailedInvocationResolution('loading');
+        if (!isBackgroundRefresh) setFirstFailedInvocationResolution('loading');
 
         void (async () => {
             try {
-                const detail = await workflowRunDetailActions.getRun(runId, controller.signal);
-                if (cancelled || !lifetime.isCurrent() || !isContentIdentityCurrent(requestScopeKey)) return;
-                if (loadedRunAccountScopeRef.current !== null
-                    && loadedRunAccountScopeRef.current.runId === runId
-                    && loadedRunAccountScopeRef.current.accountScopeKey !== accountScopeKey) {
-                    // The same opaque id exists in both Accounts, so the shared
-                    // row itself is the other Account's. Retire it before the
-                    // new body merges into the one owner.
-                    getStorage().getState().removeWorkflowRun(runId);
+                let detail: Awaited<ReturnType<typeof workflowRunDetailActions.getRun>> | null = null;
+                if (needsExactDetail) {
+                    detail = await workflowRunDetailActions.getRun(runId, controller.signal);
+                    if (cancelled || !lifetime.isCurrent() || !isContentIdentityCurrent(requestScopeKey)) return;
+                    if (loadedRunAccountScopeRef.current !== null
+                        && loadedRunAccountScopeRef.current.runId === runId
+                        && loadedRunAccountScopeRef.current.accountScopeKey !== accountScopeKey) {
+                        // The same opaque id exists in both Accounts, so the shared
+                        // row itself is the other Account's. Retire it before the
+                        // new body merges into the one owner.
+                        getStorage().getState().removeWorkflowRun(runId);
+                    }
+                    // The body lands in the one shared owner; this screen keeps no copy.
+                    //
+                    // An opened accepted context that carries no authored title
+                    // is an untitled Run, not private content this device could
+                    // not open: the sparse metadata sidecar omits the key when
+                    // the snapshot is readable but unnamed, and projecting that
+                    // as `unavailable` locked a perfectly readable Run in the
+                    // collection and in every Session card that reads the same row.
+                    getStorage().getState().upsertWorkflowRuns([{ ...workflowRunRowFromSummary(
+                        detail.run,
+                        detail.acceptedContext.metadata
+                            ? { kind: 'available', value: detail.acceptedContext.metadata }
+                            : null,
+                    ), detail }]);
+                    setContentScopeKey(requestScopeKey);
+                    loadedRunAccountScopeRef.current = { runId, accountScopeKey };
                 }
-                // The body lands in the one shared owner; this screen keeps no copy.
-                getStorage().getState().upsertWorkflowRuns([workflowRunRowFromSummary(
-                    detail.run,
-                    detail.acceptedContext.metadata
-                        ? { kind: 'available', value: detail.acceptedContext.metadata }
-                        : { kind: 'unavailable' },
-                )]);
-                setDefinition(detail.definition);
-                setAcceptedContext(detail.acceptedContext);
-                setResult(detail.result);
-                setFinalOutputInvocationId(detail.finalOutputInvocationId ?? null);
-                setUsageLabel(detail.usage === undefined
-                    ? null
-                    : formatWorkflowUsageLabel(detail.usage, {
-                        tokens: t('usage.tokens'),
-                        input: t('usage.tokenMix.input'),
-                        output: t('usage.tokenMix.output'),
-                    }));
-                setContentScopeKey(requestScopeKey);
-                loadedRunAccountScopeRef.current = { runId, accountScopeKey };
+
+                // What this pass actually observed, which is the read's own
+                // answer whenever it opened the Run. Recording the revision the
+                // render happened to hold would leave the ref behind the row it
+                // just published and make the next render repeat the whole load.
+                const observedState = detail === null
+                    ? { revision: observedRevision, terminal: observedTerminal }
+                    : { revision: detail.run.revision, terminal: isTerminalWorkflowRunState(detail.run.state) };
+
+                const historyPromise = workflowRunDetailActions.listInvocations({ runId }, controller.signal);
+                const failedPromise = observedState.terminal
+                    ? workflowRunDetailActions.listInvocations({ runId, lifecycles: ['failed'], limit: 1 }, controller.signal)
+                    : Promise.resolve(null);
+                if (isBackgroundRefresh) {
+                    // Refresh the complete loaded filtered span, not only its
+                    // first page. The helper replays the traversal the reader
+                    // paid for through the existing pagination API, bounded by
+                    // its loaded page count, so a settled tail beyond page one
+                    // leaves and the continuation reflects current truth.
+                    const [page, failedPage, refreshedAttention] = await Promise.all([
+                        historyPromise,
+                        failedPromise,
+                        refreshLoadedAttentionSpan({
+                            listPage: ({ cursor }) => workflowRunDetailActions.listInvocations({
+                                runId,
+                                ...(cursor === undefined ? {} : { cursor }),
+                                lifecycles: WORKFLOW_ATTENTION_LIFECYCLES,
+                            }, controller.signal),
+                            previousPageCount: Math.max(1, attentionPageCountRef.current),
+                            signal: controller.signal,
+                        }),
+                    ]);
+                    if (cancelled || !lifetime.isCurrent() || !isContentIdentityCurrent(requestScopeKey)) return;
+                    const store = getStorage().getState();
+                    store.applyWorkflowRunInvocationPage({
+                        runId,
+                        invocations: page.invocations,
+                        nextCursor: page.nextCursor ?? null,
+                        parentRevision: page.parentRevision,
+                        mode: 'refresh',
+                    });
+                    store.applyWorkflowRunInvocationPage({
+                        runId,
+                        window: 'attention',
+                        invocations: refreshedAttention.invocations,
+                        nextCursor: refreshedAttention.nextCursor,
+                        parentRevision: refreshedAttention.parentRevision ?? page.parentRevision,
+                        mode: 'refresh',
+                    });
+                    store.setWorkflowRunFirstFailedInvocation({ runId, invocation: failedPage?.invocations[0] ?? null });
+                    setFirstFailedInvocationResolution('resolved');
+                    loadedDetailRef.current = {
+                        contentIdentity: requestScopeKey,
+                        revision: observedState.revision,
+                        terminal: observedState.terminal,
+                    };
+                    setPagingFailure(null);
+                    setLoadState('ready');
+                    return;
+                }
 
                 const [page, attentionPage, failedPage] = await Promise.all([
-                    workflowRunDetailActions.listInvocations({ runId }, controller.signal),
+                    historyPromise,
                     workflowRunDetailActions.listInvocations({ runId, lifecycles: WORKFLOW_ATTENTION_LIFECYCLES }, controller.signal),
-                    isTerminalWorkflowRunState(detail.run.state)
-                        ? workflowRunDetailActions.listInvocations({ runId, lifecycles: ['failed'], limit: 1 }, controller.signal)
-                        : Promise.resolve(null),
+                    failedPromise,
                 ]);
                 if (cancelled || !lifetime.isCurrent() || !isContentIdentityCurrent(requestScopeKey)) return;
-                getStorage().getState().applyWorkflowRunInvocationPage({
+                const store = getStorage().getState();
+                store.applyWorkflowRunInvocationPage({
                     runId,
                     invocations: page.invocations,
                     nextCursor: page.nextCursor ?? null,
                     parentRevision: page.parentRevision,
                     mode: 'replace',
                 });
-                setAttentionInvocations(attentionPage.invocations);
-                setAttentionNextCursor(attentionPage.nextCursor ?? null);
-                setFirstFailedInvocation(failedPage?.invocations[0] ?? null);
+                store.applyWorkflowRunInvocationPage({
+                    runId,
+                    window: 'attention',
+                    invocations: attentionPage.invocations,
+                    nextCursor: attentionPage.nextCursor ?? null,
+                    parentRevision: attentionPage.parentRevision,
+                    mode: 'replace',
+                });
+                attentionPageCountRef.current = 1;
+                store.setWorkflowRunFirstFailedInvocation({ runId, invocation: failedPage?.invocations[0] ?? null });
                 setFirstFailedInvocationResolution('resolved');
+                loadedDetailRef.current = {
+                    contentIdentity: requestScopeKey,
+                    revision: observedState.revision,
+                    terminal: observedState.terminal,
+                };
                 // Fresh first pages supersede a failed continuation of the ones
                 // they replaced.
                 setPagingFailure(null);
@@ -452,7 +627,11 @@ export function WorkflowRunScreen(): React.ReactElement {
             controller.abort();
             retirement.dispose();
         };
-    }, [accountScopeKey, contentIdentity, isContentIdentityCurrent, loadAttempt, runId, cachedRow?.summary?.revision]);
+        // `observedRevision`/`observedTerminal` are deliberately not dependencies:
+        // they are read from the render that produced `pendingRefreshRevision`,
+        // and depending on them directly would restart the whole load whenever
+        // the shared row moved for a reason this screen has already read.
+    }, [accountScopeKey, activelyViewed, contentIdentity, invocationInvalidationToken, isContentIdentityCurrent, loadAttempt, pendingRefreshRevision, runId]);
 
     const retryLoad = React.useCallback(() => {
         setLoadState('loading');
@@ -464,25 +643,16 @@ export function WorkflowRunScreen(): React.ReactElement {
         : null;
     const runMachine = useMachine(summary?.machineId ?? '', summary !== null);
     const visibleDefinition = contentBelongsToActiveScope ? definition : null;
-    const saveAsWorkflowTitle = React.useMemo(
-        () => visibleDefinition === null ? null : workflowDefinitionPromptTitle(visibleDefinition),
-        [visibleDefinition],
-    );
     const visibleAcceptedContext = contentBelongsToActiveScope ? acceptedContext : null;
     const visibleResult = contentBelongsToActiveScope ? result : undefined;
     const visibleFinalOutputInvocationId = contentBelongsToActiveScope ? finalOutputInvocationId : null;
-    const visibleFirstFailedInvocation = contentBelongsToActiveScope ? firstFailedInvocation : null;
+    const visibleFirstFailedInvocation = selectWorkflowRunFirstFailedInvocation(visibleInvocations);
     const visibleUsageLabel = contentBelongsToActiveScope ? usageLabel : null;
-    const visibleAttentionInvocations = contentBelongsToActiveScope ? attentionInvocations : EMPTY_INVOCATIONS;
+    const visibleAttentionInvocations = selectWorkflowRunWindowInvocations(visibleInvocations, 'attention');
     const visibleProgressByInvocationId = contentBelongsToActiveScope
         ? progressByInvocationId
         : EMPTY_PROGRESS_BY_INVOCATION_ID;
-    const allInvocations = React.useMemo(() => {
-        const byId = new Map((invocationWindow?.invocations ?? []).map((entry) => [entry.id, entry]));
-        for (const entry of visibleAttentionInvocations) byId.set(entry.id, entry);
-        if (visibleFirstFailedInvocation !== null) byId.set(visibleFirstFailedInvocation.id, visibleFirstFailedInvocation);
-        return [...byId.values()];
-    }, [invocationWindow?.invocations, visibleAttentionInvocations, visibleFirstFailedInvocation]);
+    const allInvocations = resolveVisibleWorkflowInvocations(visibleInvocations);
     const visibleResultLabel = React.useMemo(() => {
         if (visibleResult === undefined) return null;
         const raw = typeof visibleResult === 'string' ? visibleResult : JSON.stringify(visibleResult);
@@ -509,8 +679,17 @@ export function WorkflowRunScreen(): React.ReactElement {
     const selectedInvocation = selectedInvocationId === null
         ? null
         : allInvocations.find((entry) => entry.id === selectedInvocationId) ?? null;
-    const selectedInvocationUpdatedAt = selectedInvocation?.updatedAt ?? null;
-    const invocationCoverage = React.useMemo(() => summarizeWorkflowInvocationCoverage(allInvocations), [allInvocations]);
+    const selectedInvocationContentRevision = selectedInvocation?.contentRevision ?? null;
+    const selectedEvidence = selectedInvocationId === null ? undefined : invocationEvidenceById.get(selectedInvocationId);
+    const selectedContentUnavailable = selectedReadUnavailable || !contentBelongsToActiveScope
+        || selectedInvocation === null || selectedEvidence === undefined
+        || selectedEvidence.index.contentRevision !== selectedInvocation.contentRevision;
+    const invocationCoverage = React.useMemo(() => summarizeWorkflowInvocationCoverage(allInvocations, {
+        kindsByInvocationId: new Map([...invocationStructure].map(([id, entry]) => [id, entry.coverageKind])),
+        historyComplete: invocationWindow?.loaded === true && invocationWindow.nextCursor == null,
+        ...(summary === null ? {} : { runState: summary.state }),
+        knownFailure: visibleFirstFailedInvocation !== null,
+    }), [allInvocations, invocationStructure, invocationWindow?.loaded, invocationWindow?.nextCursor, summary?.state, visibleFirstFailedInvocation]);
     const changedRowCount = React.useMemo(() => allInvocations.reduce((count, invocation) => (
         previousLifecyclesRef.current.get(invocation.id) === invocation.lifecycle ? count : count + 1
     ), 0), [allInvocations]);
@@ -527,11 +706,15 @@ export function WorkflowRunScreen(): React.ReactElement {
             : invocationStructure.get(selectedInvocationId)?.blockId ?? selectedInvocationId,
         blockingIssue: null,
         attentionCount: visibleAttentionInvocations.length,
-        terminal: summary === null ? null : resolveAnnouncementTerminal(summary.state, invocationCoverage.failed),
+        terminal: summary === null ? null : resolveAnnouncementTerminal(summary.state, invocationCoverage.knownFailure),
         changedRowCount,
         selectedRowChanged: selectedInvocationId !== null
             && previousLifecyclesRef.current.get(selectedInvocationId) !== allInvocations.find((entry) => entry.id === selectedInvocationId)?.lifecycle,
-    } as const), [allInvocations, changedRowCount, invocationCoverage.failed, invocationStructure, selectedInvocationId, summary, visibleAttentionInvocations.length, visibleDefinition?.blocks]);
+        // The same paging facts the visible content states: partial windows are
+        // announced as loaded, never as exact totals of the whole Run.
+        attentionHasMore: attentionNextCursor !== null,
+        historyIncomplete: !(invocationWindow?.loaded === true && invocationWindow?.nextCursor == null),
+    } as const), [allInvocations, changedRowCount, invocationCoverage.knownFailure, invocationStructure, selectedInvocationId, summary, visibleAttentionInvocations.length, visibleDefinition?.blocks, attentionNextCursor, invocationWindow?.loaded, invocationWindow?.nextCursor]);
     useWorkflowAnnouncements({
         state: announcementState,
         enabled: announcementsEnabled,
@@ -544,47 +727,72 @@ export function WorkflowRunScreen(): React.ReactElement {
     });
 
     /**
-     * Publish one authorized exact invocation read through the existing Run
-     * index and opened-progress owners. Callers fence Account/content lifetime
-     * before using this; the response itself never becomes local settlement.
+     * Settle one exact invocation read through the existing Run index and
+     * opened-progress owners. Only the latest issued read for this Account,
+     * Run and selection publishes and confirms: a superseded or mismatched
+     * response is ignored, so it can neither regress fresher content nor arm
+     * a callback from evidence nobody confirmed. Callers fence Account/content
+     * lifetime before using this; the response itself never becomes local
+     * settlement. Returns whether the response confirmed the selection.
      */
-    const publishExactInvocation = React.useCallback((
-        targetRunId: string,
-        targetInvocationId: string,
+    const settleExactInvocation = React.useCallback((
+        token: PendingExactInvocationRead,
         response: ExactInvocationResponse,
-    ) => {
+    ): boolean => {
+        if (exactInvocationRequestRef.current !== token) return false;
+        if (!isContentIdentityCurrent(token.contentIdentity)) return false;
+        const index = response.invocation?.index;
+        if (index?.runId !== token.runId || index?.id !== token.invocationId) return false;
+        if (response.invocation.parentRevision < token.revision) return false;
+        if (token.contentRevision !== null && isWorkflowInvocationFactOlder(index, {
+            id: token.invocationId, contentRevision: token.contentRevision,
+        })) return false;
+        const known = getStorage().getState().workflowRunInvocationsByRunId[token.runId]?.factsById[token.invocationId];
+        if (known && isWorkflowInvocationFactOlder(index, known)) return false;
+        // The selected row stays visible through history, while the store's
+        // attention membership follows the fresh lifecycle: a settled row
+        // leaves the filtered window so its approve/answer callbacks withdraw.
         getStorage().getState().upsertWorkflowRunInvocation({
-            runId: targetRunId,
-            invocation: response.invocation.index,
+            runId: token.runId,
+            invocation: { ...response.invocation.index, opened: response.invocation },
             parentRevision: response.invocation.parentRevision,
         });
-        setProgressByInvocationId((current) => {
-            const next = new Map(current);
-            next.set(targetInvocationId, response.invocation.progress);
-            return next;
-        });
-    }, []);
+        setSelectedContentUnavailable(false);
+        return true;
+    }, [isContentIdentityCurrent]);
 
     React.useEffect(() => {
-        if (runId === null || selectedInvocationId === null) return;
+        if (!activelyViewed || runId === null || selectedInvocationId === null) return;
         const requestIdentity = contentIdentity;
         const lifetime = captureActiveServerAccountScopeLifetime();
         if (lifetime === null) return;
         let cancelled = false;
         const controller = new AbortController();
         const retirement = lifetime.onRetire(() => controller.abort());
-        setSelectedContentUnavailable(false);
+        const token: PendingExactInvocationRead = {
+            contentIdentity: requestIdentity,
+            runId,
+            invocationId: selectedInvocationId,
+            revision: summary?.revision ?? 0,
+            contentRevision: selectedInvocationContentRevision,
+        };
+        exactInvocationRequestRef.current = token;
+        // The last-known content stays rendered, but the evidence is
+        // unconfirmed before this request answers: no permission or recovery
+        // callback may act on it until the matching response confirms it.
+        setSelectedContentUnavailable(true);
         void (async () => {
             try {
                 const response = await workflowRunDetailActions.getInvocation(
                     { runId, invocationId: selectedInvocationId },
                     controller.signal,
                 );
-                if (cancelled || !lifetime.isCurrent() || !isContentIdentityCurrent(requestIdentity)) return;
-                publishExactInvocation(runId, selectedInvocationId, response);
+                if (cancelled || !lifetime.isCurrent()) return;
+                settleExactInvocation(token, response);
             } catch {
                 // The index remains useful when the exact Action read fails.
-                if (!cancelled && lifetime.isCurrent() && isContentIdentityCurrent(requestIdentity)) {
+                if (!cancelled && lifetime.isCurrent() && isContentIdentityCurrent(requestIdentity)
+                    && exactInvocationRequestRef.current === token) {
                     setSelectedContentUnavailable(true);
                 }
             }
@@ -594,7 +802,7 @@ export function WorkflowRunScreen(): React.ReactElement {
             controller.abort();
             retirement.dispose();
         };
-    }, [accountScopeKey, contentIdentity, isContentIdentityCurrent, publishExactInvocation, runId, selectedInvocationId, selectedInvocationUpdatedAt, summary?.revision]);
+    }, [accountScopeKey, activelyViewed, contentIdentity, invocationInvalidationToken, isContentIdentityCurrent, settleExactInvocation, runId, selectedInvocationId, selectedInvocationContentRevision, summary?.revision]);
 
     // One owner decides the haptic and its visible twin together, so a device
     // can never buzz for a completion the screen did not show.
@@ -638,7 +846,10 @@ export function WorkflowRunScreen(): React.ReactElement {
         } catch (error) {
             // The durable intent may still have been recorded; the authoritative
             // Run state arrives through the canonical read, never from this catch.
-            if (owns()) setControlError(formatWorkflowProblemMessage(error));
+            // The canonical mapping decides the sentence AND whether it
+            // interrupts; keeping only the sentence is what left a failed Stop
+            // silent to a screen reader.
+            if (owns()) setControlError(resolveWorkflowProblemPresentation(error));
         } finally {
             if (pendingOperationRef.current === token) {
                 pendingOperationRef.current = null;
@@ -650,6 +861,24 @@ export function WorkflowRunScreen(): React.ReactElement {
     const settleRun = React.useCallback((result: Readonly<{ run: WorkflowRunSummaryV1 }>) => {
         getStorage().getState().upsertWorkflowRuns([workflowRunRowFromSummary(result.run)]);
     }, []);
+
+    /**
+     * Cancellation is the one control whose acceptance is not its application.
+     *
+     * Pause and resume move the returned Run's own state, so the shared row
+     * says what happened. An accepted cancellation of an admitted Run keeps the
+     * Run active and answers `intent: 'cancel_requested'`; the request receipt
+     * therefore has to be kept, or the label reverts to **Stop** the instant the
+     * transport settles. It is recorded separately from the transport mutex and
+     * is superseded by the indexed `cancel_requested` rows the next read brings.
+     */
+    const settleControl = React.useCallback((result: Readonly<{
+        run: WorkflowRunSummaryV1;
+        intent: 'pause_requested' | 'paused' | 'resumed' | 'recovery_required' | 'unavailable' | 'cancel_requested' | 'cancelled';
+    }>) => {
+        if (result.intent === 'cancel_requested') setCancelRequestReceipt(true);
+        settleRun(result);
+    }, [settleRun]);
 
     const submitControl = React.useCallback(async (
         kind: 'pause' | 'resume' | 'cancel',
@@ -663,8 +892,8 @@ export function WorkflowRunScreen(): React.ReactElement {
                     mode: 'boundary',
                     runId,
                     expectedRevision: current.revision,
-                })), settleRun);
-    }, [issueRunOperation, runId, settleRun]);
+                })), settleControl);
+    }, [issueRunOperation, runId, settleControl]);
 
     const loadMoreInvocations = React.useCallback(async () => {
         if (runId === null || invocationWindow?.nextCursor == null || loadingMoreInvocations) return;
@@ -706,12 +935,11 @@ export function WorkflowRunScreen(): React.ReactElement {
                 runId, cursor: attentionNextCursor, lifecycles: WORKFLOW_ATTENTION_LIFECYCLES,
             });
             if (!lifetime.isCurrent() || !isContentIdentityCurrent(requestIdentity)) return;
-            setAttentionInvocations((current) => {
-                const byId = new Map(current.map((entry) => [entry.id, entry]));
-                for (const entry of page.invocations) byId.set(entry.id, entry);
-                return [...byId.values()];
+            getStorage().getState().applyWorkflowRunInvocationPage({
+                runId, window: 'attention', invocations: page.invocations, nextCursor: page.nextCursor ?? null,
+                parentRevision: page.parentRevision, mode: 'append',
             });
-            setAttentionNextCursor(page.nextCursor ?? null);
+            attentionPageCountRef.current += 1;
             setPagingFailure((current) => (current?.window === 'attention' ? null : current));
         } catch {
             if (lifetime.isCurrent() && isContentIdentityCurrent(requestIdentity)) {
@@ -771,10 +999,15 @@ export function WorkflowRunScreen(): React.ReactElement {
         }
     }, [contentIdentity, pendingPermissionDecisions, retirePendingPermissionDecision, runId, selectedExecutionRunId, selectedInvocationId, selectedProgress]);
 
-    const respondToSelectedRequest = React.useCallback(async (request:
-        | Readonly<{ requestId: string; approved: boolean }>
-        | Readonly<{ requestId: string; answers: StructuredQuestionAnswersV1 }>
-    ) => {
+    /**
+     * Answers one request for the selected detached Execution Run.
+     *
+     * The canonical prompt card that calls this owns the in-flight, answered
+     * and failed presentation, so a failure is rejected back to it rather than
+     * shown a second time here. The promise settles only after the exact
+     * re-read, so the card's own in-flight state spans the whole exchange.
+     */
+    const respondToSelectedRequest = React.useCallback(async (request: ExecutionRunPromptResponse): Promise<void> => {
         if (
             activeAccountScope === null
             || summary === null
@@ -782,14 +1015,14 @@ export function WorkflowRunScreen(): React.ReactElement {
             || selectedInvocationId === null
             || selectedExecutionRunId === null
             || !summary.machineId.trim()
-        ) return;
+        ) throw new Error(t('errors.operationFailed'));
         const requestKey = permissionRequestKey(selectedExecutionRunId, request.requestId);
         // The decision already in flight owns this request: the opposite press
         // must not send a competing answer the machine would settle second.
         if (pendingPermissionDecisionsRef.current.has(requestKey)) return;
         const requestIdentity = contentIdentity;
         const lifetime = captureActiveServerAccountScopeLifetime();
-        if (lifetime === null) return;
+        if (lifetime === null) throw new Error(t('errors.operationFailed'));
         const decision: PendingPermissionDecision = {
             accountLifetime: lifetime,
             contentIdentity: requestIdentity,
@@ -806,6 +1039,7 @@ export function WorkflowRunScreen(): React.ReactElement {
         const retirement = lifetime.onRetire(() => controller.abort());
         let transportIssued = false;
         let definitivePreIssuanceFailure = false;
+        let responseFailure: Error | null = null;
         try {
             try {
                 const response = await machineRpcWithServerScope<Readonly<{
@@ -838,47 +1072,62 @@ export function WorkflowRunScreen(): React.ReactElement {
                 if (!lifetime.isCurrent() || !isContentIdentityCurrent(requestIdentity)) return;
                 if (!response.ok) {
                     definitivePreIssuanceFailure = isDefinitivePermissionDecisionPreIssuanceResponse(response);
-                    setControlError(t('errors.operationFailed'));
+                    responseFailure = new Error(t('errors.operationFailed'));
                 }
             } catch (error) {
                 // The daemon may still have recorded the answer; an unreachable
                 // machine only means this screen cannot say that it did.
                 if (!lifetime.isCurrent() || !isContentIdentityCurrent(requestIdentity)) return;
                 definitivePreIssuanceFailure = !transportIssued;
-                setControlError(formatWorkflowProblemMessage(error));
+                responseFailure = new Error(resolveWorkflowProblemPresentation(error).message);
             }
 
             if (!lifetime.isCurrent() || !isContentIdentityCurrent(requestIdentity)) return;
             try {
+                // The reconcile re-read joins the same single flight the
+                // selection effect owns: it supersedes an older in-flight
+                // read, and a newer one supersedes it. Only its matching
+                // answer publishes and confirms.
+                const reconcileToken: PendingExactInvocationRead = {
+                    contentIdentity: requestIdentity,
+                    runId,
+                    invocationId: selectedInvocationId,
+                    revision: summary?.revision ?? 0,
+                    contentRevision: selectedInvocationContentRevision,
+                };
+                exactInvocationRequestRef.current = reconcileToken;
                 const exact = await workflowRunDetailActions.getInvocation({
                     runId,
                     invocationId: selectedInvocationId,
                 }, controller.signal);
                 if (!lifetime.isCurrent() || !isContentIdentityCurrent(requestIdentity)) return;
-                publishExactInvocation(runId, selectedInvocationId, exact);
-                const requestStillOpen = exact.invocation.progress.execution?.kind === 'detached_run'
+                const confirmed = settleExactInvocation(reconcileToken, exact);
+                // Rejected exact content cannot prove that an issued request
+                // settled. Only accepted current evidence may retire it.
+                const requestSettled = confirmed && !(exact.invocation.progress.execution?.kind === 'detached_run'
                     && exact.invocation.progress.execution.runId === selectedExecutionRunId
-                    && hasWorkflowInvocationRequest(exact.invocation.progress, request.requestId);
-                if (!requestStillOpen || definitivePreIssuanceFailure) {
+                    && hasWorkflowInvocationRequest(exact.invocation.progress, request.requestId));
+                if (requestSettled || definitivePreIssuanceFailure) {
                     retirePendingPermissionDecision(decision);
                 }
             } catch (error) {
                 // Without current exact content the outcome remains unknown.
                 // Keep controls withdrawn; a later canonical read retires them.
                 if (lifetime.isCurrent() && isContentIdentityCurrent(requestIdentity)) {
-                    setControlError(formatWorkflowProblemMessage(error));
+                    setControlError(resolveWorkflowProblemPresentation(error));
                 }
             }
+            if (responseFailure !== null) throw responseFailure;
         } finally {
             retirement.dispose();
         }
-    }, [activeAccountScope, contentIdentity, isContentIdentityCurrent, publishExactInvocation, retirePendingPermissionDecision, runId, selectedExecutionRunId, selectedInvocationId, summary]);
+    }, [activeAccountScope, contentIdentity, isContentIdentityCurrent, settleExactInvocation, retirePendingPermissionDecision, runId, selectedExecutionRunId, selectedInvocationId, selectedInvocationContentRevision, summary]);
     /**
      * The withdrawn controls for the attempt currently on screen. A decision
      * belonging to another execution Run is not shown here, so its key cannot
      * disable a same-named request on this one.
      */
-    const pendingPermissionRequestIds = React.useMemo(() => {
+    const pendingRequestIds = React.useMemo(() => {
         if (selectedExecutionRunId === null || selectedInvocationId === null || pendingPermissionDecisions.size === 0) {
             return EMPTY_PERMISSION_REQUEST_IDS;
         }
@@ -914,11 +1163,14 @@ export function WorkflowRunScreen(): React.ReactElement {
             run: summary,
             invocation: selectedInvocation,
             progress: selectedProgress,
+            recoveryAvailability: selectedInvocationId === null
+                ? null
+                : recoveryAvailabilityByInvocationId.get(selectedInvocationId) ?? null,
             machineHomeDirectory: runMachine?.metadata?.homeDir ?? null,
             invocations: allInvocations,
             invocationHistoryComplete: (invocationWindow?.loaded ?? false) && invocationWindow?.nextCursor == null,
         })
-    ), [allInvocations, invocationWindow, runMachine, selectedInvocation, selectedProgress, summary]);
+    ), [allInvocations, invocationWindow, recoveryAvailabilityByInvocationId, runMachine, selectedInvocation, selectedInvocationId, selectedProgress, summary]);
     // Acknowledgement is recorded against the exact attempt it was given for.
     // Changing selection therefore withdraws it rather than carrying blanket
     // consent to a different invocation.
@@ -935,7 +1187,8 @@ export function WorkflowRunScreen(): React.ReactElement {
         conversation: 'same_conversation' | 'fresh_agent',
         replacement?: WorkflowAuthoredInputV1,
     ) => {
-        if (runId === null || selectedInvocationId === null) return;
+        if (runId === null || selectedInvocationId === null || !selectedRecovery
+            || selectedRecovery.retryCausalInvocationIds.length === 0) return;
         // An attempt whose prior effects are unknown is not retried until this
         // exact attempt has been acknowledged. The Action owner revalidates.
         if (uncertaintyAcknowledgementRequired && !uncertaintyAcknowledged) return;
@@ -943,13 +1196,14 @@ export function WorkflowRunScreen(): React.ReactElement {
             runId,
             expectedRevision: current.revision,
             invocation: { recordId: selectedInvocationId },
+            causalInvocationIds: [...selectedRecovery.retryCausalInvocationIds],
             conversation,
             input: replacement === undefined
                 ? { kind: 'original' }
                 : { kind: 'replacement', value: replacement },
             ...(uncertaintyAcknowledgementRequired ? { acknowledgeUncertainPriorEffects: true as const } : {}),
         }), settleRun);
-    }, [issueRunOperation, runId, selectedInvocationId, settleRun, uncertaintyAcknowledged, uncertaintyAcknowledgementRequired]);
+    }, [issueRunOperation, runId, selectedInvocationId, selectedRecovery, settleRun, uncertaintyAcknowledged, uncertaintyAcknowledgementRequired]);
 
     /**
      * Accepts the continuation the execution owner prepared for this exact
@@ -957,25 +1211,10 @@ export function WorkflowRunScreen(): React.ReactElement {
      * preserves the previous one; it never repeats completed predecessors.
      */
     const continuePrepared = React.useCallback(async (choice: WorkflowRecoveryContinuation) => {
-        if (runId === null || selectedInvocationId === null) return;
-        if (uncertaintyAcknowledgementRequired && !uncertaintyAcknowledged) return;
         // The canonical continuation input is required and non-empty.
         if (choice.document.text.trim().length === 0) return;
-        // A stale revision or lost response preserves the review state; the
-        // authoritative attempt arrives through the canonical read.
-        await issueRunOperation('continue', (current) => workflowRunDetailActions.resumeRun({
-            mode: 'recover',
-            runId,
-            expectedRevision: current.revision,
-            invocations: [{
-                kind: 'continue',
-                invocation: { recordId: selectedInvocationId },
-                conversation: choice.conversation,
-                input: { document: choice.document, input: choice.input },
-                ...(uncertaintyAcknowledgementRequired ? { acknowledgeUncertainPriorEffects: true as const } : {}),
-            }],
-        }), settleRun);
-    }, [issueRunOperation, runId, selectedInvocationId, settleRun, uncertaintyAcknowledged, uncertaintyAcknowledgementRequired]);
+        await retrySelected(choice.conversation, { document: choice.document, input: choice.input });
+    }, [retrySelected]);
 
     const restoreSelectedWorkspace = React.useCallback(async () => {
         if (runId === null || selectedInvocationId === null) return;
@@ -1051,6 +1290,7 @@ export function WorkflowRunScreen(): React.ReactElement {
         );
         if (!confirmed || !isContentIdentityCurrent(requestIdentity)) return;
         setRunAgainValues(visibleAcceptedContext.inputs);
+        setRunAgainRawTextValues({});
         if (visibleDefinition.inputs.length > 0) {
             setRunAgainInputOpen(true);
             return;
@@ -1092,49 +1332,89 @@ export function WorkflowRunScreen(): React.ReactElement {
 
     const openWorkspace = React.useCallback((workspaceRefId: string, directory: string) => {
         const opened = openProject(workspaceRefId, { activeRootPath: directory });
-        if (!opened) setControlError(t('workflows.workspace.unavailableBody'));
+        if (!opened) {
+            setControlError({
+                code: null,
+                title: t('workflows.workspace.title'),
+                message: t('workflows.workspace.unavailableBody'),
+                repair: 'none',
+                repairLabel: null,
+                accessibilitySemantics: 'alert',
+            });
+        }
     }, [openProject]);
 
-    const saveAsWorkflow = React.useCallback(async () => {
-        if (visibleDefinition === null || saveAsWorkflowPending) return;
-        if (saveAsWorkflowTitle === null) return;
-        const requestIdentity = contentIdentity;
+    const saveAsWorkflow = React.useCallback(() => {
+        if (summary === null || visibleDefinition === null || visibleAcceptedContext === null) return;
         const lifetime = captureActiveServerAccountScopeLifetime();
-        if (lifetime === null) return;
-        setSaveAsWorkflowPending(true);
-        try {
-            const savedDefinition = await createWorkflowDefinition({
-                definitionId: randomUUID(),
-                definition: visibleDefinition,
-                metadata: { title: saveAsWorkflowTitle },
-            });
-            if (!lifetime.isCurrent() || !isContentIdentityCurrent(requestIdentity)) return;
-            router.push({
-                pathname: '/workflows/[id]',
-                params: { id: savedDefinition.definitionId },
-            } as never);
-        } catch {
-            if (lifetime.isCurrent() && isContentIdentityCurrent(requestIdentity)) {
-                await Modal.alert(t('workflows.save.failedTitle'), t('workflows.save.failedBody'));
-            }
-        } finally {
-            if (lifetime.isCurrent() && isContentIdentityCurrent(requestIdentity)) setSaveAsWorkflowPending(false);
-        }
-    }, [contentIdentity, isContentIdentityCurrent, router, saveAsWorkflowPending, saveAsWorkflowTitle, visibleDefinition]);
+        if (lifetime === null || !lifetime.isCurrent() || !isContentIdentityCurrent(contentIdentity)) return;
+        const seedId = storeWorkflowReviewedRunSeed(buildWorkflowReviewedRunSeed({
+            run: summary,
+            definition: visibleDefinition,
+            acceptedContext: visibleAcceptedContext,
+        }));
+        router.push({ pathname: '/workflows/new', params: { reviewedRunSeedId: seedId } } as never);
+    }, [contentIdentity, isContentIdentityCurrent, router, summary, visibleAcceptedContext, visibleDefinition]);
 
-    const runAgainModalProps = React.useMemo<WorkflowRunInputModalProps | null>(
+    /**
+     * A mutating control only exists while the private evidence it acts on is
+     * the evidence the current exact read validated.
+     *
+     * When that read fails the last-known progress stays inspectable and says
+     * so, but approving a request or continuing an attempt from superseded
+     * content is a decision nobody can stand behind: the request may already be
+     * resolved or replaced. Deciding it once here keeps every control honest
+     * without a guard bolted onto each button.
+     */
+    const selectedEvidenceConfirmed = !selectedContentUnavailable;
+    const whenEvidenceConfirmed = React.useCallback(
+        <T,>(callback: T | undefined): T | undefined => (selectedEvidenceConfirmed ? callback : undefined),
+        [selectedEvidenceConfirmed],
+    );
+
+    /**
+     * The durable stop receipt, from the canonical owner rather than from the
+     * request's own lifetime. A terminal Run has already applied it, so the
+     * receipt retires with the state it was waiting for.
+     */
+    const cancelRequested = summary !== null
+        && !isTerminalWorkflowRunState(summary.state)
+        && (cancelRequestReceipt || allInvocations.some((entry) => entry.lifecycle === 'cancel_requested'));
+
+    /**
+     * The one problem the outcome region reports, keeping the canonical
+     * presentation rather than flattening it to a sentence.
+     */
+    const visibleProblem: WorkflowProblemPresentation | null = controlError
+        ?? (loadState === 'failed'
+            ? {
+                code: null,
+                title: t('workflows.loadFailedTitle'),
+                message: t('workflows.loadFailedBody'),
+                repair: 'retry',
+                repairLabel: t('common.retry'),
+                accessibilitySemantics: 'alert',
+            }
+            : null);
+
+    const runAgainModalProps = React.useMemo<WorkflowRunComposerModalProps | null>(
         () => visibleDefinition === null ? null : ({
             inputs: visibleDefinition.inputs,
             values: runAgainValues,
             onChangeValues: setRunAgainValues,
+            rawTextValues: runAgainRawTextValues,
+            onChangeRawTextValues: setRunAgainRawTextValues,
+            workflowName: visibleAcceptedContext?.metadata?.title,
+            preview: visibleAcceptedContext?.metadata?.description || JSON.stringify(visibleDefinition.blocks, null, 2),
+            machineId: visibleAcceptedContext?.machineId ?? null,
             onRun: (inputs) => { void admitRunAgain(inputs); },
             onCancel: () => setRunAgainInputOpen(false),
             pending: runNow.stateFor(pendingRunAgainIdRef.current ?? '') === 'submitting',
         }),
-        [admitRunAgain, runAgainValues, runNow, visibleDefinition],
+        [admitRunAgain, runAgainRawTextValues, runAgainValues, runNow, visibleAcceptedContext, visibleDefinition],
     );
 
-    useWorkflowRunInputModal({
+    useWorkflowRunComposerModal({
         open: runAgainInputOpen,
         props: runAgainModalProps,
         testID: 'workflow-run-again-inputs-modal',
@@ -1143,7 +1423,12 @@ export function WorkflowRunScreen(): React.ReactElement {
     if (runId === null) {
         return (
             <View style={[styles.root, styles.centered]}>
-                <Text style={styles.stateTitle}>{t('workflows.loadFailedTitle')}</Text>
+                <SurfaceStateCard
+                    testID="workflow-run-unavailable"
+                    kind="unavailable"
+                    title={t('workflows.loadFailedTitle')}
+                    reason={t('workflows.loadFailedBody')}
+                />
             </View>
         );
     }
@@ -1161,7 +1446,7 @@ export function WorkflowRunScreen(): React.ReactElement {
                         accessibilitySemantics="alert"
                     />
                 ) : (
-                    <ActivitySpinner testID="workflow-run-loading" />
+                    <SurfaceStateCard testID="workflow-run-loading" kind="loading" title={t('common.loading')} />
                 )}
             </View>
         );
@@ -1175,6 +1460,9 @@ export function WorkflowRunScreen(): React.ReactElement {
             <WorkflowRunContent
                 run={summary}
                 machineName={getMachineDisplayName(runMachine)}
+                {...(runMachine === null || runMachine === undefined
+                    ? {}
+                    : { machineReachable: isMachineOnline(runMachine) })}
                 // An opened accepted context with no metadata is an untitled
                 // Run — the unnamed-draft case — not private content this
                 // device cannot open; only an unopened context is unavailable.
@@ -1204,6 +1492,9 @@ export function WorkflowRunScreen(): React.ReactElement {
                 firstFailedInvocationId={visibleFirstFailedInvocation?.id ?? null}
                 firstFailedInvocationResolution={firstFailedInvocationResolution}
                 selectedInvocationProgress={selectedProgress}
+                selectedInvocationRecoveryAvailability={selectedInvocationId === null
+                    ? null
+                    : recoveryAvailabilityByInvocationId.get(selectedInvocationId) ?? null}
                 invocationProgressById={visibleProgressByInvocationId}
                 invocationStructure={invocationStructure}
                 onOpenSession={activeAccountScope === null ? undefined : (sessionId) => router.push(
@@ -1217,13 +1508,10 @@ export function WorkflowRunScreen(): React.ReactElement {
                     );
                     if (route !== null) router.push(route as never);
                 }}
-                onRespondPermission={selectedExecutionRunId === null
+                onRespondToRequest={whenEvidenceConfirmed(selectedExecutionRunId === null
                     ? undefined
-                    : (request) => { void respondToSelectedRequest(request); }}
-                onAnswerQuestion={selectedExecutionRunId === null
-                    ? undefined
-                    : (request) => { void respondToSelectedRequest(request); }}
-                pendingPermissionRequestIds={pendingPermissionRequestIds}
+                    : respondToSelectedRequest)}
+                pendingRequestIds={pendingRequestIds}
                 workspaceHomeDirectory={runMachine?.metadata?.homeDir ?? null}
                 onCopyWorkspace={(directory) => { void copyWorkspace(directory); }}
                 onOpenWorkspace={openWorkspace}
@@ -1233,43 +1521,47 @@ export function WorkflowRunScreen(): React.ReactElement {
                 onLoadMoreAttention={attentionNextCursor === null ? undefined : () => { void loadMoreAttention(); }}
                 loadingMoreAttention={loadingMoreAttention}
                 loadMoreAttentionFailed={visiblePagingFailure === 'attention'}
-                onRetrySameConversation={selectedInvocationId && summary.availability.retry ? () => { void retrySelected('same_conversation'); } : undefined}
-                onRetryFreshAgent={selectedInvocationId && summary.availability.retry ? () => { void retrySelected('fresh_agent'); } : undefined}
-                onRetryWithReplacement={selectedInvocationId && summary.availability.retry
+                attentionHasMore={attentionNextCursor !== null}
+                onRetrySameConversation={whenEvidenceConfirmed(selectedInvocationId && selectedRecovery?.canRetrySameConversation ? () => { void retrySelected('same_conversation'); } : undefined)}
+                onRetryFreshAgent={whenEvidenceConfirmed(selectedInvocationId && selectedRecovery?.canRetryFreshAgent ? () => { void retrySelected('fresh_agent'); } : undefined)}
+                onRetryWithReplacement={whenEvidenceConfirmed(selectedInvocationId
+                    && (selectedRecovery?.canRetrySameConversation || selectedRecovery?.canRetryFreshAgent)
                     ? (input) => { void retrySelected(input.conversation, { document: input.document, input: input.input }); }
-                    : undefined}
+                    : undefined)}
                 preparedRecovery={selectedProgress?.recovery ?? null}
-                onContinuePrepared={selectedInvocationId !== null && selectedProgress?.recovery !== undefined
+                onContinuePrepared={whenEvidenceConfirmed(selectedInvocationId !== null && selectedProgress?.recovery !== undefined
                     ? (choice) => { void continuePrepared(choice); }
-                    : undefined}
+                    : undefined)}
                 uncertaintyAcknowledged={uncertaintyAcknowledged}
-                onAcknowledgeUncertainPriorEffects={uncertaintyAcknowledgementRequired
+                onAcknowledgeUncertainPriorEffects={whenEvidenceConfirmed(uncertaintyAcknowledgementRequired
                     ? acknowledgeUncertainPriorEffects
-                    : undefined}
-                onReattach={selectedInvocationId !== null && selectedRecovery?.canReattach === true
+                    : undefined)}
+                onReattach={whenEvidenceConfirmed(selectedInvocationId !== null && selectedRecovery?.canReattach === true
                     ? () => { void reattachSelected(); }
-                    : undefined}
+                    : undefined)}
                 onDelete={isTerminalWorkflowRunState(summary.state) && summary.workflowCustodyState === 'settled' ? () => { void deleteRun(); } : undefined}
                 deleteBlockedByCustody={isTerminalWorkflowRunState(summary.state) && summary.workflowCustodyState === 'pending'}
                 onRunAgain={visibleAcceptedContext !== null && isTerminalWorkflowRunState(summary.state)
                     ? () => { void requestRunAgain(); }
                     : undefined}
                 onSaveAsWorkflow={visibleDefinition === null
-                    || saveAsWorkflowTitle === null
+                    || visibleAcceptedContext === null
                     ? undefined
                     : () => { void saveAsWorkflow(); }}
-                saveAsWorkflowPending={saveAsWorkflowPending}
-                onStartReviewedNewRun={visibleAcceptedContext !== null
+                saveAsWorkflowPending={false}
+                onStartReviewedNewRun={whenEvidenceConfirmed(visibleAcceptedContext !== null
                     && selectedInvocationId !== null
                     && selectedRecovery?.canStartReviewedNewRun === true
                     ? startReviewedNewRun
-                    : undefined}
-                onRestoreWorkspace={selectedInvocationId !== null
+                    : undefined)}
+                onRestoreWorkspace={whenEvidenceConfirmed(selectedInvocationId !== null
                     && selectedRecovery?.canRestoreWorkspace === true
                     ? () => { void restoreSelectedWorkspace(); }
-                    : undefined}
+                    : undefined)}
                 completionEmphasis={completionEmphasis}
-                errorLabel={controlError ?? (loadState === 'failed' ? t('workflows.loadFailedBody') : null)}
+                cancelRequested={cancelRequested}
+                errorLabel={visibleProblem?.message ?? null}
+                errorSemantics={visibleProblem?.accessibilitySemantics ?? 'alert'}
                 onReload={loadState === 'failed' ? retryLoad : undefined}
                 selectedContentUnavailable={selectedContentUnavailable}
                 contentContainerStyle={styles.content}

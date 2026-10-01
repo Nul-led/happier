@@ -8,6 +8,7 @@ import { CopiedPill } from '@/components/ui/copy/CopiedPill';
 import { useTemporaryCopyFeedback } from '@/components/ui/copy/useTemporaryCopyFeedback';
 import { Item } from '@/components/ui/lists/Item';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
+import { SectionContentRow } from '@/components/ui/lists/SectionContentRow';
 import { Modal } from '@/modal';
 import { t } from '@/text';
 import { setClipboardStringSafe } from '@/utils/ui/clipboard';
@@ -113,7 +114,7 @@ export const TeamLinkDelivery = React.memo(function TeamLinkDelivery(props: Read
     }, [url]);
 
     return (
-        <ItemGroup title={props.title} footer={props.footer}>
+        <ItemGroup title={props.title} description={props.footer}>
             {props.open ? (
                 <Item
                     testID={`${props.testIDPrefix}-open`}
@@ -152,11 +153,13 @@ export const TeamLinkDelivery = React.memo(function TeamLinkDelivery(props: Read
                 />
             ) : null}
             {qrRevealed ? (
-                <TeamLinkQr
-                    url={url}
-                    accessibilityLabel={props.qrAccessibilityLabel}
-                    testID={`${props.testIDPrefix}-qr`}
-                />
+                <SectionContentRow>
+                    <TeamLinkQr
+                        url={url}
+                        accessibilityLabel={props.qrAccessibilityLabel}
+                        testID={`${props.testIDPrefix}-qr`}
+                    />
+                </SectionContentRow>
             ) : null}
         </ItemGroup>
     );

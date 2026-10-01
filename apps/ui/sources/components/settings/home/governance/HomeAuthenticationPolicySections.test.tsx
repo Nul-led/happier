@@ -110,281 +110,8 @@ afterEach(() => {
 });
 
 describe('HomeAuthenticationPolicySections', () => {
-    it('does not replace an explicitly absent narrowed recommendation with the deployment default', async () => {
-        const { HomeAuthenticationPolicySections } = await import('./HomeAdministrationPoliciesScreen');
-        const serverId = await harness.addHome({ name: 'Home A', serverUrl: 'https://home-a.example', accountId: 'owner' });
-        const projection = homeGovernanceProjectionFixture({
-            authenticationOptions: {
-                methods: [{ id: 'key_challenge', displayName: 'Recovery key', actions: [] }],
-                permittedAccountModes: ['e2ee', 'plain'],
-                recommendedProvisioningMode: 'e2ee',
-                signInService: { deploymentMode: 'self', canDisable: true },
-            },
-        });
-        projection.policy = {
-            ...projection.policy,
-            authentication: {
-                status: 'narrowed',
-                enabledMethodIds: ['key_challenge'],
-                permittedAccountModes: ['e2ee', 'plain'],
-                recommendedProvisioningMode: null,
-                admission: null,
-                signInServiceDisabled: false,
-            },
-        };
-        const context: HomeAdministrationContext = {
-            scope: { serverId, accountId: 'owner' },
-            homeName: 'Home A',
-            projection,
-            mutationsAvailable: true,
-            approvalPending: false,
-            refresh: vi.fn(),
-        };
-
-        const screen = await renderScreen(<HomeAuthenticationPolicySections context={context} />);
-
-        expect(renderedControlIsChecked(screen.findByTestId('home-policy-auth-recommended:e2ee'))).toBe(false);
-        expect(renderedControlIsChecked(screen.findByTestId('home-policy-auth-recommended:plain'))).toBe(false);
-        expect(renderedControlIsDisabled(screen.findByTestId('home-policy-auth-save'))).toBe(true);
-    });
-
-    it('edits sign-in methods, Account modes, recommendation and admission in one explicit CAS save', async () => {
-        const { HomeAuthenticationPolicySections } = await import('./HomeAdministrationPoliciesScreen');
-        const serverId = await harness.addHome({ name: 'Home A', serverUrl: 'https://home-a.example', accountId: 'owner' });
-        const projection = homeGovernanceProjectionFixture({
-            authenticationOptions: {
-                methods: [
-                    { id: 'key_challenge', displayName: 'Recovery key', actions: [] },
-                    { id: 'github', displayName: 'GitHub', actions: [] },
-                ],
-                permittedAccountModes: ['e2ee', 'plain'],
-                recommendedProvisioningMode: 'e2ee',
-                signInService: { deploymentMode: 'self', canDisable: true },
-            },
-        });
-        projection.policy = {
-            ...projection.policy,
-            revision: 9,
-            authentication: {
-                status: 'narrowed',
-                enabledMethodIds: ['key_challenge'],
-                permittedAccountModes: ['e2ee'],
-                recommendedProvisioningMode: 'e2ee',
-                admission: 'invitation_only',
-                signInServiceDisabled: false,
-            },
-        };
-        harness.answer(serverId, '/v1/home/policy/set', {
-            body: { ...projection.policy, revision: 10 },
-        });
-        harness.answer(serverId, '/v1/home/governance/get', { body: projection });
-        const context: HomeAdministrationContext = {
-            scope: { serverId, accountId: 'owner' },
-            homeName: 'Home A',
-            projection,
-            mutationsAvailable: true,
-            approvalPending: false,
-            refresh: vi.fn(),
-        };
-
-        const screen = await renderScreen(<HomeAuthenticationPolicySections context={context} />);
-        await screen.pressByTestIdAsync('home-policy-auth-method:github');
-        await screen.pressByTestIdAsync('home-policy-auth-mode:plain');
-        await screen.pressByTestIdAsync('home-policy-auth-recommended:plain');
-        await screen.pressByTestIdAsync('home-policy-auth-admission:closed');
-        await screen.pressByTestIdAsync('home-policy-auth-service-disabled');
-        await screen.pressByTestIdAsync('home-policy-auth-save');
-
-        await waitForHomeGovernance(() => expect(harness.requestsFor('/v1/home/policy/set')).toHaveLength(1));
-        expect(harness.requestsFor('/v1/home/policy/set')[0]).toMatchObject({
-            serverId,
-            input: {
-                expectedRevision: 9,
-                authenticationPolicy: {
-                    v: 1,
-                    enabledMethodIds: ['key_challenge', 'github'],
-                    permittedAccountModes: ['e2ee', 'plain'],
-                    recommendedProvisioningMode: 'plain',
-                    admission: 'closed',
-                    signInService: { mode: 'disabled' },
-                },
-            },
-        });
-    });
-
-    it('does not allow the last sign-in method or Account mode to be removed', async () => {
-        const { HomeAuthenticationPolicySections } = await import('./HomeAdministrationPoliciesScreen');
-        const serverId = await harness.addHome({ name: 'Home A', serverUrl: 'https://home-a.example', accountId: 'owner' });
-        const projection = homeGovernanceProjectionFixture({
-            authenticationOptions: {
-                methods: [{ id: 'key_challenge', displayName: 'Recovery key', actions: [] }],
-                permittedAccountModes: ['e2ee'],
-                recommendedProvisioningMode: 'e2ee',
-                signInService: { deploymentMode: 'self', canDisable: true },
-            },
-        });
-        const context: HomeAdministrationContext = {
-            scope: { serverId, accountId: 'owner' },
-            homeName: 'Home A',
-            projection,
-            mutationsAvailable: true,
-            approvalPending: false,
-            refresh: vi.fn(),
-        };
-
-        const screen = await renderScreen(<HomeAuthenticationPolicySections context={context} />);
-        expect(renderedControlIsDisabled(screen.findByTestId('home-policy-auth-method:key_challenge'))).toBe(true);
-        expect(renderedControlIsDisabled(screen.findByTestId('home-policy-auth-mode:e2ee'))).toBe(true);
-        expect(renderedControlIsDisabled(screen.findByTestId('home-policy-auth-save'))).toBe(true);
-    });
-
-    it('does not turn an inherited policy into an explicit service disable when the deployment is disabled', async () => {
-        const { HomeAuthenticationPolicySections } = await import('./HomeAdministrationPoliciesScreen');
-        const serverId = await harness.addHome({ name: 'Home A', serverUrl: 'https://home-a.example', accountId: 'owner' });
-        const projection = homeGovernanceProjectionFixture({
-            authenticationOptions: {
-                methods: [{ id: 'key_challenge', actions: [] }],
-                permittedAccountModes: ['e2ee'],
-                recommendedProvisioningMode: 'e2ee',
-                signInService: { deploymentMode: 'disabled', canDisable: false },
-            },
-        });
-        harness.answer(serverId, '/v1/home/policy/set', {
-            body: { ...projection.policy, revision: projection.policy.revision + 1 },
-        });
-        const context: HomeAdministrationContext = {
-            scope: { serverId, accountId: 'owner' },
-            homeName: 'Home A',
-            projection,
-            mutationsAvailable: true,
-            approvalPending: false,
-            refresh: vi.fn(),
-        };
-
-        const screen = await renderScreen(<HomeAuthenticationPolicySections context={context} />);
-        await screen.pressByTestIdAsync('home-policy-auth-admission:closed');
-        await screen.pressByTestIdAsync('home-policy-auth-save');
-
-        await waitForHomeGovernance(() => expect(harness.requestsFor('/v1/home/policy/set')).toHaveLength(1));
-        expect(harness.requestsFor('/v1/home/policy/set')[0]?.input).toEqual({
-            expectedRevision: projection.policy.revision,
-            authenticationPolicy: {
-                v: 1,
-                admission: 'closed',
-                signInService: null,
-            },
-        });
-    });
-
-    it('keeps narrowed choices that left the deployment ceiling visible until the administrator repairs them', async () => {
-        const { HomeAuthenticationPolicySections } = await import('./HomeAdministrationPoliciesScreen');
-        const serverId = await harness.addHome({ name: 'Home A', serverUrl: 'https://home-a.example', accountId: 'owner' });
-        const projection = homeGovernanceProjectionFixture({
-            authenticationOptions: {
-                methods: [{ id: 'key_challenge', displayName: 'Recovery key', actions: [] }],
-                permittedAccountModes: ['e2ee'],
-                recommendedProvisioningMode: 'e2ee',
-                signInService: { deploymentMode: 'self', canDisable: true },
-            },
-        });
-        projection.policy = {
-            ...projection.policy,
-            authentication: {
-                status: 'narrowed',
-                enabledMethodIds: ['retired_method'],
-                permittedAccountModes: ['plain'],
-                recommendedProvisioningMode: 'plain',
-                admission: null,
-                signInServiceDisabled: false,
-            },
-        };
-        harness.answer(serverId, '/v1/home/policy/set', {
-            body: { ...projection.policy, revision: projection.policy.revision + 1 },
-        });
-        const context: HomeAdministrationContext = {
-            scope: { serverId, accountId: 'owner' },
-            homeName: 'Home A',
-            projection,
-            mutationsAvailable: true,
-            approvalPending: false,
-            refresh: vi.fn(),
-        };
-
-        const screen = await renderScreen(<HomeAuthenticationPolicySections context={context} />);
-        expect(renderedControlIsChecked(screen.findByTestId('home-policy-auth-method:retired_method'))).toBe(true);
-        expect(renderedControlIsChecked(screen.findByTestId('home-policy-auth-mode:plain'))).toBe(true);
-        expect(renderedControlIsDisabled(screen.findByTestId('home-policy-auth-save'))).toBe(true);
-
-        await screen.pressByTestIdAsync('home-policy-auth-method:key_challenge');
-        await screen.pressByTestIdAsync('home-policy-auth-method:retired_method');
-        await screen.pressByTestIdAsync('home-policy-auth-mode:e2ee');
-        await screen.pressByTestIdAsync('home-policy-auth-mode:plain');
-        expect(renderedControlIsDisabled(screen.findByTestId('home-policy-auth-save'))).toBe(true);
-        await screen.pressByTestIdAsync('home-policy-auth-recommended:e2ee');
-        expect(renderedControlIsDisabled(screen.findByTestId('home-policy-auth-save'))).toBe(false);
-        await screen.pressByTestIdAsync('home-policy-auth-save');
-
-        await waitForHomeGovernance(() => expect(harness.requestsFor('/v1/home/policy/set')).toHaveLength(1));
-        expect(harness.requestsFor('/v1/home/policy/set')[0]?.input).toMatchObject({
-            authenticationPolicy: {
-                enabledMethodIds: ['key_challenge'],
-                permittedAccountModes: ['e2ee'],
-                recommendedProvisioningMode: 'e2ee',
-            },
-        });
-    });
-
-    it('keeps the administrator draft when the Home rejects a stale revision', async () => {
-        const { HomeAuthenticationPolicySections } = await import('./HomeAdministrationPoliciesScreen');
-        const serverId = await harness.addHome({ name: 'Home A', serverUrl: 'https://home-a.example', accountId: 'owner' });
-        const projection = homeGovernanceProjectionFixture({
-            authenticationOptions: {
-                methods: [
-                    { id: 'key_challenge', actions: [] },
-                    { id: 'github', displayName: 'GitHub', actions: [] },
-                ],
-                permittedAccountModes: ['e2ee'],
-                recommendedProvisioningMode: 'e2ee',
-                signInService: { deploymentMode: 'self', canDisable: true },
-            },
-        });
-        projection.policy = {
-            ...projection.policy,
-            revision: 4,
-            authentication: {
-                status: 'narrowed',
-                enabledMethodIds: ['key_challenge'],
-                permittedAccountModes: ['e2ee'],
-                recommendedProvisioningMode: 'e2ee',
-                admission: null,
-                signInServiceDisabled: false,
-            },
-        };
-        harness.answer(serverId, '/v1/home/policy/set', {
-            status: 409,
-            body: { error: 'home_policy_revision_conflict' },
-        });
-        const refresh = vi.fn();
-        const context: HomeAdministrationContext = {
-            scope: { serverId, accountId: 'owner' },
-            homeName: 'Home A',
-            projection,
-            mutationsAvailable: true,
-            approvalPending: false,
-            refresh,
-        };
-
-        const screen = await renderScreen(<HomeAuthenticationPolicySections context={context} />);
-        await screen.pressByTestIdAsync('home-policy-auth-method:github');
-        await screen.pressByTestIdAsync('home-policy-auth-save');
-        await waitForHomeGovernance(() => expect(refresh).toHaveBeenCalled());
-
-        expect(renderedControlIsChecked(screen.findByTestId('home-policy-auth-method:github'))).toBe(true);
-        expect(renderedControlIsDisabled(screen.findByTestId('home-policy-auth-save'))).toBe(false);
-    });
-
     it('edits Team provider kinds through the Home policy revision owner', async () => {
-        const { HomeAuthenticationPolicySections } = await import('./HomeAdministrationPoliciesScreen');
+        const { HomeTeamSignInRulesSection } = await import('../signInProviders/HomeSignInProviderPolicySections');
         const serverId = await harness.addHome({ name: 'Home A', serverUrl: 'https://home-a.example', accountId: 'owner' });
         const projection = homeGovernanceProjectionFixture();
         projection.policy = {
@@ -411,7 +138,7 @@ describe('HomeAuthenticationPolicySections', () => {
             refresh: vi.fn(),
         };
 
-        const screen = await renderScreen(<HomeAuthenticationPolicySections context={context} />);
+        const screen = await renderScreen(<HomeTeamSignInRulesSection context={context} />);
         expect(screen.findByTestId('home-policy-team-provider:oidc')).toBeTruthy();
         expect(screen.findByTestId('home-policy-team-provider:workos_sso')).toBeTruthy();
         expect(screen.findByTestId('home-policy-team-provider:github_app_identity')).toBeTruthy();
@@ -435,7 +162,7 @@ describe('HomeAuthenticationPolicySections', () => {
     it('lets a fresh Home save its first Team-provider narrowing seeded from the deployment ceiling', async () => {
         // An absent policy inherits the deployment ceiling (teams-lane-01/02 :230, :234),
         // so the editor starts from the kinds this deployment can run, not from the enum.
-        const { HomeAuthenticationPolicySections } = await import('./HomeAdministrationPoliciesScreen');
+        const { HomeTeamSignInRulesSection } = await import('../signInProviders/HomeSignInProviderPolicySections');
         const serverId = await harness.addHome({ name: 'Home A', serverUrl: 'https://home-a.example', accountId: 'owner' });
         const projection = homeGovernanceProjectionFixture({
             identityServices: {
@@ -456,7 +183,7 @@ describe('HomeAuthenticationPolicySections', () => {
             refresh: vi.fn(),
         };
 
-        const screen = await renderScreen(<HomeAuthenticationPolicySections context={context} />);
+        const screen = await renderScreen(<HomeTeamSignInRulesSection context={context} />);
         expect(renderedControlIsChecked(screen.findByTestId('home-policy-team-provider:oidc'))).toBe(true);
         expect(renderedControlIsChecked(screen.findByTestId('home-policy-team-provider:github_app_identity'))).toBe(true);
         const workos = screen.findByTestId('home-policy-team-provider:workos_sso');
@@ -480,7 +207,7 @@ describe('HomeAuthenticationPolicySections', () => {
     });
 
     it('restores the committed Team-provider selection after an immediate refusal and submits the next click once', async () => {
-        const { HomeAuthenticationPolicySections } = await import('./HomeAdministrationPoliciesScreen');
+        const { HomeTeamSignInRulesSection } = await import('../signInProviders/HomeSignInProviderPolicySections');
         const serverId = await harness.addHome({ name: 'Home A', serverUrl: 'https://home-a.example', accountId: 'owner' });
         const projection = homeGovernanceProjectionFixture();
         projection.policy = {
@@ -509,7 +236,7 @@ describe('HomeAuthenticationPolicySections', () => {
             refresh: vi.fn(),
         };
 
-        const screen = await renderScreen(<HomeAuthenticationPolicySections context={context} />);
+        const screen = await renderScreen(<HomeTeamSignInRulesSection context={context} />);
         await screen.pressByTestIdAsync('home-policy-team-provider:workos_sso');
         await waitForHomeGovernance(() => expect(harness.requestsFor('/v1/home/policy/set')).toHaveLength(1));
         await waitForHomeGovernance(() => expect(
@@ -530,7 +257,7 @@ describe('HomeAuthenticationPolicySections', () => {
     });
 
     it('restores the committed JIT selection after an immediate refusal', async () => {
-        const { HomeAuthenticationPolicySections } = await import('./HomeAdministrationPoliciesScreen');
+        const { HomeTeamSignInRulesSection } = await import('../signInProviders/HomeSignInProviderPolicySections');
         const serverId = await harness.addHome({ name: 'Home A', serverUrl: 'https://home-a.example', accountId: 'owner' });
         const projection = homeGovernanceProjectionFixture();
         projection.policy = {
@@ -559,7 +286,7 @@ describe('HomeAuthenticationPolicySections', () => {
             refresh: vi.fn(),
         };
 
-        const screen = await renderScreen(<HomeAuthenticationPolicySections context={context} />);
+        const screen = await renderScreen(<HomeTeamSignInRulesSection context={context} />);
         await screen.pressByTestIdAsync('home-policy-team-jit');
         await waitForHomeGovernance(() => expect(harness.requestsFor('/v1/home/policy/set')).toHaveLength(1));
         await waitForHomeGovernance(() => expect(
@@ -568,7 +295,7 @@ describe('HomeAuthenticationPolicySections', () => {
     });
 
     it('keeps an approval candidate only while pending and restores the committed Team-provider selection when it terminates', async () => {
-        const { HomeAuthenticationPolicySections } = await import('./HomeAdministrationPoliciesScreen');
+        const { HomeTeamSignInRulesSection } = await import('../signInProviders/HomeSignInProviderPolicySections');
         const serverId = await harness.addHome({ name: 'Home A', serverUrl: 'https://home-a.example', accountId: 'owner' });
         homePolicyOperationBoundary.setAuthenticationPolicies = async () => ({
             kind: 'approval_pending',
@@ -598,23 +325,23 @@ describe('HomeAuthenticationPolicySections', () => {
             requestApproval,
             refresh: vi.fn(),
         };
-        const screen = await renderScreen(<HomeAuthenticationPolicySections context={context} />);
+        const screen = await renderScreen(<HomeTeamSignInRulesSection context={context} />);
 
         await screen.pressByTestIdAsync('home-policy-team-provider:workos_sso');
         await waitForHomeGovernance(() => expect(requestApproval).toHaveBeenCalledTimes(1));
         expect(renderedControlIsChecked(screen.findByTestId('home-policy-team-provider:workos_sso'))).toBe(true);
 
-        await screen.update(<HomeAuthenticationPolicySections context={{ ...context, approvalPending: true }} />);
+        await screen.update(<HomeTeamSignInRulesSection context={{ ...context, approvalPending: true }} />);
         expect(renderedControlIsChecked(screen.findByTestId('home-policy-team-provider:workos_sso'))).toBe(true);
 
-        await screen.update(<HomeAuthenticationPolicySections context={{ ...context, approvalPending: false }} />);
+        await screen.update(<HomeTeamSignInRulesSection context={{ ...context, approvalPending: false }} />);
         await waitForHomeGovernance(() => expect(
             renderedControlIsChecked(screen.findByTestId('home-policy-team-provider:workos_sso')),
         ).toBe(false));
     });
 
     it('adopts the refreshed authoritative Team-provider selection after approved execution', async () => {
-        const { HomeAuthenticationPolicySections } = await import('./HomeAdministrationPoliciesScreen');
+        const { HomeTeamSignInRulesSection } = await import('../signInProviders/HomeSignInProviderPolicySections');
         const serverId = await harness.addHome({ name: 'Home A', serverUrl: 'https://home-a.example', accountId: 'owner' });
         homePolicyOperationBoundary.setAuthenticationPolicies = async () => ({
             kind: 'approval_pending',
@@ -644,10 +371,10 @@ describe('HomeAuthenticationPolicySections', () => {
             requestApproval,
             refresh: vi.fn(),
         };
-        const screen = await renderScreen(<HomeAuthenticationPolicySections context={context} />);
+        const screen = await renderScreen(<HomeTeamSignInRulesSection context={context} />);
         await screen.pressByTestIdAsync('home-policy-team-provider:workos_sso');
         await waitForHomeGovernance(() => expect(requestApproval).toHaveBeenCalledTimes(1));
-        await screen.update(<HomeAuthenticationPolicySections context={{ ...context, approvalPending: true }} />);
+        await screen.update(<HomeTeamSignInRulesSection context={{ ...context, approvalPending: true }} />);
 
         const refreshedProjection = homeGovernanceProjectionFixture();
         refreshedProjection.policy = {
@@ -664,7 +391,7 @@ describe('HomeAuthenticationPolicySections', () => {
             },
         };
         await screen.update(
-            <HomeAuthenticationPolicySections
+            <HomeTeamSignInRulesSection
                 context={{ ...context, projection: refreshedProjection, approvalPending: false }}
             />,
         );
@@ -674,7 +401,7 @@ describe('HomeAuthenticationPolicySections', () => {
     });
 
     it('saves canonical GitHub Enterprise origins through the existing Team-provider policy CAS', async () => {
-        const { HomeAuthenticationPolicySections } = await import('./HomeAdministrationPoliciesScreen');
+        const { HomeTeamSignInRulesSection } = await import('../signInProviders/HomeSignInProviderPolicySections');
         const serverId = await harness.addHome({ name: 'Home A', serverUrl: 'https://home-a.example', accountId: 'owner' });
         const projection = homeGovernanceProjectionFixture();
         projection.policy = {
@@ -701,7 +428,7 @@ describe('HomeAuthenticationPolicySections', () => {
             refresh: vi.fn(),
         };
 
-        const screen = await renderScreen(<HomeAuthenticationPolicySections context={context} />);
+        const screen = await renderScreen(<HomeTeamSignInRulesSection context={context} />);
         screen.changeTextByTestId(
             'home-policy-team-provider-origins',
             'https://github.first.example\n\nhttps://github.second.example:8443\n',
@@ -730,7 +457,7 @@ describe('HomeAuthenticationPolicySections', () => {
     });
 
     it('keeps an invalid or duplicate GitHub Enterprise origin inline and never sends it', async () => {
-        const { HomeAuthenticationPolicySections } = await import('./HomeAdministrationPoliciesScreen');
+        const { HomeTeamSignInRulesSection } = await import('../signInProviders/HomeSignInProviderPolicySections');
         const serverId = await harness.addHome({ name: 'Home A', serverUrl: 'https://home-a.example', accountId: 'owner' });
         const projection = homeGovernanceProjectionFixture();
         projection.policy = {
@@ -755,13 +482,13 @@ describe('HomeAuthenticationPolicySections', () => {
             refresh: vi.fn(),
         };
 
-        const screen = await renderScreen(<HomeAuthenticationPolicySections context={context} />);
+        const screen = await renderScreen(<HomeTeamSignInRulesSection context={context} />);
         screen.changeTextByTestId(
             'home-policy-team-provider-origins',
             'https://github.company.example/path',
         );
 
-        await waitForHomeGovernance(() => expect(screen.findByTestId('home-policy-team-provider-origins-invalid')).toBeTruthy());
+        await waitForHomeGovernance(() => expect(screen.findByTestId('home-policy-team-provider-origins.error')).toBeTruthy());
         expect(renderedControlIsDisabled(screen.findByTestId('home-policy-team-provider-origins-save'))).toBe(true);
         expect(harness.requestsFor('/v1/home/policy/set')).toHaveLength(0);
 
@@ -769,13 +496,13 @@ describe('HomeAuthenticationPolicySections', () => {
             'home-policy-team-provider-origins',
             'https://github.company.example\nhttps://github.company.example',
         );
-        await waitForHomeGovernance(() => expect(screen.findByTestId('home-policy-team-provider-origins-invalid')).toBeTruthy());
+        await waitForHomeGovernance(() => expect(screen.findByTestId('home-policy-team-provider-origins.error')).toBeTruthy());
         expect(renderedControlIsDisabled(screen.findByTestId('home-policy-team-provider-origins-save'))).toBe(true);
         expect(harness.requestsFor('/v1/home/policy/set')).toHaveLength(0);
     });
 
     it('keeps a GitHub Enterprise origin draft across a CAS conflict and retries with the refreshed revision', async () => {
-        const { HomeAuthenticationPolicySections } = await import('./HomeAdministrationPoliciesScreen');
+        const { HomeTeamSignInRulesSection } = await import('../signInProviders/HomeSignInProviderPolicySections');
         const serverId = await harness.addHome({ name: 'Home A', serverUrl: 'https://home-a.example', accountId: 'owner' });
         const projection = homeGovernanceProjectionFixture();
         projection.policy = {
@@ -805,7 +532,7 @@ describe('HomeAuthenticationPolicySections', () => {
             refresh,
         };
 
-        const screen = await renderScreen(<HomeAuthenticationPolicySections context={context} />);
+        const screen = await renderScreen(<HomeTeamSignInRulesSection context={context} />);
         screen.changeTextByTestId('home-policy-team-provider-origins', 'https://github.mine.example');
         await waitForHomeGovernance(() => expect(
             renderedControlIsDisabled(screen.findByTestId('home-policy-team-provider-origins-save')),
@@ -828,7 +555,7 @@ describe('HomeAuthenticationPolicySections', () => {
             },
         };
         await screen.update(
-            <HomeAuthenticationPolicySections context={{ ...context, projection: refreshedProjection }} />,
+            <HomeTeamSignInRulesSection context={{ ...context, projection: refreshedProjection }} />,
         );
         expect(screen.findByTestId('home-policy-team-provider-origins')!.props.value).toBe('https://github.mine.example');
 
@@ -851,8 +578,8 @@ describe('HomeAuthenticationPolicySections', () => {
         });
     });
 
-    it('reports the deployment WorkOS state and hides private endpoints the deployment forbids', async () => {
-        const { HomeAuthenticationPolicySections } = await import('./HomeAdministrationPoliciesScreen');
+    it('says why private endpoints are unavailable and names the deployment key that fixes them', async () => {
+        const { HomePrivateEndpointsSection } = await import('../signInProviders/HomeSignInProviderPolicySections');
         const serverId = await harness.addHome({ name: 'Cloud', serverUrl: 'https://cloud.example', accountId: 'owner' });
         const projection = homeGovernanceProjectionFixture({
             identityServices: { workos: 'partially_configured', privateIdentityNetworkAllowed: false, teamProviderKinds: [] },
@@ -867,13 +594,20 @@ describe('HomeAuthenticationPolicySections', () => {
             refresh: vi.fn(),
         };
 
-        const screen = await renderScreen(<HomeAuthenticationPolicySections context={context} />);
-        expect(screen.findByTestId('home-policy-deployment-workos')).toBeTruthy();
+        const screen = await renderScreen(<HomePrivateEndpointsSection context={context} ceilingFixed />);
         expect(screen.findAllByTestId('home-policy-identity-network-mode:private_allowlist')).toHaveLength(0);
+        expect(screen.findByTestId('home-sign-in-private-endpoints-unavailable')).not.toBeNull();
+        expect(screen.getTextContent()).toContain(
+            'homeGovernance.signInProviders.privateEndpointsFixed(key=HAPPIER_FEATURE_AUTH_MANAGED_IDENTITY__PRIVATE_NETWORK_ENABLED)',
+        );
+        // Off because the Home left it off reads differently from fixed by the deployment.
+        await screen.update(<HomePrivateEndpointsSection context={context} ceilingFixed={false} />);
+        expect(screen.getTextContent()).toContain('homeGovernance.signInProviders.privateEndpointsOff');
+        expect(screen.getTextContent()).not.toContain('privateEndpointsFixed');
     });
 
     it('saves an exact private endpoint allowlist through the Home policy revision owner', async () => {
-        const { HomeAuthenticationPolicySections } = await import('./HomeAdministrationPoliciesScreen');
+        const { HomePrivateEndpointsSection } = await import('../signInProviders/HomeSignInProviderPolicySections');
         const serverId = await harness.addHome({ name: 'Self hosted', serverUrl: 'https://self.example', accountId: 'owner' });
         const projection = homeGovernanceProjectionFixture({
             identityServices: { workos: 'configured', privateIdentityNetworkAllowed: true, teamProviderKinds: [] },
@@ -890,7 +624,7 @@ describe('HomeAuthenticationPolicySections', () => {
             refresh: vi.fn(),
         };
 
-        const screen = await renderScreen(<HomeAuthenticationPolicySections context={context} />);
+        const screen = await renderScreen(<HomePrivateEndpointsSection context={context} ceilingFixed={null} />);
         await screen.pressByTestIdAsync('home-policy-identity-network-mode:private_allowlist');
         screen.changeTextByTestId('home-policy-identity-network-hostnames', 'idp.corp.example\n');
         screen.changeTextByTestId('home-policy-identity-network-cidrs', '10.0.0.0/8');
@@ -914,7 +648,7 @@ describe('HomeAuthenticationPolicySections', () => {
     });
 
     it('keeps a dirty private-network draft across a revision refresh and retries against the new revision', async () => {
-        const { HomeAuthenticationPolicySections } = await import('./HomeAdministrationPoliciesScreen');
+        const { HomePrivateEndpointsSection } = await import('../signInProviders/HomeSignInProviderPolicySections');
         const serverId = await harness.addHome({ name: 'Self hosted', serverUrl: 'https://self.example', accountId: 'owner' });
         const projection = homeGovernanceProjectionFixture({
             identityServices: { workos: 'configured', privateIdentityNetworkAllowed: true, teamProviderKinds: [] },
@@ -941,7 +675,7 @@ describe('HomeAuthenticationPolicySections', () => {
             refresh,
         };
 
-        const screen = await renderScreen(<HomeAuthenticationPolicySections context={context} />);
+        const screen = await renderScreen(<HomePrivateEndpointsSection context={context} ceilingFixed={null} />);
         await screen.pressByTestIdAsync('home-policy-identity-network-mode:private_allowlist');
         screen.changeTextByTestId('home-policy-identity-network-hostnames', 'idp.corp.example');
         screen.changeTextByTestId('home-policy-identity-network-cidrs', '10.0.0.0/8');
@@ -967,7 +701,7 @@ describe('HomeAuthenticationPolicySections', () => {
             },
         };
         await screen.update(
-            <HomeAuthenticationPolicySections
+            <HomePrivateEndpointsSection ceilingFixed={null}
                 context={{ ...context, projection: refreshedProjection }}
             />,
         );
@@ -993,7 +727,76 @@ describe('HomeAuthenticationPolicySections', () => {
     });
 });
 
+describe('TeamsVisibilityPolicyEditor', () => {
+    it('turns "Show Teams to members" off through the Home policy and keeps it until the Home confirms', async () => {
+        const { TeamsVisibilityPolicyEditor } = await import('./HomeAdministrationPoliciesScreen');
+        const serverId = await harness.addHome({ name: 'Home A', serverUrl: 'https://home-a.example', accountId: 'owner' });
+        const projection = homeGovernanceProjectionFixture();
+        harness.answer(serverId, '/v1/home/policy/set', {
+            body: { ...projection.policy, revision: projection.policy.revision + 1, teamsVisibleToMembers: false },
+        });
+        const context: HomeAdministrationContext = {
+            scope: { serverId, accountId: 'owner' },
+            homeName: 'Home A',
+            projection,
+            mutationsAvailable: true,
+            approvalPending: false,
+            refresh: vi.fn(),
+        };
+
+        const screen = await renderScreen(<TeamsVisibilityPolicyEditor context={context} />);
+        expect(screen.findByTestId('home-policy-teams-visible-to-members-switch')?.props.value).toBe(true);
+
+        await act(async () => {
+            screen.findByTestId('home-policy-teams-visible-to-members-switch')?.props.onValueChange(false);
+        });
+        await waitForHomeGovernance(() => expect(harness.requestsFor('/v1/home/policy/set')).toHaveLength(1));
+        expect(harness.requestsFor('/v1/home/policy/set')[0]?.input).toEqual({
+            expectedRevision: projection.policy.revision,
+            teamsVisibleToMembers: false,
+        });
+        expect(screen.findByTestId('home-policy-teams-visible-to-members-switch')?.props.value).toBe(false);
+    });
+
+    it('is not offered by a Home that predates the policy', async () => {
+        const { TeamsVisibilityPolicyEditor } = await import('./HomeAdministrationPoliciesScreen');
+        const serverId = await harness.addHome({ name: 'Home A', serverUrl: 'https://home-a.example', accountId: 'owner' });
+        const projection = homeGovernanceProjectionFixture();
+        const { teamsVisibleToMembers: _absent, ...olderPolicy } = projection.policy;
+        const context: HomeAdministrationContext = {
+            scope: { serverId, accountId: 'owner' },
+            homeName: 'Home A',
+            projection: { ...projection, policy: olderPolicy },
+            mutationsAvailable: true,
+            approvalPending: false,
+            refresh: vi.fn(),
+        };
+
+        const screen = await renderScreen(<TeamsVisibilityPolicyEditor context={context} />);
+        expect(screen.findByTestId('home-policy-teams-visible-to-members')).toBeNull();
+    });
+});
+
 describe('TeamCreationPolicyEditor', () => {
+    it('leaves "this Home is not answering" to the page banner instead of repeating it on the section', async () => {
+        const { TeamCreationPolicyEditor } = await import('./HomeAdministrationPoliciesScreen');
+        const serverId = await harness.addHome({ name: 'Home A', serverUrl: 'https://home-a.example', accountId: 'owner' });
+        const context: HomeAdministrationContext = {
+            scope: { serverId, accountId: 'owner' },
+            homeName: 'Home A',
+            projection: homeGovernanceProjectionFixture(),
+            mutationsAvailable: false,
+            approvalPending: false,
+            refresh: vi.fn(),
+        };
+        const screen = await renderScreen(<TeamCreationPolicyEditor context={context} />);
+        expect(screen.getTextContent()).not.toContain('homeGovernance.reasonHomeUnreachable');
+        // The committed choice stays marked while it cannot be changed.
+        const committed = screen.findHostByTestId('home-policy-team-creation:managed_only');
+        expect(committed?.props['aria-checked'] ?? committed?.props.accessibilityState?.checked).toBe(true);
+    });
+
+
     it('does not carry a retained draft into the same route on another Home', async () => {
         const { TeamCreationPolicyEditor } = await import('./HomeAdministrationPoliciesScreen');
         const serverA = await harness.addHome({ name: 'Home A', serverUrl: 'https://home-a.example', accountId: 'owner-a' });

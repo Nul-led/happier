@@ -1,133 +1,114 @@
 import * as React from 'react';
 import { View } from 'react-native';
-import { useRouter } from 'expo-router';
-import { SvgXml } from 'react-native-svg';
-import { StyleSheet, useUnistyles } from 'react-native-unistyles';
-
-import { Item } from '@/components/ui/lists/Item';
-import { ItemGroup } from '@/components/ui/lists/ItemGroup';
-import { ItemList } from '@/components/ui/lists/ItemList';
-import { StatusDot } from '@/components/ui/status/StatusDot';
-import { Text } from '@/components/ui/text/Text';
-import { t } from '@/text';
-import { useActiveServerAccountScope, useProfile } from '@/sync/store/hooks';
-import { useSettingMutable, useSettings } from '@/sync/store/hooks';
-import { useApplySettings } from '@/sync/store/settingsWriters';
-import { Modal } from '@/modal';
-import { getLegacyConnectedServiceRegistryEntry } from '@/sync/domains/connectedServices/connectedServiceRegistry';
+import { useLocalSearchParams, useRouter } from '@/components/appShell/workspace/destinationRoute';
+import { StyleSheet } from 'react-native-unistyles';
+import { useHappierCollectionLayout } from '@happier-dev/plugin-ui/presentation';
 import {
-  useAppShellPluginUiProjection,
-  useProjectedPluginLocalizedTextResolver,
-  useProjectedConnectedServicesRegistry,
-} from '@/components/appShell/plugins/AppShellPluginUiProjection';
-import { AGENT_IDS } from '@/agents/catalog/catalog';
-import { getResolvedAgentCatalogEntries } from '@/agents/backendCatalog/agentCatalogProjection';
-import { useDaemonMergedProjectionInputs } from '@/agents/backendCatalog/useDaemonMergedProjectionInputs';
-import {
-  buildQualifiedPluginContributionKey,
-  ConnectedServicesProviderStateSharingSettingsV1Schema,
-  isConnectedServiceCredentialHealthStatusUsable,
   normalizeConnectedServiceCredentialHealthStatus,
+  type QualifiedConnectedAccountPurposeBindingTargetV1,
+  type QualifiedConnectedAccountRef,
 } from '@happier-dev/protocol';
-import { useFeatureEnabled } from '@/hooks/server/useFeatureEnabled';
-import { ConnectedServiceQuotaBadgesView } from '@/components/settings/connectedServices/ConnectedServiceQuotaBadgesView';
-import { useConnectedServiceQuotaBadges } from '@/hooks/server/connectedServices/useConnectedServiceQuotaBadges';
-import { useConnectedServiceQuotaSummaries } from '@/hooks/server/connectedServices/useConnectedServiceQuotaSummaries';
-import {
-  connectedServiceProfileKey,
-  qualifiedConnectedAccountPreferenceServiceKey,
-  resolveConnectedServiceDefaultProfileId,
-  resolveQualifiedConnectedAccountDefaultId,
-} from '@/sync/domains/connectedServices/connectedServiceProfilePreferences';
-import { buildConnectedAccountSettingsRoute } from '@/sync/domains/connectedServices/connectedAccountSettingsRoute';
-import { resolveConnectedAccountUiNegotiation } from '@/sync/domains/connectedServices/resolveConnectedAccountUiNegotiation';
-import { useServerFeaturesRuntimeSnapshot } from '@/sync/domains/features/featureDecisionRuntime';
-import { resolveConnectedServiceBrandIconXml } from '@/agents/registry/resolveConnectedServiceBrandIconXml';
-import {
-  compareAccountHealthSeverity,
-  deriveAccountHealth,
-  worstAccountHealth,
-  type AccountHealth,
-} from '@/sync/domains/connectedServices/deriveAccountHealth';
-import { resolveAccountHealthDotColor } from './account/accountBlockModel';
-import {
-  resolveConnectedServiceRegistryEntryDisplayName,
-} from './model/resolveConnectedServiceDisplayName';
-import {
-  presentConnectedServiceIndexDiagnosticCopy,
-  presentConnectedServiceIndexDiagnostics,
-} from './model/presentConnectedServiceIndexDiagnostics';
-import { buildConnectedServiceQuotaSummaryCards } from './buildConnectedServiceQuotaSummaryCards';
-import { ConnectedServiceQuotaSummaryCardSection } from './ConnectedServiceQuotaSummaryCardSection';
-import {
-  ConnectedServicesDefaultAuthRow,
-  type ConnectedServicesAgentDefaultAuthWrite,
-} from './ConnectedServicesDefaultAuthRow';
-import { ConnectedServicesProviderStateSharingDefaultsGroup } from './ConnectedServicesProviderStateSharingSettings';
-import { Icon } from '@/components/ui/icons/Icon';
+
+import { IconButton } from '@/components/ui/buttons/IconButton';
+import { AttentionBanner } from '@/components/ui/lists/AttentionBanner';
+import { ItemList } from '@/components/ui/lists/ItemList';
+import { SurfaceStateCard } from '@/components/ui/surfaces/SurfaceStateCard';
+import { SettingsPageHeader } from '@/components/settings/shell/SettingsPageHeader';
 import { TeamCredentialCatalogSettingsGroup } from '@/components/settings/teams/credentials/TeamCredentialCatalogSettingsGroup';
 import { teamCredentialDetailPath } from '@/components/settings/teams/teamsRoutes';
+import { useUsageSummary } from '@/components/hub/usage/useUsageSummary';
+import { useFeatureEnabled } from '@/hooks/server/useFeatureEnabled';
 import { useHomeTeamCredentialModelCatalog } from '@/hooks/teams/useHomeTeamCredentialModelCatalog';
+import { useConnectedAccountIdentityPrivacy } from '@/hooks/ui/useConnectedAccountIdentityPrivacy';
+import { buildConnectedAccountSettingsRoute, buildNewConnectedAccountPoolRoute } from '@/sync/domains/connectedServices/connectedAccountSettingsRoute';
+import { useActiveServerAccountScope, useAllMachines, useLocalSettingMutable, useSetting, useSettings } from '@/sync/store/hooks';
+import { useApplySettings } from '@/sync/store/settingsWriters';
+import { t } from '@/text';
+import { runGuardedNavigation } from '@/utils/navigation/runGuardedNavigation';
+import { getMachineDisplayName, isMachineOnline } from '@/utils/sessions/machineUtils';
+import { fireAndForget } from '@/utils/system/fireAndForget';
+import { useDeviceType } from '@/utils/platform/responsive';
 
-const BRAND_ICON_SIZE = 24;
+import { AgentDefaultMenuButton } from './defaults/AgentDefaultMenuButton';
+import { ConnectedAccountPrivacyToggle } from './usage/ConnectedAccountPrivacyToggle';
+import { buildAgentDefaultChoices, writeAgentDefaultChoice } from './defaults/agentDefaultChoices';
+import { ConnectedAccountIndexLiveFacts } from './index/ConnectedAccountIndexRow';
+import { ConnectedServicePoolIndexItem } from './index/ConnectedServicePoolIndexItem';
+import { ConnectedServicesIndexView, type ConnectedServicesIndexPresentation } from './index/ConnectedServicesIndexView';
+import { NewPoolMenu, selectNewPoolServices } from './collection/NewPoolMenu';
+import { presentConnectedServiceIndexDiagnosticCopy } from './model/presentConnectedServiceIndexDiagnostics';
+import type { ConnectedServicesIndexSheet } from './model/buildConnectedServicesIndexModel';
+import { useConnectedServicesIndex } from './model/useConnectedServicesIndex';
+import { ConnectedAccountSettled } from './setup/ConnectedAccountSettled';
+import { ConnectedServicesConnectMore } from './setup/ConnectedServicesConnectMore';
+import type { ConnectedServiceSetupTarget } from './setup/ConnectedServiceSetupPanel';
 
-const stylesheet = StyleSheet.create((theme) => ({
-  iconBox: {
-    width: 28,
-    height: 28,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  healthDot: {
-    position: 'absolute',
-    bottom: -1,
-    right: -1,
-    borderWidth: 1.5,
-    borderColor: theme.colors.surface.base,
-  },
-}));
+const EMPTY_LABELS: Readonly<Record<string, string | undefined>> = {};
 
 /**
- * Derive a service row's health as the worst-of the credential statuses across its
- * accounts. Quota capacity is left out here — the index surfaces pinned-meter
- * badges and does not mount per-account quota snapshots — so the row dot reflects
- * connection health only. It reuses the canonical `deriveAccountHealth` owner so
- * the index can never disagree with the account detail view.
+ * Connected services, the collection's index (lab `csvc` C1/C2, P0): every service with its accounts
+ * and their limits, as a list or as cards; the set-up blocks for what your agents could also use; the
+ * pools; Team-shared accounts. With nothing connected yet it is the first run (the promise and the
+ * set-up blocks, no rail). Accounts, pools and usage are Account-level; only adding and signing in run
+ * on a machine.
  */
-function deriveServiceRowHealth(profiles: ReadonlyArray<{ status?: unknown }>): AccountHealth {
-  return worstAccountHealth(profiles.map((profile) => deriveAccountHealth({
-    status: normalizeConnectedServiceCredentialHealthStatus(profile?.status),
-    capacityPct: null,
-  })));
-}
-
 export const ConnectedServicesSettingsView = React.memo(function ConnectedServicesSettingsView() {
-  const { theme } = useUnistyles();
-  const styles = stylesheet;
-  const profile = useProfile();
-  const activeAccountScope = useActiveServerAccountScope();
-  const appShellProjection = useAppShellPluginUiProjection();
-  const connectedServicesRegistrySnapshot = useProjectedConnectedServicesRegistry();
-  const localizePluginText = useProjectedPluginLocalizedTextResolver();
-  const connectedServicesRegistry = connectedServicesRegistrySnapshot.entries;
-  const settings = useSettings();
-  const [providerStateSharingSettings, setProviderStateSharingSettings] =
-    useSettingMutable('connectedServicesProviderStateSharingSettingsV1');
-  const applySettings = useApplySettings();
-  // Agent default authentication has one owner (the purpose-binding store);
-  // each write also folds and retires the released service-keyed entry.
-  const setDefaultAuthSettings = React.useCallback((next: ConnectedServicesAgentDefaultAuthWrite) => {
-    applySettings(next);
-  }, [applySettings]);
-  const [poolAdoptionDismissedByKey, setPoolAdoptionDismissedByKey] =
-    useSettingMutable('connectedServicesDefaultAuthPoolAdoptionDismissedByKey');
-  const dismissPoolAdoptionSuggestion = React.useCallback((key: string) => {
-    setPoolAdoptionDismissedByKey({
-      ...(poolAdoptionDismissedByKey ?? {}),
-      [key]: true,
-    });
-  }, [poolAdoptionDismissedByKey, setPoolAdoptionDismissedByKey]);
   const router = useRouter();
+  const activeAccountScope = useActiveServerAccountScope();
+  const index = useConnectedServicesIndex({ agents: 'load' });
+  const { indexModel, agentEntries, agentsKnown, registrySnapshot, appShellProjection } = index;
+  const settings = useSettings();
+  const applySettings = useApplySettings();
+  const labelsByKey = useSetting('connectedServicesProfileLabelByKey') ?? EMPTY_LABELS;
+  const privacy = useConnectedAccountIdentityPrivacy();
+  const [presentationSetting, setPresentation] = useLocalSettingMutable('connectedServicesIndexViewV1');
+  const presentation: ConnectedServicesIndexPresentation = presentationSetting === 'grid' ? 'grid' : 'list';
+  const layout = useHappierCollectionLayout();
+  const phone = useDeviceType() === 'phone';
+  const compact = phone || layout?.mode === 'stacked';
+  // "As of": when the usage the rows show was read (the one usage owner; never starts a read itself).
+  const usage = useUsageSummary({ load: 'cache' });
+
+  // The rail's "+" (and a service route's `connect`) open the set-up blocks on the catalog.
+  const params = useLocalSearchParams<{ connect?: string; service?: string }>();
+  const [request, setRequest] = React.useState<ConnectedServiceSetupTarget | null>(null);
+  const connectParam = typeof params.connect === 'string' ? params.connect : null;
+  const serviceParam = typeof params.service === 'string' ? params.service : null;
+  React.useEffect(() => {
+    if (!connectParam) return;
+    setRequest(serviceParam ? { kind: 'service', serviceKey: serviceParam } : { kind: 'catalog' });
+    router.setParams({ connect: undefined, service: undefined });
+  }, [connectParam, router, serviceParam]);
+  const [setupOpen, setSetupOpen] = React.useState(false);
+  const [settled, setSettled] = React.useState<Readonly<{ serviceKey: string; account: QualifiedConnectedAccountRef }> | null>(null);
+  const [refreshToken, setRefreshToken] = React.useState(0);
+
+  const navigate = React.useCallback((href: Parameters<typeof router.push>[0], tag: string) => {
+    const result = runGuardedNavigation(() => router.push(href));
+    if (result !== true) fireAndForget(result, { tag });
+  }, [router]);
+
+  const defaultSettings = React.useMemo(() => ({
+    connectedAccountPurposeBindingsV1: settings.connectedAccountPurposeBindingsV1,
+    connectedServicesDefaultAuthByAgentIdV1: settings.connectedServicesDefaultAuthByAgentIdV1,
+  }), [settings.connectedAccountPurposeBindingsV1, settings.connectedServicesDefaultAuthByAgentIdV1]);
+  const agents = agentsKnown ? agentEntries : null;
+  const renderStar = React.useCallback((target: QualifiedConnectedAccountPurposeBindingTargetV1, testID: string) => {
+    if (!agents) return null;
+    const choices = buildAgentDefaultChoices({ agents, settings: defaultSettings, target });
+    return (
+      <AgentDefaultMenuButton
+        testID={testID}
+        presentation="icon"
+        choices={choices}
+        onChange={(agentId, makeDefault) => {
+          const written = writeAgentDefaultChoice({ agents, settings: defaultSettings, target, agentId, makeDefault });
+          if (written) applySettings(written);
+        }}
+      />
+    );
+  }, [agents, applySettings, defaultSettings]);
+
   const accountGroupsEnabled = useFeatureEnabled('connectedServices.accountGroups');
   const teamCredentialResourcesEnabled = useFeatureEnabled('teams.credentialResources', {
     scopeKind: 'spawn',
@@ -137,418 +118,198 @@ export const ConnectedServicesSettingsView = React.memo(function ConnectedServic
     serverId: activeAccountScope?.serverId,
     enabled: teamCredentialResourcesEnabled,
   });
-  const daemonAgentProjection = useDaemonMergedProjectionInputs({
-    machineId: appShellProjection.machineId,
-    serverId: appShellProjection.serverId,
-    enabled: Boolean(appShellProjection.machineId),
-  });
-  const agentEntries = React.useMemo(() => getResolvedAgentCatalogEntries({
-    enabledAgentIds: AGENT_IDS,
-    mergedProviderProjectionById: daemonAgentProjection.inputs?.mergedProviderProjectionById ?? null,
-    mergedBackendProjectionById: daemonAgentProjection.inputs?.mergedBackendProjectionById ?? null,
-  }), [
-    daemonAgentProjection.inputs?.mergedBackendProjectionById,
-    daemonAgentProjection.inputs?.mergedProviderProjectionById,
-  ]);
-  const normalizedProviderStateSharingSettings = React.useMemo(
-    () => ConnectedServicesProviderStateSharingSettingsV1Schema.parse(providerStateSharingSettings),
-    [providerStateSharingSettings],
+
+  const machines = useAllMachines();
+  const onlineMachineName = React.useMemo(() => {
+    const online = machines.find((machine) => isMachineOnline(machine));
+    return online ? getMachineDisplayName(online) : null;
+  }, [machines]);
+
+  const accountCount = indexModel.sheets.reduce((total, sheet) => total + sheet.accounts.length, 0);
+  const needsYouCount = indexModel.sheets.reduce((total, sheet) => total + (sheet.canOpen
+    ? sheet.accounts.filter((account) => normalizeConnectedServiceCredentialHealthStatus(account.status) === 'needs_reauth').length
+    : 0), 0);
+  const projectionLoading = registrySnapshot.status === 'loading';
+  const projectionFailed = registrySnapshot.status === 'error';
+  const agentConnectable = indexModel.connectable.filter((service) => service.section === 'agents');
+  const firstRun = accountCount === 0 && indexModel.sheets.length === 0;
+
+  const banner = projectionFailed ? (
+    <AttentionBanner
+      testID="connected-services-projection-error"
+      title={t('connectedServicesSettings.projectionErrorTitle')}
+      description={(registrySnapshot.errorReason ? presentConnectedServiceIndexDiagnosticCopy(registrySnapshot.errorReason) : null)
+        ?? t('connectedServicesSettings.projectionErrorDescription')}
+      action={{
+        label: t('common.retry'),
+        testID: 'connected-services-projection-retry',
+        onPress: () => appShellProjection.reloadConnectedAccountProjection?.(),
+      }}
+    />
+  ) : null;
+
+  const connectMore = (
+    <ConnectedServicesConnectMore
+      model={indexModel}
+      layout={firstRun ? 'firstRun' : 'section'}
+      request={request}
+      onRequestHandled={() => setRequest(null)}
+      onConnected={(account, serviceKey) => setSettled({ serviceKey, account })}
+      onOpenChange={setSetupOpen}
+      loading={projectionLoading}
+    />
   );
 
-  const serverFeatures = useServerFeaturesRuntimeSnapshot({ enabled: true });
-  const accountTransport = resolveConnectedAccountUiNegotiation(serverFeatures);
-  // V2 is a released built-in compatibility projection only. New rows read
-  // qualified V4 account/group state; a feature response still in flight must
-  // not be mistaken for an empty legacy list.
-  const services = profile.connectedServicesV2;
-  const qualifiedAccounts = accountTransport === 'advertised-v4'
-    ? profile.connectedAccountsV4 ?? []
-    : [];
-  const qualifiedGroups = accountTransport === 'advertised-v4'
-    ? profile.connectedAccountGroupsV4 ?? []
-    : [];
-  // "Nothing is connected" is a conclusion, not a waiting state: while the
-  // descriptor projection is still loading — or has failed — the status row
-  // above already explains the screen, and the empty copy would both contradict
-  // it and take a second half-width card in the columned group.
-  const isProjectionSettled = connectedServicesRegistrySnapshot.status !== 'loading'
-    && connectedServicesRegistrySnapshot.status !== 'error';
-  const projectionErrorDetails = connectedServicesRegistrySnapshot.errorReason
-    ? presentConnectedServiceIndexDiagnosticCopy(connectedServicesRegistrySnapshot.errorReason)
-    : null;
-  const visibleRegistryEntries = React.useMemo(() => {
-    if (accountTransport !== 'legacy') return connectedServicesRegistry;
-    // A released V2 profile becomes a row only through the generated built-in
-    // adapter. This retains old-server access without allowing a scalar id to
-    // select a foreign or novel V4 descriptor.
-    const byQualifiedService = new Map<string, typeof connectedServicesRegistry[number]>();
-    for (const entry of connectedServicesRegistry) {
-      if (!entry.service || !entry.legacyServiceId) continue;
-      byQualifiedService.set(buildQualifiedPluginContributionKey(entry.service), entry);
-    }
-    for (const service of services) {
-      const entry = getLegacyConnectedServiceRegistryEntry(service.serviceId);
-      if (!entry.service || !entry.legacyServiceId) continue;
-      byQualifiedService.set(buildQualifiedPluginContributionKey(entry.service), entry);
-    }
-    return [...byQualifiedService.values()];
-  }, [accountTransport, connectedServicesRegistry, services]);
-  const quotaRequestedProfiles = React.useMemo(() => {
-    const next: Array<
-      | { serviceId: string; profileId: string }
-      | { ref: { service: { pluginId: string; localId: string }; accountId: string } }
-    > = [];
-    for (const entry of visibleRegistryEntries) {
-      if (!entry.service) continue;
-      if (accountTransport === 'advertised-v4') {
-        const connectedIds = qualifiedAccounts
-          .filter((account) => (
-            account.ref.service.pluginId === entry.service!.pluginId
-            && account.ref.service.localId === entry.service!.localId
-            && isConnectedServiceCredentialHealthStatusUsable(
-              normalizeConnectedServiceCredentialHealthStatus(account.status),
-            )
-          ))
-          .map((account) => account.ref.accountId);
-        const accountId = resolveQualifiedConnectedAccountDefaultId({
-          service: entry.service,
-          legacyServiceId: entry.legacyServiceId ?? null,
-          connectedAccountIds: connectedIds,
-          defaultAccountByServiceKey: settings.connectedServicesDefaultProfileByServiceId,
-        });
-        if (accountId) next.push({ ref: { service: entry.service, accountId } });
-        continue;
-      }
-      if (accountTransport !== 'legacy' || !entry.legacyServiceId) continue;
-      const svc = services.find((candidate) => candidate.serviceId === entry.legacyServiceId) ?? null;
-      const connectedIds = (svc?.profiles ?? [])
-        .filter((profileEntry) => isConnectedServiceCredentialHealthStatusUsable(
-          normalizeConnectedServiceCredentialHealthStatus(profileEntry.status),
-        ))
-        .map((profileEntry) => profileEntry.profileId);
-      const profileId = resolveConnectedServiceDefaultProfileId({
-        serviceId: entry.legacyServiceId,
-        connectedProfileIds: connectedIds,
-        defaultProfileByServiceId: settings.connectedServicesDefaultProfileByServiceId,
-      });
-      if (profileId) next.push({ serviceId: entry.legacyServiceId, profileId });
-    }
-    return next;
-  }, [
-    accountTransport,
-    visibleRegistryEntries,
-    qualifiedAccounts,
-    services,
-    settings.connectedServicesDefaultProfileByServiceId,
-  ]);
-
-  const quotaBadgesByKey = useConnectedServiceQuotaBadges(quotaRequestedProfiles);
-  const {
-    summaries: quotaSummaries,
-    isRefreshing: quotaSummariesRefreshing,
-    hasConnectedProfiles: hasConnectedQuotaProfiles,
-  } = useConnectedServiceQuotaSummaries();
-  const quotaCards = React.useMemo(
-    () => buildConnectedServiceQuotaSummaryCards(quotaSummaries),
-    [quotaSummaries],
+  const eye = (
+    <ConnectedAccountPrivacyToggle
+      testID="connected-services-index:privacy"
+      hidden={privacy.hidden}
+      onChange={privacy.setHidden}
+    />
   );
-  /** Every index row routes through its exact V4 identity. */
-  const openProjectedConnectedServiceSettings = React.useCallback(async (entry: typeof connectedServicesRegistry[number]) => {
-    const canOpen = entry.executable === true
-      || (
-        accountTransport === 'legacy'
-        && Boolean(entry.legacyServiceId)
-        && !entry.projectedDescriptor
-      );
-    if (!entry.service || !canOpen) {
-      await Modal.alert(
-        t('errors.daemonUnavailableTitle'),
-        t('errors.daemonUnavailableBody'),
-      );
-      return;
-    }
-    try {
-      router.push(buildConnectedAccountSettingsRoute(entry.service));
-    } catch {
-      // Fallback for environments without route support.
-      await Modal.alert(
-        t('connect.unsupported.connectTitle', {
-          name: resolveConnectedServiceRegistryEntryDisplayName(entry, t, localizePluginText),
-        }),
-        t('connect.unsupported.runCommandInTerminal'),
-        [
-          { text: entry.connectCommand, style: 'default' },
-          { text: t('common.ok'), style: 'cancel' },
-        ],
-      );
-    }
-  }, [accountTransport, localizePluginText, router]);
 
-  /** Released V2/V3 default-auth ingress, explicitly resolved by the adapter. */
-  const openLegacyConnectedServiceSettings = React.useCallback(async (serviceId: string) => {
-    await openProjectedConnectedServiceSettings(
-      getLegacyConnectedServiceRegistryEntry(serviceId),
-    );
-  }, [openProjectedConnectedServiceSettings]);
-
-  // Service rows carry a brand mark + worst-of-status health dot, ordered
-  // attention-first so anything needing the user sits at the top of the list.
-  const serviceRows = React.useMemo(() => visibleRegistryEntries
-    .flatMap((entry) => {
-      if (!entry.service) return [];
-      const serviceKey = buildQualifiedPluginContributionKey(entry.service);
-      const label = resolveConnectedServiceRegistryEntryDisplayName(entry, t, localizePluginText);
-      const v4Profiles = qualifiedAccounts.filter((account) => (
-        account.ref.service.pluginId === entry.service!.pluginId
-        && account.ref.service.localId === entry.service!.localId
-      ));
-      const v4Groups = qualifiedGroups.filter((group) => (
-        group.ref.service.pluginId === entry.service!.pluginId
-        && group.ref.service.localId === entry.service!.localId
-      ));
-      const legacyService = accountTransport === 'legacy' && entry.legacyServiceId
-        ? services.find((candidate) => candidate.serviceId === entry.legacyServiceId) ?? null
-        : null;
-      const profiles = accountTransport === 'advertised-v4'
-        ? v4Profiles
-        : legacyService?.profiles ?? [];
-      const connected = profiles.filter((profileEntry) =>
-        isConnectedServiceCredentialHealthStatusUsable(
-          normalizeConnectedServiceCredentialHealthStatus(profileEntry.status),
-        )
-      );
-      const effectiveProfileId = accountTransport === 'advertised-v4'
-        ? resolveQualifiedConnectedAccountDefaultId({
-            service: entry.service,
-            legacyServiceId: entry.legacyServiceId ?? null,
-            connectedAccountIds: connected.map((profileEntry) => (
-              'ref' in profileEntry ? profileEntry.ref.accountId : profileEntry.profileId
-            )),
-            defaultAccountByServiceKey: settings.connectedServicesDefaultProfileByServiceId,
-          })
-        : entry.legacyServiceId
-          ? resolveConnectedServiceDefaultProfileId({
-              serviceId: entry.legacyServiceId,
-              connectedProfileIds: connected.map((profileEntry) => (
-                'profileId' in profileEntry ? profileEntry.profileId : profileEntry.ref.accountId
-              )),
-              defaultProfileByServiceId: settings.connectedServicesDefaultProfileByServiceId,
-            })
-          : null;
-      const quotaKey = effectiveProfileId
-        ? accountTransport === 'advertised-v4'
-          ? connectedServiceProfileKey({
-              serviceId: qualifiedConnectedAccountPreferenceServiceKey(entry.service),
-              profileId: effectiveProfileId,
-            })
-          : entry.legacyServiceId
-            ? connectedServiceProfileKey({ serviceId: entry.legacyServiceId, profileId: effectiveProfileId })
-            : ''
-        : '';
-      const badges = quotaKey ? (quotaBadgesByKey[quotaKey] ?? []) : [];
-      const diagnostics = presentConnectedServiceIndexDiagnostics({
-        entry,
-        registryErrorReason: connectedServicesRegistrySnapshot.errorReason,
-      });
-      const readyGroupCount = v4Groups.filter((group) => group.state.status === 'ready').length;
-      const subtitle = diagnostics.primary ?? (
-        accountTransport === 'indeterminate'
-          ? t('common.loading')
-          : connected.length > 0
-            ? t('connectedServices.list.connectedCount', { count: connected.length })
-            : profiles.length > 0
-              ? t('connectedServices.list.needsReauth')
-              : v4Groups.length > 0
-                ? readyGroupCount > 0
-                  ? t('connectedServices.detail.groups.title')
-                  : t('common.unavailable')
-                : t('connectedServices.list.notConnected')
-      );
-      // A service with no accounts at all is "not connected" — neutral, no dot.
-      const health: AccountHealth = profiles.length > 0 ? deriveServiceRowHealth(profiles) : 'healthy';
-      const canOpen = entry.executable === true
-        || (
-          accountTransport === 'legacy'
-          && Boolean(entry.legacyServiceId)
-          && !entry.projectedDescriptor
-        );
-      return [{
-        serviceKey,
-        entry,
-        label,
-        badges,
-        subtitle,
-        supportDetails: diagnostics.supportDetails,
-        canOpen,
-        health,
-        hasProfiles: profiles.length > 0,
-      }];
-    })
-    .sort((a, b) => {
-      const rank = compareAccountHealthSeverity(a.health, b.health);
-      if (rank !== 0) return rank;
-      return a.label.localeCompare(b.label);
-    }),
-  [
-    accountTransport,
-    visibleRegistryEntries,
-    services,
-    qualifiedAccounts,
-    qualifiedGroups,
-    localizePluginText,
-    settings.connectedServicesDefaultProfileByServiceId,
-    quotaBadgesByKey,
-    connectedServicesRegistrySnapshot.errorReason,
-  ]);
-
-  return (
-    <ItemList>
-      <ConnectedServiceQuotaSummaryCardSection
-        title={t('settings.usage')}
-        cards={quotaCards}
-        isRefreshing={quotaSummariesRefreshing}
-        showWhenEmpty={hasConnectedQuotaProfiles}
-        testID="connected-services-quota-summary-section"
-      />
-      <ItemGroup title={t('connectedServices.title')} columns={2}>
-        {connectedServicesRegistrySnapshot.status === 'loading' ? (
-          <Item
-            testID="connected-services-projection-loading"
-            title={t('common.loading')}
-            mode="info"
-          />
-        ) : null}
-        {connectedServicesRegistrySnapshot.status === 'error' ? (
-          <Item
-            testID="connected-services-projection-error"
-            title={t('common.requestFailed')}
-            subtitle={t('common.unavailable')}
-            mode="info"
-            onPress={projectionErrorDetails
-              ? () => void Modal.alert(
-                  t('common.details'),
-                  projectionErrorDetails,
-                )
-              : undefined}
-          />
-        ) : null}
-        {isProjectionSettled
-          && services.length === 0
-          && qualifiedAccounts.length === 0
-          && qualifiedGroups.length === 0
-          && serviceRows.length === 0 ? (
-          <View style={{ paddingHorizontal: 16, paddingVertical: 12 }}>
-            <Text style={{ color: theme.colors.text.secondary }}>{t('connectedServices.list.empty')}</Text>
+  if (firstRun) {
+    // First run (P0): no rail, the promise and the set-up blocks; nothing to add says why.
+    const canAdd = agentConnectable.length > 0 || projectionLoading;
+    return (
+      <ItemList presentation="page">
+        <SettingsPageHeader description={t('settings.connectedServicesSubtitle')} />
+        {banner}
+        {canAdd ? connectMore : !projectionFailed ? (
+          <View style={styles.firstRun}>
+            <SurfaceStateCard
+              testID="connected-services-empty"
+              kind="unavailable"
+              size="page"
+              title={t('connectedServicesSettings.emptyTitle')}
+              reason={onlineMachineName
+                ? t('connectedServicesSettings.emptyNoServiceOnMachine', { machine: onlineMachineName })
+                : t('connectedServicesSettings.emptyNoMachineOnline')}
+              action={onlineMachineName ? {
+                label: t('connectedServicesSettings.emptyOpenAgents'),
+                onPress: () => navigate('/(app)/settings/agents', 'ConnectedServices.openAgents'),
+              } : {
+                label: t('connectedServicesSettings.emptyAction'),
+                onPress: () => navigate('/(app)/settings/machines', 'ConnectedServices.openMachines'),
+              }}
+              note={t('connectedServicesSettings.firstRunMeanwhile')}
+            />
           </View>
         ) : null}
+      </ItemList>
+    );
+  }
 
-        {serviceRows.map((row) => {
-          const { serviceKey, entry, label, badges, subtitle, supportDetails, health, hasProfiles, canOpen } = row;
-          // Brand aliases are a visual affordance only; only a generated legacy
-          // adapter can opt a qualified owner into a built-in mark.
-          const brandXml = resolveConnectedServiceBrandIconXml(entry.legacyServiceId, theme);
-          const leadingIcon = (
-            <View style={styles.iconBox}>
-              {brandXml
-                ? <SvgXml xml={brandXml} width={BRAND_ICON_SIZE} height={BRAND_ICON_SIZE} />
-                : <Icon name="key" size={20} color={theme.colors.text.primary} />}
-              {hasProfiles ? (
-                <StatusDot
-                  testID={`connected-services-index:${serviceKey}:health-dot`}
-                  color={resolveAccountHealthDotColor(theme, health)}
-                  size={8}
-                  style={styles.healthDot}
-                />
-              ) : null}
-            </View>
-          );
+  const openAccount = (sheet: ConnectedServicesIndexSheet, accountId: string) => navigate(
+    buildConnectedAccountSettingsRoute(sheet.service, { kind: 'account', accountId }), 'ConnectedServices.openAccount');
+  const newPoolServices = selectNewPoolServices(indexModel);
 
-          return (
-            <React.Fragment key={serviceKey}>
-              <Item
-                title={label}
-                subtitle={subtitle}
-                leftElement={leadingIcon}
-                rightElement={badges.length > 0 ? <ConnectedServiceQuotaBadgesView badges={badges} /> : undefined}
-                disabled={!canOpen}
-                onPress={!canOpen
-                  ? undefined
-                  : () => openProjectedConnectedServiceSettings(entry)}
-              />
-              {supportDetails ? (
-                <Item
-                  testID={`connected-services-index:${serviceKey}:support-details`}
-                  title={t('common.details')}
-                  subtitle={t('common.unavailable')}
-                  onPress={() => void Modal.alert(t('common.details'), supportDetails)}
-                />
-              ) : null}
-            </React.Fragment>
-          );
-        })}
-      </ItemGroup>
-      <TeamCredentialCatalogSettingsGroup
-        title={t('teams.credentials.sharedWithYou')}
-        sourceKind="connected_service"
-        catalog={teamCredentialCatalog}
-        onOpen={(resource) => {
-          if (!activeAccountScope) return;
-          router.push(teamCredentialDetailPath({
-            serverId: activeAccountScope.serverId,
-            teamId: resource.teamId,
-          }, resource.id) as never);
-        }}
-      />
-      <ItemGroup
-        title={t('connectedServices.defaultAuth.title')}
-        footer={t('connectedServices.defaultAuth.footer')}
-      >
-        {agentEntries.map((agentEntry) => {
-          const connectedAccountPurposes = agentEntry.connectedAccounts;
-          const declaredServices = connectedAccountPurposes.map((declaration) => (
-            buildQualifiedPluginContributionKey(declaration.service)
-          ));
-          if (connectedAccountPurposes.length === 0) return null;
-          return (
-            <ConnectedServicesDefaultAuthRow
-              key={agentEntry.agentId}
-              agentId={agentEntry.agentId}
-              agentIdentity={agentEntry.identity}
-              agentTitle={agentEntry.title}
-              connectedAccountPurposes={connectedAccountPurposes}
-              connectedAccountServiceKeys={declaredServices}
-              connectedAccountsV4={qualifiedAccounts}
-              connectedAccountGroupsV4={qualifiedGroups}
-              accountGroupsEnabled={accountGroupsEnabled}
-              teamCredentialResources={teamCredentialCatalog.resources}
-              teamNameById={teamCredentialCatalog.teamNameById}
-              currentTeamCredentialResourceKeys={teamCredentialCatalog.currentResourceKeys}
-              onRecoverTeamCredentialResource={(resource) => {
-                if (!activeAccountScope) return;
-                router.push(teamCredentialDetailPath({
-                  serverId: activeAccountScope.serverId,
-                  teamId: resource.teamId,
-                }, resource.id) as never);
-              }}
-              settings={{
-                connectedServicesProfileLabelByKey: settings.connectedServicesProfileLabelByKey,
-                connectedServicesDefaultProfileByServiceId: settings.connectedServicesDefaultProfileByServiceId,
-                connectedAccountPurposeBindingsV1: settings.connectedAccountPurposeBindingsV1,
-                connectedServicesDefaultAuthByAgentIdV1: settings.connectedServicesDefaultAuthByAgentIdV1,
-              }}
-              setDefaultAuthSettings={setDefaultAuthSettings}
-              onOpenConnectedServicesSettings={openLegacyConnectedServiceSettings}
-              dismissedPoolAdoptionSuggestionKeys={poolAdoptionDismissedByKey}
-              onDismissPoolAdoptionSuggestion={dismissPoolAdoptionSuggestion}
-            />
-          );
-        })}
-      </ItemGroup>
-      <ConnectedServicesProviderStateSharingDefaultsGroup
-        settings={normalizedProviderStateSharingSettings}
-        setSettings={setProviderStateSharingSettings}
-        onOpenBackendOverrides={() => router.push('/(app)/settings/connected-services/provider-state-sharing')}
-      />
-    </ItemList>
+  return (
+    <ConnectedServicesIndexView
+      model={indexModel}
+      labelsByKey={labelsByKey}
+      present={privacy.present}
+      now={Date.now()}
+      presentation={presentation}
+      onPresentationChange={setPresentation}
+      compact={compact}
+      headerActions={(
+        <View style={styles.headerActions}>
+          {eye}
+          <IconButton
+            testID="connected-services-index:connect"
+            iconName="plus"
+            accessibilityLabel={t('connectedServicesCollection.connectService')}
+            variant="plain"
+            onPress={() => setRequest({ kind: 'catalog' })}
+          />
+        </View>
+      )}
+      summary={{
+        needsYouCount,
+        asOf: usage.asOf,
+        onRefreshAll: () => setRefreshToken((token) => token + 1),
+      }}
+      banner={banner}
+      connectMore={connectMore}
+      sharedWithYou={(
+        <TeamCredentialCatalogSettingsGroup
+          title={t('teams.credentials.sharedWithYou')}
+          sourceKind="connected_service"
+          catalog={teamCredentialCatalog}
+          onRetry={teamCredentialCatalog.reload}
+          onOpen={(resource) => {
+            if (!activeAccountScope) return;
+            navigate(teamCredentialDetailPath({
+              serverId: activeAccountScope.serverId,
+              teamId: resource.teamId,
+            }, resource.id) as never, 'ConnectedServices.openTeamCredential');
+          }}
+        />
+      )}
+      fixProminence={setupOpen ? 'secondary' : 'primary'}
+      settled={settled ? {
+        serviceKey: settled.serviceKey,
+        accountId: settled.account.accountId,
+        node: (
+          <ConnectedAccountSettled
+            account={settled.account}
+            model={indexModel}
+            agents={agentEntries}
+            onDismiss={() => setSettled(null)}
+          />
+        ),
+      } : null}
+      renderAccount={({ sheet, account, render }) => (
+        <ConnectedAccountIndexLiveFacts
+          key={account.accountId}
+          identity={account.kind === 'qualified'
+            ? { kind: 'qualified', account: account.profile.ref }
+            : { kind: 'legacy', serviceId: account.legacyServiceId, profileId: account.accountId }}
+          status={account.status}
+          billedPerUse={account.kind === 'qualified' && account.profile.kind === 'token'}
+          showsUsage={sheet.section === 'agents'}
+          signedOut={sheet.canOpen && normalizeConnectedServiceCredentialHealthStatus(account.status) === 'needs_reauth'}
+          refreshToken={refreshToken}
+          render={render}
+        />
+      )}
+      renderPool={({ sheet, pool, entry, presentation: itemPresentation, showDivider }) => (
+        <ConnectedServicePoolIndexItem
+          {...entry}
+          service={sheet.service}
+          presentation={itemPresentation}
+          compact={compact}
+          showDivider={showDivider}
+          key={pool.ref.groupId}
+        />
+      )}
+      renderStar={renderStar}
+      onAddAccount={(sheet) => setRequest({ kind: 'service', serviceKey: sheet.serviceKey })}
+      onSignInAgain={(sheet, accountId) => setRequest({ kind: 'reconnect', serviceKey: sheet.serviceKey, accountId })}
+      onOpenAccount={openAccount}
+      onOpenPool={(sheet, groupId) => navigate(
+        buildConnectedAccountSettingsRoute(sheet.service, { kind: 'group', groupId }), 'ConnectedServices.openPool')}
+      renderNewPool={accountGroupsEnabled && newPoolServices.length > 0 ? (renderTrigger) => (
+        <NewPoolMenu
+          testID="connected-services-index:new-pool-menu"
+          services={newPoolServices}
+          onCreate={(sheet) => navigate(buildNewConnectedAccountPoolRoute(sheet.service), 'ConnectedServices.newPool')}
+          renderTrigger={renderTrigger}
+        />
+      ) : null}
+    />
   );
 });
+
+const styles = StyleSheet.create(() => ({
+  firstRun: {
+    paddingTop: 18,
+    paddingBottom: 12,
+  },
+  headerActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 2,
+  },
+}));

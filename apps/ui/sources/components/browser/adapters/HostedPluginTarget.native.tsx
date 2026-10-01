@@ -48,6 +48,9 @@ export function HostedPluginTarget(props: Readonly<{
     navigationCommand?: BrowserFrameNavigationCommand;
     bootstrapConfig?: PluginHostedWebBridgeBootstrapConfigV1;
     onUnexpectedNavigation?: () => void;
+    onLoadStart?: () => void;
+    onLoad?: () => void;
+    onError?: () => void;
     bridge?: (PluginHostedWebNativeBridgeConfig & Partial<BrowserFrameHostMessageAttachment>) | null;
     diagnostics?: BrowserDiagnosticsEngineBridgeConfig;
     networkOrigins?: readonly UiSurfaceNetworkOriginV1[];
@@ -97,6 +100,9 @@ export function HostedPluginTarget(props: Readonly<{
                 mixedContentMode: props.url === undefined ? 'never' : resolveNativeMixedContentMode(security, props.url),
                 diagnostics: props.diagnostics,
                 nativeMessageBridge,
+                onLoadStart: props.onLoadStart,
+                onLoadEnd: props.onLoad,
+                onError: props.onError,
                 onBlockedNavigation: props.html === undefined ? undefined : props.onUnexpectedNavigation,
                 onUnexpectedNavigation: props.html === undefined ? undefined : props.onUnexpectedNavigation,
             }}

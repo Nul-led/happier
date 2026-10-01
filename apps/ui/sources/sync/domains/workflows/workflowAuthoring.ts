@@ -1,4 +1,5 @@
 import { validateWorkflowDefinition } from '@happier-dev/protocol/workflows/workflowValidationV1';
+import { resolveWorkflowStepSelectionV1 } from '@happier-dev/protocol/workflows/workflowStepSelectionV1';
 import {
   WORKFLOW_SESSION_AUTHORING_SELECTION_FIELD_IDS,
   type WorkflowBlock,
@@ -12,12 +13,13 @@ import {
 import type { JsonValue } from '@happier-dev/protocol';
 import type { WorkflowReferenceScope } from '@happier-dev/protocol/workflows/workflowReferenceV1';
 import { workflowBlockReferenceLabel } from './workflowBlockLabel';
+import { parseWorkflowInputTextDraft } from './workflowInputText';
 
 import {
   createWorkflowEditorDraft,
-  walkWorkflowBlocks,
   type WorkflowEditorDraft,
 } from './workflowEditorDraft';
+import { walkWorkflowBlocks } from '@happier-dev/protocol/workflows/workflowDefinitionEditV1';
 
 /**
  * The canonical definition ↔ editor projection.
@@ -153,11 +155,29 @@ export function resolveEffectiveWorkflowStepExecution(
   draft: Readonly<Pick<WorkflowEditorDraft, 'defaults'>>,
   step: WorkflowStep,
 ): WorkflowStepExecutionSelection {
-  const execution = step.execution;
-  if (execution === undefined) return draft.defaults;
-  const effective: Record<string, unknown> = { ...draft.defaults };
-  for (const [key, value] of Object.entries(execution)) effective[key] = value;
-  return effective as WorkflowStepExecutionSelection;
+  return resolveWorkflowStepSelectionV1({ defaults: draft.defaults, step: step.execution }).selection;
+}
+
+/**
+ * Whether every step in a parallel group genuinely runs in its own conversation.
+ *
+ * Only a `fresh` conversation creates one: under the shared-Run default (or an
+ * explicit continuation) the branches reach the same conversation and take
+ * turns in it. The runtime reads the same effective selection this resolves —
+ * a step's own override, else the workflow default — so the editor states the
+ * separation only where it is actually true.
+ */
+export function doWorkflowParallelBranchesUseSeparateConversations(
+  draft: Readonly<Pick<WorkflowEditorDraft, 'defaults'>>,
+  parallel: Extract<WorkflowBlock, Readonly<{ kind: 'parallel' }>>,
+): boolean {
+  const steps = parallel.branches.flatMap(
+    (branch) => walkWorkflowBlocks(branch.blocks).filter((block) => block.kind === 'step'),
+  );
+  if (steps.length === 0) return false;
+  return steps.every(
+    (step) => resolveEffectiveWorkflowStepExecution(draft, step).conversation?.kind === 'fresh',
+  );
 }
 
 /** The Session-authoring fields a step overrode, in the editor's chip order. */
@@ -267,6 +287,11 @@ export type WorkflowReferenceScopeFacts = Readonly<{
   insideLoop: boolean;
   /** The current item (`item` references) is available only inside a for-each loop. */
   insideItemsLoop: boolean;
+  /**
+   * The consumer runs inside a parallel branch, so siblings may execute at the
+   * same time as it — which is what makes a shared workspace a shared write.
+   */
+  insideParallel: boolean;
 }>;
 
 /**
@@ -283,6 +308,8 @@ export function resolveWorkflowReferenceScopeFacts(
   return {
     insideLoop: levels.some((level) => level.loop !== null),
     insideItemsLoop: levels.some((level) => level.loop?.hasItems === true),
+    // Every level but the consumer's own names an enclosing block.
+    insideParallel: levels.slice(0, -1).some((level) => level.blocks[level.position]?.kind === 'parallel'),
   };
 }
 
@@ -378,9 +405,14 @@ export type WorkflowRunInputFieldState = Readonly<{
 export function projectWorkflowRunInputFields(params: Readonly<{
   inputs: readonly WorkflowInputDefinition[];
   values: Readonly<Record<string, JsonValue | undefined>>;
+  /** Uncommitted text buffers; seeded values above are already semantic JSON. */
+  rawTextValues?: Readonly<Record<string, string>>;
 }>): readonly WorkflowRunInputFieldState[] {
   return params.inputs.map((definition) => {
-    const supplied = params.values[definition.name];
+    const rawText = params.rawTextValues?.[definition.name];
+    const draft = rawText === undefined ? null : parseWorkflowInputTextDraft(definition, rawText);
+    if (draft?.invalid) return { definition, value: undefined, blocking: true, errorCode: 'invalid_input' };
+    const supplied = draft === null ? params.values[definition.name] : draft.value;
     const value = supplied === undefined ? definition.default : supplied;
     if (value === undefined) {
       return {
@@ -490,20 +522,6 @@ export function resolveWorkflowRunBlockedReason(params: Readonly<{
   pending?: boolean;
 }>): WorkflowCommandBlockedReason | null {
   if (params.pending === true) return 'pending';
-  if (!params.targetResolved) return 'target_required';
-  return params.validation.valid ? null : 'definition_invalid';
-}
-
-/**
- * Schedule copies the reviewed draft into the Automation wrapper, and the
- * scheduling seed refuses an invalid draft. Refusing here names the cause
- * before the press instead of accepting it and doing nothing.
- */
-export function resolveWorkflowScheduleBlockedReason(params: Readonly<{
-  validation: WorkflowDraftValidation;
-  /** True only when an exact Machine and a non-empty project directory exist. */
-  targetResolved: boolean;
-}>): WorkflowCommandBlockedReason | null {
   if (!params.targetResolved) return 'target_required';
   return params.validation.valid ? null : 'definition_invalid';
 }

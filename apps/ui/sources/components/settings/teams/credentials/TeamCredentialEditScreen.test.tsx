@@ -4,11 +4,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
     ARTIFACT_PLAIN_DATA_KEY_MARKER,
     decodePlainArtifactStoredContent,
+    machinePoolActionEndpointPathV1,
     type MachinePoolViewV1,
 } from '@happier-dev/protocol';
 
 import {
     collectRenderedTestIds,
+    createDeferred,
     createHomeGovernanceHarness,
     createMachineAdministrationTargetSelectionMock,
     installHomeGovernanceBoundaries,
@@ -17,6 +19,7 @@ import {
     standardCleanup,
     teamCapabilitiesFixture,
     teamCredentialResourceFixture,
+    teamCredentialSourceCandidateFixture,
     teamCredentialViewerFixture,
     teamSummaryFixture,
 } from '@/dev/testkit';
@@ -34,11 +37,6 @@ const routerBack = vi.hoisted(() => vi.fn());
 // Resolve the real store only after the Home harness installs its HTTP boundary;
 // a static import eagerly loads the Action transport before `vi.doMock` can own it.
 let storage: typeof import('@/sync/domains/state/storage')['storage'];
-
-vi.mock('@/sync/api/capabilities/accountStoredContentCompatibility', async (importOriginal) => ({
-    ...await importOriginal<typeof import('@/sync/api/capabilities/accountStoredContentCompatibility')>(),
-    requireCurrentAccountStoredContentServerCompatibility: vi.fn(async () => undefined),
-}));
 
 installSettingsViewCommonModuleMocks({
     router: async () => ({
@@ -181,6 +179,7 @@ async function renderEditor(params?: Readonly<{
     placement?: 'machine' | 'pool' | 'none';
     /** The focused administration routes render exactly one section. */
     section?: 'access' | 'request_policy' | 'limits';
+    sourceReadFails?: boolean;
     resourceOverrides?: Parameters<typeof teamCredentialResourceFixture>[0];
 }>) {
     const serverId = await harness.addHome({
@@ -252,6 +251,9 @@ async function renderEditor(params?: Readonly<{
     harness.answer(serverId, CREDENTIAL_GET_PATH, { body: resource });
     harness.answer(serverId, ENTITLED_LIST_PATH, { body: { resources: [] } });
     harness.answer(serverId, LIMITS_LIST_PATH, { body: { limits: [], nextCursor: null } });
+    if (params?.sourceReadFails) {
+        harness.answer(serverId, '/v1/teams/credential-resources/sources/list', { status: 503 });
+    }
     harness.answer(serverId, ARTIFACT_CREATE_PATH, {
         body: {
             id: 'artifact-approval', header: '', body: '',
@@ -316,6 +318,34 @@ afterEach(() => {
 });
 
 describe('TeamCredentialEditScreen broker placement', () => {
+    it('retries an initial source read without replacing the resource draft', async () => {
+        const { screen, serverId, resource } = await renderEditor({ sourceReadFails: true });
+        act(() => screen.changeTextByTestId('team-credential-edit-name', 'Keep this draft'));
+        await vi.waitFor(() => expect(screen.findByTestId('team-credential-edit-source-retry')).not.toBeNull());
+        const candidate = teamCredentialSourceCandidateFixture({ label: 'Recovered pool' });
+        harness.answer(serverId, '/v1/teams/credential-resources/sources/list', {
+            body: { candidates: [candidate], supportedKinds: ['connected_pool'], brokerPresentation: resource.brokerPresentation },
+        });
+        await screen.pressByTestIdAsync('team-credential-edit-source-retry');
+        await vi.waitFor(() => expect(screen.findByTestId('team-credential-edit-source-retry')).toBeNull());
+        expect(screen.findByTestId('team-credential-edit-name')?.props.value).toBe('Keep this draft');
+        await vi.waitFor(() => expect(findDeclaredRow(screen, 'team-credential-create-source')?.props.disabled).toBe(false));
+        await screen.pressByTestIdAsync('team-credential-create-source');
+        const { Modal } = await import('@/modal');
+        // The modal boundary records heterogeneous component configs; this assertion reads only the picker shape.
+        const picker = vi.mocked(Modal.show).mock.calls.at(-1)?.[0] as unknown as Readonly<{
+            props: {
+                rootStep: { sections: readonly { options: readonly { id: string; label: string }[] }[] };
+                onSelect: (id: string) => void;
+            };
+        }>;
+        const option = picker.props.rootStep.sections.flatMap((section) => section.options).find((row) => row.label === 'Recovered pool');
+        expect(option).toBeDefined();
+        await act(async () => picker.props.onSelect(option!.id));
+        expect(findDeclaredRow(screen, 'team-credential-create-source')?.props.detail).toBe('Recovered pool');
+        expect(screen.findByTestId('team-credential-edit-name')?.props.value).toBe('Keep this draft');
+    });
+
     it('composes exact Home eligibility with canonical Machine rows and preserves offline placement', async () => {
         const { screen } = await renderEditor({ placement: 'none' });
         const selector = brokerMachineSelector(screen);
@@ -587,6 +617,11 @@ describe('TeamCredentialEditScreen broker placement', () => {
 
     it('keeps a Pool projection failure actionable and preserves the credential draft while retrying', async () => {
         const { screen, serverId } = await renderEditor();
+        const response = createDeferred<void>();
+        harness.answer(serverId, machinePoolActionEndpointPathV1('machines.pools.list'), {
+            body: { pools: storage.getState().machinePoolListByServerId[serverId] },
+            respondAfter: response.promise,
+        });
         act(() => screen.changeTextByTestId('team-credential-edit-name', 'Draft name'));
         act(() => storage.getState().setMachinePoolListStatus(serverId, 'error'));
 
@@ -599,6 +634,9 @@ describe('TeamCredentialEditScreen broker placement', () => {
 
         expect(screen.findByTestId('team-credential-edit-name')?.props.value).toBe('Draft name');
         await vi.waitFor(() => expect(screen.findByTestId('team-credential-edit-broker:machine_pool:loading')).not.toBeNull());
+        await act(async () => response.resolve());
+        await vi.waitFor(() => expect(screen.findByTestId('team-credential-edit-broker:machine_pool:loading')).toBeNull());
+        expect(screen.findByTestId('team-credential-edit-name')?.props.value).toBe('Draft name');
     });
 
     it('shows a focused Access save refusal, which the full editor’s name group could never render', async () => {

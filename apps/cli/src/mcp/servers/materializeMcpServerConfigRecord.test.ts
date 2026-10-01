@@ -369,6 +369,8 @@ describe('materializeMcpServerConfigRecord', () => {
 
       const st = await stat(configPath);
       expect(st.mode & 0o777).toBe(0o600);
+      out.cleanup();
+      expect(existsSync(configPath)).toBe(false);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
@@ -442,6 +444,8 @@ describe('materializeMcpServerConfigRecord', () => {
       expect(raw).toContain('"cwd":"/safe-home"');
       expect(raw).toContain('"API_KEY":"sk-test"');
       expect(raw).not.toContain('happier-mcp-stdio-launcher.mjs');
+      out.cleanup();
+      expect(existsSync(configPath)).toBe(false);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

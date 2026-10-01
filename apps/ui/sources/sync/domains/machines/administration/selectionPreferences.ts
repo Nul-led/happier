@@ -1,5 +1,7 @@
 import {
     MachineAdministrationSelectionsV1Schema,
+    MachineAdministrationTargetsV1Schema,
+    type MachineAdministrationTargetsV1,
     type MachineAdministrationSelectionsV1,
     type MachineAdministrationTargetV1,
     type PluginMachineExecutionOriginV1,
@@ -26,30 +28,26 @@ export const MACHINE_ADMINISTRATION_SELECTION_KEYS_V1 = Object.freeze({
 } as const);
 
 /**
- * Builds one exact named-entry proposal. Parsing delegates key/value/document
- * bounds to the Settings-owned schema; persistence and CAS remain with Settings.
+ * Builds one device-local named-entry proposal. Validation remains domain-owned.
  */
 export function setMachineAdministrationTargetPreference(
-    current: MachineAdministrationSelectionsV1,
+    current: MachineAdministrationTargetsV1,
     key: string,
     target: MachineAdministrationTargetV1,
-): MachineAdministrationSelectionsV1 {
-    return MachineAdministrationSelectionsV1Schema.parse({
+): MachineAdministrationTargetsV1 {
+    return MachineAdministrationTargetsV1Schema.parse({
         ...current,
-        targetsByKey: {
-            ...current.targetsByKey,
-            [key]: target,
-        },
+        [key]: target,
     });
 }
 
 export function clearMachineAdministrationTargetPreference(
-    current: MachineAdministrationSelectionsV1,
+    current: MachineAdministrationTargetsV1,
     key: string,
-): MachineAdministrationSelectionsV1 {
-    const targetsByKey = { ...current.targetsByKey };
-    delete targetsByKey[key];
-    return MachineAdministrationSelectionsV1Schema.parse({ ...current, targetsByKey });
+): MachineAdministrationTargetsV1 {
+    const targets = { ...current };
+    delete targets[key];
+    return MachineAdministrationTargetsV1Schema.parse(targets);
 }
 
 export function setPluginMachineExecutionOriginPreference(

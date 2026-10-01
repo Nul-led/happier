@@ -4,14 +4,17 @@ import { createRootLayoutFeaturesResponse } from '@/dev/testkit/fixtures/feature
 import { decodeBase64, encodeBase64 } from '@/encryption/base64';
 import { encryptBox } from '@/encryption/libsodium';
 
-export function createDirectoryHttpFixture() {
+export function createDirectoryHttpFixture(options: Readonly<{ sameServiceHome?: boolean }> = {}) {
     const endpoint = 'https://directory.test';
     const identity = 'srv_directory';
     const home: AccountDirectoryHomeEntryV1 = {
-        v: 1, homeServerIdentityId: 'srv_home_b', canonicalServerUrl: 'https://home-b.test',
+        v: 1, homeServerIdentityId: options.sameServiceHome ? identity : 'srv_home_b',
+        canonicalServerUrl: options.sameServiceHome ? endpoint : 'https://home-b.test',
         label: 'Home B', preferred: true, createdAtMs: 1, updatedAtMs: 1,
-        connectionDescriptor: { v: 1, homeServerIdentityId: 'srv_home_b', canonicalServerUrl: 'https://home-b.test',
-            revision: 1, endpoints: [{ kind: 'https', url: 'https://home-b.test' }] },
+        connectionDescriptor: { v: 1,
+            homeServerIdentityId: options.sameServiceHome ? identity : 'srv_home_b',
+            canonicalServerUrl: options.sameServiceHome ? endpoint : 'https://home-b.test',
+            revision: 1, endpoints: [{ kind: 'https', url: options.sameServiceHome ? endpoint : 'https://home-b.test' }] },
     };
     const capability = { version: 1 as const, homeDirectory: true, homeEnrollment: true,
         homeLoginAssertion: { keyId: 'a'.repeat(64), publicKeyBase64Url: 'A'.repeat(43) } };
@@ -33,12 +36,15 @@ export function createDirectoryHttpFixture() {
         } as AccountDirectoryMeResponseV1,
         calls: [] as Array<{ endpoint: string; path: string; init?: RequestInit }>,
     };
-    const token = `header.${encodeBase64(new TextEncoder().encode(JSON.stringify({ sub: 'account-home' })), 'base64')}.signature`;
+    const token = `header.${encodeBase64(new TextEncoder().encode(JSON.stringify({ sub: options.sameServiceHome ? 'account-directory' : 'account-home' })), 'base64')}.signature`;
     const json = (value: unknown, status = 200) => new Response(JSON.stringify(value), { status, headers: { 'Content-Type': 'application/json' } });
     const request = async (requestEndpoint: string, path: string, init?: RequestInit): Promise<Response> => {
         state.calls.push({ endpoint: requestEndpoint, path, init });
         const currentHome = state.homes.find((entry) => entry.homeServerIdentityId === home.homeServerIdentityId) ?? home;
-        if (path === '/v1/features') return json(requestEndpoint === endpoint ? features : {
+        if (path === '/v1/features') return json(requestEndpoint === endpoint ? {
+            ...features,
+            ...(options.sameServiceHome ? { homeConnectionDescriptor: currentHome.connectionDescriptor } : {}),
+        } : {
             ...createRootLayoutFeaturesResponse({ capabilities: { serverIdentity: { serverIdentityId: currentHome.homeServerIdentityId } } }),
             homeConnectionDescriptor: currentHome.connectionDescriptor,
         });

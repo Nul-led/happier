@@ -11,7 +11,12 @@ export type TeamsHomeAdmissionEntry =
     | Readonly<{ serverId: string; state: 'capable' }>
     | Readonly<{ serverId: string; state: 'disabled' }>
     | Readonly<{ serverId: string; state: 'unsupported'; reason: 'endpoint_missing' | 'misconfigured' }>
-    | Readonly<{ serverId: string; state: 'unresolved'; reason: 'loading' | 'unreachable' }>;
+    /**
+     * `credential_unreadable`: the Home admitted Teams, but this device could
+     * not read its own saved credential for it — neither a Home failure nor a
+     * sign-out, and settled rather than loading.
+     */
+    | Readonly<{ serverId: string; state: 'unresolved'; reason: 'loading' | 'unreachable' | 'credential_unreadable' }>;
 
 export type TeamsSettingsAdmission = Readonly<{
     /** True when the exact Home set contains at least one capable Home. */
@@ -99,4 +104,21 @@ export function resolveTeamsSettingsAdmission(params: Readonly<{
         capableServerIds: Object.freeze(capableServerIds) as readonly string[],
         unresolvedServerIds: Object.freeze(unresolvedServerIds) as readonly string[],
     });
+}
+
+/**
+ * Whether the Teams destination is listed in navigation, given the admitted Homes' current
+ * eligibility answers.
+ *
+ * Each Home decides for its viewer (`showTeams`): it hides Teams from a member who is in no Team when
+ * it turned "Show Teams to members" off, or when Team creation is off. The entry is withheld only when
+ * every capable Home has said so; a Home that has not answered, or predates the answer, leaves Teams
+ * shown, because a Home that never chose shows Teams.
+ */
+export function resolveTeamsDestinationShown(params: Readonly<{
+    capableServerIds: readonly string[];
+    showTeamsByServerId: ReadonlyMap<string, boolean | undefined>;
+}>): boolean {
+    if (params.capableServerIds.length === 0) return false;
+    return params.capableServerIds.some((serverId) => params.showTeamsByServerId.get(serverId) !== false);
 }

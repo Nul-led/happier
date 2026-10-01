@@ -4,7 +4,7 @@ import { createRootLayoutFeaturesResponse } from '@/dev/testkit/fixtures/feature
 import { AccountDirectorySession } from '@/sync/domains/accountDirectory/accountDirectorySession';
 import { TokenStorage } from '@/auth/storage/tokenStorage';
 import { completeAccountServicePostAuth, resumeAccountServicePostAuth, supplyAccountServiceHomeMaterial } from './completeAccountServicePostAuth';
-import { adoptHomeProfile, buildHomeConnectionDescriptorForProfile, getActiveServerSnapshot, resolveServerProfileForPortableIdentity, resolveServerProfileScopeId } from '@/sync/domains/server/serverProfiles';
+import { adoptHomeProfile, buildHomeConnectionDescriptorForProfile, getActiveServerSnapshot, listServerProfiles, resolveServerProfileForPortableIdentity, resolveServerProfileScopeId, setActiveServerId } from '@/sync/domains/server/serverProfiles';
 import { encodeBase64 } from '@/encryption/base64';
 import { CURRENT_ACCOUNT_STORED_CONTENT_PROTOCOL_VERSION } from '@happier-dev/protocol';
 import { createDirectoryHttpFixture } from './accountDirectoryTestFixtures';
@@ -104,6 +104,65 @@ describe('exact Account post-auth continuation', () => {
         focusSwitch.mockRestore();
     });
 
+    it('enters the sole same-service Home without creating a local Home', async () => {
+        const fixture = createDirectoryHttpFixture({ sameServiceHome: true });
+        fixture.state.preferredHomeServerIdentityId = null;
+        fixture.state.homes = [{ ...fixture.home, preferred: false }];
+        fixture.state.approval = 'approved';
+        const profilesBefore = new Set(listServerProfiles().map((profile) => profile.id));
+        request.mockImplementation((path: string, init?: RequestInit) => fixture.request(
+            fixture.service.endpointUrl, path, init,
+        ));
+        const result = await completeAccountServicePostAuth({
+            credentialTokenDigest: TEST_CREDENTIAL_TOKEN_DIGEST,
+            service, session: session(),
+            intent: { kind: 'enter', target: { kind: 'automatic' } },
+        });
+
+        expect(result).toEqual({
+            kind: 'home_entered', homeServerIdentityId: service.serverIdentityId, selection: 'sole',
+        });
+        const addedProfiles = listServerProfiles().filter((profile) => !profilesBefore.has(profile.id));
+        expect(addedProfiles).toEqual([expect.objectContaining({ serverIdentityId: service.serverIdentityId })]);
+        expect(await TokenStorage.getCredentialsForServerUrl(service.endpointUrl, { serverId: service.serverIdentityId }))
+            .toEqual({ token: fixture.token });
+        expect(getActiveServerSnapshot().serverId).toBe(service.serverIdentityId);
+    });
+
+    it('adds and enters the same-service Home from a desktop with an existing local Home', async () => {
+        const localIdentity = 'srv_existing_personal_home';
+        const localUrl = 'https://personal-home.test';
+        const localProfile = await adoptHomeProfile({
+            descriptor: { v: 1, homeServerIdentityId: localIdentity, canonicalServerUrl: localUrl,
+                revision: 1, endpoints: [{ kind: 'https', url: localUrl }] },
+            source: 'manual',
+        });
+        await TokenStorage.setCredentialsForServerUrl(localUrl, { serverId: localIdentity }, { token: 'local-home-token' });
+        await setActiveServerId(localProfile.id);
+        const fixture = createDirectoryHttpFixture({ sameServiceHome: true });
+        fixture.state.preferredHomeServerIdentityId = null;
+        fixture.state.homes = [{ ...fixture.home, preferred: false }];
+        fixture.state.approval = 'approved';
+        request.mockImplementation((path: string, init?: RequestInit) => fixture.request(
+            fixture.service.endpointUrl, path, init,
+        ));
+
+        const result = await completeAccountServicePostAuth({
+            credentialTokenDigest: TEST_CREDENTIAL_TOKEN_DIGEST,
+            service, session: session(),
+            intent: { kind: 'enter', target: { kind: 'automatic' } },
+        });
+
+        expect(result).toEqual({
+            kind: 'home_entered', homeServerIdentityId: service.serverIdentityId, selection: 'sole',
+        });
+        expect(resolveServerProfileForPortableIdentity(localIdentity).kind).toBe('resolved');
+        expect(resolveServerProfileForPortableIdentity(service.serverIdentityId).kind).toBe('resolved');
+        expect(await TokenStorage.getCredentialsForServerUrl(localUrl, { serverId: localIdentity }))
+            .toEqual({ token: 'local-home-token' });
+        expect(getActiveServerSnapshot().serverId).toBe(service.serverIdentityId);
+    });
+
     it('still focuses the exact Home for an explicit enter intent', async () => {
         const focusSwitch = vi.spyOn(activeServerSwitch, 'setActiveServerAndSwitch').mockResolvedValue('switched');
         const fixture = createDirectoryHttpFixture();
@@ -171,7 +230,7 @@ describe('exact Account post-auth continuation', () => {
         request.mockImplementation((path: string, init?: RequestInit) => {
             if (path.includes('/login-assertion') && failNextAssertion) {
                 failNextAssertion = false;
-                throw new TypeError('Account Service temporarily unavailable');
+                throw new TypeError('Network request failed');
             }
             return fixture.request(
                 path.startsWith('/v1/account-directory/') ? fixture.service.endpointUrl : fixture.state.homes[0]!.canonicalServerUrl,

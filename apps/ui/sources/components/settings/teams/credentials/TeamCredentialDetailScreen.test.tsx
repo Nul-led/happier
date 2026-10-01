@@ -1,20 +1,19 @@
 import * as React from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { ARTIFACT_PLAIN_DATA_KEY_MARKER } from '@happier-dev/protocol';
+import { ARTIFACT_PLAIN_DATA_KEY_MARKER, TEAM_CREDENTIAL_EXTERNAL_PROVIDER_PROTOCOLS_V1 } from '@happier-dev/protocol';
 
+import { collectRenderedTestIds } from '@/dev/testkit/render/collectRenderedTestIds';
+import { createDeferred } from '@/dev/testkit/hooks/createDeferred';
+import { createHomeGovernanceHarness, installHomeGovernanceBoundaries } from '@/dev/testkit/harness/homeGovernanceHarness';
+import { flushHookEffects } from '@/dev/testkit/hooks/flushHookEffects';
+import { renderScreen } from '@/dev/testkit/render/renderScreen';
+import { standardCleanup } from '@/dev/testkit/cleanup/standardCleanup';
 import {
-    collectRenderedTestIds,
-    createDeferred,
-    createHomeGovernanceHarness,
-    flushHookEffects,
-    installHomeGovernanceBoundaries,
-    renderScreen,
-    standardCleanup,
     teamCapabilitiesFixture,
     teamCredentialResourceFixture,
     teamCredentialViewerFixture,
     teamSummaryFixture,
-} from '@/dev/testkit';
+} from '@/dev/testkit/fixtures/teamFixtures';
 
 import { installSettingsViewCommonModuleMocks } from '../../settingsViewTestHelpers';
 
@@ -35,13 +34,12 @@ installSettingsViewCommonModuleMocks({
     },
 });
 
-vi.mock('@/sync/api/capabilities/accountStoredContentCompatibility', async (importOriginal) => ({
-    ...await importOriginal<typeof import('@/sync/api/capabilities/accountStoredContentCompatibility')>(),
-    requireCurrentAccountStoredContentServerCompatibility: vi.fn(async () => undefined),
-}));
-
 const harness = createHomeGovernanceHarness();
 installHomeGovernanceBoundaries(harness);
+vi.doUnmock('@/sync/domains/state/storage');
+const { resetTeamsSnapshotsForTests } = await import('@/sync/store/teams/teamsSnapshots');
+const { resetTeamsDirectoryEngineForTests } = await import('@/sync/engine/teams/teamsDirectoryEngine');
+const { resetTeamActionClientForTests } = await import('@/sync/ops/teams/teamActionClient');
 
 const TEAM_GET_PATH = '/v1/teams/get';
 const LIST_PATH = '/v1/teams/credential-resources/list';
@@ -52,9 +50,6 @@ const PREPARATION_LIST_PATH = '/v2/teams/team-1/credential-resources/resource-1/
 const ARTIFACT_CREATE_PATH = '/v1/artifacts';
 
 beforeEach(async () => {
-    const { resetTeamsSnapshotsForTests } = await import('@/sync/store/teams/teamsSnapshots');
-    const { resetTeamsDirectoryEngineForTests } = await import('@/sync/engine/teams/teamsDirectoryEngine');
-    const { resetTeamActionClientForTests } = await import('@/sync/ops/teams/teamActionClient');
     resetTeamsSnapshotsForTests();
     resetTeamsDirectoryEngineForTests();
     resetTeamActionClientForTests();
@@ -203,10 +198,12 @@ describe('TeamCredentialDetailScreen', () => {
         expect(brokerRow?.props.accessibilityLabel).toContain('machinePools.connectionSemantics');
     });
 
-    it('renders an entitled recipient from the least-privilege catalog and opens exact-Home usage', async () => {
+    it('renders an entitled recipient from the least-privilege catalog and opens exact-Home usage and external keys', async () => {
         const serverId = await harness.addHome({
             name: 'Home A', serverUrl: 'https://home-a.example', accountId: 'account-maya',
             teamsEnabled: true, credentialResourcesEnabled: true,
+            credentialResourcesExternalApiEnabled: true,
+            credentialResourcesExternalApiAvailability: { available: true, baseUrl: 'https://home-a.example/api/provider-broker/v1', protocols: [...TEAM_CREDENTIAL_EXTERNAL_PROVIDER_PROTOCOLS_V1] },
         });
         await harness.selectHomes([serverId]);
         harness.answer(serverId, TEAM_GET_PATH, {
@@ -220,7 +217,7 @@ describe('TeamCredentialDetailScreen', () => {
                 resources: [{
                     id: 'resource-1', teamId: 'team-1', displayName: 'Acme Provider', resourceRevision: 7,
                     readiness: { kind: 'available' }, recoveryAction: null,
-                    mayBroker: false, mayReceiveDirect: true, directMaterialState: 'stale',
+                    mayBroker: true, mayReceiveDirect: true, directMaterialState: 'stale',
                     sessionUsePolicy: 'personal_allowed', providerModels: [], connectedServiceSelections: [],
                     sourcePresentation: {
                         kind: 'provider',
@@ -246,6 +243,9 @@ describe('TeamCredentialDetailScreen', () => {
         expect(collectRenderedTestIds(screen.tree.toJSON())).not.toContain('team-credential-open-edit');
         screen.pressByTestId('team-credential-recipient-open-usage');
         expect(routerPush).toHaveBeenCalledWith(`/settings/teams/${serverId}/team-1/credentials/resource-1/usage`);
+        await vi.waitFor(() => expect(screen.findByTestId('team-credential-open-external-api')).not.toBeNull());
+        await screen.pressByTestIdAsync('team-credential-open-external-api');
+        expect(routerPush).toHaveBeenCalledWith(`/settings/teams/${serverId}/team-1/credentials/resource-1/external-api`);
     });
 
     it('treats an absent resource as revoked only after the recipient catalog is current', async () => {

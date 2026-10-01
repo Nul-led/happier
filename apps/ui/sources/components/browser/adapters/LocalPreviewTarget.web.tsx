@@ -8,6 +8,9 @@ import {
 } from '@/sync/domains/browser/control';
 
 import { BrowserViewFrame } from '../frame/BrowserViewFrame.web';
+import { DesktopWebViewEngine, type DesktopWebViewEngineBridge } from '../frame/engines/DesktopWebViewEngine';
+import type { BrowserControlViewState } from '@/sync/domains/browser/control/state';
+import type { BrowserSurfaceLifecycleState } from '../surfaces/browserSurfaceLifecycle';
 import type {
     BrowserAutomationEngineBridgeConfig,
     BrowserDiagnosticsEngineBridgeConfig,
@@ -18,6 +21,10 @@ export function LocalPreviewTarget(props: Readonly<{
     title: string;
     url: string;
     testID: string;
+    view?: BrowserControlViewState;
+    profileId?: string | null;
+    bridge?: DesktopWebViewEngineBridge;
+    lifecycleState?: BrowserSurfaceLifecycleState;
     navigationKey?: string;
     navigationCommand?: BrowserFrameNavigationCommand;
     onLoad?: () => void;
@@ -32,6 +39,23 @@ export function LocalPreviewTarget(props: Readonly<{
     onLifecycle?: BrowserViewLifecycleEmitter;
 }>): React.ReactElement {
     const onLifecycle = props.onLifecycle;
+    if (props.view?.engineKind === 'desktopWebView') {
+        if (!props.profileId) {
+            return <BrowserViewFrame engine={{ kind: 'unavailable', reasonCode: 'browser_profile_missing', testID: props.testID }} />;
+        }
+        return <DesktopWebViewEngine
+            view={props.view}
+            url={props.url}
+            profileId={props.profileId}
+            testID={props.testID}
+            bridge={props.bridge}
+            lifecycleState={props.lifecycleState}
+            diagnostics={props.diagnostics}
+            automation={props.automation}
+            navigationCommand={props.navigationCommand}
+            onLifecycle={onLifecycle}
+        />;
+    }
     return (
         <BrowserViewFrame
             engine={{

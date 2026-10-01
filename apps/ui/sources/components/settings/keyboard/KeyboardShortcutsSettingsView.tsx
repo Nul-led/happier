@@ -1,32 +1,67 @@
 import * as React from 'react';
-import { Platform, Pressable, View } from 'react-native';
-import { useUnistyles } from 'react-native-unistyles';
+import { Platform, View } from 'react-native';
+import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
+import { RoundButton } from '@/components/ui/buttons/RoundButton';
 import { Switch } from '@/components/ui/forms/Switch';
+import { Icon, ICON_SIZE } from '@/components/ui/icons/Icon';
+import { KeyHint } from '@/components/ui/keyboard/KeyHint';
+import { ExpandableItem } from '@/components/ui/lists/ExpandableItem';
 import { Item } from '@/components/ui/lists/Item';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
 import { ItemList } from '@/components/ui/lists/ItemList';
-import { Text } from '@/components/ui/text/Text';
+import { useReducedMotionPreference } from '@/hooks/ui/useReducedMotionPreference';
 import { resolveKeyboardPlatform } from '@/keyboard/runtime';
 import type { KeyboardCommandId } from '@/keyboard/types';
 import { Modal } from '@/modal';
 import { useSettings } from '@/sync/domains/state/storage';
 import { useApplySettings } from '@/sync/store/settingsWriters';
 import { t } from '@/text';
+import { useRouter } from '@/components/appShell/workspace/destinationRoute';
+
+import { SETTING_ANCHOR_QUERY_PARAM } from '@/components/settings/catalog/settingDeclarations';
+import { SettingsPageHeader } from '@/components/settings/shell/SettingsPageHeader';
+import { SettingAnchor, SettingRow } from '@/components/settings/shell/SettingRow';
 
 import {
     buildKeyboardShortcutResetDelta,
     buildKeyboardShortcutSetDelta,
     buildKeyboardShortcutSettingsModel,
     buildKeyboardShortcutToggleDelta,
+    type KeyboardShortcutSettingsCommandRow,
+    type KeyboardShortcutSettingsConflict,
 } from './keyboardShortcutsSettingsModel';
+import { KEYBOARD_COMMAND_GROUP_TITLE_KEYS, KEYBOARD_SETTINGS, resolveKeyboardCommandSetting } from './keyboardSettings';
 import { showKeyboardShortcutCapturePrompt } from './showKeyboardShortcutCapturePrompt';
-import { Icon } from '@/components/ui/icons/Icon';
+
+/** "Cmd+Shift+Enter" → ["Cmd", "Shift", "Enter"]; a literal "+" key stays one keycap. */
+export function splitKeybindingLabel(label: string): readonly string[] {
+    const parts = label.split('+');
+    const keys: string[] = [];
+    for (let index = 0; index < parts.length; index += 1) {
+        const part = parts[index];
+        if (part === '' && index === parts.length - 1 && keys.length > 0) {
+            keys[keys.length - 1] = '+';
+            continue;
+        }
+        if (part !== '') keys.push(part);
+    }
+    return keys.length > 0 ? keys : [label];
+}
+
+const Keycaps = React.memo(function Keycaps(props: Readonly<{ label: string; testID?: string }>) {
+    return (
+        <View style={styles.keycaps} testID={props.testID} accessibilityLabel={props.label}>
+            {splitKeybindingLabel(props.label).map((key, index) => <KeyHint key={`${key}-${index}`} label={key} />)}
+        </View>
+    );
+});
 
 export const KeyboardShortcutsSettingsView = React.memo(function KeyboardShortcutsSettingsView() {
     const { theme } = useUnistyles();
     const settings = useSettings();
     const applySettings = useApplySettings();
+    const reducedMotion = useReducedMotionPreference();
     const platform = React.useMemo(() => resolveKeyboardPlatform(), []);
     const surface = Platform.OS === 'web' ? 'web' : 'native';
     const model = React.useMemo(() => buildKeyboardShortcutSettingsModel({
@@ -34,6 +69,11 @@ export const KeyboardShortcutsSettingsView = React.memo(function KeyboardShortcu
         platform,
         surface,
     }), [settings, platform, surface]);
+    const [expandedCommandId, setExpandedCommandId] = React.useState<KeyboardCommandId | null>(null);
+
+    const commandTitleById = React.useMemo(() => new Map(
+        model.commandRows.map((row) => [row.commandId, t(row.titleKey)] as const),
+    ), [model.commandRows]);
 
     const setCommandEnabled = React.useCallback((commandId: KeyboardCommandId, enabled: boolean) => {
         applySettings(buildKeyboardShortcutToggleDelta(
@@ -85,17 +125,29 @@ export const KeyboardShortcutsSettingsView = React.memo(function KeyboardShortcu
         platform,
     ]);
 
+    // A conflict opens the command it names: the row expands and its search anchor scrolls it into
+    // view and pulses it (the same reveal search uses), so the row is never left off screen.
+    const router = useRouter();
+    const revealCommand = React.useCallback((commandId: KeyboardCommandId | null) => {
+        setExpandedCommandId(commandId);
+        const setting = commandId ? resolveKeyboardCommandSetting(commandId) : undefined;
+        if (setting) router.setParams({ [SETTING_ANCHOR_QUERY_PARAM]: setting.anchor });
+    }, [router]);
+
+    const conflictTitle = React.useCallback((conflict: KeyboardShortcutSettingsConflict) => (
+        conflict.commandIds.map((commandId) => commandTitleById.get(commandId) ?? commandId).join(' · ')
+    ), [commandTitleById]);
+
     return (
-        <ItemList testID="settings-keyboard-shortcuts-screen" style={{ paddingTop: 0 }}>
+        <ItemList testID="settings-keyboard-shortcuts-screen" style={{ paddingTop: 0 }} presentation="page">
+            <SettingsPageHeader description={t('settingsKeyboard.entrySubtitle')} />
             <ItemGroup
                 title={t('settingsKeyboard.generalGroupTitle')}
-                footer={t('settingsKeyboard.generalGroupFooter')}
+                description={t('settingsKeyboard.generalGroupFooter')}
             >
-                <Item
+                <SettingRow
                     testID="settings-keyboard-shortcuts-enabled-row"
-                    title={t('settingsKeyboard.enableShortcutsTitle')}
-                    subtitle={t('settingsKeyboard.enableShortcutsSubtitle')}
-                    icon={<Icon name="squares-four" size={29} color={theme.colors.accent.blue} />}
+                    setting={KEYBOARD_SETTINGS.settings.enableShortcuts}
                     rightElement={(
                         <Switch
                             testID="settings-keyboard-shortcuts-enabled"
@@ -105,11 +157,9 @@ export const KeyboardShortcutsSettingsView = React.memo(function KeyboardShortcu
                     )}
                     showChevron={false}
                 />
-                <Item
+                <SettingRow
                     testID="settings-keyboard-shortcuts-single-key-enabled-row"
-                    title={t('settingsKeyboard.singleKeyTitle')}
-                    subtitle={t('settingsKeyboard.singleKeySubtitle')}
-                    icon={<Icon name="question" size={29} color={theme.colors.accent.orange} />}
+                    setting={KEYBOARD_SETTINGS.settings.singleKey}
                     rightElement={(
                         <Switch
                             testID="settings-keyboard-shortcuts-single-key-enabled"
@@ -121,70 +171,138 @@ export const KeyboardShortcutsSettingsView = React.memo(function KeyboardShortcu
                 />
             </ItemGroup>
 
+            {/* Conflicts block shortcuts, so they come before the commands, each naming what clashes. */}
             {model.conflicts.length > 0 ? (
-                <ItemGroup title={t('settingsKeyboard.conflictsGroupTitle')}>
-                    <Item
-                        testID="settings-keyboard-shortcuts-conflicts"
-                        title={t('settingsKeyboard.conflictsTitle', { count: model.conflicts.length })}
-                        subtitle={t('settingsKeyboard.conflictsSubtitle', { count: model.conflicts.length })}
-                        icon={<Icon name="warning" size={29} color={theme.colors.state.warning.foreground} />}
-                        mode="info"
-                    />
+                <ItemGroup
+                    title={t('settingsKeyboard.conflictsGroupTitle')}
+                    description={t('settingsKeyboard.conflictsSubtitle', { count: model.conflicts.length })}
+                >
+                    {model.conflicts.map((conflict) => (
+                        <Item
+                            key={conflict.id}
+                            testID={`settings-keyboard-shortcuts-conflict-${conflict.id}`}
+                            title={conflictTitle(conflict)}
+                            subtitle={conflict.kind === 'browser-reserved'
+                                ? t('settingsKeyboard.conflictBrowserReserved')
+                                : t('settingsKeyboard.conflictDuplicate')}
+                            subtitleLines={0}
+                            icon={<Icon name="warning" size={ICON_SIZE.md} color={theme.colors.state.warning.foreground} />}
+                            onPress={() => revealCommand(conflict.commandIds[0] ?? null)}
+                        />
+                    ))}
                 </ItemGroup>
             ) : null}
 
-            <ItemGroup
-                title={t('settingsKeyboard.commandsGroupTitle')}
-                footer={t('settingsKeyboard.commandsGroupFooter')}
-            >
-                {model.commandRows.map((row) => (
-                    <Item
-                        key={row.commandId}
-                        testID={`settings-keyboard-shortcut-row-${row.commandId}`}
-                        title={t(row.titleKey)}
-                        subtitle={row.defaultLabel ?? t('settingsKeyboard.noDefaultShortcut')}
-                        icon={<Icon name="radio-button" size={29} color={theme.colors.text.secondary} />}
-                        rightElement={(
-                            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-                                <Pressable
-                                    testID={`settings-keyboard-shortcut-set-${row.commandId}`}
-                                    onPress={() => {
-                                        void setCommandShortcut(row.commandId, t(row.titleKey), row.bindingValue);
-                                    }}
-                                    accessibilityRole="button"
-                                    accessibilityLabel={t('settingsKeyboard.setCommandAccessibility', {
-                                        command: t(row.titleKey),
-                                    })}
-                                    style={{ paddingHorizontal: 8, paddingVertical: 6 }}
-                                >
-                                    <Text style={{ color: theme.colors.button.secondary.tint }}>
-                                        {t('settingsKeyboard.setCommandButton')}
-                                    </Text>
-                                </Pressable>
-                                <Pressable
-                                    testID={`settings-keyboard-shortcut-reset-${row.commandId}`}
-                                    onPress={() => resetCommand(row.commandId)}
-                                    accessibilityRole="button"
-                                    accessibilityLabel={t('settingsKeyboard.resetCommandAccessibility', {
-                                        command: t(row.titleKey),
-                                    })}
-                                    style={{ paddingHorizontal: 8, paddingVertical: 6 }}
-                                >
-                                    <Text style={{ color: theme.colors.button.secondary.tint }}>
-                                        {t('common.reset')}
-                                    </Text>
-                                </Pressable>
-                                <Switch
-                                    testID={`settings-keyboard-shortcut-enabled-${row.commandId}`}
-                                    value={!row.disabled}
-                                    onValueChange={(enabled) => setCommandEnabled(row.commandId, enabled)}
-                                />
-                            </View>
-                        )}
-                        showChevron={false}
-                    />
-                ))}
-            </ItemGroup>
+            {model.commandGroups.map((group) => (
+                <ItemGroup key={group.id} title={t(KEYBOARD_COMMAND_GROUP_TITLE_KEYS[group.id])} density="compact">
+                    {group.rows.map((row) => (
+                        <KeyboardShortcutCommandRow
+                            key={row.commandId}
+                            row={row}
+                            expanded={expandedCommandId === row.commandId}
+                            reducedMotion={reducedMotion}
+                            onExpandedChange={(next) => setExpandedCommandId(next ? row.commandId : null)}
+                            onEnabledChange={setCommandEnabled}
+                            onReset={resetCommand}
+                            onChangeShortcut={setCommandShortcut}
+                        />
+                    ))}
+                </ItemGroup>
+            ))}
         </ItemList>
     );
 });
+
+/**
+ * One command, expanded in place: closed it shows its keys (or Off); open it holds the three things
+ * a command has — whether it is on, its keys, and a way back to the default.
+ */
+const KeyboardShortcutCommandRow = React.memo(function KeyboardShortcutCommandRow(props: Readonly<{
+    row: KeyboardShortcutSettingsCommandRow;
+    expanded: boolean;
+    reducedMotion: boolean;
+    showDivider?: boolean;
+    onExpandedChange: (next: boolean) => void;
+    onEnabledChange: (commandId: KeyboardCommandId, enabled: boolean) => void;
+    onReset: (commandId: KeyboardCommandId) => void;
+    onChangeShortcut: (commandId: KeyboardCommandId, commandTitle: string, currentBinding: string | null) => Promise<void>;
+}>) {
+    const { row } = props;
+    const title = t(row.titleKey);
+    const setting = resolveKeyboardCommandSetting(row.commandId);
+    // Closed, the row says what the command does now: its keys, Off, or that it has none.
+    const keys = !row.disabled && row.defaultLabel
+        ? <Keycaps label={row.defaultLabel} testID={`settings-keyboard-shortcut-keys-${row.commandId}`} />
+        : undefined;
+    const summaryText = row.disabled
+        ? t('settingsKeyboard.commandOff')
+        : row.defaultLabel ? undefined : t('settingsKeyboard.noShortcut');
+
+    const disclosure = (
+        <ExpandableItem
+            expanded={props.expanded}
+            onExpandedChange={props.onExpandedChange}
+            reducedMotion={props.reducedMotion}
+            showDivider={props.showDivider}
+            header={({ headerProps }) => (
+                <Item
+                    {...headerProps}
+                    testID={`settings-keyboard-shortcut-row-${row.commandId}`}
+                    title={title}
+                    subtitle={row.hasOverride ? t('settingsKeyboard.customShortcut') : undefined}
+                    rightElement={keys}
+                    detail={summaryText}
+                    keepChevronWithRightElement
+                />
+            )}
+        >
+            <Item
+                title={t('settingsKeyboard.commandEnabledTitle')}
+                rightElement={(
+                    <Switch
+                        testID={`settings-keyboard-shortcut-enabled-${row.commandId}`}
+                        value={!row.disabled}
+                        onValueChange={(enabled) => props.onEnabledChange(row.commandId, enabled)}
+                    />
+                )}
+                showChevron={false}
+            />
+            <Item
+                title={t('settingsKeyboard.keysTitle')}
+                subtitle={row.defaultLabel ?? t('settingsKeyboard.noShortcut')}
+                rightElement={(
+                    <RoundButton
+                        testID={`settings-keyboard-shortcut-set-${row.commandId}`}
+                        size="small"
+                        display="secondary"
+                        title={t('settingsKeyboard.setCommandButton')}
+                        accessibilityLabel={t('settingsKeyboard.setCommandAccessibility', { command: title })}
+                        onPress={() => { void props.onChangeShortcut(row.commandId, title, row.bindingValue); }}
+                    />
+                )}
+                showChevron={false}
+            />
+            {row.hasOverride || row.disabled ? (
+                <Item
+                    testID={`settings-keyboard-shortcut-reset-${row.commandId}`}
+                    title={t('settingsKeyboard.resetToDefaultTitle')}
+                    subtitle={row.registryDefaultLabel ?? t('settingsKeyboard.noDefaultShortcut')}
+                    accessibilityLabel={t('settingsKeyboard.resetCommandAccessibility', { command: title })}
+                    accessibilityRole="button"
+                    onPress={() => props.onReset(row.commandId)}
+                    showChevron={false}
+                />
+            ) : null}
+        </ExpandableItem>
+    );
+
+    return setting ? <SettingAnchor setting={setting} showDivider={props.showDivider}>{disclosure}</SettingAnchor> : disclosure;
+});
+
+const styles = StyleSheet.create(() => ({
+    keycaps: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 4,
+    },
+}));

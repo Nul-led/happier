@@ -1,11 +1,9 @@
 import * as React from 'react';
-import { useNavigation, useRouter } from 'expo-router';
+import { useNavigation, useRouter } from '@/components/appShell/workspace/destinationRoute';
 import type { TeamCredentialDeliveryModeV1, TeamCredentialSessionUsePolicyV1, TeamCredentialUsageLimitDefinitionV1 } from '@happier-dev/protocol/teams';
-import { useUnistyles } from 'react-native-unistyles';
-import { Icon } from '@/components/ui/icons/Icon';
+import { FieldTextInput } from '@/components/ui/forms/FieldTextInput';
 import { Item } from '@/components/ui/lists/Item';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
-import { TextInput } from '@/components/ui/text/Text';
 import { useFeatureEnabled } from '@/hooks/server/useFeatureEnabled';
 import {
     useTeamCredentialRequestPolicySupport,
@@ -20,7 +18,7 @@ import { useTeamCredentialProviderSourceOffers } from '@/hooks/teams/useTeamCred
 import { isTeamCredentialProviderSourceOfferCurrent, type TeamCredentialSourceCandidatePresentationV1 } from '@/hooks/teams/composeTeamCredentialProviderSourceOffer';
 import { isTeamActionApprovalPendingError } from '@/sync/ops/teams/teamActionClient';
 import { createTeamCredentialResource } from '@/sync/ops/teams/teamCredentialOperations';
-import { t } from '@/text';
+import { getPreferredLanguage, t } from '@/text';
 import { TeamSection } from '../TeamSection';
 import type { TeamSectionContext } from '../teamSectionContext';
 import { teamCredentialDetailPath } from '../teamsRoutes';
@@ -28,7 +26,7 @@ import { credentialApprovalFailureMessage, credentialFailureMessage, deliveryMod
 import { TeamCredentialAudiencePicker } from './TeamCredentialAudiencePicker';
 import { TeamCredentialSourcePicker } from './TeamCredentialSourcePicker';
 import { confirmTeamCredentialDirectDisclosure, confirmTeamCredentialDisclosureWidening, EMPTY_TEAM_CREDENTIAL_LIMIT_DRAFT, EMPTY_TEAM_CREDENTIAL_RESOURCE_DRAFT, narrowTeamCredentialResourceDraftToBrokeredOnly, offeredDeliveryModes, reconcileTeamCredentialPolicyDraftForModelCatalog, TEAM_CREDENTIAL_LIMIT_PERIODS, TEAM_CREDENTIAL_LIMIT_SUBJECT_KINDS, TeamCredentialBrokerPlacementSection, teamCredentialBrokerPlacementDraftLabel, TeamCredentialDeliveryModeChooser, teamCredentialLimitMaximumValid, teamCredentialLimitSubjectSelected, teamCredentialPolicyFromDraft, teamCredentialResourceDraftFingerprint, useTeamCredentialResourceDraft, withAudienceEntry, type TeamCredentialResourceDraft } from './teamCredentialEditorDraft';
-import { useTeamCredentialDraftNavigationGuard } from './useTeamCredentialDraftNavigationGuard';
+import { useUnsavedDraftNavigationGuard } from '@/utils/navigation/useUnsavedDraftNavigationGuard';
 import {
     projectTeamCredentialRequestPolicyEditorSupport,
     TeamCredentialRequestPolicyEditorSection,
@@ -45,9 +43,9 @@ type TeamCredentialCreateSourceHint = Readonly<
 >;
 
 const CredentialCreator = React.memo(function CredentialCreator(props: Readonly<{ context: TeamSectionContext; sourceHint?: TeamCredentialCreateSourceHint }>) {
-    const { theme } = useUnistyles();
     const router = useRouter();
     const navigation = useNavigation();
+    const locale = getPreferredLanguage();
     const { context } = props;
     const featureEnabled = useFeatureEnabled('teams.credentialResources', { scopeKind: 'spawn', serverId: context.scope.serverId });
     const projection = useTeamCredentialResources({ scope: context.scope, address: context.address, enabled: featureEnabled });
@@ -201,7 +199,7 @@ const CredentialCreator = React.memo(function CredentialCreator(props: Readonly<
         ).then((confirmed) => {
             if (confirmed) setPolicyDraft(reconciliation.draft);
         });
-    }, [providerPolicyReconciliation, requestPolicySupportResult]);
+    }, [locale, providerPolicyReconciliation, requestPolicySupportResult]);
     const chooseSource = React.useCallback(async (candidate: TeamCredentialSourceCandidatePresentationV1) => {
         const nextDraft = {
             ...resourceDraft.draft,
@@ -248,20 +246,20 @@ const CredentialCreator = React.memo(function CredentialCreator(props: Readonly<
         setCandidateId(null); setNameEdited(false); setPickedNames(new Map());
         setExpanded(null); setNotice(null);
     }, [resourceDraft]);
-    const allowSavedNavigation = useTeamCredentialDraftNavigationGuard({
+    const { allowSavedNavigation } = useUnsavedDraftNavigationGuard({
         navigation,
         isDirty: resourceDraft.isDirty,
         onDiscard: discardDraft,
         tag: 'TeamCredentialCreateScreen.beforeRemove',
     });
     const busy = submitting || context.approvalPending;
-    if (!featureEnabled) return <ItemGroup footer={t('teams.credentials.unavailable')}><Item testID="team-credential-create-unavailable" title={t('teams.credentials.create.title')} showChevron={false} /></ItemGroup>;
+    if (!featureEnabled) return <ItemGroup description={t('teams.credentials.unavailable')}><Item testID="team-credential-create-unavailable" title={t('teams.credentials.create.title')} showChevron={false} /></ItemGroup>;
     // A first credential read that failed is not "still loading": the viewer is
     // null for both, and the source and provider retries further down are
     // unreachable behind this return, so the screen used to spin forever.
-    if (projection.viewer === null && projection.error !== null) return <ItemGroup footer={credentialFailureMessage(projection.error)}><Item testID="team-credential-create-retry" title={t('teams.unavailable.retry')} icon={<Icon name="arrow-clockwise" size={29} color={theme.colors.text.secondary} />} onPress={() => void projection.retry()} showChevron={false} /></ItemGroup>;
+    if (projection.viewer === null && projection.error !== null) return <ItemGroup description={credentialFailureMessage(projection.error)}><Item testID="team-credential-create-retry" title={t('teams.unavailable.retry')} onPress={() => void projection.retry()} showChevron={false} /></ItemGroup>;
     if (projection.viewer === null) return <ItemGroup><Item testID="team-credential-create-loading" title={t('teams.credentials.create.title')} loading showChevron={false} /></ItemGroup>;
-    if (!mayOffer || (!context.canMutate && !context.approvalPending)) return <ItemGroup footer={t('teams.credentials.create.notAllowed')}><Item testID="team-credential-create-forbidden" title={t('homeGovernance.forbiddenTitle')} showChevron={false} /></ItemGroup>;
+    if (!mayOffer || (!context.canMutate && !context.approvalPending)) return <ItemGroup description={t('teams.credentials.create.notAllowed')}><Item testID="team-credential-create-forbidden" title={t('homeGovernance.forbiddenTitle')} showChevron={false} /></ItemGroup>;
     const directExportSupported = selected?.candidate.directExportSupport !== 'unsupported';
     const modes = offeredDeliveryModes({
         disclosureCeiling: directExportSupported ? ceiling : 'brokered_only',
@@ -308,16 +306,28 @@ const CredentialCreator = React.memo(function CredentialCreator(props: Readonly<
     const providerCatalogLoading = providerConnections.loading
         && providerSourceOffers.length === 0
         && sources.supportedKinds.includes('provider_connection');
+    const missingRequirements = [
+        selected === null ? t('teams.credentials.detail.sourceLabel') : null,
+        name.trim().length === 0 ? t('teams.credentials.edit.nameLabel') : null,
+        managesResources && grants.length === 0 ? t('teams.credentials.detail.access') : null,
+        managesResources && needsBroker && placement === null ? t('teams.credentials.detail.brokerLabel') : null,
+    ].filter((value): value is string => value !== null);
+    const reviewDescription = notice
+        ?? (context.approvalPending
+            ? t('teams.credentials.approvalPending')
+            : !ready && !busy && missingRequirements.length > 0
+                ? missingRequirements.join(' · ')
+                : undefined);
 
     return <>
-        <ItemGroup title={t('teams.credentials.create.title')} footer={sources.supportedKinds.length < 3 ? t('teams.credentials.create.sourceUnsupported') : t('teams.credentials.subtitle')}>
+        <ItemGroup title={t('teams.credentials.create.title')} description={sources.supportedKinds.length < 3 ? t('teams.credentials.create.sourceUnsupported') : t('teams.credentials.subtitle')}>
             <TeamCredentialSourcePicker candidates={sources.candidates} selected={selected} disabled={busy} unavailableReason={sources.status === 'loading' || providerCatalogLoading ? t('common.loading') : sources.candidates.length === 0 ? t('teams.credentials.create.sourceEmpty') : null} onSelect={chooseSource} />
         </ItemGroup>
-        {sources.error ? <ItemGroup footer={credentialFailureMessage(sources.error)}><Item testID="team-credential-create-source-retry" title={t('teams.unavailable.retry')} icon={<Icon name="arrow-clockwise" size={29} color={theme.colors.text.secondary} />} onPress={() => void sources.reload()} showChevron={false} /></ItemGroup> : null}
-        {providerConnections.error && sources.supportedKinds.includes('provider_connection') ? <ItemGroup footer={t('teams.credentials.requestPolicy.catalogUnavailable')}><Item testID="team-credential-create-provider-source-retry" title={t('teams.unavailable.retry')} icon={<Icon name="arrow-clockwise" size={29} color={theme.colors.text.secondary} />} onPress={() => void providerConnections.refresh()} showChevron={false} /></ItemGroup> : null}
-        <ItemGroup title={t('teams.credentials.edit.nameLabel')}><TextInput testID="team-credential-create-name" value={name} onChangeText={value => { setNameEdited(true); patchResourceDraft({ name: value }); }} placeholder={t('teams.credentials.edit.namePlaceholder')} accessibilityLabel={t('teams.credentials.edit.nameLabel')} maxLength={NAME_MAX_LENGTH} editable={!busy} /></ItemGroup>
-        <ItemGroup title={t('teams.credentials.edit.ceilingLabel')} footer={t('teams.credentials.edit.ceilingNote')} accessibilityRole="radiogroup" accessibilityLabel={t('teams.credentials.edit.ceilingLabel')}>
-            {(['brokered_only', 'direct_allowed'] as const).map(value => <Item key={value} testID={`team-credential-create-ceiling:${value}`} title={value === 'brokered_only' ? t('teams.credentials.edit.ceilingBrokeredOnly') : t('teams.credentials.edit.ceilingDirectAllowed')} selected={ceiling === value} disabled={busy} onPress={async () => { if (value === 'direct_allowed' && ceiling !== value && !await confirmTeamCredentialDisclosureWidening()) return; if (value === 'brokered_only') resourceDraft.setDraft(narrowTeamCredentialResourceDraftToBrokeredOnly); else patchResourceDraft({ disclosureCeiling: value }, true); }} showChevron={false} />)}
+        {sources.error ? <ItemGroup description={credentialFailureMessage(sources.error)}><Item testID="team-credential-create-source-retry" title={t('teams.unavailable.retry')} onPress={() => void sources.reload()} showChevron={false} /></ItemGroup> : null}
+        {providerConnections.error && sources.supportedKinds.includes('provider_connection') ? <ItemGroup description={t('teams.credentials.requestPolicy.catalogUnavailable')}><Item testID="team-credential-create-provider-source-retry" title={t('teams.unavailable.retry')} onPress={() => void providerConnections.refresh()} showChevron={false} /></ItemGroup> : null}
+        <ItemGroup title={t('teams.credentials.edit.nameLabel')}><Item title={t('teams.credentials.edit.nameLabel')} accessoryLayout="adaptive" showChevron={false} rightElement={<FieldTextInput testID="team-credential-create-name" value={name} onChangeText={value => { setNameEdited(true); patchResourceDraft({ name: value }); }} placeholder={t('teams.credentials.edit.namePlaceholder')} accessibilityLabel={t('teams.credentials.edit.nameLabel')} maxLength={NAME_MAX_LENGTH} editable={!busy} />} /></ItemGroup>
+        <ItemGroup title={t('teams.credentials.edit.ceilingLabel')} description={t('teams.credentials.edit.ceilingNote')} accessibilityRole="radiogroup" accessibilityLabel={t('teams.credentials.edit.ceilingLabel')}>
+            {(['brokered_only', 'direct_allowed'] as const).map(value => <Item key={value} testID={`team-credential-create-ceiling:${value}`} title={value === 'brokered_only' ? t('teams.credentials.edit.ceilingBrokeredOnly') : t('teams.credentials.edit.ceilingDirectAllowed')} accessibilityRole="radio" webRole="radio" selected={ceiling === value} disabled={busy} onPress={async () => { if (value === 'direct_allowed' && ceiling !== value && !await confirmTeamCredentialDisclosureWidening()) return; if (value === 'brokered_only') resourceDraft.setDraft(narrowTeamCredentialResourceDraftToBrokeredOnly); else patchResourceDraft({ disclosureCeiling: value }, true); }} showChevron={false} />)}
         </ItemGroup>
         {managesResources ? <TeamCredentialBrokerPlacementSection
             scope={context.scope}
@@ -328,7 +338,7 @@ const CredentialCreator = React.memo(function CredentialCreator(props: Readonly<
             disabled={busy}
             onChange={(next) => patchResourceDraft({ brokerPlacement: next }, true)}
         /> : null}
-        {managesResources ? <ItemGroup title={t('teams.credentials.audience.title')} footer={t('teams.credentials.audience.limitsNote')}>
+        {managesResources ? <ItemGroup title={t('teams.credentials.audience.title')} description={t('teams.credentials.audience.limitsNote')}>
             <Item testID="team-credential-create-audience-everyone" title={t('teams.credentials.audience.everyone')} detail={allMembers === null ? t('teams.credentials.audience.everyoneOff') : deliveryModeLabel(allMembers)} disabled={busy} onPress={() => setExpanded(expanded === 'everyone' ? null : 'everyone')} showChevron={false} />
             {chooser('everyone', t('teams.credentials.audience.everyone'), allMembers, (draft, next) => ({
                 ...draft,
@@ -340,7 +350,7 @@ const CredentialCreator = React.memo(function CredentialCreator(props: Readonly<
                 reaching someone past the first page is the chooser's job. */}
             <TeamCredentialAudiencePicker testID="team-credential-create-audience-add" scope={context.scope} address={context.address} excludedGroupIds={[...groupGrants.keys()]} excludedMemberIds={[...memberGrants.keys()]} disabled={busy} onChoose={principal => { setPickedNames(names => new Map(names).set(`${principal.kind}:${principal.id}`, principal.name)); if (principal.kind === 'group') setGroupGrants(current => withAudienceEntry(current, principal.id, 'brokered')); else setMemberGrants(current => withAudienceEntry(current, principal.id, 'brokered')); setExpanded(`${principal.kind}:${principal.id}`); }} />
         </ItemGroup> : null}
-        {managesResources ? <ItemGroup title={t('teams.credentials.usePolicy.label')}>{USE_POLICIES.map(value => <Item key={value} testID={`team-credential-create-use-policy:${value}`} title={sessionUsePolicyLabel(value)} selected={usePolicy === value} disabled={busy} onPress={() => patchResourceDraft({ sessionUsePolicy: value })} showChevron={false} />)}</ItemGroup> : null}
+        {managesResources ? <ItemGroup title={t('teams.credentials.usePolicy.label')} accessibilityRole="radiogroup" accessibilityLabel={t('teams.credentials.usePolicy.label')}>{USE_POLICIES.map(value => <Item key={value} testID={`team-credential-create-use-policy:${value}`} title={sessionUsePolicyLabel(value)} accessibilityRole="radio" webRole="radio" selected={usePolicy === value} disabled={busy} onPress={() => patchResourceDraft({ sessionUsePolicy: value })} showChevron={false} />)}</ItemGroup> : null}
         {managesResources && selectedSource !== null ? requestPolicySupportResult ? (
             <TeamCredentialRequestPolicyEditorSection
                 draft={policyDraft}
@@ -349,7 +359,7 @@ const CredentialCreator = React.memo(function CredentialCreator(props: Readonly<
                 busy={busy}
                 testIDPrefix="team-credential-create-policy"
             />
-        ) : <ItemGroup footer={requestPolicySupport.error
+        ) : <ItemGroup description={requestPolicySupport.error
             ? credentialFailureMessage(requestPolicySupport.error)
             : undefined}>
             <Item
@@ -367,7 +377,7 @@ const CredentialCreator = React.memo(function CredentialCreator(props: Readonly<
                 showChevron={false}
             />
         </ItemGroup> : null}
-        {managesResources ? needsBroker ? <ItemGroup title={t('teams.credentials.limits.title')} footer={hasLimit && pendingLimit === null ? t('teams.credentials.limits.maximumInvalid') : t('teams.credentials.limits.overshoot')}>
+        {managesResources ? needsBroker ? <ItemGroup title={t('teams.credentials.limits.title')} description={hasLimit && pendingLimit === null ? t('teams.credentials.limits.maximumInvalid') : t('teams.credentials.limits.overshoot')}>
             {TEAM_CREDENTIAL_LIMIT_SUBJECT_KINDS.map(kind => <Item key={kind} testID={`team-credential-create-limit-subject:${kind}`} title={limitSubjectKindLabel(kind)} selected={limitDraft.subjectKind === kind} disabled={busy} onPress={() => { setLimitSubjectName(null); setLimitSubjectMembershipId(null); setLimitDraft(current => ({ ...current, subjectKind: kind, subjectId: '' })); }} showChevron={false} />)}
             {limitDraft.subjectKind === 'team_group' && limitDraft.subjectId ? <Item testID={`team-credential-create-limit-group:${limitDraft.subjectId}`} title={limitSubjectName ?? t('teams.credentials.limits.unknownSubject')} selected disabled={busy} onPress={() => { setLimitSubjectName(null); setLimitDraft(current => ({ ...current, subjectId: '' })); }} showChevron={false} /> : null}
             {limitDraft.subjectKind === 'team_group' ? <TeamCredentialAudiencePicker scope={context.scope} address={context.address} excludedGroupIds={limitDraft.subjectId ? [limitDraft.subjectId] : []} excludedMemberIds={[]} allowedKinds={['group']} label={t('teams.credentials.limits.subject.group')} disabled={busy} onChoose={principal => { if (principal.kind !== 'group') return; setLimitSubjectName(principal.name); setLimitDraft(current => ({ ...current, subjectId: principal.id })); }} testID="team-credential-create-limit-group-choose" /> : null}
@@ -375,14 +385,14 @@ const CredentialCreator = React.memo(function CredentialCreator(props: Readonly<
             {limitDraft.subjectKind === 'team_member' ? <TeamCredentialAudiencePicker scope={context.scope} address={context.address} excludedGroupIds={[]} excludedMemberIds={limitSubjectMembershipId ? [limitSubjectMembershipId] : []} allowedKinds={['member']} label={t('teams.credentials.limits.subject.member')} disabled={busy} onChoose={principal => { if (principal.kind !== 'member') return; setLimitSubjectName(principal.name); setLimitSubjectMembershipId(principal.id); setLimitDraft(current => ({ ...current, subjectId: principal.accountId })); }} testID="team-credential-create-limit-member-choose" /> : null}
             <Item testID="team-credential-create-limit-metric:inference_requests" title={limitMetricLabel('inference_requests')} selected disabled={busy} showChevron={false} />
             {TEAM_CREDENTIAL_LIMIT_PERIODS.map(period => <Item key={period} testID={`team-credential-create-limit-period:${period}`} title={limitPeriodLabel(period)} selected={limitDraft.period === period} disabled={busy} onPress={() => setLimitDraft(current => ({ ...current, period }))} showChevron={false} />)}
-            <TextInput testID="team-credential-create-limit-maximum" value={limitDraft.maximum} onChangeText={value => setLimitDraft(current => ({ ...current, maximum: value }))} placeholder={t('teams.credentials.limits.maximumPlaceholder')} keyboardType="numeric" editable={!busy} />
+            <Item title={t('teams.credentials.limits.maximumLabel')} accessoryLayout="adaptive" showChevron={false} rightElement={<FieldTextInput testID="team-credential-create-limit-maximum" accessibilityLabel={t('teams.credentials.limits.maximumLabel')} value={limitDraft.maximum} onChangeText={value => setLimitDraft(current => ({ ...current, maximum: value }))} placeholder={t('teams.credentials.limits.maximumPlaceholder')} keyboardType="numeric" editable={!busy} />} />
             {savedLimits.map((limit, index) => <Item key={`${limitIdentity(limit)}:${index}`} testID={`team-credential-create-limit-saved:${index}`} title={`${limitSubjectKindLabel(limit.subjectKind)} · ${limitMetricLabel(limit.metric)}`} detail={`${limit.maximum} · ${limitPeriodLabel(limit.period)}`} destructive disabled={busy} onPress={() => setSavedLimits(current => current.filter((_, candidate) => candidate !== index))} showChevron={false} />)}
             <Item testID="team-credential-create-limit-add" title={t('teams.credentials.limits.add')} disabled={busy || pendingLimit === null || savedLimits.some(limit => limitIdentity(limit) === limitIdentity(pendingLimit))} onPress={() => { if (pendingLimit === null) return; setSavedLimits(current => [...current, pendingLimit]); setLimitDraft(EMPTY_TEAM_CREDENTIAL_LIMIT_DRAFT); setLimitSubjectName(null); setLimitSubjectMembershipId(null); }} showChevron={false} />
-        </ItemGroup> : <ItemGroup title={t('teams.credentials.limits.title')} footer={t('teams.credentials.limits.directOnly')}>
+        </ItemGroup> : <ItemGroup title={t('teams.credentials.limits.title')} description={t('teams.credentials.limits.directOnly')}>
             <Item title={t('teams.credentials.limits.empty')} disabled showChevron={false} />
         </ItemGroup> : null}
-        <ItemGroup title={t('teams.credentials.create.reviewLabel')} footer={notice ?? (context.approvalPending ? t('teams.credentials.approvalPending') : undefined)}>
-            <Item testID="team-credential-create-review-source" title={t('teams.credentials.detail.sourceLabel')} detail={selectedSource ? sourceKindLabel(selectedSource) : t('teams.credentials.create.sourceChoose')} showChevron={false} />
+        <ItemGroup title={t('teams.credentials.create.reviewLabel')} description={reviewDescription}>
+            <Item testID="team-credential-create-review-source" title={t('teams.credentials.detail.sourceLabel')} detail={selected ? `${selected.candidate.label} · ${sourceKindLabel(selectedSource)}` : t('teams.credentials.create.sourceChoose')} showChevron={false} />
             <Item testID="team-credential-create-review-ceiling" title={t('teams.credentials.edit.ceilingLabel')} detail={ceiling === 'brokered_only' ? t('teams.credentials.edit.ceilingBrokeredOnly') : t('teams.credentials.edit.ceilingDirectAllowed')} showChevron={false} />
             {managesResources ? <><Item testID="team-credential-create-review-broker" title={t('teams.credentials.detail.brokerLabel')} detail={teamCredentialBrokerPlacementDraftLabel({ placement, brokerPresentation: sources.brokerPresentation, pickerRows: machineAdministrationRows })} showChevron={false} />
             <Item testID="team-credential-create-review-use-policy" title={t('teams.credentials.usePolicy.label')} detail={sessionUsePolicyLabel(usePolicy)} showChevron={false} />
@@ -410,5 +420,5 @@ const CredentialCreator = React.memo(function CredentialCreator(props: Readonly<
 });
 
 export const TeamCredentialCreateScreen = React.memo(function TeamCredentialCreateScreen(props: Readonly<{ serverId: string; teamId: string; sourceHint?: TeamCredentialCreateSourceHint }>) {
-    return <TeamSection serverId={props.serverId} teamId={props.teamId} title={t('teams.credentials.create.title')}>{context => <CredentialCreator context={context} sourceHint={props.sourceHint} />}</TeamSection>;
+    return <TeamSection serverId={props.serverId} teamId={props.teamId} title={t('teams.credentials.create.title')} description={t('teams.pages.credentialCreate')}>{context => <CredentialCreator context={context} sourceHint={props.sourceHint} />}</TeamSection>;
 });

@@ -17,9 +17,10 @@ const appStateChangeMock = vi.hoisted(() => ({ current: null as null | ((state: 
 const focusEffectsMock = vi.hoisted(() => ({ current: [] as Array<() => void | (() => void)> }));
 const openExternalUrlMock = vi.hoisted(() => vi.fn());
 
-vi.mock('expo-router', () => ({
-    useRouter: () => ({ replace: vi.fn(), push: vi.fn(), back: vi.fn() }),
-}));
+vi.mock('expo-router', async () => {
+    const { createExpoRouterMock } = await import('@/dev/testkit/mocks/router');
+    return createExpoRouterMock().module;
+});
 vi.mock('@react-navigation/native', async () => {
     const ReactModule = await import('react');
     return {
@@ -49,7 +50,12 @@ vi.mock('react-native', async (importOriginal) => {
         },
     };
 });
-vi.mock('@/components/ui/lists/Item', () => ({ Item: 'Item' }));
+// Rows render their right-hand control, as the real row does; page fields are text inputs.
+vi.mock('@/components/ui/lists/Item', async () => {
+    const React = await import('react');
+    return { Item: (props: { rightElement?: unknown }) => React.createElement('Item', props, props.rightElement as never) };
+});
+vi.mock('@/components/ui/forms/FieldTextInput', () => ({ FieldTextInput: 'TextInput' }));
 vi.mock('@/components/ui/lists/ItemGroup', () => ({ ItemGroup: 'ItemGroup' }));
 vi.mock('@/components/ui/feedback/ActivitySpinner', () => ({ ActivitySpinner: 'ActivitySpinner' }));
 vi.mock('@/utils/url/openExternalUrl', () => ({ openExternalUrl: openExternalUrlMock }));

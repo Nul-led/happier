@@ -2,7 +2,8 @@ import { describe, expect, it } from 'vitest';
 
 import type { WorkflowDefinitionV1 } from '@happier-dev/protocol/workflows/workflowV1';
 
-import { workflowDefinitionPromptTitle, workflowStepPromptLabel } from './workflowBlockLabel';
+import { workflowStepPromptLabel } from '@happier-dev/protocol/workflows';
+import { workflowDefinitionPromptTitle } from './workflowBlockLabel';
 
 const AGENT_TARGET = {
     kind: 'agent' as const,

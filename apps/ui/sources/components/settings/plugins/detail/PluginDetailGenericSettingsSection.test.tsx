@@ -9,7 +9,7 @@ import type {
     PluginProjectionEditableSettingField,
     PluginProjectionEntry,
 } from '@/agents/backendCatalog/daemonContributionRegistryProjectionAdapters';
-import { createDeferred, flattenTestStyle, renderScreen } from '@/dev/testkit';
+import { createDeferred, flattenTestStyle, renderScreen, standardCleanup } from '@/dev/testkit';
 import type {
     MachinePluginSecretDeleteResult,
     MachinePluginSecretSetResult,
@@ -290,9 +290,11 @@ function createProjection(
     fields: readonly PluginProjectionEditableSettingField[] = SETTINGS_FIELDS,
     scope: 'account' | 'daemon' = 'daemon',
     pluginId = PLUGIN_ID,
+    occurrenceId = `occurrence-${generation}`,
 ): PluginProjectionEntry {
     return {
         pluginId,
+        occurrenceId,
         immutableGenerationId: `generation-${generation}`,
         title: 'Acme hooks',
         description: null,
@@ -322,6 +324,7 @@ function createProjection(
 function createExternalNotificationChannelProjection(): PluginProjectionEntry {
     return {
         pluginId: EXTERNAL_NOTIFICATION_PLUGIN_ID,
+        occurrenceId: 'external-notification-occurrence-1',
         immutableGenerationId: 'external-notification-generation-1',
         title: 'Document Reviewer Target',
         description: null,
@@ -370,6 +373,7 @@ function createExternalNotificationChannelProjection(): PluginProjectionEntry {
 function createOpenCodeProjection(): PluginProjectionEntry {
     return {
         pluginId: OPENCODE_PLUGIN_ID,
+        occurrenceId: 'opencode-occurrence-1',
         title: 'OpenCode',
         description: null,
         version: '1.0.0',
@@ -606,6 +610,8 @@ async function renderSection(
         serverId?: string | null;
         daemonServerIdentityId?: string | null;
         perActiveServerIdentityId?: string | null;
+        /** The platform fact the app's presentation provider supplies (touch floors). */
+        uiPlatform?: 'ios' | 'android' | 'web';
     }> = {},
 ) {
     const { PluginDetailGenericSettingsSection } = await import('./PluginDetailGenericSettingsSection');
@@ -628,7 +634,10 @@ async function renderSection(
             isDaemonTargetCurrent={options.isDaemonTargetCurrent}
         />
     );
-    const screen = await renderScreen(element);
+    const { HappierUiPlatformProvider } = await import('@happier-dev/plugin-ui/environment');
+    const screen = await renderScreen(options.uiPlatform
+        ? <HappierUiPlatformProvider platform={{ platform: options.uiPlatform, colorScheme: 'light' }}>{element}</HappierUiPlatformProvider>
+        : element);
     await flushAsync();
     return { PluginDetailGenericSettingsSection, element, screen };
 }
@@ -704,6 +713,12 @@ describe('PluginDetailGenericSettingsSection', () => {
         });
     });
 
+    it('draws no section for a settings group with nothing the user can set', async () => {
+        const { screen } = await renderSection(createProjection(1, []));
+        expect(screen.findByTestId(`settings.plugins.detail.${PLUGIN_ID}.settings.${GROUP_ID}.empty`)).toBeNull();
+        expect(screen.findAll((node) => node.props?.title === 'Acme hook settings')).toHaveLength(0);
+    });
+
     it('refreshes mounted generic and declarative Settings consumers from one shared record watch', async () => {
         let endpoint = 'https://before.example.test';
         let region = 'eu-before';
@@ -759,7 +774,7 @@ describe('PluginDetailGenericSettingsSection', () => {
                             pluginId: PLUGIN_ID,
                             localId: 'shared-settings',
                             qualifiedId: `${PLUGIN_ID}/shared-settings`,
-                            generation: '1',
+                            occurrenceId: 'shared-settings-occurrence-1',
                         },
                         visible: true,
                         requiredHostMethods: [],
@@ -1516,7 +1531,7 @@ describe('PluginDetailGenericSettingsSection', () => {
         expect(screen.getTextContent()).not.toContain('settingsPlugins.genericSettingsSaveError');
     });
 
-    it('retires an Account-secret draft and stale settlement when its immutable generation is replaced', async () => {
+    it('keeps an Account-secret draft across custody changes and retires it when its occurrence is replaced', async () => {
         const pendingWrite = createDeferred<{
             status: 'conflict';
             snapshot: {
@@ -1533,6 +1548,10 @@ describe('PluginDetailGenericSettingsSection', () => {
             ...createProjection(1, [ACCOUNT_SECRET_FIELD], 'account'),
             immutableGenerationId: 'generation-2',
         };
+        const thirdProjection = {
+            ...secondProjection,
+            occurrenceId: 'occurrence-2',
+        };
         const { PluginDetailGenericSettingsSection, screen } = await renderSection(firstProjection);
 
         act(() => {
@@ -1548,6 +1567,25 @@ describe('PluginDetailGenericSettingsSection', () => {
                 <PluginDetailGenericSettingsSection
                     pluginId={PLUGIN_ID}
                     projection={secondProjection}
+                    machineId="machine-1"
+                    serverId="server-1"
+                    accountServerIdentityId="server-identity-1"
+                    daemonServerIdentityId="server-identity-1"
+                    perActiveServerIdentityId="server-identity-1"
+                    daemonOperationsAvailable
+                />,
+            );
+        });
+        await flushAsync();
+
+        expect(screen.findByTestId(ACCOUNT_SECRET_INPUT_ID)?.props.value)
+            .toBe('generation-one-account-secret');
+
+        await act(async () => {
+            screen.tree.update(
+                <PluginDetailGenericSettingsSection
+                    pluginId={PLUGIN_ID}
+                    projection={thirdProjection}
                     machineId="machine-1"
                     serverId="server-1"
                     accountServerIdentityId="server-identity-1"
@@ -1726,7 +1764,7 @@ describe('PluginDetailGenericSettingsSection', () => {
         expect(machinePluginSettingsSetMock).not.toHaveBeenCalled();
     });
 
-    it('retires a daemon-secret draft and stale settlement when its immutable generation is replaced', async () => {
+    it('keeps a daemon-secret draft across custody changes and retires it when its occurrence is replaced', async () => {
         const pendingWrite = createDeferred<MachinePluginSecretSetResult>();
         machinePluginSecretSetMock.mockReturnValueOnce(pendingWrite.promise);
         const secretField = SETTINGS_FIELDS[1]!;
@@ -1734,6 +1772,10 @@ describe('PluginDetailGenericSettingsSection', () => {
         const secondProjection = {
             ...createProjection(1, [secretField], 'account'),
             immutableGenerationId: 'generation-2',
+        };
+        const thirdProjection = {
+            ...secondProjection,
+            occurrenceId: 'occurrence-2',
         };
         const { PluginDetailGenericSettingsSection, screen } = await renderSection(firstProjection);
 
@@ -1750,6 +1792,25 @@ describe('PluginDetailGenericSettingsSection', () => {
                 <PluginDetailGenericSettingsSection
                     pluginId={PLUGIN_ID}
                     projection={secondProjection}
+                    machineId="machine-1"
+                    serverId="server-1"
+                    accountServerIdentityId="server-identity-1"
+                    daemonServerIdentityId="server-identity-1"
+                    perActiveServerIdentityId="server-identity-1"
+                    daemonOperationsAvailable
+                />,
+            );
+        });
+        await flushAsync();
+
+        expect(screen.findByTestId(SECRET_INPUT_ID)?.props.value)
+            .toBe('generation-one-daemon-secret');
+
+        await act(async () => {
+            screen.tree.update(
+                <PluginDetailGenericSettingsSection
+                    pluginId={PLUGIN_ID}
+                    projection={thirdProjection}
                     machineId="machine-1"
                     serverId="server-1"
                     accountServerIdentityId="server-identity-1"
@@ -1832,25 +1893,12 @@ describe('PluginDetailGenericSettingsSection', () => {
         );
     });
 
-    it('keeps generic text controls at least 44 points tall', async () => {
-        const { screen } = await renderSection();
-
-        expect(flattenTestStyle(screen.findByTestId(ENDPOINT_INPUT_ID)?.props.style))
-            .toMatchObject({ minHeight: 44 });
-        expect(flattenTestStyle(screen.findByTestId(SECRET_INPUT_ID)?.props.style))
-            .toMatchObject({ minHeight: 44 });
-    });
-
-    it('keeps generic text controls at least 48dp tall on Android', async () => {
-        platformEnvironment.platform = 'android';
-        try {
-            const { screen } = await renderSection();
-            expect(flattenTestStyle(screen.findByTestId(ENDPOINT_INPUT_ID)?.props.style))
-                .toMatchObject({ minHeight: 48 });
-            expect(flattenTestStyle(screen.findByTestId(SECRET_INPUT_ID)?.props.style))
-                .toMatchObject({ minHeight: 48 });
-        } finally {
-            platformEnvironment.platform = 'web';
+    it('keeps generic text controls at the native touch floor on phones (44 pt iOS, 48 dp Android)', async () => {
+        for (const [uiPlatform, floor] of [['ios', 44], ['android', 48]] as const) {
+            const { screen } = await renderSection(createProjection(1), { uiPlatform });
+            expect(flattenTestStyle(screen.findByTestId(ENDPOINT_INPUT_ID)?.props.style)).toMatchObject({ minHeight: floor });
+            expect(flattenTestStyle(screen.findByTestId(SECRET_INPUT_ID)?.props.style)).toMatchObject({ minHeight: floor });
+            standardCleanup();
         }
     });
 
@@ -2416,6 +2464,17 @@ describe('PluginDetailGenericSettingsSection', () => {
         ['account', 'settingsPlugins.genericSettingsAccountFooter'],
         ['daemon', 'settingsPlugins.genericSettingsFooter'],
     ] as const)('uses the %s record footer when the plugin does not declare one', async (scope, footer) => {
+        if (scope === 'account') {
+            scopedSettingsReadMock.mockResolvedValue({
+                status: 'ready',
+                snapshot: {
+                    scope: { kind: 'account' },
+                    target: { kind: 'account', serverIdentityId: 'server-identity-1' },
+                    revision: { kind: 'account', value: 1 },
+                    values: { endpoint: 'https://account.example.test', enabled: true },
+                },
+            });
+        }
         const { screen } = await renderSection(createProjection(1, undefined, scope));
 
         expect(screen.getTextContent()).toContain(footer);

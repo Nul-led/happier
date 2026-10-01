@@ -38,19 +38,21 @@ describe('runManagedIdentityProviderRemoval', () => {
         expect(remove).not.toHaveBeenCalled();
     });
 
-    it('fails closed if a read-only preflight returns an approval envelope', async () => {
-        const confirm = vi.fn();
+    it('awaits a read-only preflight approval before confirmation', async () => {
+        const confirm = vi.fn(async () => true);
         const remove = vi.fn();
         const result = await runManagedIdentityProviderRemoval({
             providerId: 'provider-1',
-            readPreflight: async () => ({ kind: 'approval_pending', artifactId: 'approval-read', approval: readApproval }),
+            readPreflight: async (options) => {
+                await options?.onApprovalSucceeded?.(preflight);
+                return { kind: 'approval_pending', artifactId: readApproval.artifactId, approval: readApproval };
+            },
             confirm,
-            remove,
+            remove: async () => ({ kind: 'succeeded' as const, value: { outcome: 'removed' as const } }),
         });
 
-        expect(result).toEqual({ kind: 'failed', code: 'invalid_action_output' });
-        expect(confirm).not.toHaveBeenCalled();
-        expect(remove).not.toHaveBeenCalled();
+        expect(result).toEqual({ kind: 'removed' });
+        expect(confirm).toHaveBeenCalledOnce();
     });
 
     it('uses the preflight revision for the confirmed mutation', async () => {

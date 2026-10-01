@@ -296,6 +296,7 @@ export function BrowserDetailsSurface(props: Readonly<{
             desktopWebViewAvailability={desktopWebViewAvailability}
             allowExternalUrlBrowsing={props.allowExternalUrlBrowsing}
             sendDaemonCommand={sendDaemonCommand}
+            subscribeBrowserEvents={productModels?.browserContext?.daemonControl?.subscribeBrowserEvents}
             onViewTargetChange={props.onViewTargetChange}
             nowMs={props.nowMs}
             testID={props.testID ?? 'browser-details-surface'}

@@ -6,7 +6,7 @@ import type { NativeAccountAdmissionV1 } from '@happier-dev/protocol';
 import type { AccountDirectoryAuthTransport } from '@/auth/accountDirectory/accountDirectoryAuthClient';
 import type { HomeAuthenticationAction } from '@/auth/capabilities/authMethodCapabilities';
 import { useAuth } from '@/auth/context/AuthContext';
-import { executeHomeAuthentication } from '@/auth/flows/executeHomeAuthentication';
+import { executeHomeAuthentication, type ExecuteHomeAuthenticationOptions } from '@/auth/flows/executeHomeAuthentication';
 import { resolveHomeAuthenticationTarget } from '@/auth/flows/resolveHomeAuthenticationTarget';
 import { getAuthProvider } from '@/auth/providers/registry';
 import { describeHomeAuthenticationAction } from '@/components/account/auth/homeAuthenticationActionPresentation';
@@ -33,7 +33,7 @@ export function HomeAuthenticationFlow(props: Readonly<{
     keyChallengeV2Available?: boolean;
     returnTo: string;
     /** Optional Team entry context carried into the existing Home OAuth owner. */
-    teamAdmission?: Readonly<{ teamId: string; invitationToken?: string; origin?: 'home' | 'team' }>;
+    teamAdmission?: ExecuteHomeAuthenticationOptions['teamAdmission'];
     accountContinuation?: AccountHomeAuthenticationContinuation;
     /** Human label for the selected Home, used in native auth failure copy. */
     homeLabel?: string;
@@ -126,6 +126,7 @@ export function HomeAuthenticationFlow(props: Readonly<{
                 action={execution.action}
                 mode={execution.mode}
                 {...(execution.recommendedProvisionMode ? { recommendedProvisionMode: execution.recommendedProvisionMode } : {})}
+                {...(execution.passwordReset ? { passwordReset: execution.passwordReset } : {})}
                 {...(props.homeLabel ? { homeLabel: props.homeLabel } : {})}
                 {...(props.nativeAdmission ? { admission: props.nativeAdmission } : {})}
                 {...(props.initialEmail ? { initialEmail: props.initialEmail } : {})}

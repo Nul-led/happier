@@ -46,10 +46,6 @@ vi.mock('@/sync/runtime/nativeIrohTunnels/runtime', () => ({
     }),
 }));
 
-vi.mock('@/sync/runtime/nativeIrohTunnels/fallback', () => ({
-    classifyIrohHomeTunnelSwitchFailure: () => ({ fallbackAllowed: false }),
-}));
-
 vi.mock('@/sync/runtime/orchestration/concurrentSessionCache', () => ({
     startConcurrentSessionCacheSync: vi.fn(),
     stopConcurrentSessionCacheSync: vi.fn(),

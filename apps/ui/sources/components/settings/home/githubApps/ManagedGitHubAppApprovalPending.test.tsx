@@ -16,22 +16,23 @@ const openExternalUrlMock = vi.hoisted(() => vi.fn());
 const announceMock = vi.hoisted(() => vi.fn());
 const approvalPendingMock = vi.hoisted(() => vi.fn());
 
-vi.mock('expo-router', () => ({
-    useNavigation: () => ({
-        isFocused: () => true,
-        addListener: () => () => {},
-        dispatch: vi.fn(),
-    }),
-    useRouter: () => ({ replace: replaceMock, push: pushMock, back: vi.fn() }),
-}));
+vi.mock('expo-router', async () => {
+    const { createExpoRouterMock } = await import('@/dev/testkit/mocks/router');
+    return createExpoRouterMock({ router: { replace: replaceMock, push: pushMock } }).module;
+});
 vi.mock('@/components/ui/forms/FieldItem', () => ({ FieldItem: 'FieldItem' }));
 vi.mock('@/components/ui/accessibility/announceAccessibilityMessage', () => ({
     announceAccessibilityMessage: announceMock,
 }));
 vi.mock('@/components/ui/feedback/ActivitySpinner', () => ({ ActivitySpinner: 'ActivitySpinner' }));
-vi.mock('@/components/ui/lists/Item', () => ({ Item: 'Item' }));
+// Rows render their right-hand control, as the real row does; page fields are text inputs.
+vi.mock('@/components/ui/lists/Item', async () => {
+    const React = await import('react');
+    return { Item: (props: { rightElement?: unknown }) => React.createElement('Item', props, props.rightElement as never) };
+});
+vi.mock('@/components/ui/forms/FieldTextInput', () => ({ FieldTextInput: 'TextInput' }));
 vi.mock('@/components/ui/lists/ItemGroup', () => ({ ItemGroup: 'ItemGroup' }));
-vi.mock('@/components/ui/text/Text', () => ({ TextInput: 'TextInput' }));
+vi.mock('@/components/ui/text/Text', () => ({ Text: 'Text', TextInput: 'TextInput' }));
 vi.mock('@/text', () => ({ t: (key: string) => key }));
 vi.mock('@/utils/url/openExternalUrl', () => ({ openExternalUrl: openExternalUrlMock }));
 vi.mock('@/modal', () => ({
@@ -248,8 +249,7 @@ describe('managed GitHub App approval-pending consumers', () => {
         await screen.pressByTestIdAsync('github-app-save');
 
         expect(replaceMock).not.toHaveBeenCalled();
-        expect(screen.findByTestId('github-app-save')?.parent?.props.footer)
-            .toBe('connect.waitingForApproval');
+        expect(screen.findAll((node) => node.props.description === 'connect.waitingForApproval')).not.toHaveLength(0);
         expect(screen.findByTestId('github-app-save')?.props.loading).toBe(false);
         expect(screen.findByTestId('github-app-private-key')?.props.value).toBe('private-key');
         expect(announceMock).toHaveBeenCalledWith('connect.waitingForApproval');
@@ -318,8 +318,7 @@ describe('managed GitHub App approval-pending consumers', () => {
         await screen.pressByTestIdAsync('github-manifest-start');
 
         expect(openExternalUrlMock).not.toHaveBeenCalled();
-        expect(screen.findByTestId('github-app-save')?.parent?.props.footer)
-            .toBe('connect.waitingForApproval');
+        expect(screen.findAll((node) => node.props.description === 'connect.waitingForApproval')).not.toHaveLength(0);
         expect(screen.findByTestId('github-manifest-start')?.props.loading).toBe(false);
         expect(approvalPendingMock).toHaveBeenCalledWith(pendingApproval);
     });
@@ -364,7 +363,7 @@ describe('managed GitHub App approval-pending consumers', () => {
         expect(openExternalUrlMock).not.toHaveBeenCalled();
         expect(screen.findByTestId('github-app-notice')?.props.title)
             .toBe('connect.waitingForApproval');
-        expect(screen.findByTestId('github-installation-verify')?.props.loading).toBe(false);
+        expect(screen.findByTestId('github-installation-verify')?.props.disabled).toBe(false);
         expect(approvalPendingMock).toHaveBeenCalledWith(pendingApproval);
     });
 
@@ -416,7 +415,7 @@ describe('managed GitHub App approval-pending consumers', () => {
 
         expect(executeMock).toHaveBeenCalledTimes(1);
         expect(screen.findByTestId('github-manifest-start')?.props.disabled).toBe(false);
-        expect(screen.findAll((node) => node.props.footer === 'identityAdministration.error')).not.toHaveLength(0);
+        expect(screen.findAll((node) => node.props.description === 'identityAdministration.error')).not.toHaveLength(0);
     });
 
     it('does not refresh after a pending installation removal', async () => {
@@ -427,12 +426,12 @@ describe('managed GitHub App approval-pending consumers', () => {
             <ManagedGitHubAppDetailContent surface={surface} registrationId="registration-1" />,
         );
 
-        await screen.pressByTestIdAsync('github-app-installation:installation-1');
+        await screen.pressByTestIdAsync('github-app-installation-remove:installation-1');
 
         expect(refreshMock).not.toHaveBeenCalled();
         expect(screen.findByTestId('github-app-notice')?.props.title)
             .toBe('connect.waitingForApproval');
-        expect(screen.findByTestId('github-app-installation:installation-1')?.props.disabled).toBe(false);
+        expect(screen.findByTestId('github-app-installation-remove:installation-1')?.props.disabled).toBe(false);
     });
 
     it('preserves a Home-owned create draft and opens the exact Home policy after an unapproved enterprise origin', async () => {
@@ -461,7 +460,7 @@ describe('managed GitHub App approval-pending consumers', () => {
         expect(screen.findByTestId('github-app-private-key')?.props.value).toBe('private-key');
         expect(screen.findByTestId('github-enterprise-origin-policy')?.props.title)
             .toBe('homeGovernance.githubEnterpriseOrigins');
-        expect(screen.findAll((node) => node.props.footer
+        expect(screen.findAll((node) => node.props.description
             === 'identityAdministration.githubEnterpriseOriginNotApproved')).not.toHaveLength(0);
 
         await screen.pressByTestIdAsync('github-enterprise-origin-policy');
@@ -484,7 +483,7 @@ describe('managed GitHub App approval-pending consumers', () => {
         await screen.pressByTestIdAsync('github-installation-verify');
 
         expect(openExternalUrlMock).not.toHaveBeenCalled();
-        expect(screen.findByTestId('github-installation-verify')?.props.loading).toBe(false);
+        expect(screen.findByTestId('github-installation-verify')?.props.disabled).toBe(false);
         expect(screen.findByTestId('github-enterprise-origin-policy')?.props.title)
             .toBe('homeGovernance.githubEnterpriseOrigins');
         await screen.pressByTestIdAsync('github-enterprise-origin-policy');
@@ -537,11 +536,11 @@ describe('managed GitHub App approval-pending consumers', () => {
 
         // The classifier's answer, not the wire enum. A raw code here is the
         // regression: it is unlocalized and means nothing to an administrator.
-        const footers = screen.findAll((node) => typeof node.props.footer === 'string'
-            && node.props.footer.length > 0);
-        expect(footers.map((node) => node.props.footer))
+        const footers = screen.findAll((node) => typeof node.props.description === 'string'
+            && node.props.description.length > 0);
+        expect(footers.map((node) => node.props.description))
             .not.toContain('github_installation_unverified');
-        expect(footers.map((node) => node.props.footer))
+        expect(footers.map((node) => node.props.description))
             .toContain('identityAdministration.error');
     });
 });

@@ -15,7 +15,6 @@ vi.mock('react-native-unistyles', async () => {
     const { createUnistylesMock } = await import('@/dev/testkit/mocks/unistyles');
     return createUnistylesMock({ theme: { colors: { text: { secondary: '#666' } } } });
 });
-vi.mock('@/hooks/server/useServerRetentionPolicies', () => ({ useServerRetentionPolicies: () => ({}) }));
 vi.mock('@/components/ui/lists/ItemGroup', () => ({
     ItemGroup: ({ children }: { children?: React.ReactNode }) => React.createElement(React.Fragment, null, children),
 }));
@@ -27,7 +26,7 @@ vi.mock('@/components/ui/lists/ItemRowActions', () => ({
 }));
 
 describe('SavedServersSection actions', () => {
-    it('routes distinct web actions to tab-local and device-default focus scopes', async () => {
+    it('switches this tab from the row and makes the Home the device default from its menu', async () => {
         const onSwitch = vi.fn();
         const { SavedServersSection } = await import('./SavedServersSection');
         const screen = await renderScreen(React.createElement(SavedServersSection, {
@@ -47,13 +46,13 @@ describe('SavedServersSection actions', () => {
             onRemove: vi.fn(),
         }));
 
+        await screen.pressByTestIdAsync('saved-server-switch-server-b');
         const actions = findTestInstanceByTypeWithProps(screen, 'ItemRowActions' as never, { title: 'Home B' })?.props.actions;
-        const tabAction = actions.find((action: { id: string }) => action.id === 'switch-tab');
-        const deviceAction = actions.find((action: { id: string }) => action.id === 'switch-device');
-        tabAction.onPress();
-        deviceAction.onPress();
+        expect(actions.map((action: { id: string }) => action.id)).toEqual(['switch-device', 'rename', 'remove']);
+        actions.find((action: { id: string }) => action.id === 'switch-device').onPress();
 
-        expect(onSwitch).toHaveBeenNthCalledWith(1, expect.objectContaining({ id: 'server-b' }), 'tab');
+        // The row's Switch uses the routine scope (this tab in a browser); the menu moves the device default.
+        expect(onSwitch).toHaveBeenNthCalledWith(1, expect.objectContaining({ id: 'server-b' }));
         expect(onSwitch).toHaveBeenNthCalledWith(2, expect.objectContaining({ id: 'server-b' }), 'device');
     });
 
@@ -74,14 +73,15 @@ describe('SavedServersSection actions', () => {
 
         const focused = findTestInstanceByTypeWithProps(screen, 'Item' as never, { testID: 'saved-server-row-server-a' })!.props;
         const other = findTestInstanceByTypeWithProps(screen, 'Item' as never, { testID: 'saved-server-row-server-b' })!.props;
-        expect(focused.detail).toBe('server.active');
-        expect(String(focused.accessibilityLabel)).toContain('server.active');
-        expect(other.detail).toBe('server.default');
-        expect(String(other.accessibilityLabel)).toContain('server.default');
-        expect(String(other.accessibilityLabel)).not.toContain('server.active');
+        // The Home in use carries the Current pill; its status line does not repeat it.
+        expect(String(focused.subtitle)).not.toContain('server.homes.currentPill');
+        expect(String(focused.accessibilityLabel)).toContain('server.homes.currentPill');
+        expect(String(other.subtitle)).toMatch(/ · homesHub\.opensFirst$/);
+        expect(String(other.accessibilityLabel)).toContain('homesHub.opensFirst');
+        expect(String(other.accessibilityLabel)).not.toContain('server.homes.currentPill');
     });
 
-    it('combines active and device-default facts when they name the same Home', async () => {
+    it('says "default" on the current Home only to assistive tech; its line carries its state', async () => {
         const { SavedServersSection } = await import('./SavedServersSection');
         const screen = await renderScreen(React.createElement(SavedServersSection, {
             servers: [{ id: 'server-a', name: 'Home A', serverUrl: 'https://a.example.test', createdAt: 0, updatedAt: 0, lastUsedAt: 0 }],
@@ -94,8 +94,30 @@ describe('SavedServersSection actions', () => {
         }));
 
         const row = findTestInstanceByTypeWithProps(screen, 'Item' as never, { testID: 'saved-server-row-server-a' })!.props;
-        expect(row.detail).toBe('server.active · server.default');
-        expect(String(row.accessibilityLabel)).toContain('server.active · server.default');
+        expect(String(row.subtitle)).not.toContain('homesHub.opensFirst');
+        expect(String(row.accessibilityLabel)).toContain('server.homes.currentPill · homesHub.opensFirst');
+    });
+
+    it('offers Home Administration on the rows of Homes that admit this account, and only there', async () => {
+        const onOpenAdministration = vi.fn();
+        const { SavedServersSection } = await import('./SavedServersSection');
+        const screen = await renderScreen(React.createElement(SavedServersSection, {
+            servers: [
+                { id: 'server-a', name: 'Home A', serverUrl: 'https://a.example.test', createdAt: 0, updatedAt: 0, lastUsedAt: 0 },
+                { id: 'server-b', name: 'Home B', serverUrl: 'https://b.example.test', createdAt: 0, updatedAt: 0, lastUsedAt: 0 },
+            ],
+            activeServerId: 'server-a',
+            authStatusByServerId: { 'server-a': 'signedIn', 'server-b': 'signedIn' },
+            administrableServerIds: new Set(['server-b']),
+            onOpenAdministration,
+            onSwitch: vi.fn(),
+            onRename: vi.fn(),
+            onRemove: vi.fn(),
+        }));
+
+        expect(screen.findByTestId('saved-server-administration-server-a')).toBeFalsy();
+        await screen.pressByTestIdAsync('saved-server-administration-server-b');
+        expect(onOpenAdministration).toHaveBeenCalledWith(expect.objectContaining({ id: 'server-b' }));
     });
 
     it('offers an edit-members action on a group row without switching the client to it', async () => {

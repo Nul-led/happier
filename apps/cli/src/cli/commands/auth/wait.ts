@@ -173,12 +173,13 @@ function parsePendingAuthState(raw: string): PendingAuthState {
 async function completeClaimedCredentialHandoff(params: Readonly<{
   credentials: StoredCredentials;
   statePath: string;
+  runtimeOrigin: string;
 }>): Promise<string> {
   // The relay claim is one-shot. Once credentials are durable, this request
   // must no longer be retryable even if the subsequent registration fails.
   await removeProtectedLocalStateFile(params.statePath, PENDING_AUTH_STATE_PROTECTION);
   try {
-    return await registerTerminalEnrollmentMachine(params.credentials);
+    return await registerTerminalEnrollmentMachine(params.credentials, params.runtimeOrigin);
   } catch (cause) {
     throw new Error(
       'Authentication credentials were saved, but machine registration is incomplete. '
@@ -322,6 +323,7 @@ export async function handleAuthWait(argsRaw: string[], signal?: AbortSignal): P
       const machineId = await completeClaimedCredentialHandoff({
         credentials: persisted.credentials,
         statePath,
+        runtimeOrigin: acquired.runtime.runtimeOrigin,
       });
       await writeJsonStdout({
         success: true,

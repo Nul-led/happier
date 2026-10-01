@@ -67,6 +67,22 @@ describe('native email/password failure copy', () => {
         expect(describeEmailPasswordFailure(wrongPassword).messageKey).toBe('settingsAccount.nativePassword.signInFailed');
     });
 
+    it('never blames the credentials for a failure the credentials did not cause', () => {
+        const unreachable = [
+            new HappyError('x', true, { code: 'server_unreachable' }),
+            new HappyError('x', true, { kind: 'network' }),
+        ];
+        for (const error of unreachable) {
+            expect(describeEmailPasswordFailure(error)).toEqual({
+                field: 'form', messageKey: 'settingsAccount.nativePassword.homeUnreachable',
+            });
+        }
+        // An unrecognised failure is not a credential verdict: only `authentication_failed` is.
+        const unknown = describeEmailPasswordFailure(new HappyError('x', true, { kind: 'auth', code: 'action_failed' }));
+        expect(unknown.field).toBe('form');
+        expect(unknown.messageKey).not.toBe('settingsAccount.nativePassword.signInFailed');
+    });
+
     it('names the Home for a proven disabled Account and separates unavailable from rate limited', () => {
         expect(describeEmailPasswordFailure(
             new HappyError('x', false, { kind: 'auth', status: 403, code: 'account-disabled' }),
@@ -112,8 +128,9 @@ describe('native email/password failure copy', () => {
             .toBe('settingsAccount.nativePassword.approvalPending');
         expect(describeEmailPasswordFailure(new HappyError('wrong origin', false, { code: 'approval_binding_mismatch' })).messageKey)
             .toBe('settingsAccount.nativePassword.linkExpired');
-        expect(describeEmailPasswordFailure(new HappyError('local settlement failed', false, { code: 'operation_failed' })).messageKey)
-            .toBe('settingsAccount.nativePassword.outcomeUnconfirmed');
+        // A generic failure says the Home did not complete it; "unavailable" is reserved for the explicit reason.
+        expect(describeEmailPasswordFailure(new HappyError('local settlement failed', false, { code: 'operation_failed' })))
+            .toEqual({ field: 'form', messageKey: 'settingsAccount.nativePassword.serverUnavailable' });
         expect(describeEmailPasswordFailure(
             new HappyError('wrong current password', false, { code: 'authentication_failed' }),
             { credentialField: 'currentPassword' },

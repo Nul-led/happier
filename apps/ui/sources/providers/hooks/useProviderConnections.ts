@@ -16,12 +16,28 @@ type ProviderConnectionsState = Readonly<{
     loading: boolean;
 }>;
 
+type ConnectionReader = Readonly<{
+    machineId: string;
+    serverId: string | null;
+    accountLifetime: ActiveServerAccountScopeLifetime | null;
+    read: () => Promise<Success | null | undefined>;
+}>;
+
+// A collection and its open detail can describe different projections of the
+// same target. Keep only active readers here; each hook still owns its data,
+// errors, cancellation and Account lifetime.
+const activeReaders = new Set<ConnectionReader>();
+
 export function useProviderConnections(input: Readonly<{
     enabled: boolean;
+    active?: boolean;
     machineId: string | null;
     serverId: string | null;
     connectionId?: string;
 }>) {
+    const active = input.active ?? true;
+    const activeRef = React.useRef(active);
+    activeRef.current = active;
     const accountLifetime = captureActiveServerAccountScopeLifetime();
     const [state, setState] = React.useState<ProviderConnectionsState>({
         scopeKey: null,
@@ -44,7 +60,7 @@ export function useProviderConnections(input: Readonly<{
     const scopeEnabled = Boolean(input.enabled && input.machineId);
     const data = stateMatchesScope ? state.data : null;
     const error = stateMatchesScope ? state.error : null;
-    const loading = scopeEnabled && (!stateMatchesScope || state.loading);
+    const loading = active && scopeEnabled && (!stateMatchesScope || state.loading);
 
     React.useEffect(() => {
         const registration = accountLifetime?.onRetire(() => {
@@ -57,10 +73,11 @@ export function useProviderConnections(input: Readonly<{
         return () => registration?.dispose();
     }, [accountLifetime]);
 
-    const refresh = React.useCallback(async () => {
+    const read = React.useCallback(async () => {
+        if (!activeRef.current) return null;
         const requestGeneration = ++generation.current;
         const requestStillCurrent = (): boolean => (
-            currentAccountLifetimeRef.current === accountLifetime
+            activeRef.current && currentAccountLifetimeRef.current === accountLifetime
             && (accountLifetime?.isCurrent() ?? true)
         );
         if (!requestStillCurrent()) return null;
@@ -122,10 +139,40 @@ export function useProviderConnections(input: Readonly<{
     }, [accountLifetime, input.connectionId, input.enabled, input.machineId, input.serverId, scopeKey]);
 
     React.useEffect(() => {
-        setState({ scopeKey, accountLifetime, data: null, error: null, loading: false });
-        void refresh();
-        return () => { generation.current += 1; };
-    }, [accountLifetime, refresh, scopeKey]);
+        const reader = active && input.enabled && input.machineId
+            ? { machineId: input.machineId, serverId: input.serverId, accountLifetime, read }
+            : null;
+        if (reader) activeReaders.add(reader);
+        // Visibility pauses demand; it does not change the authority of a
+        // retained projection or the metadata an editor draft was built from.
+        setState((current) => current.scopeKey === scopeKey && current.accountLifetime === accountLifetime
+            ? current
+            : { scopeKey, accountLifetime, data: null, error: null, loading: false });
+        void read();
+        return () => {
+            generation.current += 1;
+            if (reader) activeReaders.delete(reader);
+        };
+    }, [accountLifetime, active, input.enabled, input.machineId, input.serverId, read, scopeKey]);
+
+    const refresh = React.useCallback(async () => {
+        const ownRead = read();
+        if (input.enabled && input.machineId
+            && currentAccountLifetimeRef.current === accountLifetime
+            && (accountLifetime?.isCurrent() ?? true)) {
+            // Invoke private reads, never peer refreshes, so this cannot recurse.
+            // Each read presents its own failure without failing a successful write.
+            for (const reader of activeReaders) {
+                if (reader.read !== read
+                    && reader.machineId === input.machineId
+                    && reader.serverId === input.serverId
+                    && reader.accountLifetime === accountLifetime) {
+                    void reader.read();
+                }
+            }
+        }
+        return await ownRead;
+    }, [accountLifetime, input.enabled, input.machineId, input.serverId, read]);
 
     return { data, error, loading, refresh };
 }

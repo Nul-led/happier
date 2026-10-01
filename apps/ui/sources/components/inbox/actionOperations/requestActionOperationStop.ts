@@ -3,8 +3,10 @@ import type { ActionOperationCancelV1Response } from '@happier-dev/protocol';
 import { cancelActionOperation } from '@/sync/ops/actionOperations';
 import type { ActionOperationProjection } from '@/sync/domains/actionOperations/actionOperationSelectors';
 
+export type ActionOperationStopTarget = Pick<ActionOperationProjection, 'serverId' | 'snapshot'>;
+
 export async function requestActionOperationStop(
-    operation: ActionOperationProjection,
+    operation: ActionOperationStopTarget,
 ): Promise<ActionOperationCancelV1Response> {
     if (!operation.serverId) return { kind: 'not_found' };
     return await cancelActionOperation({
