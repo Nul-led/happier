@@ -24,6 +24,18 @@ export type CodeBlockViewFrameProps = Readonly<{
     children: React.ReactNode;
 }>;
 
+/** The overlaid copy button's padding, icon and border, as drawn by `styles.copyButton`/`copyButtonOverlay`. */
+const COPY_BUTTON_OVERLAY_OFFSET = 8;
+const COPY_BUTTON_ICON_SIZE = 14;
+const COPY_BUTTON_PADDING_X = 8;
+const COPY_BUTTON_BORDER = 1;
+/**
+ * How far the code's viewport stops short of the block's right edge while the copy button is overlaid,
+ * so a command scrolls or wraps beside the button instead of running under it.
+ */
+export const CODE_BLOCK_OVERLAY_COPY_INSET = COPY_BUTTON_OVERLAY_OFFSET
+    + COPY_BUTTON_PADDING_X * 2 + COPY_BUTTON_ICON_SIZE + COPY_BUTTON_BORDER * 2;
+
 export const CodeBlockViewFrame = React.memo<CodeBlockViewFrameProps>(({
     code,
     language = null,
@@ -54,6 +66,7 @@ export const CodeBlockViewFrame = React.memo<CodeBlockViewFrameProps>(({
     const contentPaddingStyle = shouldOverlayCopyButton
         ? [styles.codePadding]
         : (shouldRenderHeaderRow ? styles.codePaddingWithHeader : styles.codePadding);
+    const besideOverlaidCopy = showCopyButton && shouldOverlayCopyButton ? styles.besideOverlaidCopy : null;
 
     const copyButton = showCopyButton ? (
         <Pressable
@@ -71,7 +84,7 @@ export const CodeBlockViewFrame = React.memo<CodeBlockViewFrameProps>(({
         >
             <Icon
                 name={behavior.copied ? 'check' : 'copy'}
-                size={14}
+                size={COPY_BUTTON_ICON_SIZE}
                 color={behavior.copied ? (theme.colors.state.success.foreground ?? theme.colors.text.secondary) : theme.colors.text.secondary}
             />
         </Pressable>
@@ -108,14 +121,14 @@ export const CodeBlockViewFrame = React.memo<CodeBlockViewFrameProps>(({
             {header}
             {shouldOverlayCopyButton ? copyButton : null}
             {wrap ? (
-                <View style={contentPaddingStyle}>
+                <View style={[contentPaddingStyle, besideOverlaidCopy]}>
                     {children}
                 </View>
             ) : (
                 <HorizontalOverflowScrollView
                     testID={scrollTestID}
                     showsHorizontalScrollIndicator={false}
-                    style={styles.scroll}
+                    style={[styles.scroll, besideOverlaidCopy]}
                     contentContainerStyle={contentPaddingStyle}
                 >
                     {children}
@@ -125,11 +138,11 @@ export const CodeBlockViewFrame = React.memo<CodeBlockViewFrameProps>(({
     );
 });
 
-const styles = StyleSheet.create(() => ({
+const styles = StyleSheet.create((theme) => ({
     container: {
         width: '100%',
         alignSelf: 'stretch',
-        borderRadius: 10,
+        borderRadius: theme.parts.codeBlock.radius,
         borderWidth: 1,
         overflow: 'hidden',
         position: 'relative',
@@ -137,6 +150,10 @@ const styles = StyleSheet.create(() => ({
     scroll: {
         width: '100%',
         alignSelf: 'stretch',
+    },
+    besideOverlaidCopy: {
+        width: 'auto',
+        marginRight: CODE_BLOCK_OVERLAY_COPY_INSET,
     },
     headerRow: {
         flexDirection: 'row',
@@ -162,16 +179,16 @@ const styles = StyleSheet.create(() => ({
     copyButton: {
         flexDirection: 'row',
         alignItems: 'center',
-        paddingHorizontal: 8,
+        paddingHorizontal: COPY_BUTTON_PADDING_X,
         paddingVertical: 6,
         borderRadius: 8,
     },
     copyButtonOverlay: {
         position: 'absolute',
-        top: 8,
-        right: 8,
+        top: COPY_BUTTON_OVERLAY_OFFSET,
+        right: COPY_BUTTON_OVERLAY_OFFSET,
         zIndex: 10,
-        borderWidth: 1,
+        borderWidth: COPY_BUTTON_BORDER,
     },
     copyButtonHovered: {
         opacity: 0.85,

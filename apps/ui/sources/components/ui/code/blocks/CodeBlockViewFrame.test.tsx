@@ -101,6 +101,43 @@ describe('CodeBlockViewFrame', () => {
         expect(flattened.some((s: any) => s?.position === 'absolute')).toBe(true);
     });
 
+    it.each([false, true])('keeps the code out from under an overlaid copy button (wrap=%s)', async (wrap) => {
+        mockPlatform('web');
+        const { CodeBlockViewFrame, CODE_BLOCK_OVERLAY_COPY_INSET } = await import('./CodeBlockViewFrame');
+
+        const screen = await renderScreen(
+            <CodeBlockViewFrame code={'happier-server --print-home-claim-code'} language={null} showHeaderRow={false} wrap={wrap} showCopyButton scrollTestID="code-viewport">
+                <React.Fragment>child</React.Fragment>
+            </CodeBlockViewFrame>,
+        );
+
+        // The viewport that holds the code (the scroller, or the wrapped block) ends where the button begins,
+        // so a long command scrolls or wraps beside the button instead of running under it.
+        const flat = (style: unknown) => (Array.isArray(style) ? style.flat(Infinity) : [style]) as Array<Record<string, unknown> | null>;
+        const marginRightOf = (style: unknown) => flat(style).reduce<number>((value, entry) => (typeof entry?.marginRight === 'number' ? entry.marginRight : value), 0);
+        const viewport = wrap
+            ? screen.tree.root.findAll((node) => typeof node.type === 'string' && marginRightOf(node.props.style) > 0)[0] ?? null
+            : screen.findByTestId('code-viewport');
+        expect(CODE_BLOCK_OVERLAY_COPY_INSET).toBeGreaterThan(0);
+        expect(viewport).not.toBeNull();
+        expect(marginRightOf(viewport!.props.style)).toBe(CODE_BLOCK_OVERLAY_COPY_INSET);
+    });
+
+    it('gives the code the full width when the copy button sits in the header', async () => {
+        mockPlatform('web');
+        const { CodeBlockViewFrame } = await import('./CodeBlockViewFrame');
+
+        const screen = await renderScreen(
+            <CodeBlockViewFrame code={'x'} language={'typescript'} wrap={false} showCopyButton scrollTestID="code-viewport">
+                <React.Fragment>child</React.Fragment>
+            </CodeBlockViewFrame>,
+        );
+
+        const viewport = screen.findByTestId('code-viewport')!;
+        const styles = (Array.isArray(viewport.props.style) ? viewport.props.style.flat(Infinity) : [viewport.props.style]) as Array<Record<string, unknown> | null>;
+        expect(styles.some((style) => typeof style?.marginRight === 'number' && style.marginRight > 0)).toBe(false);
+    });
+
     it('keeps copy button in the header when language is provided', async () => {
         mockPlatform('web');
         const { CodeBlockViewFrame } = await import('./CodeBlockViewFrame');
