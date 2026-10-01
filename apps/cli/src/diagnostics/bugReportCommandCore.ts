@@ -1,7 +1,10 @@
+import { writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import {
   BUG_REPORT_DEFAULT_ISSUE_OWNER,
   BUG_REPORT_DEFAULT_ISSUE_REPO,
+  buildBugReportExportBundle,
+  serializeBugReportExportBundle,
   buildBugReportFallbackIssueUrl as buildFallbackIssueUrl,
   formatBugReportFallbackIssueBody as formatFallbackIssueBody,
   appendBugReportReporterToSummary,
@@ -31,6 +34,7 @@ import {
   parseBugReportArgs,
 } from '@/diagnostics/bugReportCommandArgs';
 import {
+  DEFAULT_BUG_REPORT_FEATURE,
   fetchBugReportsFeatureFromServer,
   type BugReportsFeature,
 } from '@/diagnostics/bugReportFeatureClient';
@@ -48,13 +52,20 @@ type BugReportSubmittedResult = {
   artifactCount: number;
 };
 
+type BugReportExportedResult = {
+  mode: 'exported';
+  outputPath: string;
+  diagnosticsIncluded: boolean;
+  artifactCount: number;
+};
+
 type BugReportFallbackResult = {
   mode: 'fallback';
   issueUrl: string;
   diagnosticsIncluded: boolean;
 };
 
-export type BugReportCommandResult = BugReportSubmittedResult | BugReportFallbackResult;
+export type BugReportCommandResult = BugReportSubmittedResult | BugReportExportedResult | BugReportFallbackResult;
 
 export type BugReportCommandDependencies = {
   getActiveServerProfile: () => Promise<Pick<ServerProfile, 'id' | 'name' | 'serverUrl' | 'webappUrl'>>;
@@ -70,6 +81,7 @@ export type BugReportCommandDependencies = {
   }) => Promise<{ issues: BugReportSimilarIssue[] }>;
   isInteractiveTerminal: () => boolean;
   promptInput: (question: string) => Promise<string>;
+  writeExportFile: (path: string, contents: string) => Promise<void>;
 };
 
 const DEFAULT_DEPS: BugReportCommandDependencies = {
@@ -87,6 +99,9 @@ const DEFAULT_DEPS: BugReportCommandDependencies = {
     }),
   isInteractiveTerminal,
   promptInput,
+  writeExportFile: async (path, contents) => {
+    await writeFile(path, contents, 'utf8');
+  },
 };
 
 async function resolveRequiredField(input: {
@@ -173,7 +188,15 @@ export async function runBugReportCommand(
 
   const interactive = deps.isInteractiveTerminal();
   const activeServer = await deps.getActiveServerProfile();
-  const feature = await deps.fetchBugReportsFeature(activeServer.serverUrl);
+  let feature: BugReportsFeature;
+  try {
+    feature = await deps.fetchBugReportsFeature(activeServer.serverUrl);
+  } catch (error) {
+    if (!parsed.exportPath) {
+      throw error;
+    }
+    feature = { ...DEFAULT_BUG_REPORT_FEATURE };
+  }
   let includeDiagnostics = parsed.includeDiagnostics ?? feature.defaultIncludeDiagnostics;
 
   const title = await resolveRequiredField({
@@ -234,7 +257,7 @@ export async function runBugReportCommand(
     cliOverride: parsed.providerUrl,
     featureProviderUrl: feature.providerUrl,
   });
-  if (!feature.enabled || !providerUrl) {
+  if ((!feature.enabled || !providerUrl) && !parsed.exportPath) {
     const fallbackBody = formatFallbackIssueBody({
       summary: summaryWithReporter,
       currentBehavior,
@@ -259,7 +282,7 @@ export async function runBugReportCommand(
   }
 
   let existingIssueNumber: number | undefined = parsed.existingIssueNumber ?? undefined;
-  if (!existingIssueNumber && interactive && !parsed.skipSimilarIssues) {
+  if (!existingIssueNumber && interactive && !parsed.skipSimilarIssues && providerUrl) {
     const query = [title, summary, currentBehavior ?? '', expectedBehavior ?? '']
       .map((part) => String(part).trim())
       .filter(Boolean)
@@ -323,6 +346,24 @@ export async function runBugReportCommand(
     },
   };
 
+  if (parsed.exportPath) {
+    const bundle = buildBugReportExportBundle({
+      form,
+      environment,
+      artifacts: diagnostics.artifacts,
+    });
+    await deps.writeExportFile(parsed.exportPath, serializeBugReportExportBundle(bundle));
+    return {
+      mode: 'exported',
+      outputPath: parsed.exportPath,
+      diagnosticsIncluded: includeDiagnostics,
+      artifactCount: diagnostics.artifacts.length,
+    };
+  }
+
+  if (!providerUrl) {
+    throw new Error('Bug report submission requires a bug report provider URL');
+  }
   const submitted = await deps.submitBugReport({
     providerUrl,
     timeoutMs: feature.uploadTimeoutMs,

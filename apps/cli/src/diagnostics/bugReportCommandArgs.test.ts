@@ -11,4 +11,11 @@ describe('parseBugReportArgs', () => {
     const parsed = parseBugReportArgs(['--summary', '- bullet style summary']);
     expect(parsed.summary).toBe('- bullet style summary');
   });
+  it('parses export and dry-run output options', () => {
+    expect(parseBugReportArgs(['--export', '/tmp/report.json']).exportPath).toBe('/tmp/report.json');
+    expect(parseBugReportArgs(['--dry-run', '--output', '/tmp/report.json'])).toMatchObject({
+      dryRun: true,
+      exportPath: '/tmp/report.json',
+    });
+  });
 });

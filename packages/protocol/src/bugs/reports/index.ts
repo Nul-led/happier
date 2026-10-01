@@ -50,3 +50,4 @@ export {
   type BugReportMachineRuntimeLike,
   type BugReportMachineStackContextLike,
 } from './machineDiagnostics.js';
+export { buildBugReportExportBundle, serializeBugReportExportBundle, type BugReportExportArtifact, type BugReportExportBundle } from './export.js';
