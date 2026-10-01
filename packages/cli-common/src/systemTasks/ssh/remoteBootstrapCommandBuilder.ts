@@ -1,3 +1,4 @@
+import { DEFAULT_HAPPIER_CLOUD_SERVER_URL } from '../../happierCloud.js';
 import { safeBashSingleQuote } from '../../ssh/shellQuote.js';
 import { resolveRemoteInstalledFirstPartyBinaryPath } from './remoteFirstPartyInstallPath.js';
 
@@ -49,7 +50,7 @@ function normalizeServerUrlForBootstrap(url: string): string {
 
 function shouldUseCloudProfileId(params: Readonly<{ serverUrl: string; localServerUrl?: string }>): boolean {
   const serverUrl = normalizeServerUrlForBootstrap(params.serverUrl);
-  if (serverUrl !== 'https://api.happier.dev') return false;
+  if (serverUrl !== DEFAULT_HAPPIER_CLOUD_SERVER_URL) return false;
   const localServerUrl = typeof params.localServerUrl === 'string' ? normalizeServerUrlForBootstrap(params.localServerUrl) : '';
   return !localServerUrl || localServerUrl === serverUrl;
 }

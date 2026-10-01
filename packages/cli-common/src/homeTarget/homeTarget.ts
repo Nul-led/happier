@@ -9,6 +9,7 @@ import {
   type HomeCredentialDestinationV1,
 } from '@happier-dev/protocol';
 
+import { DEFAULT_HAPPIER_CLOUD_SERVER_URL } from '../happierCloud.js';
 import {
   resolveHomeCarrierPreferredTransport,
   type HomeCarrierPreferredTransport,
@@ -116,7 +117,7 @@ function parseWebappUrl(value: unknown): string {
 }
 
 function deriveWebappUrl(applicationUrl: string): string {
-  if (applicationUrl === 'https://api.happier.dev') return 'https://app.happier.dev';
+  if (applicationUrl === DEFAULT_HAPPIER_CLOUD_SERVER_URL) return 'https://app.happier.dev';
   return new URL(applicationUrl).origin;
 }
 
