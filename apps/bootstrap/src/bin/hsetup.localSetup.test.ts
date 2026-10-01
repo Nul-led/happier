@@ -3,6 +3,7 @@ import { join } from 'node:path';
 
 import type { InteractiveSystemTaskKindMap } from '@happier-dev/cli-common/systemTasks';
 import type { BackgroundServiceSetupGuidance } from '@happier-dev/cli-common/systemTasks';
+import { buildBackgroundServiceSetupGuidance } from '@happier-dev/cli-common/systemTasks';
 import { deriveBoxPublicKeyFromSeed, openTerminalProvisioningV3Response } from '@happier-dev/protocol';
 import { describe, expect, it } from 'vitest';
 
@@ -11,6 +12,10 @@ import {
   createProductionSetupThisComputerInteractiveDeps,
   createSetupThisComputerInteractiveTaskKind,
 } from '../systemTasks/kinds/setupThisComputerInteractiveKind.js';
+import {
+  createProductionSetupRepairThisComputerInteractiveDeps,
+  createSetupRepairThisComputerInteractiveTaskKind,
+} from '../systemTasks/kinds/setupRepairThisComputerInteractiveKind.js';
 import { createHsetupSystemTaskRegistry } from '../systemTasks/registry.js';
 
 import { createDefaultInteractiveKinds, runHsetupCli } from './hsetup.js';
@@ -86,7 +91,11 @@ async function runHsetup(params: Readonly<{
     stderr: { write: (chunk) => { stderrChunks.push(chunk); } },
     now: () => ts++,
     taskIdFactory: () => params.taskId ?? 'task-local-1',
-    ...(params.interactiveKinds ? { interactiveKinds: params.interactiveKinds } : {}),
+    ...(params.interactiveKinds
+      ? { interactiveKinds: params.interactiveKinds }
+      : params.spec.kind === 'setup.repairThisComputer.v1'
+        ? { interactiveKinds: repairKindsWithoutGuidance() }
+        : {}),
   });
   const lines = stdoutChunks.join('').trim().split('\n').filter(Boolean)
     .map((line) => JSON.parse(line) as Record<string, unknown>);
@@ -131,7 +140,21 @@ function setupKindsWithoutGuidance(): InteractiveSystemTaskKindMap {
       // Production wiring by name: this file drives the real dispatcher and the real
       // setup recipe against the fake CLI installed at `HAPPIER_BOOTSTRAP_CLI_PATH`.
       ...createProductionSetupThisComputerInteractiveDeps(),
-      exposeHappierCliOnPath: async () => ({ changed: false, shellReloadHint: null, failure: null }),
+      exposeHappierCliOnPath: async () => ({ changed: false, shellReloadHint: null, failure: null, existingCommand: null }),
+    readBackgroundServiceSetupGuidance: async () => createDefaultGuidance(),
+    }),
+  };
+}
+
+/**
+ * Repair reads the machine's installed background services through the guidance owner; the
+ * developer's own services must not decide a test, so the inventory is fixed here.
+ */
+function repairKindsWithoutGuidance(): InteractiveSystemTaskKindMap {
+  return {
+    ...createDefaultInteractiveKinds(),
+    'setup.repairThisComputer.v1': createSetupRepairThisComputerInteractiveTaskKind({
+      ...createProductionSetupRepairThisComputerInteractiveDeps(),
       readBackgroundServiceSetupGuidance: async () => createDefaultGuidance(),
     }),
   };
@@ -217,6 +240,47 @@ function tokenOnlyAuthRequest(fixture: PairingFixture): Record<string, unknown> 
 }
 
 describe('hsetup local setup and repair dispatch', () => {
+  it('repairs the selected account and identifies an actual service restart separately from start', async () => {
+    const fixture = createPairingFixture();
+    await withFakeHappierCli({
+      serverList: { ok: true, data: { activeServerId: 'cloud', profiles: [{ id: 'relay', serverUrl: 'https://relay.example.test' }] } },
+      authStatus: { ok: true, kind: 'auth_status', data: {
+        authenticated: true, credentialState: 'valid', machineRegistrationState: 'server-confirmed',
+        accountId: 'account-old', machineId: 'machine-old',
+      } },
+      authStatuses: [{ ok: true, kind: 'auth_status', data: {
+        authenticated: true, credentialState: 'valid', machineRegistrationState: 'server-confirmed',
+        accountId: 'account-new', machineId: 'machine-new',
+      } }],
+      authRequests: [tokenOnlyAuthRequest(fixture)],
+      authWaits: [{ success: true, machineId: 'machine-new' }],
+      daemonStatuses: [readyDaemonStatus('machine-new')],
+    }, async (fakeCli) => {
+      const interactiveKinds = {
+        ...createDefaultInteractiveKinds(),
+        'setup.repairThisComputer.v1': createSetupRepairThisComputerInteractiveTaskKind({
+          ...createProductionSetupRepairThisComputerInteractiveDeps(),
+          // Only the OS inventory is a fixture; conflict and lifecycle policy stay real.
+          readBackgroundServiceSetupGuidance: async (target) => buildBackgroundServiceSetupGuidance({
+            ...target, platform: 'linux', mode: 'user', currentHappierHomeDir: process.env.HAPPIER_HOME_DIR,
+            managedReleaseChannelInventory: { defaultReleaseChannel: 'stable', managedReleaseChannels: [] },
+            services: [{ id: 'service-relay', serviceType: 'daemon', platform: 'linux', backend: 'systemd-user',
+              label: 'relay', targetMode: 'pinned', verification: 'verified', ring: 'stable', instanceId: 'relay',
+              scope: 'user', definitionPath: '/test/relay.service', executablePath: fakeCli.cliPath,
+              happierHomeDir: process.env.HAPPIER_HOME_DIR, serverUrl: 'https://relay.example.test',
+              installed: true, running: true }],
+          }),
+        }),
+      };
+      const run = await runHsetup({
+        spec: { ...REPAIR_SPEC, params: { ...REPAIR_SPEC.params, activeAccountId: 'account-new' } },
+        answers: [{ approved: true }], interactiveKinds,
+      });
+      expect(run.result).toMatchObject({ ok: true, data: { machineId: 'machine-new' } });
+      expect(run.events).toContainEqual(expect.objectContaining({ type: 'progress', stepId: 'setup.repairThisComputer.restartService' }));
+      expect(fakeCli.readInvocations()).toContainEqual(['--server', 'relay', 'service', 'restart', '--json']);
+    });
+  });
   it('dispatches setup.thisComputer.v1 and setup.repairThisComputer.v1 only through the interactive map', () => {
     const interactiveKinds = createDefaultInteractiveKinds();
     const registry = createHsetupSystemTaskRegistry();
@@ -287,13 +351,15 @@ describe('hsetup local setup and repair dispatch', () => {
       });
       expect(run.exitCode).toBe(0);
       expect(fakeCli.readInvocations()).toEqual([
-        ['server', 'set', '--server-url', 'https://relay.example.test', '--webapp-url', 'https://app.example.test', '--json'],
-        ['auth', 'status', '--json'],
-        ['auth', 'request', '--json'],
-        ['auth', 'wait', '--public-key', fixture.publicKeyB64, '--json'],
-        ['service', 'install', '--json'],
-        ['service', 'start', '--json'],
-        ['daemon', 'status', '--json'],
+        ['server', 'list', '--json'],
+        ['server', 'help'],
+        ['server', 'set', '--server-url', 'https://relay.example.test', '--webapp-url', 'https://app.example.test', '--no-use', '--json'],
+        ['--server', 'relay', 'auth', 'status', '--json'],
+        ['--server', 'relay', 'auth', 'request', '--json'],
+        ['--server', 'relay', 'auth', 'wait', '--public-key', fixture.publicKeyB64, '--json'],
+        ['--server', 'relay', 'service', 'install', '--json'],
+        ['--server', 'relay', 'service', 'start', '--json'],
+        ['--server', 'relay', 'daemon', 'status', '--json'],
       ]);
       expect(lifecycle(run.events)).toEqual([
         { type: 'progress', stepId: 'setup.repairThisComputer.configureRelay' },
@@ -351,11 +417,13 @@ describe('hsetup local setup and repair dispatch', () => {
         data: { machineId: 'machine-local-1' },
       });
       expect(fakeCli.readInvocations()).toEqual([
-        ['server', 'set', '--server-url', 'https://relay.example.test', '--webapp-url', 'https://app.example.test', '--json'],
-        ['auth', 'status', '--json'],
-        ['service', 'install', '--json'],
-        ['service', 'start', '--json'],
-        ['daemon', 'status', '--json'],
+        ['server', 'list', '--json'],
+        ['server', 'help'],
+        ['server', 'set', '--server-url', 'https://relay.example.test', '--webapp-url', 'https://app.example.test', '--no-use', '--json'],
+        ['--server', 'relay', 'auth', 'status', '--json'],
+        ['--server', 'relay', 'service', 'install', '--json'],
+        ['--server', 'relay', 'service', 'start', '--json'],
+        ['--server', 'relay', 'daemon', 'status', '--json'],
       ]);
     });
   });
@@ -413,11 +481,13 @@ describe('hsetup local setup and repair dispatch', () => {
 
         expect(run.result).toMatchObject({ ok: true, data: { machineId: 'machine-local-1' } });
         expect(fakeCli.readInvocations()).toEqual([
-          ['server', 'set', '--server-url', 'https://relay.example.test', '--webapp-url', 'https://app.example.test', '--json'],
-          ['auth', 'status', '--json'],
-          ['service', 'install', '--json'],
-          ['service', 'start', '--json'],
-          ['daemon', 'status', '--json'],
+          ['server', 'list', '--json'],
+          ['server', 'help'],
+          ['server', 'set', '--server-url', 'https://relay.example.test', '--webapp-url', 'https://app.example.test', '--no-use', '--json'],
+          ['--server', 'relay', 'auth', 'status', '--json'],
+          ['--server', 'relay', 'service', 'install', '--json'],
+          ['--server', 'relay', 'service', 'start', '--json'],
+          ['--server', 'relay', 'daemon', 'status', '--json'],
         ]);
       } finally {
         restoreEnvVar('HAPPIER_HOME_DIR', previous.homeDir);
@@ -475,13 +545,43 @@ describe('hsetup local setup and repair dispatch', () => {
         data: { machineId: 'machine-local-1' },
       });
       expect(fakeCli.readInvocations()).toEqual([
-        ['service', 'status', '--json'],
-        ['server', 'set', '--server-url', 'https://relay.example.test', '--webapp-url', 'https://app.example.test', '--json'],
-        ['auth', 'status', '--json'],
-        ['service', 'install', '--json'],
-        ['service', 'start', '--json'],
-        ['daemon', 'status', '--json'],
+        ['server', 'list', '--json'],
+        ['server', 'help'],
+        ['server', 'set', '--server-url', 'https://relay.example.test', '--webapp-url', 'https://app.example.test', '--no-use', '--json'],
+        ['--server', 'relay', 'auth', 'status', '--json'],
+        ['--server', 'relay', 'service', 'install', '--json'],
+        ['--server', 'relay', 'service', 'start', '--json'],
+        ['--server', 'relay', 'daemon', 'status', '--json'],
       ]);
+    });
+  });
+
+  it('uses the identity-bearing Home profile it resolved, so setup and scoped status address one profile', async () => {
+    await withFakeHappierCli({
+      serverList: {
+        ok: true,
+        kind: 'server_list',
+        data: {
+          activeServerId: 'cloud',
+          profiles: [
+            { id: 'cloud', serverUrl: 'https://api.happier.dev' },
+            { id: 'home-2', serverUrl: 'https://relay.example.test', homeServerIdentityId: 'home-identity-2' },
+          ],
+        },
+      },
+    }, async (fakeCli) => {
+      const run = await runHsetup({
+        spec: { ...SETUP_SPEC, params: { ...SETUP_SPEC.params, activeServerIdentityId: 'home-identity-2' } },
+        interactiveKinds: setupKindsWithoutGuidance(),
+      });
+
+      expect(run.result).toMatchObject({ ok: true });
+      const invocations = fakeCli.readInvocations();
+      // The resolved profile is used as saved: no second profile, no rewritten endpoints.
+      expect(invocations.some((args) => args[0] === 'server' && args[1] === 'set')).toBe(false);
+      const scopedServerIds = invocations.filter((args) => args[0] === '--server').map((args) => args[1]);
+      expect(scopedServerIds.length).toBeGreaterThan(0);
+      expect(new Set(scopedServerIds)).toEqual(new Set(['home-2']));
     });
   });
 
@@ -502,8 +602,10 @@ describe('hsetup local setup and repair dispatch', () => {
       ]);
       expect(run.result).toMatchObject({ ok: true, data: { machineId: 'machine-local-1' } });
       expect(fakeCli.readInvocations()).toEqual([
-        ['server', 'set', '--server-url', 'https://relay.example.test', '--webapp-url', 'https://app.example.test', '--json'],
-        ['auth', 'status', '--json'],
+        ['server', 'list', '--json'],
+        ['server', 'help'],
+        ['server', 'set', '--server-url', 'https://relay.example.test', '--webapp-url', 'https://app.example.test', '--no-use', '--json'],
+        ['--server', 'relay', 'auth', 'status', '--json'],
       ]);
     });
   });
@@ -519,7 +621,7 @@ describe('hsetup local setup and repair dispatch', () => {
             // Production wiring by name: this file drives the real dispatcher and the real
             // setup recipe against the fake CLI installed at `HAPPIER_BOOTSTRAP_CLI_PATH`.
             ...createProductionSetupThisComputerInteractiveDeps(),
-            exposeHappierCliOnPath: async () => ({ changed: false, shellReloadHint: null, failure: null }),
+            exposeHappierCliOnPath: async () => ({ changed: false, shellReloadHint: null, failure: null, existingCommand: null }),
             readBackgroundServiceSetupGuidance: async () => createDefaultGuidance({
               targetReleaseChannel: 'preview',
               currentDefaultReleaseChannel: 'stable',
@@ -532,7 +634,7 @@ describe('hsetup local setup and repair dispatch', () => {
             }),
             readCurrentRelayOwner: async () => null,
             switchDefaultReleaseChannel: async (channel) => { switches.push(channel); },
-            uninstallExistingDaemonServices: async () => undefined,
+            readServerProfileScope: async () => ({ serverId: null, activeServerId: 'cloud', selectedService: null, targetMode: 'pinned' as const }),
           }),
         },
       });
@@ -551,6 +653,7 @@ describe('hsetup local setup and repair dispatch', () => {
         'https://relay.example.test',
         '--webapp-url',
         'https://app.example.test',
+        '--no-use',
         '--json',
       ]);
     });
@@ -582,14 +685,15 @@ describe('hsetup local setup and repair dispatch', () => {
       ]);
       expect(run.result).toMatchObject({ ok: true, data: { machineId: 'machine-local-auth-1' } });
       expect(fakeCli.readInvocations()).toEqual([
-        ['service', 'status', '--json'],
-        ['server', 'set', '--server-url', 'https://relay.example.test', '--webapp-url', 'https://app.example.test', '--json'],
-        ['auth', 'status', '--json'],
-        ['auth', 'request', '--json'],
-        ['auth', 'wait', '--public-key', fixture.publicKeyB64, '--json'],
-        ['service', 'install', '--json'],
-        ['service', 'start', '--json'],
-        ['daemon', 'status', '--json'],
+        ['server', 'list', '--json'],
+        ['server', 'help'],
+        ['server', 'set', '--server-url', 'https://relay.example.test', '--webapp-url', 'https://app.example.test', '--no-use', '--json'],
+        ['--server', 'relay', 'auth', 'status', '--json'],
+        ['--server', 'relay', 'auth', 'request', '--json'],
+        ['--server', 'relay', 'auth', 'wait', '--public-key', fixture.publicKeyB64, '--json'],
+        ['--server', 'relay', 'service', 'install', '--json'],
+        ['--server', 'relay', 'service', 'start', '--json'],
+        ['--server', 'relay', 'daemon', 'status', '--json'],
       ]);
     });
   });
@@ -608,10 +712,11 @@ describe('hsetup local setup and repair dispatch', () => {
         error: { code: 'invalid_cli_response', message: 'Received an invalid auth request response.' },
       });
       expect(fakeCli.readInvocations()).toEqual([
-        ['service', 'status', '--json'],
-        ['server', 'set', '--server-url', 'https://relay.example.test', '--webapp-url', 'https://app.example.test', '--json'],
-        ['auth', 'status', '--json'],
-        ['auth', 'request', '--json'],
+        ['server', 'list', '--json'],
+        ['server', 'help'],
+        ['server', 'set', '--server-url', 'https://relay.example.test', '--webapp-url', 'https://app.example.test', '--no-use', '--json'],
+        ['--server', 'relay', 'auth', 'status', '--json'],
+        ['--server', 'relay', 'auth', 'request', '--json'],
       ]);
     });
   });
@@ -627,15 +732,16 @@ describe('hsetup local setup and repair dispatch', () => {
 
       expect(run.result).toMatchObject({ ok: true, data: { machineId: 'machine-local-2' } });
       expect(fakeCli.readInvocations()).toEqual([
-        ['service', 'status', '--json'],
-        ['server', 'set', '--server-url', 'https://relay.example.test', '--webapp-url', 'https://app.example.test', '--json'],
-        ['auth', 'status', '--json'],
-        ['auth', 'request', '--json'],
-        ['auth', 'approve', '--public-key', 'public-key-local-2', '--json'],
-        ['auth', 'wait', '--public-key', 'public-key-local-2', '--json'],
-        ['service', 'install', '--json'],
-        ['service', 'start', '--json'],
-        ['daemon', 'status', '--json'],
+        ['server', 'list', '--json'],
+        ['server', 'help'],
+        ['server', 'set', '--server-url', 'https://relay.example.test', '--webapp-url', 'https://app.example.test', '--no-use', '--json'],
+        ['--server', 'relay', 'auth', 'status', '--json'],
+        ['--server', 'relay', 'auth', 'request', '--json'],
+        ['--server', 'relay', 'auth', 'approve', '--public-key', 'public-key-local-2', '--json'],
+        ['--server', 'relay', 'auth', 'wait', '--public-key', 'public-key-local-2', '--json'],
+        ['--server', 'relay', 'service', 'install', '--json'],
+        ['--server', 'relay', 'service', 'start', '--json'],
+        ['--server', 'relay', 'daemon', 'status', '--json'],
       ]);
     });
   });
@@ -662,7 +768,7 @@ describe('hsetup local setup and repair dispatch', () => {
           ok: false,
           error: { code: 'daemon_service_not_ready', message: 'Background service did not reach a ready state for the selected Relay.' },
         });
-        expect(fakeCli.readInvocations()).toContainEqual(['daemon', 'status', '--json']);
+        expect(fakeCli.readInvocations()).toContainEqual(['--server', 'relay', 'daemon', 'status', '--json']);
       });
     } finally {
       restoreEnvVar('HAPPIER_BOOTSTRAP_SETUP_THIS_COMPUTER_SERVICE_READY_TIMEOUT_MS', previousTimeoutMs);
@@ -699,7 +805,7 @@ describe('hsetup local setup and repair dispatch', () => {
               // Production wiring by name: this file drives the real dispatcher and the real
               // setup recipe against the fake CLI installed at `HAPPIER_BOOTSTRAP_CLI_PATH`.
               ...createProductionSetupThisComputerInteractiveDeps(),
-              exposeHappierCliOnPath: async () => ({ changed: false, shellReloadHint: null, failure: null }),
+              exposeHappierCliOnPath: async () => ({ changed: false, shellReloadHint: null, failure: null, existingCommand: null }),
               readBackgroundServiceSetupGuidance: async () => createDefaultGuidance({
                 targetReleaseChannel: 'preview',
                 currentDefaultReleaseChannel: 'stable',
@@ -719,7 +825,7 @@ describe('hsetup local setup and repair dispatch', () => {
         expect(run.events).toContainEqual(expect.objectContaining({ type: 'prompt', stepId: 'setup.thisComputer.preflight.releaseChannel' }));
         expect(run.result).toMatchObject({ ok: false });
         expect(fakeCli.readInvocations()).toEqual([
-          ['service', 'status', '--json'],
+          ['server', 'list', '--json'],
         ]);
       } finally {
         restoreEnvVar('HAPPIER_HOME_DIR', previous.homeDir);

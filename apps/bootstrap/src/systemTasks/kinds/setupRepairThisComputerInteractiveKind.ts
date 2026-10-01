@@ -1,7 +1,12 @@
 import {
+  readBackgroundServiceSetupGuidance,
+  resolveBackgroundServiceSetupReconciliationDisposition,
   runSetupMachineRecipe,
   SystemTaskExecutionError,
+  type BackgroundServiceSetupGuidance,
+  type BackgroundServiceSetupServiceTarget,
   type InteractiveSystemTaskKind,
+  type LocalServerProfileScope,
   type SetupMachineRecipeExecutor,
 } from '@happier-dev/cli-common/systemTasks';
 import type { PublicReleaseRingId } from '@happier-dev/release-runtime/releaseRings';
@@ -11,6 +16,7 @@ import { normalizeBootstrapChannel } from '../taskRuntime.js';
 import {
   createLocalSetupRecipeExecutor,
   readLocalActiveRelayProfile,
+  readLocalServerProfileScopeForRelay,
   readLocalSetupCliAcquisition,
   type LocalSetupCliAcquisition,
   type LocalSetupRelayProfile,
@@ -23,13 +29,32 @@ export type SetupRepairThisComputerParams = Readonly<{
   /** Webapp URL for the active relay. Defaults to `activeRelayUrl`. */
   activeWebappUrl?: string;
   activeLocalRelayUrl?: string | null;
+  /** The explicit Home's server identity (RV-11): tells apart profiles that share its URL. */
+  activeServerIdentityId?: string;
+  activeAccountId?: string;
   channel?: 'stable' | 'preview' | 'dev' | 'publicdev';
   surface?: string;
 }>;
 
 export type SetupRepairThisComputerInteractiveDeps = Readonly<{
   readActiveRelayProfile: (params: Readonly<{ releaseRing?: PublicReleaseRingId }>) => Promise<LocalSetupRelayProfile>;
-  createRecipeExecutor: (params: Readonly<{ releaseRing?: PublicReleaseRingId }>) => SetupMachineRecipeExecutor;
+  createRecipeExecutor: (params: Readonly<{
+    signal?: AbortSignal;
+    releaseRing?: PublicReleaseRingId;
+    scopeToConfiguredServer?: boolean;
+    knownServerScope?: LocalServerProfileScope | null;
+  }>) => SetupMachineRecipeExecutor;
+  /** Read-only resolution of the explicit Home's saved profile; spawns the real CLI, so it has no default. */
+  readServerProfileScope: (params: Readonly<{
+    releaseRing?: PublicReleaseRingId;
+    relayProfile: LocalSetupRelayProfile;
+  }>) => Promise<LocalServerProfileScope>;
+  readBackgroundServiceSetupGuidance: (params: Readonly<{
+    targetReleaseChannel: PublicReleaseRingId;
+    targetServerUrl: string;
+    serviceTarget?: BackgroundServiceSetupServiceTarget;
+    offerDefaultReleaseChannelSwitch?: boolean;
+  }>) => Promise<BackgroundServiceSetupGuidance>;
   /**
    * Which `happier` CLI will perform the repair and how it was acquired. Only `managed` is
    * approved for pairing without asking; any other provenance is confirmed by a human who is
@@ -38,7 +63,7 @@ export type SetupRepairThisComputerInteractiveDeps = Readonly<{
   readCliAcquisition: (params: Readonly<{ releaseRing?: PublicReleaseRingId }>) => LocalSetupCliAcquisition;
 }>;
 
-const REPAIR_PARAM_KEYS = ['activeRelayUrl', 'activeWebappUrl', 'activeLocalRelayUrl', 'channel', 'surface'] as const;
+const REPAIR_PARAM_KEYS = ['activeRelayUrl', 'activeWebappUrl', 'activeLocalRelayUrl', 'activeServerIdentityId', 'activeAccountId', 'channel', 'surface'] as const;
 
 function parseSetupRepairThisComputerParams(params: unknown): SetupRepairThisComputerParams {
   if (params == null) {
@@ -62,6 +87,8 @@ function parseSetupRepairThisComputerParams(params: unknown): SetupRepairThisCom
   const activeRelayUrl = readOptionalString('activeRelayUrl');
   const activeWebappUrl = readOptionalString('activeWebappUrl');
   const activeLocalRelayUrl = readOptionalString('activeLocalRelayUrl');
+  const activeServerIdentityId = readOptionalString('activeServerIdentityId');
+  const activeAccountId = readOptionalString('activeAccountId');
   const channel = readOptionalString('channel');
   const surface = readOptionalString('surface');
   if (channel !== undefined && channel !== 'stable' && channel !== 'preview' && channel !== 'dev' && channel !== 'publicdev') {
@@ -81,6 +108,8 @@ function parseSetupRepairThisComputerParams(params: unknown): SetupRepairThisCom
     ...(activeRelayUrl ? { activeRelayUrl } : {}),
     ...(activeWebappUrl ? { activeWebappUrl } : {}),
     ...(activeLocalRelayUrl ? { activeLocalRelayUrl } : {}),
+    ...(activeServerIdentityId ? { activeServerIdentityId } : {}),
+    ...(activeAccountId ? { activeAccountId } : {}),
     ...(channel ? { channel } : {}),
     ...(surface ? { surface } : {}),
   };
@@ -99,16 +128,21 @@ function parseSetupRepairThisComputerParams(params: unknown): SetupRepairThisCom
  * construction that forgets it is a compile error rather than a silent run against the developer's
  * real machine. The two read-only deps keep their defaults.
  */
-export type SetupRepairThisComputerInteractiveDepsInput =
-  Pick<SetupRepairThisComputerInteractiveDeps, 'createRecipeExecutor'>
-  & Partial<Omit<SetupRepairThisComputerInteractiveDeps, 'createRecipeExecutor'>>;
+type RequiredSetupRepairDepName = 'createRecipeExecutor' | 'readServerProfileScope';
 
-/** The one production composition of the mutating dep; `hsetup` passes it explicitly. */
+export type SetupRepairThisComputerInteractiveDepsInput =
+  Pick<SetupRepairThisComputerInteractiveDeps, RequiredSetupRepairDepName>
+  & Partial<Omit<SetupRepairThisComputerInteractiveDeps, RequiredSetupRepairDepName>>;
+
+/** The one production composition of the required deps; `hsetup` passes it explicitly. */
 export function createProductionSetupRepairThisComputerInteractiveDeps(): Pick<
   SetupRepairThisComputerInteractiveDeps,
-  'createRecipeExecutor'
+  RequiredSetupRepairDepName
 > {
-  return { createRecipeExecutor: createLocalSetupRecipeExecutor };
+  return {
+    createRecipeExecutor: createLocalSetupRecipeExecutor,
+    readServerProfileScope: readLocalServerProfileScopeForRelay,
+  };
 }
 
 export function createSetupRepairThisComputerInteractiveTaskKind(
@@ -117,6 +151,7 @@ export function createSetupRepairThisComputerInteractiveTaskKind(
   const deps: SetupRepairThisComputerInteractiveDeps = {
     readActiveRelayProfile: readLocalActiveRelayProfile,
     readCliAcquisition: readLocalSetupCliAcquisition,
+    readBackgroundServiceSetupGuidance: async (params) => await readBackgroundServiceSetupGuidance({ ...params, mode: 'user' }),
     ...overrides,
   };
 
@@ -129,6 +164,7 @@ export function createSetupRepairThisComputerInteractiveTaskKind(
           serverUrl: parsed.activeRelayUrl,
           webappUrl: parsed.activeWebappUrl ?? parsed.activeRelayUrl,
           localServerUrl: parsed.activeLocalRelayUrl ?? null,
+          ...(parsed.activeServerIdentityId ? { serverIdentityId: parsed.activeServerIdentityId } : {}),
         }
         : await deps.readActiveRelayProfile({ releaseRing });
 
@@ -144,15 +180,50 @@ export function createSetupRepairThisComputerInteractiveTaskKind(
         },
       });
 
+      // The same service policy as setup (R10 D3, R3-6): an explicit Home is repaired on its own
+      // pinned service, the disposition owner decides install/start/restart, and repair never
+      // decides about other services — a conflict needing consent is left to guided setup.
+      const profileScope = parsed.activeRelayUrl
+        ? await deps.readServerProfileScope({ releaseRing, relayProfile })
+        : null;
+      const serviceTarget: BackgroundServiceSetupServiceTarget | undefined = profileScope
+        ? profileScope.targetMode === 'pinned'
+          ? { targetMode: 'pinned', serverId: profileScope.serverId }
+          : { targetMode: 'default-following', followedServerId: profileScope.activeServerId }
+        : undefined;
+      const guidance = await deps.readBackgroundServiceSetupGuidance({
+        targetReleaseChannel: releaseRing ?? 'stable',
+        targetServerUrl: relayProfile.serverUrl,
+        ...(serviceTarget ? { serviceTarget, offerDefaultReleaseChannelSwitch: false } : {}),
+      });
+      if (guidance.shouldPromptForServiceReplacement) {
+        throw new SystemTaskExecutionError(
+          'background_service_consent_required',
+          'Other background services conflict with this one. Run setup for this computer to decide what to keep.',
+        );
+      }
+
       const recipeResult = await runSetupMachineRecipe({
         relayProfile,
-        executor: deps.createRecipeExecutor({ releaseRing }),
+        ...(parsed.activeAccountId ? { expectedAccountId: parsed.activeAccountId } : {}),
+        executor: deps.createRecipeExecutor({
+          signal: ctx.signal,
+          releaseRing,
+          ...(parsed.activeRelayUrl ? { scopeToConfiguredServer: true, knownServerScope: profileScope } : {}),
+        }),
+        serviceActions: ({ paired }) => resolveBackgroundServiceSetupReconciliationDisposition({
+          guidance,
+          targetChanged: paired,
+          tookOverManualRelayRuntime: false,
+          replacedExistingServices: false,
+        }),
         stepIds: {
           configureRelay: 'setup.repairThisComputer.configureRelay',
           authRequest: 'setup.repairThisComputer.authRequest',
           authWait: 'setup.repairThisComputer.authenticate',
           installService: 'setup.repairThisComputer.installService',
           startService: 'setup.repairThisComputer.startService',
+          restartService: 'setup.repairThisComputer.restartService',
           verifyService: 'setup.repairThisComputer.waitForReady',
         },
         signal: ctx.signal,

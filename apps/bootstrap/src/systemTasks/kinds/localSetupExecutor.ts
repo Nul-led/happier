@@ -2,17 +2,24 @@ import {
   createLocalHappierJsonExecutor,
   createSetupMachineRecipeExecutorFromHappierJsonExecutor,
   DEFAULT_HAPPIER_CLI_ENV_VAR_NAMES,
+  readLocalServerProfileScope,
   resolveExplicitOrInstalledLocalFirstPartyCommand,
+  scopeHappierJsonExecutor,
   SystemTaskExecutionError,
+  type HappierServerScope,
   type LocalFirstPartyCommandProvenance,
+  type LocalServerProfileScope,
   type SetupMachineRecipeExecutor,
 } from '@happier-dev/cli-common/systemTasks';
+import { readMachineDaemonOwnershipMetadataFromSocketAuth, type MachineDaemonOwnershipMetadata } from '@happier-dev/protocol';
 import type { PublicReleaseRingId } from '@happier-dev/release-runtime/releaseRings';
 
 export type LocalSetupRelayProfile = Readonly<{
   serverUrl: string;
   webappUrl: string;
   localServerUrl: string | null;
+  /** The explicit Home's server identity, when the app knows it (RV-11). */
+  serverIdentityId?: string | null;
 }>;
 
 /**
@@ -21,13 +28,18 @@ export type LocalSetupRelayProfile = Readonly<{
  * selected release ring through the canonical JSON executor and its canonical status readers.
  */
 export function createLocalSetupRecipeExecutor(params: Readonly<{
+  signal?: AbortSignal;
   releaseRing?: PublicReleaseRingId;
   takeOverManualRelayRuntime?: boolean;
+  scopeToConfiguredServer?: boolean;
+  knownServerScope?: LocalServerProfileScope | null;
 }>): SetupMachineRecipeExecutor {
   return createSetupMachineRecipeExecutorFromHappierJsonExecutor({
-    executor: createLocalHappierJsonExecutor({ releaseRing: params.releaseRing }),
+    executor: createLocalHappierJsonExecutor({ releaseRing: params.releaseRing, signal: params.signal }),
     options: {
       takeOverManualRelayRuntime: params.takeOverManualRelayRuntime,
+      scopeToConfiguredServer: params.scopeToConfiguredServer,
+      knownServerScope: params.knownServerScope,
     },
   });
 }
@@ -91,4 +103,45 @@ export function readLocalSetupCliAcquisition(params: Readonly<{
     provenance: resolved?.provenance ?? 'override',
     command: resolved?.command ?? null,
   };
+}
+
+/**
+ * The manual (non-service) daemon owner of the target, read through `service status`. With a
+ * `scope` it is the explicit Home's own daemon: daemons are per-server, so a manual daemon of
+ * another server never conflicts with this Home's service (R3-5).
+ */
+export async function readLocalCurrentRelayOwner(params: Readonly<{
+  releaseRing?: PublicReleaseRingId;
+  scope?: HappierServerScope;
+}>): Promise<Pick<MachineDaemonOwnershipMetadata, 'serviceManaged' | 'publicReleaseChannel' | 'cliVersion'> | null> {
+  const baseExecutor = createLocalHappierJsonExecutor({ releaseRing: params.releaseRing });
+  const executor = params.scope ? scopeHappierJsonExecutor(baseExecutor, params.scope) : baseExecutor;
+  const parsed = await executor.runHappierJson(['service', 'status', '--json'], {
+    allowJsonFailure: true,
+  });
+  const owner = parsed && typeof parsed === 'object'
+    ? (parsed as { owner?: unknown }).owner
+    : null;
+  const normalized = readMachineDaemonOwnershipMetadataFromSocketAuth(owner);
+  return normalized.serviceManaged === undefined
+    && normalized.publicReleaseChannel === undefined
+    && normalized.cliVersion === undefined
+    ? null
+    : normalized;
+}
+
+/** Read-only `server list --json` resolution of an explicit Home's saved profile (R10 D3). */
+export async function readLocalServerProfileScopeForRelay(params: Readonly<{
+  releaseRing?: PublicReleaseRingId;
+  relayProfile: LocalSetupRelayProfile;
+}>): Promise<LocalServerProfileScope> {
+  return await readLocalServerProfileScope(
+    createLocalHappierJsonExecutor({ releaseRing: params.releaseRing }),
+    {
+      serverUrl: params.relayProfile.serverUrl,
+      localServerUrl: params.relayProfile.localServerUrl,
+      serverIdentityId: params.relayProfile.serverIdentityId ?? null,
+    },
+    { releaseRing: params.releaseRing },
+  );
 }

@@ -69,7 +69,7 @@ Implemented for real:
 - `desktop_show_main_window`, `desktop_set_window_mode`
 - `desktop_get_window_chrome_policy`, `desktop_get_window_state`
 - `desktop_minimize_window`, `desktop_toggle_window_maximize`, `desktop_close_window`
-- `desktop_get_autostart_enabled`, `desktop_set_autostart_enabled`
+- `desktop_set_tray_state` applies the shared service login mode (no Electron tray); `desktop_finish_shutdown` answers the shared Quit handoff
 - `desktop_read_stack_boot_credentials` — a port of the Tauri implementation, same env vars and
   same candidate key paths
 - `start_system_task`, `cancel_system_task`, `get_system_task_snapshot`,

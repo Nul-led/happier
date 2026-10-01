@@ -56,10 +56,13 @@ export class DesktopEventBus {
     }
 
     listenerCount(eventName?: string): number {
-        if (eventName === undefined) return this.listeners.size;
         let count = 0;
-        for (const listener of this.listeners.values()) {
-            if (listener.eventName === eventName) count += 1;
+        for (const [eventId, listener] of this.listeners) {
+            if (listener.sender.isDestroyed()) {
+                this.listeners.delete(eventId);
+                continue;
+            }
+            if (eventName === undefined || listener.eventName === eventName) count += 1;
         }
         return count;
     }

@@ -17,8 +17,10 @@ import { ElectronSystemTasks } from './commands/systemTasks';
 import type { CommandArgs, CommandContext } from './commands/types';
 import { DesktopEventBus } from './ipc/eventBus';
 import { InvokeLog } from './ipc/invokeLog';
+import { createLoginItemWriter } from './loginItem';
 import { createMainWindow, presentMainWindow } from './mainWindow';
 import { UI_WEB_BUNDLE_DIR } from './paths';
+import { DesktopQuitLifecycle } from './quitLifecycle';
 import {
     BUNDLE_ORIGIN,
     BUNDLE_SCHEME,
@@ -39,6 +41,7 @@ const invokeLog = InvokeLog.fromEnvironment();
 
 let mainWindow: BrowserWindow | null = null;
 let windowMode: WindowMode = 'main';
+let quitLifecycle: DesktopQuitLifecycle | null = null;
 
 // Loaded only in the main process; the renderer/preload never touch the addon.
 const irohTunnel = new ElectronIrohTunnelService({
@@ -78,6 +81,10 @@ const desktopFiles = new ElectronDesktopFiles({
 
 const registry = createCommandRegistry({
     eventBus,
+    quitLifecycle: {
+        finishShutdown: (outcome) => quitLifecycle?.finishShutdown(outcome),
+        rendererListening: (eventName) => quitLifecycle?.rendererListening(eventName),
+    },
     showMainWindow: () => {
         if (!mainWindow || mainWindow.isDestroyed()) return false;
         presentMainWindow(mainWindow);
@@ -87,13 +94,12 @@ const registry = createCommandRegistry({
         windowMode = mode;
         console.log(`[window] mode ${windowMode}`);
     },
-    autostart: {
-        isEnabled: () => app.getLoginItemSettings().openAtLogin === true,
-        setEnabled: (enabled) => {
-            app.setLoginItemSettings({ openAtLogin: enabled });
-            return app.getLoginItemSettings().openAtLogin === true;
-        },
-    },
+    autostart: createLoginItemWriter({
+        api: app,
+        platform: process.platform,
+        isPackaged: app.isPackaged,
+        development: isDevMode(),
+    }),
     secureStorage: new ElectronSecureStorage({
         userDataPath: () => app.getPath('userData'),
         crypto: safeStorage,
@@ -157,9 +163,9 @@ async function openMainWindow(): Promise<void> {
         preloadArguments: runtimeConfig === null ? [] : [encodeRuntimeConfigArgument(runtimeConfig)],
     });
     mainWindow = window;
+    quitLifecycle?.attachWindow(window);
 
     window.on('closed', () => {
-        eventBus.releaseSender(window.webContents);
         if (mainWindow === window) {
             mainWindow = null;
         }
@@ -187,28 +193,17 @@ if (!app.requestSingleInstanceLock()) {
         }
     });
 
-    app.on('window-all-closed', () => {
-        if (process.platform !== 'darwin') {
-            app.quit();
-        }
-    });
-
-    // Final application shutdown closes the shared Iroh process endpoint
-    // best-effort; the persistent identity key file is retained so restarts
-    // reuse the same endpoint identity. One settle guard keeps quit linear.
-    let irohShutdownSettled = false;
-    app.on('will-quit', (event) => {
-        if (irohShutdownSettled) return;
-        event.preventDefault();
-        irohShutdownSettled = true;
-        void irohTunnel
-            .shutdownForProcessExit()
-            .catch(() => {
-                // Best-effort: a failed teardown never blocks or fails quit.
-            })
-            .finally(() => {
-                app.quit();
-            });
+    quitLifecycle = new DesktopQuitLifecycle({
+        app,
+        eventBus,
+        ensureMainWindow: async () => {
+            await app.whenReady();
+            if (!mainWindow || mainWindow.isDestroyed()) await openMainWindow();
+        },
+        showMainWindow: () => {
+            if (mainWindow && !mainWindow.isDestroyed()) presentMainWindow(mainWindow);
+        },
+        shutdownForProcessExit: () => irohTunnel.shutdownForProcessExit(),
     });
 
     app.on('activate', () => {

@@ -135,7 +135,8 @@ function noGuidanceDeps() {
     }),
     readCurrentRelayOwner: async () => null,
     switchDefaultReleaseChannel: async () => undefined,
-    uninstallExistingDaemonServices: async () => undefined,
+    readServerProfileScope: async () => ({ serverId: null, activeServerId: 'cloud', selectedService: null, targetMode: 'pinned' as const }),
+    upgradeCliForTokenOnlyPairing: async () => false,
   };
 }
 
@@ -148,7 +149,7 @@ describe('setup.thisComputer.v1 pairing approval', () => {
     const invocations: string[] = [];
     const fixture = createPairingFixture();
     const kind = createSetupThisComputerInteractiveTaskKind({
-      exposeHappierCliOnPath: async () => ({ changed: false, shellReloadHint: null, failure: null }),
+      exposeHappierCliOnPath: async () => ({ changed: false, shellReloadHint: null, failure: null, existingCommand: null }),
       ensureLocalHappierTools: async () => {
         invocations.push('ensureLocalHappierTools');
         return MANAGED_CLI;
@@ -193,7 +194,7 @@ describe('setup.thisComputer.v1 pairing approval', () => {
     const invocations: string[] = [];
     const fixture = createPairingFixture();
     const kind = createSetupThisComputerInteractiveTaskKind({
-      exposeHappierCliOnPath: async () => ({ changed: false, shellReloadHint: null, failure: null }),
+      exposeHappierCliOnPath: async () => ({ changed: false, shellReloadHint: null, failure: null, existingCommand: null }),
       ensureLocalHappierTools: async () => {
         invocations.push('ensureLocalHappierTools');
         return MANAGED_CLI;
@@ -273,7 +274,7 @@ describe('setup.thisComputer.v1 pairing approval', () => {
     const invocations: string[] = [];
     const fixture = createPairingFixture();
     const kind = createSetupThisComputerInteractiveTaskKind({
-      exposeHappierCliOnPath: async () => ({ changed: false, shellReloadHint: null, failure: null }),
+      exposeHappierCliOnPath: async () => ({ changed: false, shellReloadHint: null, failure: null, existingCommand: null }),
       ensureLocalHappierTools: async () => {
         invocations.push('ensureLocalHappierTools');
         return MANAGED_CLI;
@@ -324,7 +325,7 @@ describe('setup.thisComputer.v1 pairing approval', () => {
     const fixture = createPairingFixture();
     const executor = createUnauthenticatedPairingExecutor(invocations, fixture);
     const kind = createSetupThisComputerInteractiveTaskKind({
-      exposeHappierCliOnPath: async () => ({ changed: false, shellReloadHint: null, failure: null }),
+      exposeHappierCliOnPath: async () => ({ changed: false, shellReloadHint: null, failure: null, existingCommand: null }),
       ensureLocalHappierTools: async () => MANAGED_CLI,
       readActiveRelayProfile: async () => ({
         serverUrl: RELAY_SERVER_URL,
@@ -360,6 +361,49 @@ describe('setup.thisComputer.v1 pairing approval', () => {
     expect(invocations).not.toContain('installDaemonService');
   });
 
+  it('replaces a managed CLI that lacks token-only pairing with the newer CLI on its channel and pairs once more', async () => {
+    // R3-3: the installed managed CLI predates token-only pairing. When the channel has a newer
+    // CLI, the acquisition owner replaces it and pairing is retried once with the new CLI.
+    const invocations: string[] = [];
+    const fixture = createPairingFixture();
+    const executor = createUnauthenticatedPairingExecutor(invocations, fixture);
+    let upgraded = false;
+    const kind = createSetupThisComputerInteractiveTaskKind({
+      exposeHappierCliOnPath: async () => ({ changed: false, shellReloadHint: null, failure: null, existingCommand: null }),
+      ensureLocalHappierTools: async () => MANAGED_CLI,
+      readActiveRelayProfile: async () => ({ serverUrl: RELAY_SERVER_URL, webappUrl: RELAY_WEBAPP_URL, localServerUrl: null }),
+      createRecipeExecutor: () => ({
+        ...executor,
+        requestAuthPairing: upgraded
+          ? executor.requestAuthPairing
+          : async () => {
+            invocations.push('requestAuthPairing:legacy');
+            return { publicKey: fixture.publicKeyB64 };
+          },
+      }),
+      ...noGuidanceDeps(),
+      upgradeCliForTokenOnlyPairing: async () => {
+        invocations.push('upgradeCliForTokenOnlyPairing');
+        upgraded = true;
+        return true;
+      },
+    });
+
+    const runner = createSystemTasksRunner({ kinds: { 'setup.thisComputer.v1': kind } });
+    await runner.start({
+      taskId: 'setup-upgrade-token-only',
+      kind: 'setup.thisComputer.v1',
+      params: { surface: 'desktop.ui', target: 'thisComputer', activeRelayUrl: RELAY_SERVER_URL, activeWebappUrl: RELAY_WEBAPP_URL },
+    });
+    const prompt = await waitForPendingPrompt(runner, { taskId: 'setup-upgrade-token-only', cursor: 0 });
+    await runner.respond({ taskId: 'setup-upgrade-token-only', answer: { approved: true } });
+    const finalPoll = await waitForResult(runner, { taskId: 'setup-upgrade-token-only', cursor: prompt.nextCursor });
+
+    expect(finalPoll.result?.ok).toBe(true);
+    expect(invocations.indexOf('upgradeCliForTokenOnlyPairing')).toBeGreaterThan(invocations.indexOf('requestAuthPairing:legacy'));
+    expect(invocations.lastIndexOf('requestAuthPairing')).toBeGreaterThan(invocations.indexOf('upgradeCliForTokenOnlyPairing'));
+  });
+
   it('stamps an override-resolved CLI and its command on the prompt so the approval owner can ask about it', async () => {
     // An env/repo override went through no release verification. The executor does not decide —
     // it reports which CLI it resolved and how, and the desktop approval owner asks the person at
@@ -367,7 +411,7 @@ describe('setup.thisComputer.v1 pairing approval', () => {
     const invocations: string[] = [];
     const fixture = createPairingFixture();
     const kind = createSetupThisComputerInteractiveTaskKind({
-      exposeHappierCliOnPath: async () => ({ changed: false, shellReloadHint: null, failure: null }),
+      exposeHappierCliOnPath: async () => ({ changed: false, shellReloadHint: null, failure: null, existingCommand: null }),
       ensureLocalHappierTools: async () => {
         invocations.push('ensureLocalHappierTools');
         return OVERRIDE_CLI;

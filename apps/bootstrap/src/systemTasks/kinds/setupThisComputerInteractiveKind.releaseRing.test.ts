@@ -17,7 +17,10 @@ vi.mock('@happier-dev/cli-common/systemTasks', async () => {
 import { createSystemTasksRunner } from '@happier-dev/cli-common/systemTasks';
 
 import { createLocalSetupRecipeExecutor } from './localSetupExecutor.js';
-import { createSetupThisComputerInteractiveTaskKind } from './setupThisComputerInteractiveKind.js';
+import {
+    createProductionSetupThisComputerInteractiveDeps,
+    createSetupThisComputerInteractiveTaskKind,
+} from './setupThisComputerInteractiveKind.js';
 
 /** The CLI acquisition the executor reports: managed install path, with the command it resolved. */
 const MANAGED_CLI = { provenance: 'managed', command: '/home/tester/.happier/bin/happier' } as const;
@@ -57,11 +60,12 @@ describe('createSetupThisComputerInteractiveTaskKind release-ring manual relay t
         cliCommonMocks.createLocalHappierJsonExecutor.mockReset();
     });
 
-    it('scopes relay-owner inspection and service takeover to the selected release ring', async () => {
+    it('gives the explicit Home its own pinned service without switching the terminal, scoped to the selected ring', async () => {
         const executorCalls: Array<{
             releaseRing: unknown;
             args: readonly string[];
             allowJsonFailure: boolean | undefined;
+            serviceTargetMode?: string;
         }> = [];
 
         cliCommonMocks.createLocalHappierJsonExecutor.mockImplementation(({ releaseRing }: { releaseRing?: string }) => ({
@@ -73,22 +77,45 @@ describe('createSetupThisComputerInteractiveTaskKind release-ring manual relay t
                 });
                 return {
                     status: 0,
-                    stdout: '',
+                    stdout: args[0] === 'server' && args[1] === 'help'
+                        ? '  happier server set [--server-id <id>] --server-url <url> [--webapp-url <url>] [--no-use]\n'
+                        : '',
                     stderr: '',
                 };
             }),
-            runHappierJson: vi.fn(async (args: readonly string[], opts?: Readonly<{ allowJsonFailure?: boolean }>) => {
+            runHappierJson: vi.fn(async (args: readonly string[], opts?: Readonly<{ allowJsonFailure?: boolean; env?: NodeJS.ProcessEnv }>) => {
                 executorCalls.push({
                     releaseRing,
                     args,
                     allowJsonFailure: opts?.allowJsonFailure,
+                    ...(opts?.env?.HAPPIER_DAEMON_SERVICE_TARGET_MODE
+                        ? { serviceTargetMode: opts.env.HAPPIER_DAEMON_SERVICE_TARGET_MODE }
+                        : {}),
                 });
+                const command = args[0] === '--server' ? args.slice(2) : args;
 
-                if (args[0] === 'service' && args[1] === 'status') {
+                if (command[0] === 'server' && command[1] === 'list') {
+                    return {
+                        ok: true,
+                        data: {
+                            activeServerId: 'cloud',
+                            profiles: [
+                                { id: 'cloud', serverUrl: 'https://api.happier.dev' },
+                                { id: 'relay', serverUrl: 'https://relay.example.test' },
+                            ],
+                        },
+                    };
+                }
+
+                if (command[0] === 'server' && command[1] === 'set') {
+                    return { ok: true, kind: 'server_set', data: { profile: { id: 'relay' }, active: { id: 'cloud' }, used: false } };
+                }
+
+                if (command[0] === 'service' && command[1] === 'status') {
                     return { owner: null };
                 }
 
-                if (args[0] === 'auth' && args[1] === 'status') {
+                if (command[0] === 'auth' && command[1] === 'status') {
                     return {
                         ok: true,
                         data: {
@@ -100,7 +127,7 @@ describe('createSetupThisComputerInteractiveTaskKind release-ring manual relay t
                     };
                 }
 
-                if (args[0] === 'daemon' && args[1] === 'status') {
+                if (command[0] === 'daemon' && command[1] === 'status') {
                     return {
                         daemon: { running: true },
                         service: { installed: true },
@@ -115,8 +142,9 @@ describe('createSetupThisComputerInteractiveTaskKind release-ring manual relay t
         const kind = createSetupThisComputerInteractiveTaskKind({
             createRecipeExecutor: createLocalSetupRecipeExecutor,
             switchDefaultReleaseChannel: async () => undefined,
-            uninstallExistingDaemonServices: async () => undefined,
-            exposeHappierCliOnPath: async () => ({ changed: false, shellReloadHint: null, failure: null }),
+            readServerProfileScope: createProductionSetupThisComputerInteractiveDeps().readServerProfileScope,
+            upgradeCliForTokenOnlyPairing: async () => false,
+            exposeHappierCliOnPath: async () => ({ changed: false, shellReloadHint: null, failure: null, existingCommand: null }),
             ensureLocalHappierTools: async () => MANAGED_CLI,
             readActiveRelayProfile: async () => ({
                 serverUrl: 'https://relay.example.test',
@@ -178,47 +206,61 @@ describe('createSetupThisComputerInteractiveTaskKind release-ring manual relay t
         });
 
         expect(finalPoll.result?.ok).toBe(true);
+        // R10 D3: read-only resolution first; the Home's resolved profile is used as saved (never
+        // rewritten, never selected), and every later command addresses this Home's own pinned
+        // service and daemon.
         expect(executorCalls).toEqual([
             {
                 releaseRing: 'preview',
-                args: ['service', 'status', '--json'],
+                args: ['server', 'list', '--json'],
+                allowJsonFailure: undefined,
+            },
+            {
+                releaseRing: 'preview',
+                args: ['--server', 'relay', 'service', 'status', '--json'],
                 allowJsonFailure: true,
+                serviceTargetMode: 'pinned',
             },
             {
                 releaseRing: 'preview',
-                args: ['server', 'set', '--server-url', 'https://relay.example.test', '--webapp-url', 'https://app.example.test', '--json'],
+                args: ['server', 'help'],
                 allowJsonFailure: undefined,
             },
             {
                 releaseRing: 'preview',
-                args: ['auth', 'status', '--json'],
+                args: ['--server', 'relay', 'auth', 'status', '--json'],
                 allowJsonFailure: true,
+                serviceTargetMode: 'pinned',
             },
             {
                 releaseRing: 'preview',
-                args: ['service', 'install', '--takeover', '--json'],
+                args: ['--server', 'relay', 'service', 'install', '--takeover', '--json'],
                 allowJsonFailure: undefined,
+                serviceTargetMode: 'pinned',
             },
             {
                 releaseRing: 'preview',
-                args: ['service', 'start', '--takeover', '--json'],
+                args: ['--server', 'relay', 'service', 'start', '--takeover', '--json'],
                 allowJsonFailure: undefined,
+                serviceTargetMode: 'pinned',
             },
             {
                 releaseRing: 'preview',
-                args: ['daemon', 'status', '--json'],
+                args: ['--server', 'relay', 'daemon', 'status', '--json'],
                 allowJsonFailure: undefined,
+                serviceTargetMode: 'pinned',
             },
         ]);
+        expect(executorCalls.some((call) => call.args.includes('server') && call.args.includes('set') && !call.args.includes('--no-use'))).toBe(false);
     });
 
-    it('passes the selected release ring into local service replacement cleanup', async () => {
+    it('applies an accepted replacement through the selected ring\'s scoped install, never a remove-all', async () => {
         const invocations: string[] = [];
-        const uninstallCalls: Array<{ releaseRing: unknown }> = [];
+        const executorCalls: Array<Record<string, unknown>> = [];
 
         const kind = createSetupThisComputerInteractiveTaskKind({
             switchDefaultReleaseChannel: async () => undefined,
-            exposeHappierCliOnPath: async () => ({ changed: false, shellReloadHint: null, failure: null }),
+            exposeHappierCliOnPath: async () => ({ changed: false, shellReloadHint: null, failure: null, existingCommand: null }),
             ensureLocalHappierTools: async () => {
                 invocations.push('ensureLocalHappierTools');
                 return MANAGED_CLI;
@@ -228,7 +270,9 @@ describe('createSetupThisComputerInteractiveTaskKind release-ring manual relay t
                 webappUrl: 'https://app.example.test',
                 localServerUrl: null,
             }),
-            createRecipeExecutor: () => ({
+            createRecipeExecutor: (params) => {
+                executorCalls.push({ ...params });
+                return {
                 configureRelay: async () => {
                     invocations.push('configureRelay');
                 },
@@ -242,8 +286,8 @@ describe('createSetupThisComputerInteractiveTaskKind release-ring manual relay t
                 }),
                 requestAuthPairing: async () => ({ publicKey: 'pub-key' }),
                 waitForAuthPairing: async () => ({ machineId: 'machine-1' }),
-                installDaemonService: async () => {
-                    invocations.push('installDaemonService');
+                installDaemonService: async (opts) => {
+                    invocations.push(opts?.replaceExisting ? 'installDaemonService:replaceExisting' : 'installDaemonService');
                 },
                 startDaemonService: async () => {
                     invocations.push('startDaemonService');
@@ -254,7 +298,8 @@ describe('createSetupThisComputerInteractiveTaskKind release-ring manual relay t
                     needsAuth: false,
                     machineId: 'machine-1',
                 }),
-            }),
+                };
+            },
             readBackgroundServiceSetupGuidance: async () => ({
                 targetReleaseChannel: 'preview',
                 targetServerUrl: 'https://relay.example.test',
@@ -280,10 +325,8 @@ describe('createSetupThisComputerInteractiveTaskKind release-ring manual relay t
                 shouldPromptForServiceReplacement: true,
             }),
             readCurrentRelayOwner: async () => null,
-            uninstallExistingDaemonServices: async ({ releaseRing }) => {
-                uninstallCalls.push({ releaseRing });
-                invocations.push('uninstallExistingDaemonServices');
-            },
+            readServerProfileScope: async () => ({ serverId: null, activeServerId: 'cloud', selectedService: null, targetMode: 'pinned' as const }),
+            upgradeCliForTokenOnlyPairing: async () => false,
         });
 
         const runner = createSystemTasksRunner({
@@ -321,16 +364,19 @@ describe('createSetupThisComputerInteractiveTaskKind release-ring manual relay t
         });
 
         expect(finalPoll.result?.ok).toBe(true);
-        expect(uninstallCalls).toEqual([
+        expect(executorCalls).toEqual([
             {
                 releaseRing: 'preview',
+                takeOverManualRelayRuntime: false,
+                signal: expect.any(AbortSignal),
+                scopeToConfiguredServer: true,
+                knownServerScope: { serverId: null, activeServerId: 'cloud', selectedService: null, targetMode: 'pinned' },
             },
         ]);
         expect(invocations).toEqual([
             'ensureLocalHappierTools',
-            'uninstallExistingDaemonServices',
             'configureRelay',
-            'installDaemonService',
+            'installDaemonService:replaceExisting',
             'startDaemonService',
         ]);
     });
@@ -338,8 +384,9 @@ describe('createSetupThisComputerInteractiveTaskKind release-ring manual relay t
     it('reports the selected release-ring invoker in progress diagnostics', async () => {
         const kind = createSetupThisComputerInteractiveTaskKind({
             switchDefaultReleaseChannel: async () => undefined,
-            uninstallExistingDaemonServices: async () => undefined,
-            exposeHappierCliOnPath: async () => ({ changed: false, shellReloadHint: null, failure: null }),
+            readServerProfileScope: async () => ({ serverId: null, activeServerId: 'cloud', selectedService: null, targetMode: 'pinned' as const }),
+            upgradeCliForTokenOnlyPairing: async () => false,
+            exposeHappierCliOnPath: async () => ({ changed: false, shellReloadHint: null, failure: null, existingCommand: null }),
             ensureLocalHappierTools: async () => MANAGED_CLI,
             readActiveRelayProfile: async () => ({
                 serverUrl: 'https://relay.example.test',
@@ -376,7 +423,7 @@ describe('createSetupThisComputerInteractiveTaskKind release-ring manual relay t
                 manualRelayOwner: null,
                 conflictingServices: [],
                 foreignHomeConflictingServices: [],
-                exactDefaultServiceExists: true,
+                exactDefaultServiceExists: false,
                 exactDefaultServiceRunning: false,
                 shouldOfferDefaultReleaseChannelSwitch: false,
                 shouldPromptForManualRelayTakeover: false,

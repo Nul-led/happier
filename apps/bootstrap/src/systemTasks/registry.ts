@@ -12,11 +12,14 @@ import { buildScpCommand, redactSshText } from '../ssh/index.js';
 import { createSecureAccessTailscaleHandler } from './kinds/secureAccessTailscale.js';
 import { createTailscaleEnsureReadyHandler } from './kinds/tailscaleEnsureReady.js';
 import {
+  createDaemonServiceAutostartSetHandler,
   createDaemonServiceRestartHandler,
+  createDaemonServiceRelayDisconnectHandler,
   createDaemonServiceStartHandler,
   createDaemonServiceStatusHandler,
   createDaemonServiceStopHandler,
 } from './kinds/daemonService.js';
+import { createCliUpdateHandler } from './kinds/cliUpdate.js';
 import {
   createCliPathExposureEnsureHandler,
   createCliPathExposureRemoveHandler,
@@ -194,8 +197,10 @@ export function createHsetupSystemTaskRegistry(deps: HsetupRegistryDeps = {}): S
   const daemonServiceStartHandler = createDaemonServiceStartHandler();
   const daemonServiceStopHandler = createDaemonServiceStopHandler();
   const daemonServiceRestartHandler = createDaemonServiceRestartHandler();
+  const daemonServiceRelayDisconnectHandler = createDaemonServiceRelayDisconnectHandler();
 
   return systemTasks.createSystemTaskRegistry([
+    { kind: 'daemon.service.autostart.set.v1', handler: createDaemonServiceAutostartSetHandler() },
     {
       kind: 'daemon.service.status.v1',
       handler: daemonServiceStatusHandler,
@@ -211,6 +216,14 @@ export function createHsetupSystemTaskRegistry(deps: HsetupRegistryDeps = {}): S
     {
       kind: 'daemon.service.restart.v1',
       handler: daemonServiceRestartHandler,
+    },
+    {
+      kind: 'daemon.service.relay.disconnect.v1',
+      handler: daemonServiceRelayDisconnectHandler,
+    },
+    {
+      kind: 'cli.update.v1',
+      handler: createCliUpdateHandler(),
     },
     {
       kind: 'cli.pathExposure.ensure.v1',

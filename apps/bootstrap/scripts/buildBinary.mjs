@@ -22,5 +22,7 @@ await componentArtifacts.compileBunBinary({
   entrypoint: join(repoRoot, 'apps', 'bootstrap', 'src', 'bin', 'hsetup.ts'),
   bunTarget: process.env.HAPPIER_BUN_TARGET ?? target.bunTarget,
   outfile: join(outDir, exeName),
-  cwd: repoRoot,
+  // Bun creates its temporary executable in cwd; keep it with ignored build outputs so
+  // a continuously synchronized source mirror cannot remove it before promotion.
+  cwd: outDir,
 });

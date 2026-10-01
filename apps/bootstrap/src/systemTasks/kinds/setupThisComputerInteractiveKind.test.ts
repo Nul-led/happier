@@ -52,8 +52,8 @@ function createRecipeExecutor(invocations: string[]): SetupMachineRecipeExecutor
     }),
     requestAuthPairing: async () => ({ publicKey: 'pub-key' }),
     waitForAuthPairing: async () => ({ machineId: 'machine-1' }),
-    installDaemonService: async () => {
-      invocations.push('installDaemonService');
+    installDaemonService: async (opts) => {
+      invocations.push(opts?.replaceExisting ? 'installDaemonService:replaceExisting' : 'installDaemonService');
     },
     startDaemonService: async () => {
       invocations.push('startDaemonService');
@@ -71,7 +71,7 @@ describe('createSetupThisComputerInteractiveTaskKind', () => {
   it('ensures the local Happier tools before running the rest of setup', async () => {
     const invocations: string[] = [];
     const kind = createSetupThisComputerInteractiveTaskKind({
-      exposeHappierCliOnPath: async () => ({ changed: false, shellReloadHint: null, failure: null }),
+      exposeHappierCliOnPath: async () => ({ changed: false, shellReloadHint: null, failure: null, existingCommand: null }),
       ensureLocalHappierTools: async ({ releaseChannel, onProgress }) => {
         onProgress?.({ phase: 'downloading', receivedBytes: 1024, totalBytes: 2048 });
         invocations.push(`ensureLocalHappierTools:${releaseChannel}`);
@@ -100,7 +100,8 @@ describe('createSetupThisComputerInteractiveTaskKind', () => {
       }),
       readCurrentRelayOwner: async () => null,
       switchDefaultReleaseChannel: async () => undefined,
-      uninstallExistingDaemonServices: async () => undefined,
+      readServerProfileScope: async () => ({ serverId: null, activeServerId: 'cloud', selectedService: null, targetMode: 'pinned' as const }),
+      upgradeCliForTokenOnlyPairing: async () => false,
     });
 
     const runner = createSystemTasksRunner({
@@ -128,10 +129,11 @@ describe('createSetupThisComputerInteractiveTaskKind', () => {
       stepId: 'setup.thisComputer.ensureCli',
       data: { phase: 'downloading', receivedBytes: 1024, totalBytes: 2048 },
     }));
+    // The exact service already exists (stopped): the shared disposition owner starts it and does
+    // not reinstall it (R3-6).
     expect(invocations).toEqual([
       'ensureLocalHappierTools:preview',
       'configureRelay',
-      'installDaemonService',
       'startDaemonService',
     ]);
   });
@@ -166,7 +168,8 @@ describe('createSetupThisComputerInteractiveTaskKind', () => {
       }),
       readCurrentRelayOwner: async () => null,
       switchDefaultReleaseChannel: async () => undefined,
-      uninstallExistingDaemonServices: async () => undefined,
+      readServerProfileScope: async () => ({ serverId: null, activeServerId: 'cloud', selectedService: null, targetMode: 'pinned' as const }),
+      upgradeCliForTokenOnlyPairing: async () => false,
       exposeHappierCliOnPath: async () => {
         invocations.push('exposeHappierCliOnPath');
         // A read-only shell profile is the real failure mode this must survive.
@@ -201,7 +204,7 @@ describe('createSetupThisComputerInteractiveTaskKind', () => {
     ]));
     // It runs alongside the remaining service work, not after it.
     expect(invocations.indexOf('exposeHappierCliOnPath')).toBeGreaterThan(-1);
-    expect(invocations.indexOf('exposeHappierCliOnPath')).toBeLessThan(invocations.indexOf('installDaemonService'));
+    expect(invocations.indexOf('exposeHappierCliOnPath')).toBeLessThan(invocations.indexOf('startDaemonService'));
   });
 
   it('does not write the shell profile when a consent prompt is declined', async () => {
@@ -210,7 +213,7 @@ describe('createSetupThisComputerInteractiveTaskKind', () => {
       ensureLocalHappierTools: async () => MANAGED_CLI,
       exposeHappierCliOnPath: async () => {
         invocations.push('exposeHappierCliOnPath');
-        return { changed: true, shellReloadHint: null, failure: null };
+        return { changed: true, shellReloadHint: null, failure: null, existingCommand: null };
       },
       readActiveRelayProfile: async () => ({
         serverUrl: 'https://relay.example.test',
@@ -244,7 +247,8 @@ describe('createSetupThisComputerInteractiveTaskKind', () => {
       }),
       readCurrentRelayOwner: async () => null,
       switchDefaultReleaseChannel: async () => undefined,
-      uninstallExistingDaemonServices: async () => undefined,
+      readServerProfileScope: async () => ({ serverId: null, activeServerId: 'cloud', selectedService: null, targetMode: 'pinned' as const }),
+      upgradeCliForTokenOnlyPairing: async () => false,
     });
 
     const runner = createSystemTasksRunner({ kinds: { 'setup.thisComputer.v1': kind } });
@@ -275,7 +279,7 @@ describe('createSetupThisComputerInteractiveTaskKind', () => {
   it('emits command-level diagnostics on the shared step ids used by the checklist', async () => {
     const invocations: string[] = [];
     const kind = createSetupThisComputerInteractiveTaskKind({
-      exposeHappierCliOnPath: async () => ({ changed: false, shellReloadHint: null, failure: null }),
+      exposeHappierCliOnPath: async () => ({ changed: false, shellReloadHint: null, failure: null, existingCommand: null }),
       ensureLocalHappierTools: async () => {
         invocations.push('ensureLocalHappierTools');
         return MANAGED_CLI;
@@ -303,7 +307,8 @@ describe('createSetupThisComputerInteractiveTaskKind', () => {
       }),
       readCurrentRelayOwner: async () => null,
       switchDefaultReleaseChannel: async () => undefined,
-      uninstallExistingDaemonServices: async () => undefined,
+      readServerProfileScope: async () => ({ serverId: null, activeServerId: 'cloud', selectedService: null, targetMode: 'pinned' as const }),
+      upgradeCliForTokenOnlyPairing: async () => false,
     });
 
     const runner = createSystemTasksRunner({
@@ -360,7 +365,7 @@ describe('createSetupThisComputerInteractiveTaskKind', () => {
     const invocations: string[] = [];
     const kind = createSetupThisComputerInteractiveTaskKind({
         ensureLocalHappierTools: async () => MANAGED_CLI,
-      exposeHappierCliOnPath: async () => ({ changed: false, shellReloadHint: null, failure: null }),
+      exposeHappierCliOnPath: async () => ({ changed: false, shellReloadHint: null, failure: null, existingCommand: null }),
       readActiveRelayProfile: async () => ({
         serverUrl: 'https://relay.example.test',
         webappUrl: 'https://app.example.test',
@@ -416,9 +421,8 @@ describe('createSetupThisComputerInteractiveTaskKind', () => {
       switchDefaultReleaseChannel: async (releaseChannel) => {
         invocations.push(`switchDefaultReleaseChannel:${releaseChannel}`);
       },
-      uninstallExistingDaemonServices: async () => {
-        invocations.push('uninstallExistingDaemonServices');
-      },
+      readServerProfileScope: async () => ({ serverId: null, activeServerId: 'cloud', selectedService: null, targetMode: 'pinned' as const }),
+      upgradeCliForTokenOnlyPairing: async () => false,
     });
 
     const runner = createSystemTasksRunner({
@@ -509,9 +513,8 @@ describe('createSetupThisComputerInteractiveTaskKind', () => {
     });
     expect(invocations).toEqual([
       'switchDefaultReleaseChannel:preview',
-      'uninstallExistingDaemonServices',
       'configureRelay',
-      'installDaemonService',
+      'installDaemonService:replaceExisting',
       'startDaemonService',
     ]);
   });
@@ -523,7 +526,7 @@ describe('createSetupThisComputerInteractiveTaskKind', () => {
       localServerUrl: string | null;
     }> = [];
     const kind = createSetupThisComputerInteractiveTaskKind({
-      exposeHappierCliOnPath: async () => ({ changed: false, shellReloadHint: null, failure: null }),
+      exposeHappierCliOnPath: async () => ({ changed: false, shellReloadHint: null, failure: null, existingCommand: null }),
       ensureLocalHappierTools: async () => MANAGED_CLI,
       readActiveRelayProfile: async () => ({
         serverUrl: 'https://relay-from-cli.example.test',
@@ -570,7 +573,8 @@ describe('createSetupThisComputerInteractiveTaskKind', () => {
       }),
       readCurrentRelayOwner: async () => null,
       switchDefaultReleaseChannel: async () => undefined,
-      uninstallExistingDaemonServices: async () => undefined,
+      readServerProfileScope: async () => ({ serverId: null, activeServerId: 'cloud', selectedService: null, targetMode: 'pinned' as const }),
+      upgradeCliForTokenOnlyPairing: async () => false,
     });
 
     const runner = createSystemTasksRunner({
@@ -606,7 +610,7 @@ describe('createSetupThisComputerInteractiveTaskKind', () => {
     const invocations: string[] = [];
     const kind = createSetupThisComputerInteractiveTaskKind({
         ensureLocalHappierTools: async () => MANAGED_CLI,
-      exposeHappierCliOnPath: async () => ({ changed: false, shellReloadHint: null, failure: null }),
+      exposeHappierCliOnPath: async () => ({ changed: false, shellReloadHint: null, failure: null, existingCommand: null }),
       readActiveRelayProfile: async () => ({
         serverUrl: 'https://relay.example.test',
         webappUrl: 'https://app.example.test',
@@ -642,9 +646,8 @@ describe('createSetupThisComputerInteractiveTaskKind', () => {
       }),
       readCurrentRelayOwner: async () => null,
       switchDefaultReleaseChannel: async () => undefined,
-      uninstallExistingDaemonServices: async () => {
-        invocations.push('uninstallExistingDaemonServices');
-      },
+      readServerProfileScope: async () => ({ serverId: null, activeServerId: 'cloud', selectedService: null, targetMode: 'pinned' as const }),
+      upgradeCliForTokenOnlyPairing: async () => false,
     });
 
     const runner = createSystemTasksRunner({
@@ -696,9 +699,8 @@ describe('createSetupThisComputerInteractiveTaskKind', () => {
       data: { machineId: 'machine-1' },
     });
     expect(invocations).toEqual([
-      'uninstallExistingDaemonServices',
       'configureRelay',
-      'installDaemonService',
+      'installDaemonService:replaceExisting',
       'startDaemonService',
     ]);
   });
@@ -708,8 +710,9 @@ describe('createSetupThisComputerInteractiveTaskKind', () => {
     const kind = createSetupThisComputerInteractiveTaskKind({
         ensureLocalHappierTools: async () => MANAGED_CLI,
         switchDefaultReleaseChannel: async () => undefined,
-        uninstallExistingDaemonServices: async () => undefined,
-      exposeHappierCliOnPath: async () => ({ changed: false, shellReloadHint: null, failure: null }),
+        readServerProfileScope: async () => ({ serverId: null, activeServerId: 'cloud', selectedService: null, targetMode: 'pinned' as const }),
+        upgradeCliForTokenOnlyPairing: async () => false,
+      exposeHappierCliOnPath: async () => ({ changed: false, shellReloadHint: null, failure: null, existingCommand: null }),
       readActiveRelayProfile: async () => ({
         serverUrl: 'https://relay.example.test',
         webappUrl: 'https://app.example.test',
@@ -802,7 +805,7 @@ describe('createSetupThisComputerInteractiveTaskKind', () => {
   it('fails when the user keeps conflicting local background services', async () => {
     const kind = createSetupThisComputerInteractiveTaskKind({
         ensureLocalHappierTools: async () => MANAGED_CLI,
-      exposeHappierCliOnPath: async () => ({ changed: false, shellReloadHint: null, failure: null }),
+      exposeHappierCliOnPath: async () => ({ changed: false, shellReloadHint: null, failure: null, existingCommand: null }),
       readActiveRelayProfile: async () => ({
         serverUrl: 'https://relay.example.test',
         webappUrl: 'https://app.example.test',
@@ -835,7 +838,8 @@ describe('createSetupThisComputerInteractiveTaskKind', () => {
       }),
       readCurrentRelayOwner: async () => null,
       switchDefaultReleaseChannel: async () => undefined,
-      uninstallExistingDaemonServices: async () => undefined,
+      readServerProfileScope: async () => ({ serverId: null, activeServerId: 'cloud', selectedService: null, targetMode: 'pinned' as const }),
+      upgradeCliForTokenOnlyPairing: async () => false,
     });
 
     const runner = createSystemTasksRunner({
@@ -878,7 +882,7 @@ describe('createSetupThisComputerInteractiveTaskKind', () => {
     const invocations: string[] = [];
     const kind = createSetupThisComputerInteractiveTaskKind({
         ensureLocalHappierTools: async () => MANAGED_CLI,
-      exposeHappierCliOnPath: async () => ({ changed: false, shellReloadHint: null, failure: null }),
+      exposeHappierCliOnPath: async () => ({ changed: false, shellReloadHint: null, failure: null, existingCommand: null }),
       readActiveRelayProfile: async () => ({
         serverUrl: 'https://relay.example.test',
         webappUrl: 'https://app.example.test',
@@ -934,9 +938,8 @@ describe('createSetupThisComputerInteractiveTaskKind', () => {
       switchDefaultReleaseChannel: async (releaseChannel) => {
         invocations.push(`switchDefaultReleaseChannel:${releaseChannel}`);
       },
-      uninstallExistingDaemonServices: async () => {
-        invocations.push('uninstallExistingDaemonServices');
-      },
+      readServerProfileScope: async () => ({ serverId: null, activeServerId: 'cloud', selectedService: null, targetMode: 'pinned' as const }),
+      upgradeCliForTokenOnlyPairing: async () => false,
     });
 
     const runner = createSystemTasksRunner({
@@ -985,7 +988,7 @@ describe('createSetupThisComputerInteractiveTaskKind', () => {
   it('keeps the current default release channel and completes setup when the optional switch is declined', async () => {
     const kind = createSetupThisComputerInteractiveTaskKind({
         ensureLocalHappierTools: async () => MANAGED_CLI,
-      exposeHappierCliOnPath: async () => ({ changed: false, shellReloadHint: null, failure: null }),
+      exposeHappierCliOnPath: async () => ({ changed: false, shellReloadHint: null, failure: null, existingCommand: null }),
       readActiveRelayProfile: async () => ({
         serverUrl: 'https://relay.example.test',
         webappUrl: 'https://app.example.test',
@@ -1020,7 +1023,8 @@ describe('createSetupThisComputerInteractiveTaskKind', () => {
       }),
       readCurrentRelayOwner: async () => null,
       switchDefaultReleaseChannel: async () => undefined,
-      uninstallExistingDaemonServices: async () => undefined,
+      readServerProfileScope: async () => ({ serverId: null, activeServerId: 'cloud', selectedService: null, targetMode: 'pinned' as const }),
+      upgradeCliForTokenOnlyPairing: async () => false,
     });
 
     const runner = createSystemTasksRunner({

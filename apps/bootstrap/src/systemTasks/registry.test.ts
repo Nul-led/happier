@@ -16,10 +16,39 @@ import {
   type PersonalHomeTaskOperationContext,
 } from '@happier-dev/cli-common/systemTasks';
 import { createFakeTailscaleCli } from '@happier-dev/tests/testkit/tailscale/fakeTailscaleCli';
-import { describe, expect, it, vi } from 'vitest';
+import { buildLaunchdPlistXml, renderSystemdServiceUnit } from '@happier-dev/cli-common/service';
+import { describe, expect, it, onTestFinished, vi } from 'vitest';
 
 import { createFakeHappierCli, restoreEnvVar } from './fakeHappierCli.testkit.js';
 import { createHsetupSystemTaskRegistry } from './registry.js';
+
+function prepareInstalledDaemonFixture(cliPath: string): void {
+  const homeDir = join(cliPath, '..');
+  const previousHomeDir = process.env.HAPPIER_HOME_DIR;
+  const previousServiceHomeDir = process.env.HAPPIER_DAEMON_SERVICE_USER_HOME_DIR;
+  process.env.HAPPIER_HOME_DIR = homeDir;
+  process.env.HAPPIER_DAEMON_SERVICE_USER_HOME_DIR = homeDir;
+  const env = {
+    HAPPIER_HOME_DIR: homeDir,
+    HAPPIER_PUBLIC_RELEASE_CHANNEL: 'stable',
+    HAPPIER_DAEMON_SERVICE_TARGET_MODE: 'default-following',
+    HAPPIER_SERVER_URL: 'https://relay.example.test',
+  };
+  if (process.platform === 'darwin') {
+    const folder = join(homeDir, 'Library', 'LaunchAgents');
+    mkdirSync(folder, { recursive: true });
+    const label = 'com.happier.cli.daemon.default';
+    writeFileSync(join(folder, label + '.plist'), buildLaunchdPlistXml({ label, programArgs: [cliPath, 'daemon', 'start-sync'], env, stdoutPath: join(homeDir, 'out'), stderrPath: join(homeDir, 'err') }));
+  } else {
+    const folder = join(homeDir, '.config', 'systemd', 'user');
+    mkdirSync(folder, { recursive: true });
+    writeFileSync(join(folder, 'happier-daemon.default.service'), renderSystemdServiceUnit({ description: 'Happier', execStart: [cliPath, 'daemon', 'start-sync'], env }));
+  }
+  onTestFinished(() => {
+    restoreEnvVar('HAPPIER_HOME_DIR', previousHomeDir);
+    restoreEnvVar('HAPPIER_DAEMON_SERVICE_USER_HOME_DIR', previousServiceHomeDir);
+  });
+}
 
 async function prepareBootstrapPersonalHomeFixture(homeDir: string): Promise<Readonly<{
   archivePath: string;
@@ -168,7 +197,7 @@ describe('createHsetupSystemTaskRegistry', () => {
     }
   });
 
-  it('runs daemon.service.start.v1 and waits for the ready daemon status snapshot', async () => {
+  it.skipIf(process.platform === 'win32')('runs daemon.service.start.v1 and waits for the ready daemon status snapshot', async () => {
     const fakeCli = createFakeHappierCli({
       daemonStatuses: [
         {
@@ -225,6 +254,7 @@ describe('createHsetupSystemTaskRegistry', () => {
       process.env.HAPPIER_FAKE_CLI_STATE_PATH = join(fakeCli.cliPath, '..', 'scenario.json');
       process.env.HAPPIER_FAKE_CLI_LOG_PATH = join(fakeCli.cliPath, '..', 'invocations.log');
 
+      prepareInstalledDaemonFixture(fakeCli.cliPath);
       const result = await executeSystemTask({
         spec: {
           protocolVersion: 1,
@@ -269,7 +299,7 @@ describe('createHsetupSystemTaskRegistry', () => {
     }
   });
 
-  it('runs daemon.service.stop.v1 and stops the local daemon service through the canonical CLI wrapper', async () => {
+  it.skipIf(process.platform === 'win32')('runs daemon.service.stop.v1 and stops the local daemon service through the canonical CLI wrapper', async () => {
     const fakeCli = createFakeHappierCli({
       daemonStatuses: [
         {
@@ -326,6 +356,7 @@ describe('createHsetupSystemTaskRegistry', () => {
       process.env.HAPPIER_FAKE_CLI_STATE_PATH = join(fakeCli.cliPath, '..', 'scenario.json');
       process.env.HAPPIER_FAKE_CLI_LOG_PATH = join(fakeCli.cliPath, '..', 'invocations.log');
 
+      prepareInstalledDaemonFixture(fakeCli.cliPath);
       const result = await executeSystemTask({
         spec: {
           protocolVersion: 1,
@@ -370,7 +401,7 @@ describe('createHsetupSystemTaskRegistry', () => {
     }
   });
 
-  it('runs daemon.service.restart.v1 and restarts the local daemon service through the canonical CLI wrapper', async () => {
+  it.skipIf(process.platform === 'win32')('runs daemon.service.restart.v1 and restarts the local daemon service through the canonical CLI wrapper', async () => {
     const fakeCli = createFakeHappierCli({
       daemonStatuses: [
         {
@@ -427,6 +458,7 @@ describe('createHsetupSystemTaskRegistry', () => {
       process.env.HAPPIER_FAKE_CLI_STATE_PATH = join(fakeCli.cliPath, '..', 'scenario.json');
       process.env.HAPPIER_FAKE_CLI_LOG_PATH = join(fakeCli.cliPath, '..', 'invocations.log');
 
+      prepareInstalledDaemonFixture(fakeCli.cliPath);
       const result = await executeSystemTask({
         spec: {
           protocolVersion: 1,
@@ -527,6 +559,8 @@ describe('createHsetupSystemTaskRegistry', () => {
       data: {
         installed: true,
         version: '1.2.3',
+        channel: 'stable',
+        mode: 'user',
         relayUrl: 'http://127.0.0.1:3005',
         healthy: true,
         service: {
@@ -821,7 +855,7 @@ describe('createHsetupSystemTaskRegistry', () => {
         protocolVersion: 1,
         taskId: 'task_daemon_status_release_ring_publicdev',
         ok: true,
-        data: {
+        data: expect.objectContaining({
           serviceInstalled: true,
           daemonRunning: true,
           needsAuth: false,
@@ -830,7 +864,13 @@ describe('createHsetupSystemTaskRegistry', () => {
           daemonComparableKey: null,
           daemonAccountId: null,
           daemonMachineRegistered: true,
-        },
+          daemonAccountLabel: null,
+          daemonServiceManaged: null,
+          daemonCliVersion: null,
+          cliUpdate: null,
+          // Nothing was asked and no other `happier` is on the search path (R12).
+          cliChoice: { mode: null, otherCli: null },
+        }),
       });
       expect(fakeCli.readInvocations()).toEqual([
         ['daemon', 'status', '--json'],
@@ -1123,6 +1163,7 @@ describe('createHsetupSystemTaskRegistry', () => {
         ['login', '--qr'],
         ['status', '--json'],
         ['status', '--json'],
+        ['serve', 'status'],
         ['serve', 'status'],
         ['serve', '--bg', 'http://127.0.0.1:3005'],
       ]);
@@ -1692,6 +1733,50 @@ describe('createHsetupSystemTaskRegistry', () => {
 
     expect(result).toMatchObject({ ok: true, data: { operation: 'inspect', status: 'ok' } });
     expect(invoked).toEqual(['inspect']);
+  });
+
+  it('routes the hosting-desktop owner claim through the Personal Home operations owner', async () => {
+    const claimOwner = vi.fn(async () => ({
+      v: 1,
+      command: 'claim-home-owner',
+      intent: 'initial_claim',
+      homeServerIdentityId: 'home-1',
+      targetAccountId: 'acct_1',
+      result: { status: 'claimed', ownerAccountId: 'acct_1' },
+    }));
+    const registry = createHsetupSystemTaskRegistry({
+      personalHomeOperations: {
+        inspect: async () => ({}),
+        backup: async () => ({}),
+        verifyBackup: async () => ({}),
+        restore: async () => ({}),
+        reconcileRestore: async () => undefined,
+        recoverRestore: async () => ({}),
+        erase: async () => ({}),
+        claimOwner,
+      },
+    });
+
+    const result = await executeSystemTask({
+      spec: {
+        protocolVersion: 1,
+        kind: 'relay.runtime.personal_home.claim_owner.v1',
+        params: {
+          target: { kind: 'local' },
+          channel: 'stable',
+          mode: 'user',
+          purpose: { kind: 'personal-home', canonicalServerUrl: 'http://127.0.0.1:43123' },
+          accountId: 'acct_1',
+        },
+      },
+      taskId: 'task_personal_home_claim_owner_1',
+      registry,
+      now: () => 1700000000000,
+      emitEvent: () => undefined,
+    });
+
+    expect(result).toMatchObject({ ok: true, data: { result: { status: 'claimed', ownerAccountId: 'acct_1' } } });
+    expect(claimOwner).toHaveBeenCalledWith(expect.objectContaining({ accountId: 'acct_1' }));
   });
 
   it('routes destination relocation status through the installed-CLI registry boundary', async () => {

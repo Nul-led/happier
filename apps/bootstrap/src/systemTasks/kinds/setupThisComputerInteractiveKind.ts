@@ -1,24 +1,45 @@
 import {
   applyBackgroundServiceSetupGuidance,
   type BackgroundServiceSetupGuidanceCancellationReason,
-  createLocalHappierJsonExecutor,
   ensureLocalFirstPartyComponentCommand,
   formatBackgroundServiceManualRelayTakeoverPrompt,
   formatBackgroundServiceReleaseChannelSwitchPrompt,
   formatBackgroundServiceReplacementPrompt,
   resolveBackgroundServiceSetupServicesRequiringReplacement,
   readBackgroundServiceSetupGuidance,
+  readLocalCliUpdateFact,
+  resolveBackgroundServiceSetupReconciliationDisposition,
   runSetupMachineRecipe,
   SystemTaskExecutionError,
   type BackgroundServiceSetupGuidance,
+  type BackgroundServiceSetupServiceTarget,
+  type HappierHomeServiceConvergence,
+  type HappierServerScope,
+  type HappierServiceFollowingScope,
+  convergeHappierHomeServicesOntoCli,
+  createLocalHappierJsonExecutor,
+  readCurrentHappierServices,
+  type LocalServerProfileScope,
+  type InteractiveSystemTaskContext,
   type InteractiveSystemTaskKind,
   type SetupMachineRecipeExecutor,
+  updateManagedLocalFirstPartyComponent,
 } from '@happier-dev/cli-common/systemTasks';
-import { readMachineDaemonOwnershipMetadataFromSocketAuth, type MachineDaemonOwnershipMetadata } from '@happier-dev/protocol';
+import { resolveHappyHomeDirFromEnvironment } from '@happier-dev/cli-common/agents';
+import type { HappierService } from '@happier-dev/cli-common/happierRuntime';
+import {
+  readSetupCliChoiceAnswer,
+  type MachineDaemonOwnershipMetadata,
+  type SetupCliChoicePromptData,
+  type SystemTaskJsonObject,
+} from '@happier-dev/protocol';
 import {
   ensureHappierCliPathExposure,
+  removeHappierCliPathExposure,
   syncInstalledFirstPartyShims,
   writeDefaultManagedReleaseChannel,
+  writeHappierCliChoice,
+  type HappierCliChoice,
   type HappierCliPathExposureResult,
   type FirstPartyAcquisitionOptions,
 } from '@happier-dev/cli-common/firstPartyRuntime';
@@ -29,10 +50,17 @@ import {
 
 import { normalizeBootstrapChannel } from '../taskRuntime.js';
 import { reportCliAcquisitionProgress } from '../cliAcquisitionProgress.js';
+import {
+  inspectLocalHappierCliChoice,
+  ownCliCannotServeSetupError,
+  type LocalHappierCliChoiceInspection,
+} from '../happierCli.js';
 
 import {
   createLocalSetupRecipeExecutor,
   readLocalActiveRelayProfile,
+  readLocalCurrentRelayOwner,
+  readLocalServerProfileScopeForRelay,
   readLocalSetupCliAcquisition,
   type LocalSetupCliAcquisition,
   type LocalSetupRelayProfile,
@@ -186,33 +214,46 @@ function createInstrumentedRecipeExecutor(
       });
       await recipeExecutor.approveAuthPairing(publicKey);
     },
-    async installDaemonService() {
+    async installDaemonService(opts) {
       if (!recipeExecutor.installDaemonService) {
         return;
       }
+      const args = [
+        'service',
+        'install',
+        ...((opts?.takeover ?? takeoverArgs.length > 0) ? ['--takeover'] : []),
+        ...(opts?.replaceExisting ? ['--replace-existing=all', '--yes'] : []),
+        '--json',
+      ];
       emitCommandDiagnostics(ctx, {
         stepId: 'setup.thisComputer.installService',
-        message: `Running ${commandInvoker} service install${takeoverArgs.length > 0 ? ' --takeover' : ''} --json`,
-        diagnostics: {
-          command: commandInvoker,
-          args: ['service', 'install', ...takeoverArgs, '--json'],
-        },
+        message: `Running ${commandInvoker} ${args.join(' ')}`,
+        diagnostics: { command: commandInvoker, args },
       });
-      await recipeExecutor.installDaemonService();
+      await recipeExecutor.installDaemonService(opts);
     },
-    async startDaemonService() {
+    async startDaemonService(opts) {
       if (!recipeExecutor.startDaemonService) {
         return;
       }
+      const args = ['service', 'start', ...((opts?.takeover ?? takeoverArgs.length > 0) ? ['--takeover'] : []), '--json'];
       emitCommandDiagnostics(ctx, {
         stepId: 'setup.thisComputer.startService',
-        message: `Running ${commandInvoker} service start${takeoverArgs.length > 0 ? ' --takeover' : ''} --json`,
-        diagnostics: {
-          command: commandInvoker,
-          args: ['service', 'start', ...takeoverArgs, '--json'],
-        },
+        message: `Running ${commandInvoker} ${args.join(' ')}`,
+        diagnostics: { command: commandInvoker, args },
       });
-      await recipeExecutor.startDaemonService();
+      await recipeExecutor.startDaemonService(opts);
+    },
+    async restartDaemonService() {
+      if (!recipeExecutor.restartDaemonService) {
+        return;
+      }
+      emitCommandDiagnostics(ctx, {
+        stepId: 'setup.thisComputer.restartService',
+        message: `Running ${commandInvoker} service restart --json`,
+        diagnostics: { command: commandInvoker, args: ['service', 'restart', '--json'] },
+      });
+      await recipeExecutor.restartDaemonService();
     },
     async waitForReadyDaemon(params) {
       if (!recipeExecutor.waitForReadyDaemon) {
@@ -244,12 +285,47 @@ export type SetupThisComputerInteractiveParams = Readonly<{
   activeRelayUrl?: string;
   activeWebappUrl?: string;
   activeLocalRelayUrl?: string | null;
+  /** The explicit Home's server identity (RV-11): tells apart profiles that share its URL. */
+  activeServerIdentityId?: string;
+  activeAccountId?: string;
   installService?: boolean;
   startService?: boolean;
   verifyService?: boolean;
+  /** Settings › This computer › Command line "Change": ask the one-CLI question again (R12). */
+  reconsiderCli?: boolean;
+  /**
+   * The Personal Home recovery Retry after `cli_choice_service_convergence_failed`: with no question
+   * to ask, the recorded answer is re-applied to every service of this home and ring (R12).
+   */
+  convergeCliChoice?: boolean;
+}>;
+
+/**
+ * R12 — the one-CLI question and the two writes its answer makes. `record` and
+ * `removePathExposure` change this computer (the choice record; the shell lines Desktop wrote), so
+ * the production composition names them explicitly; a construction without this group asks
+ * nothing, which only tests rely on.
+ */
+export type SetupCliChoiceDeps = Readonly<{
+  inspect: (params: Readonly<{ reconsider?: boolean }>) => Promise<LocalHappierCliChoiceInspection>;
+  record: (choice: HappierCliChoice) => Promise<void>;
+  removePathExposure: () => Promise<void>;
+  /** This computer's service inventory, read before the run touches any service. */
+  readServices: () => Promise<readonly HappierService[]>;
+  /**
+   * Reinstalls every other service of this home and ring onto the CLI the resolver now answers with
+   * (`convergeHappierHomeServicesOntoCli`), each at its own target.
+   */
+  convergeServices: (params: Readonly<{
+    signal?: AbortSignal;
+    services: readonly HappierService[];
+    releaseRing: PublicReleaseRingId;
+    exclude: HappierServerScope | HappierServiceFollowingScope | null;
+  }>) => Promise<HappierHomeServiceConvergence>;
 }>;
 
 export type SetupThisComputerInteractiveDeps = Readonly<{
+  cliChoice?: SetupCliChoiceDeps;
   /**
    * Acquires the managed `happier` CLI and reports which command was resolved and how. Only a
    * `managed` acquisition is approved for pairing without asking (R13); any other provenance is
@@ -258,20 +334,44 @@ export type SetupThisComputerInteractiveDeps = Readonly<{
   ensureLocalHappierTools: (params: FirstPartyAcquisitionOptions & Readonly<{ releaseChannel?: PublicReleaseRingId }>) => Promise<LocalSetupCliAcquisition>;
   readActiveRelayProfile: (params: Readonly<{ releaseRing?: PublicReleaseRingId }>) => Promise<SetupThisComputerRelayProfile>;
   createRecipeExecutor: (params: Readonly<{
+    signal?: AbortSignal;
     releaseRing?: PublicReleaseRingId;
     takeOverManualRelayRuntime?: boolean;
+    /** Explicit-Home setup: save the profile without selecting it and scope every later command to it. */
+    scopeToConfiguredServer?: boolean;
+    /** The explicit Home's scope read before any write, so the executor never re-decides it. */
+    knownServerScope?: LocalServerProfileScope | null;
   }>) => SetupMachineRecipeExecutor;
+  /**
+   * Read-only: which saved profile the explicit Home is and which server the terminal follows
+   * (`server list --json`). Runs before any consent, so it must never write.
+   */
+  readServerProfileScope: (params: Readonly<{
+    releaseRing?: PublicReleaseRingId;
+    relayProfile: SetupThisComputerRelayProfile;
+  }>) => Promise<LocalServerProfileScope>;
   readBackgroundServiceSetupGuidance: (params: Readonly<{
     targetReleaseChannel: PublicReleaseRingId;
     targetServerUrl: string;
     currentRelayOwner?: Pick<MachineDaemonOwnershipMetadata, 'serviceManaged' | 'publicReleaseChannel' | 'cliVersion'> | null;
+    serviceTarget?: BackgroundServiceSetupServiceTarget;
+    offerDefaultReleaseChannelSwitch?: boolean;
   }>) => Promise<BackgroundServiceSetupGuidance>;
-  readCurrentRelayOwner: (params: Readonly<{ releaseRing?: PublicReleaseRingId }>) => Promise<Pick<
+  /**
+   * The manual (non-service) daemon of the target: scoped to the explicit Home's own server when
+   * given, because daemons are per-server and a manual daemon of another server never conflicts.
+   */
+  readCurrentRelayOwner: (params: Readonly<{ releaseRing?: PublicReleaseRingId; scope?: HappierServerScope }>) => Promise<Pick<
     MachineDaemonOwnershipMetadata,
     'serviceManaged' | 'publicReleaseChannel' | 'cliVersion'
   > | null>;
   switchDefaultReleaseChannel: (releaseChannel: PublicReleaseRingId) => Promise<void>;
-  uninstallExistingDaemonServices: (params: Readonly<{ releaseRing?: PublicReleaseRingId }>) => Promise<void>;
+  /**
+   * Replaces this channel's managed CLI with the newer CLI its channel offers (cached update fact),
+   * through the acquisition/install owner. Resolves `true` only when a different version was
+   * installed. Used when the installed managed CLI cannot do token-only pairing (R3-3).
+   */
+  upgradeCliForTokenOnlyPairing: (params: FirstPartyAcquisitionOptions & Readonly<{ releaseChannel?: PublicReleaseRingId }>) => Promise<boolean>;
   /** Makes `happier` resolve in a new terminal. Ancillary: never gates readiness (see `run`). */
   exposeHappierCliOnPath: () => Promise<HappierCliPathExposureResult>;
 }>;
@@ -287,8 +387,11 @@ type MutatingSetupThisComputerDepName =
   | 'ensureLocalHappierTools'
   | 'createRecipeExecutor'
   | 'switchDefaultReleaseChannel'
-  | 'uninstallExistingDaemonServices'
-  | 'exposeHappierCliOnPath';
+  | 'exposeHappierCliOnPath'
+  | 'upgradeCliForTokenOnlyPairing'
+  | 'cliChoice'
+  // Read-only, but it spawns the real CLI; required so a test can never reach the developer's machine.
+  | 'readServerProfileScope';
 
 export type SetupThisComputerInteractiveDepsInput =
   Pick<SetupThisComputerInteractiveDeps, MutatingSetupThisComputerDepName>
@@ -303,6 +406,14 @@ export function createSetupThisComputerInteractiveTaskKind(
     async run(ctx) {
       const parsed = parseSetupThisComputerInteractiveParams(ctx.params);
       const releaseRing = parsed.channel ? normalizeBootstrapChannel(parsed.channel).releaseChannel : undefined;
+      // R12: the first step, before anything is acquired or written.
+      const answeredCliChoice = deps.cliChoice
+        ? await askCliChoice(ctx, deps.cliChoice, {
+          reconsider: parsed.reconsiderCli === true,
+          reapplyRecorded: parsed.convergeCliChoice === true,
+        })
+        : null;
+      ctx.signal?.throwIfAborted();
       ctx.emit({
         type: 'progress',
         stepId: 'setup.thisComputer.ensureCli',
@@ -319,29 +430,55 @@ export function createSetupThisComputerInteractiveTaskKind(
         stepId: 'setup.thisComputer.resolveRelay',
         message: 'Resolving server configuration',
       });
-      const relayProfile = resolveExplicitRelayProfile(parsed) ?? await deps.readActiveRelayProfile({ releaseRing });
+      const explicitRelayProfile = resolveExplicitRelayProfile(parsed);
+      const relayProfile = explicitRelayProfile ?? await deps.readActiveRelayProfile({ releaseRing });
+      // R10 D3: an explicitly selected Home (the desktop's Personal Home) gets its own pinned
+      // service beside whatever the user set up themselves, and setup never switches the
+      // terminal's active server. Only when the terminal already follows this very server is the
+      // existing default-following service the one that serves it. Read-only: nothing is written
+      // before consent.
+      const profileScope = explicitRelayProfile
+        ? await deps.readServerProfileScope({ releaseRing, relayProfile: explicitRelayProfile })
+        : null;
+      const serviceTarget: BackgroundServiceSetupServiceTarget | undefined = profileScope
+        ? profileScope.targetMode === 'pinned'
+          ? { targetMode: 'pinned', serverId: profileScope.serverId }
+          : { targetMode: 'default-following', followedServerId: profileScope.activeServerId }
+        : undefined;
+      let guidance: BackgroundServiceSetupGuidance | null = null;
       let shouldTakeOverManualRelayRuntime = false;
+      let shouldReplaceExistingServices = false;
       if (parsed.installService !== false) {
         const targetReleaseChannel = releaseRing ?? 'stable';
-        const currentRelayOwner = await deps.readCurrentRelayOwner({ releaseRing });
-        const guidance = await deps.readBackgroundServiceSetupGuidance({
+        const currentRelayOwner = profileScope
+          ? profileScope.serverId
+            ? await deps.readCurrentRelayOwner({
+              releaseRing,
+              scope: { serverId: profileScope.serverId, targetMode: profileScope.targetMode },
+            })
+            // No saved profile yet: no daemon of this Home can be running.
+            : null
+          : await deps.readCurrentRelayOwner({ releaseRing });
+        const readGuidance = await deps.readBackgroundServiceSetupGuidance({
           targetReleaseChannel,
           targetServerUrl: relayProfile.serverUrl,
           currentRelayOwner,
+          ...(serviceTarget ? { serviceTarget, offerDefaultReleaseChannelSwitch: false } : {}),
         });
+        guidance = readGuidance;
 
         const guidanceResult = await applyBackgroundServiceSetupGuidance({
-          guidance,
+          guidance: readGuidance,
           promptSwitchDefaultReleaseChannel: async () => {
             const answer = await ctx.prompt({
               kind: 'releaseChannel.switchDefaultForSetup',
               stepId: 'setup.thisComputer.preflight.releaseChannel',
-              message: formatBackgroundServiceReleaseChannelSwitchPrompt(guidance),
+              message: formatBackgroundServiceReleaseChannelSwitchPrompt(readGuidance),
               data: {
-                targetReleaseChannel: guidance.targetReleaseChannel,
-                currentDefaultReleaseChannel: guidance.currentDefaultReleaseChannel,
-                targetServerUrl: guidance.targetServerUrl,
-                managedReleaseChannels: guidance.managedReleaseChannels,
+                targetReleaseChannel: readGuidance.targetReleaseChannel,
+                currentDefaultReleaseChannel: readGuidance.currentDefaultReleaseChannel,
+                targetServerUrl: readGuidance.targetServerUrl,
+                managedReleaseChannels: readGuidance.managedReleaseChannels,
               },
             }) as { switchDefaultReleaseChannel?: boolean };
             return answer.switchDefaultReleaseChannel === true;
@@ -350,12 +487,12 @@ export function createSetupThisComputerInteractiveTaskKind(
             const answer = await ctx.prompt({
               kind: 'daemon.takeOverManualRelayRuntimeForSetup',
               stepId: 'setup.thisComputer.preflight.manualRelayTakeover',
-              message: formatBackgroundServiceManualRelayTakeoverPrompt(guidance),
+              message: formatBackgroundServiceManualRelayTakeoverPrompt(readGuidance),
               data: {
-                targetServerUrl: guidance.targetServerUrl,
-                targetReleaseChannel: guidance.targetReleaseChannel,
-                currentReleaseChannel: guidance.manualRelayOwner?.currentReleaseChannel ?? null,
-                currentCliVersion: guidance.manualRelayOwner?.currentCliVersion ?? null,
+                targetServerUrl: readGuidance.targetServerUrl,
+                targetReleaseChannel: readGuidance.targetReleaseChannel,
+                currentReleaseChannel: readGuidance.manualRelayOwner?.currentReleaseChannel ?? null,
+                currentCliVersion: readGuidance.manualRelayOwner?.currentCliVersion ?? null,
               },
             }) as { takeOverManualRelayRuntime?: boolean };
             return answer.takeOverManualRelayRuntime === true;
@@ -364,11 +501,11 @@ export function createSetupThisComputerInteractiveTaskKind(
             const answer = await ctx.prompt({
               kind: 'daemon.replaceLocalBackgroundServices',
               stepId: 'setup.thisComputer.preflight.serviceConflict',
-              message: formatBackgroundServiceReplacementPrompt(guidance),
+              message: formatBackgroundServiceReplacementPrompt(readGuidance),
               data: {
-                targetServerUrl: guidance.targetServerUrl,
-                targetReleaseChannel: guidance.targetReleaseChannel,
-                services: resolveBackgroundServiceSetupServicesRequiringReplacement(guidance),
+                targetServerUrl: readGuidance.targetServerUrl,
+                targetReleaseChannel: readGuidance.targetReleaseChannel,
+                services: resolveBackgroundServiceSetupServicesRequiringReplacement(readGuidance),
               },
             }) as { replaceExistingServices?: boolean };
             return answer.replaceExistingServices === true;
@@ -387,16 +524,10 @@ export function createSetupThisComputerInteractiveTaskKind(
           takeOverManualRelayRuntime: async () => {
             shouldTakeOverManualRelayRuntime = true;
           },
+          // The accepted replacement is applied by the install itself (`--replace-existing=all`),
+          // which removes only this target's conflicting services (R3-7).
           replaceExistingServices: async () => {
-            emitCommandDiagnostics(ctx, {
-              stepId: 'setup.thisComputer.preflight.serviceConflict',
-              message: `Running ${resolveCliInvokerNameForPublicRing(releaseRing ?? 'stable')} service uninstall --all --yes --json`,
-              diagnostics: {
-                command: resolveCliInvokerNameForPublicRing(releaseRing ?? 'stable'),
-                args: ['service', 'uninstall', '--all', '--yes', '--json'],
-              },
-            });
-            await deps.uninstallExistingDaemonServices({ releaseRing });
+            shouldReplaceExistingServices = true;
           },
         });
 
@@ -420,30 +551,49 @@ export function createSetupThisComputerInteractiveTaskKind(
       // through the `cli.pathExposure.*` kinds.
       const pathExposure = observePathExposure(deps.exposeHappierCliOnPath());
 
-      const recipeExecutor = createInstrumentedRecipeExecutor(
-        ctx,
-        { releaseRing, takeOverManualRelayRuntime: shouldTakeOverManualRelayRuntime },
-        deps.createRecipeExecutor({
-          releaseRing,
-          takeOverManualRelayRuntime: shouldTakeOverManualRelayRuntime,
-        }),
-      );
+      const settledGuidance = guidance;
 
       // The recipe configures the explicit relay before it reads auth status and pairs, so the
-      // terminal always targets the Home that is being approved.
-      const recipeResult = await runSetupMachineRecipe({
+      // terminal always targets the Home that is being approved. Each run builds its executor
+      // fresh, so a retry after a CLI replacement drives the new CLI.
+      const runRecipe = async () => await runSetupMachineRecipe({
         relayProfile,
-        executor: recipeExecutor,
+        ...(parsed.activeAccountId ? { expectedAccountId: parsed.activeAccountId } : {}),
+        executor: createInstrumentedRecipeExecutor(
+          ctx,
+          { releaseRing, takeOverManualRelayRuntime: shouldTakeOverManualRelayRuntime },
+          deps.createRecipeExecutor({
+            signal: ctx.signal,
+            releaseRing,
+            takeOverManualRelayRuntime: shouldTakeOverManualRelayRuntime,
+            ...(explicitRelayProfile ? { scopeToConfiguredServer: true, knownServerScope: profileScope } : {}),
+          }),
+        ),
         steps: {
           installService: parsed.installService,
           startService: parsed.startService,
           verifyService: parsed.verifyService,
         },
+        // One service policy for desktop and terminal setup (R3-6): the disposition owner decides
+        // install/start/restart from the observed service and whether this run paired.
+        ...(settledGuidance && parsed.startService !== false
+          ? {
+            serviceActions: ({ paired }: Readonly<{ paired: boolean }>) => resolveBackgroundServiceSetupReconciliationDisposition({
+              guidance: settledGuidance,
+              targetChanged: paired,
+              tookOverManualRelayRuntime: shouldTakeOverManualRelayRuntime,
+              replacedExistingServices: shouldReplaceExistingServices,
+              // The R12 answer given in this run is the consent to switch the service's CLI.
+              runtimeChanged: answeredCliChoice !== null,
+            }),
+          }
+          : {}),
         stepIds: {
           configureRelay: 'setup.thisComputer.configureRelay',
           authWait: 'setup.thisComputer.auth.wait',
           installService: 'setup.thisComputer.installService',
           startService: 'setup.thisComputer.startService',
+          restartService: 'setup.thisComputer.restartService',
           verifyService: 'setup.thisComputer.verifyService',
         },
         signal: ctx.signal,
@@ -484,6 +634,62 @@ export function createSetupThisComputerInteractiveTaskKind(
         daemonReadinessErrorMessage: 'Background service did not reach a ready state for the selected Relay.',
       });
 
+      // R12: the services this run does not converge itself, as they were before it touched any.
+      const servicesBeforeRun = answeredCliChoice && deps.cliChoice ? await deps.cliChoice.readServices() : null;
+
+      let recipeResult: Awaited<ReturnType<typeof runRecipe>>;
+      try {
+        recipeResult = await runRecipe();
+      } catch (error) {
+        // R3-3: a managed CLI that predates token-only pairing (or profile-scoped setup) is replaced
+        // by the newer CLI on its channel through the acquisition owner, and setup runs once more
+        // with it. The CLI's own answers are the capability proof: the retry fails by name again if
+        // the newer CLI still lacks it. Any other CLI is never replaced here.
+        const code = error instanceof SystemTaskExecutionError ? error.code : null;
+        const capabilityMissing = code === 'pairing_approval_unavailable' || code === 'cli_capability_missing';
+        if (capabilityMissing && cli.command && isKeptCliCommand(answeredCliChoice, cli.command)) {
+          // The person's own CLI is theirs to update (R12): name the command, replace nothing.
+          throw ownCliCannotServeSetupError(cli.command, null);
+        }
+        if (!capabilityMissing || cli.provenance !== 'managed') {
+          throw error;
+        }
+        ctx.emit({
+          type: 'progress',
+          stepId: 'setup.thisComputer.ensureCli',
+          message: 'Updating Happier tools for automatic pairing',
+        });
+        const upgraded = await deps.upgradeCliForTokenOnlyPairing({
+          releaseChannel: releaseRing,
+          signal: ctx.signal,
+          onProgress: reportCliAcquisitionProgress(ctx.emit),
+        });
+        if (!upgraded) throw error;
+        ctx.signal?.throwIfAborted();
+        recipeResult = await runRecipe();
+      }
+
+      if (servicesBeforeRun && deps.cliChoice) {
+        // One CLI per home and ring: every other service of this home follows the answer too, each
+        // at its own target; the one this run set up was converged by the recipe above.
+        const convergence = await deps.cliChoice.convergeServices({
+          signal: ctx.signal,
+          services: servicesBeforeRun,
+          releaseRing: releaseRing ?? 'stable',
+          exclude: profileScope
+            ? profileScope.serverId
+              ? { serverId: profileScope.serverId, targetMode: profileScope.targetMode }
+              : null
+            : { serverId: null, targetMode: 'default-following' },
+        });
+        if (convergence.failed.length > 0) {
+          throw new SystemTaskExecutionError(
+            'cli_choice_service_convergence_failed',
+            `This computer's background services could not all be moved to the chosen Happier CLI: ${convergence.failed.map((failure) => `${failure.label} (${failure.message})`).join('; ')}`,
+          );
+        }
+      }
+
       const machineId = recipeResult.machineId;
       if (!machineId) {
         throw new SystemTaskExecutionError(
@@ -505,6 +711,62 @@ export function createSetupThisComputerInteractiveTaskKind(
       return { machineId };
     },
   };
+}
+
+/**
+ * Asks R12's question when the inspection has one, and applies the answer's two writes. Returns the
+ * answer given in this run (`null` when nothing was asked). Every refusal happens before a write,
+ * except a kept CLI that cannot serve setup: that answer is the person's and is recorded, and setup
+ * then stops naming its update command — the question comes back until it can.
+ */
+async function askCliChoice(
+  ctx: InteractiveSystemTaskContext,
+  deps: SetupCliChoiceDeps,
+  params: Readonly<{ reconsider: boolean; reapplyRecorded: boolean }>,
+): Promise<HappierCliChoice | null> {
+  const { choice: recorded, question } = await deps.inspect(params.reconsider ? { reconsider: true } : {});
+  // Nothing to ask: only a recovery retry re-applies the recorded answer (no writes to the record).
+  if (!question) return params.reapplyRecorded ? recorded : null;
+  const answer = readSetupCliChoiceAnswer(await ctx.prompt({
+    kind: 'setup.cliChoice',
+    stepId: 'setup.thisComputer.cliChoice',
+    message: question.version
+      ? `Happier CLI ${question.version} is already installed at ${question.command}.`
+      : `A Happier CLI is already installed at ${question.command}.`,
+    data: question satisfies SetupCliChoicePromptData as SystemTaskJsonObject,
+  }));
+  if (answer === null) {
+    throw new SystemTaskExecutionError(
+      'cli_choice_unanswered',
+      'Setup stopped before changing anything: choose who manages the Happier command line to continue.',
+    );
+  }
+  if (answer === 'own' && question.keepBlockedBy) {
+    throw new SystemTaskExecutionError(
+      'cli_choice_unanswered',
+      `New terminals run Happier's CLI first through ${question.keepBlockedBy}, which Happier didn't add, so ${question.command} cannot be kept. Setup stopped before changing anything.`,
+    );
+  }
+  if (answer === 'own' && question.missing) {
+    throw new SystemTaskExecutionError(
+      'cli_own_missing',
+      `The Happier CLI this computer keeps is no longer at ${question.command}. Reinstall it, or let Happier manage the command line. Nothing was changed.`,
+    );
+  }
+  const choice: HappierCliChoice = answer === 'own' ? { mode: 'own', command: question.command } : { mode: 'managed' };
+  await deps.record(choice);
+  if (choice.mode === 'own') {
+    // The terminal keeps the person's CLI: take back only the lines Desktop wrote (INV5).
+    await deps.removePathExposure();
+    if (question.belowSetupFloor) {
+      throw ownCliCannotServeSetupError(question.command, question.version, question.updateCommand);
+    }
+  }
+  return choice;
+}
+
+function isKeptCliCommand(answered: HappierCliChoice | null, command: string): boolean {
+  return answered?.mode === 'own' && answered.command === command;
 }
 
 /**
@@ -549,9 +811,13 @@ function parseSetupThisComputerInteractiveParams(params: unknown): SetupThisComp
     activeRelayUrl?: string;
     activeWebappUrl?: string;
     activeLocalRelayUrl?: string | null;
+    activeServerIdentityId?: string;
+    activeAccountId?: string;
     installService?: boolean;
     startService?: boolean;
     verifyService?: boolean;
+    reconsiderCli?: boolean;
+    convergeCliChoice?: boolean;
   } = {
     surface: typeof record.surface === 'string' ? record.surface : undefined,
     target: typeof record.target === 'string' ? record.target : undefined,
@@ -591,6 +857,18 @@ function parseSetupThisComputerInteractiveParams(params: unknown): SetupThisComp
       ? null
       : String(record.activeLocalRelayUrl).trim() || null;
   }
+  if ('activeServerIdentityId' in record && record.activeServerIdentityId != null) {
+    if (typeof record.activeServerIdentityId !== 'string' || !record.activeServerIdentityId.trim()) {
+      throw new SystemTaskExecutionError('invalid_params', 'activeServerIdentityId must be a non-empty string when provided.');
+    }
+    parsed.activeServerIdentityId = record.activeServerIdentityId.trim();
+  }
+  if ('activeAccountId' in record && record.activeAccountId != null) {
+    if (typeof record.activeAccountId !== 'string' || !record.activeAccountId.trim()) {
+      throw new SystemTaskExecutionError('invalid_params', 'activeAccountId must be a non-empty string when provided.');
+    }
+    parsed.activeAccountId = record.activeAccountId.trim();
+  }
   if (parsed.activeRelayUrl && !parsed.activeWebappUrl) {
     throw new SystemTaskExecutionError('invalid_params', 'activeWebappUrl is required when activeRelayUrl is provided.');
   }
@@ -626,6 +904,18 @@ function parseSetupThisComputerInteractiveParams(params: unknown): SetupThisComp
     }
     parsed.verifyService = record.verifyService;
   }
+  if ('reconsiderCli' in record) {
+    if (typeof record.reconsiderCli !== 'boolean') {
+      throw new SystemTaskExecutionError('invalid_params', 'Expected reconsiderCli to be a boolean.');
+    }
+    parsed.reconsiderCli = record.reconsiderCli;
+  }
+  if ('convergeCliChoice' in record) {
+    if (typeof record.convergeCliChoice !== 'boolean') {
+      throw new SystemTaskExecutionError('invalid_params', 'Expected convergeCliChoice to be a boolean.');
+    }
+    parsed.convergeCliChoice = record.convergeCliChoice;
+  }
   return parsed;
 }
 
@@ -637,6 +927,7 @@ function resolveExplicitRelayProfile(params: SetupThisComputerInteractiveParams)
     serverUrl: params.activeRelayUrl,
     webappUrl: params.activeWebappUrl,
     localServerUrl: params.activeLocalRelayUrl ?? null,
+    ...(params.activeServerIdentityId ? { serverIdentityId: params.activeServerIdentityId } : {}),
   };
 }
 
@@ -645,27 +936,11 @@ function createSetupThisComputerInteractiveDeps(
 ): SetupThisComputerInteractiveDeps {
   return {
     readActiveRelayProfile: readLocalActiveRelayProfile,
-    readBackgroundServiceSetupGuidance: async ({ targetReleaseChannel, targetServerUrl, currentRelayOwner }) => readBackgroundServiceSetupGuidance({
-      targetReleaseChannel,
-      targetServerUrl,
-      currentRelayOwner,
+    readBackgroundServiceSetupGuidance: async (params) => readBackgroundServiceSetupGuidance({
+      ...params,
       mode: 'user',
     }),
-    readCurrentRelayOwner: async ({ releaseRing }) => {
-      const executor = createLocalHappierJsonExecutor({ releaseRing });
-      const parsed = await executor.runHappierJson(['service', 'status', '--json'], {
-        allowJsonFailure: true,
-      });
-      const owner = parsed && typeof parsed === 'object'
-        ? (parsed as { owner?: unknown }).owner
-        : null;
-      const normalized = readMachineDaemonOwnershipMetadataFromSocketAuth(owner);
-      return normalized.serviceManaged === undefined
-        && normalized.publicReleaseChannel === undefined
-        && normalized.cliVersion === undefined
-        ? null
-        : normalized;
-    },
+    readCurrentRelayOwner: readLocalCurrentRelayOwner,
     ...overrides,
   };
 }
@@ -696,6 +971,18 @@ export function createProductionSetupThisComputerInteractiveDeps(): Pick<
       return readLocalSetupCliAcquisition({ ...(releaseChannel ? { releaseRing: releaseChannel } : {}) });
     },
     createRecipeExecutor: createLocalSetupRecipeExecutor,
+    upgradeCliForTokenOnlyPairing: async ({ releaseChannel, signal, onProgress }) => {
+      const fact = readLocalCliUpdateFact({ ...(releaseChannel ? { releaseRing: releaseChannel } : {}) });
+      if (!fact?.managed || !fact.updateAvailable) return false;
+      const updated = await updateManagedLocalFirstPartyComponent({
+        componentId: 'happier-cli',
+        processEnv: process.env,
+        ...(releaseChannel ? { releaseRing: releaseChannel } : {}),
+        signal,
+        onProgress,
+      });
+      return updated.version !== updated.previousVersion;
+    },
     switchDefaultReleaseChannel: async (releaseChannel) => {
       await writeDefaultManagedReleaseChannel({
         processEnv: process.env,
@@ -707,9 +994,25 @@ export function createProductionSetupThisComputerInteractiveDeps(): Pick<
         processEnv: process.env,
       });
     },
-    uninstallExistingDaemonServices: async ({ releaseRing }) => {
-      const executor = createLocalHappierJsonExecutor({ releaseRing });
-      await executor.runHappierJson(['service', 'uninstall', '--all', '--yes', '--json']);
+    readServerProfileScope: readLocalServerProfileScopeForRelay,
+    cliChoice: {
+      inspect: async ({ reconsider }) => await inspectLocalHappierCliChoice({ processEnv: process.env, ...(reconsider ? { reconsider } : {}) }),
+      record: async (choice) => await writeHappierCliChoice({ choice, processEnv: process.env }),
+      removePathExposure: async () => {
+        const removed = await removeHappierCliPathExposure({ processEnv: process.env });
+        if (removed.failure) {
+          throw new SystemTaskExecutionError('cli_path_exposure_failed', removed.failure);
+        }
+      },
+      readServices: readCurrentHappierServices,
+      convergeServices: async ({ services, releaseRing, exclude, signal }) => await convergeHappierHomeServicesOntoCli({
+        // The resolver answers with the chosen CLI, so its own `service install` rewrites each launcher.
+        executor: createLocalHappierJsonExecutor({ releaseRing, signal }),
+        services,
+        happierHomeDir: resolveHappyHomeDirFromEnvironment(process.env),
+        releaseRing,
+        exclude,
+      }),
     },
     exposeHappierCliOnPath: async () => await ensureHappierCliPathExposure({
       binDir: resolveManagedCliBinDir(process.env),

@@ -1,5 +1,6 @@
 import { formatNotImplementedError } from '../../shared/bridge';
 import type { DesktopEventBus } from '../ipc/eventBus';
+import type { DesktopQuitLifecycle } from '../quitLifecycle';
 import { readStackBootCredentials } from './bootCredentials';
 import { HttpPluginState, registerHttpPluginCommands } from './httpPlugin';
 import { EVENT_PLUGIN_COMMANDS, isKnownTauriDesktopCommand } from './inventory';
@@ -44,14 +45,14 @@ function readStorageKey(args: CommandArgs): string | null {
 
 export type RegistryDependencies = Readonly<{
     eventBus: DesktopEventBus;
+    quitLifecycle: Pick<DesktopQuitLifecycle, 'finishShutdown' | 'rendererListening'>;
     /** Presents the main window, mirroring `desktop_show_main_window`. Returns whether it existed. */
     showMainWindow: () => boolean;
     /** Records the window mode the renderer asked for. */
     setWindowMode: (mode: WindowMode) => void;
-    /** Reads and writes the OS login-item state. Injected so the registry stays Electron-free. */
+    /** Writes the service-backed OS login item. Injected so the registry stays Electron-free. */
     autostart: Readonly<{
-        isEnabled: () => boolean;
-        setEnabled: (enabled: boolean) => boolean;
+        setEnabled: (enabled: boolean) => void;
     }>;
     secureStorage: Readonly<{
         read: (key: string) => Promise<string | null>;
@@ -98,7 +99,9 @@ export function createCommandRegistry(dependencies: RegistryDependencies): Comma
         if (eventName === null || callbackId === null) {
             throw new Error('plugin:event|listen requires an event name and a handler id');
         }
-        return dependencies.eventBus.listen(eventName, callbackId, context.sender);
+        const eventId = dependencies.eventBus.listen(eventName, callbackId, context.sender);
+        dependencies.quitLifecycle.rendererListening(eventName);
+        return eventId;
     });
 
     registry.set(EVENT_PLUGIN_COMMANDS.unlisten, (args) => {
@@ -121,6 +124,14 @@ export function createCommandRegistry(dependencies: RegistryDependencies): Comma
     registry.set(EVENT_PLUGIN_COMMANDS.emitTo, emitHandler);
 
     registry.set('desktop_show_main_window', () => dependencies.showMainWindow());
+
+    registry.set('desktop_finish_shutdown', (args) => {
+        if (args.outcome !== undefined && args.outcome !== 'menuBar') {
+            throw new Error('desktop_finish_shutdown requires an omitted outcome or menuBar');
+        }
+        dependencies.quitLifecycle.finishShutdown(args.outcome);
+        return null;
+    });
 
     registry.set('desktop_set_window_mode', (args) => {
         dependencies.setWindowMode(normalizeWindowMode(args.mode));
@@ -273,9 +284,19 @@ export function createCommandRegistry(dependencies: RegistryDependencies): Comma
         return true;
     });
 
-    registry.set('desktop_get_autostart_enabled', () => dependencies.autostart.isEnabled());
-
-    registry.set('desktop_set_autostart_enabled', (args) => dependencies.autostart.setEnabled(args.enabled === true));
+    // Electron currently consumes the shared login preference only; it has no native tray
+    // renderer. The UI owns this setting through the background services, never an app toggle.
+    registry.set('desktop_set_tray_state', (args) => {
+        const state = args.state;
+        if (!state || typeof state !== 'object' || Array.isArray(state)) {
+            throw new Error('desktop_set_tray_state requires state');
+        }
+        const mode = (state as Readonly<Record<string, unknown>>).serviceAutostart;
+        if (mode === 'at-login' || mode === 'on-demand') {
+            dependencies.autostart.setEnabled(mode === 'at-login');
+        }
+        return null;
+    });
 
     return registry;
 }

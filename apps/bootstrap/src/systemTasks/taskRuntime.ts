@@ -2,6 +2,8 @@ import { createHash } from 'node:crypto';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 
+import { resolveWindowsCommandInvocation } from '@happier-dev/cli-common/process';
+
 import {
   normalizePublicReleaseRingLabel,
   resolvePublicReleaseRingIdForLabel,
@@ -28,14 +30,18 @@ export async function runCommandCapture(params: Readonly<{
   command: string;
   args: readonly string[];
   env?: NodeJS.ProcessEnv;
-  timeoutMs?: number;
+  timeoutMs?: number | null;
   stdinText?: string;
   signal?: AbortSignal;
 }>): Promise<CommandExecutionResult> {
   params.signal?.throwIfAborted();
   return await new Promise((resolve, reject) => {
-    const child = spawn(params.command, [...params.args], {
+    // An npm `happier.cmd` shim (a CLI the person kept, R12) cannot be spawned directly on Windows;
+    // the process owner routes it through cmd.exe. A no-op off Windows and for real executables.
+    const invocation = resolveWindowsCommandInvocation({ command: params.command, args: [...params.args], env: params.env ?? process.env });
+    const child = spawn(invocation.command, invocation.args, {
       env: params.env,
+      windowsVerbatimArguments: invocation.windowsVerbatimArguments,
       stdio: [params.stdinText === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'],
     });
     if (params.stdinText !== undefined) {
@@ -45,7 +51,7 @@ export async function runCommandCapture(params: Readonly<{
     const stderrChunks: Buffer[] = [];
     let settled = false;
     const cleanup = (): void => {
-      clearTimeout(timeout);
+      if (timeout !== null) clearTimeout(timeout);
       params.signal?.removeEventListener('abort', onAbort);
     };
     const onAbort = (): void => {
@@ -55,7 +61,7 @@ export async function runCommandCapture(params: Readonly<{
       cleanup();
       reject(params.signal?.reason instanceof Error ? params.signal.reason : new DOMException('This operation was aborted', 'AbortError'));
     };
-    const timeout = setTimeout(() => {
+    const timeout = params.timeoutMs === null ? null : setTimeout(() => {
       if (settled) return;
       settled = true;
       child.kill('SIGTERM');

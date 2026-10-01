@@ -1,8 +1,12 @@
 import assert from 'node:assert/strict';
+import { EventEmitter } from 'node:events';
 import { test } from 'node:test';
+import type { App } from 'electron';
 
 import { isNotImplementedError, NOT_IMPLEMENTED_ERROR_PREFIX } from '../../shared/bridge';
 import { DesktopEventBus } from '../ipc/eventBus';
+import { createLoginItemWriter } from '../loginItem';
+import { DesktopQuitLifecycle } from '../quitLifecycle';
 import { TAURI_DESKTOP_COMMANDS } from './inventory';
 import { createCommandRegistry, describeNotImplemented, resolveWindowChromeStrategy, runCommand } from './registry';
 import type { CommandContext } from './types';
@@ -24,30 +28,52 @@ function createFakeSender(): FakeSender {
     };
 }
 
-function createHarness() {
+function createHarness(options: Readonly<{
+    platform?: NodeJS.Platform;
+    isPackaged?: boolean;
+    development?: boolean;
+    rejectLoginItemWrite?: boolean;
+}> = {}) {
     const eventBus = new DesktopEventBus();
     const shown: number[] = [];
     let autostartEnabled = false;
+    const loginItemWrites: Array<Readonly<{ openAtLogin: boolean }>> = [];
     const secureValues = new Map<string, string>();
     const irohStarts: unknown[] = [];
     const irohStops: string[] = [];
     const irohStatusReads: string[] = [];
     const systemTaskCalls: Array<readonly [string, ...unknown[]]> = [];
     const desktopFileCalls: Array<readonly [string, ...unknown[]]> = [];
+    const app = new EventEmitter();
+    let quitCalls = 0;
+    const quitLifecycle = new DesktopQuitLifecycle({
+        // Electron is the process boundary; keep the real quit owner and event bridge beneath it.
+        app: Object.assign(app, { quit: () => { quitCalls += 1; } }) as unknown as Pick<App, 'on' | 'quit'>,
+        eventBus,
+        ensureMainWindow: async () => {},
+        showMainWindow: () => { shown.push(1); },
+        shutdownForProcessExit: async () => {},
+    });
     const registry = createCommandRegistry({
         eventBus,
+        quitLifecycle,
         showMainWindow: () => {
             shown.push(1);
             return true;
         },
         setWindowMode: () => {},
-        autostart: {
-            isEnabled: () => autostartEnabled,
-            setEnabled: (enabled) => {
-                autostartEnabled = enabled;
-                return autostartEnabled;
+        autostart: createLoginItemWriter({
+            platform: options.platform ?? 'darwin',
+            isPackaged: options.isPackaged ?? true,
+            development: options.development ?? false,
+            api: {
+                getLoginItemSettings: () => ({ openAtLogin: autostartEnabled }),
+                setLoginItemSettings: (settings) => {
+                    loginItemWrites.push(settings);
+                    if (!options.rejectLoginItemWrite) autostartEnabled = settings.openAtLogin;
+                },
             },
-        },
+        }),
         secureStorage: {
             read: async (key) => secureValues.get(key) ?? null,
             write: async (key, value) => {
@@ -135,6 +161,10 @@ function createHarness() {
         irohStatusReads,
         systemTaskCalls,
         desktopFileCalls,
+        readAutostartEnabled: () => autostartEnabled,
+        loginItemWrites,
+        app,
+        readQuitCalls: () => quitCalls,
     };
 }
 
@@ -159,6 +189,46 @@ test('secure storage commands share the Tauri schema and roundtrip through the i
         kind: 'implemented',
         value: null,
     });
+});
+
+test('the shared renderer can finish a desktop shutdown through the registered command', async () => {
+    const { registry, context, app, readQuitCalls } = createHarness();
+    app.emit('before-quit', { preventDefault: () => {} });
+    assert.deepEqual(await runCommand(registry, 'desktop_finish_shutdown', {}, context), {
+        kind: 'implemented',
+        value: null,
+    });
+    assert.equal(readQuitCalls(), 1);
+});
+
+test('late quit-listener registration receives the pending handoff once and cancellation keeps the window', async () => {
+    const { registry, context, app, sender, shown, readQuitCalls } = createHarness();
+    app.emit('before-quit', { preventDefault: () => {} });
+    await Promise.resolve();
+    assert.deepEqual(sender.sent, []);
+    await runCommand(registry, 'plugin:event|listen', { event: 'desktop_app_exit_requested', handler: 17 }, context);
+    await runCommand(registry, 'plugin:event|listen', { event: 'desktop_app_exit_requested', handler: 18 }, context);
+    assert.deepEqual(sender.sent, [{
+        channel: 'happier-desktop:callback',
+        message: {
+            callbackId: 17,
+            payload: { event: 'desktop_app_exit_requested', id: 17, payload: { stopServices: false, menuBarSupported: false } },
+            once: false,
+        },
+    }]);
+    await runCommand(registry, 'desktop_finish_shutdown', { outcome: 'menuBar' }, context);
+    assert.equal(readQuitCalls(), 0);
+    assert.deepEqual(shown, [1]);
+    app.emit('before-quit', { preventDefault: () => {} });
+    await runCommand(registry, 'desktop_finish_shutdown', {}, context);
+    assert.equal(readQuitCalls(), 1);
+});
+
+test('an invalid shutdown outcome cannot authorize process exit', async () => {
+    const { registry, context, app, readQuitCalls } = createHarness();
+    app.emit('before-quit', { preventDefault: () => {} });
+    await assert.rejects(runCommand(registry, 'desktop_finish_shutdown', { outcome: 'exit' }, context));
+    assert.equal(readQuitCalls(), 0);
 });
 
 test('an unimplemented product command is reported as not-implemented, never as a value', async () => {
@@ -289,21 +359,77 @@ test('macOS keeps native traffic lights while other platforms get custom control
     assert.equal(resolveWindowChromeStrategy('linux'), 'custom-controls');
 });
 
-test('autostart reads back the value it was asked to set', async () => {
-    const { registry, context } = createHarness();
+test('login startup follows the shared service mode, never a second app preference', async () => {
+    const { registry, context, readAutostartEnabled, loginItemWrites } = createHarness();
+    assert.deepEqual(await runCommand(registry, 'desktop_set_tray_state', { state: { serviceAutostart: 'at-login' } }, context), {
+        kind: 'implemented', value: null,
+    });
+    assert.equal(readAutostartEnabled(), true);
+    await runCommand(registry, 'desktop_set_tray_state', { state: { serviceAutostart: null } }, context);
+    await runCommand(registry, 'desktop_set_tray_state', { state: {} }, context);
+    assert.equal(readAutostartEnabled(), true);
+    await runCommand(registry, 'desktop_set_tray_state', { state: { serviceAutostart: 'on-demand' } }, context);
+    assert.equal(readAutostartEnabled(), false);
+    assert.deepEqual(loginItemWrites, [{ openAtLogin: true }, { openAtLogin: false }]);
+    for (const command of ['desktop_get_autostart_enabled', 'desktop_set_autostart_enabled']) {
+        assert.deepEqual(await runCommand(registry, command, { enabled: true }, context), {
+            kind: 'not-implemented', command, known: false,
+        });
+    }
+});
 
-    assert.deepEqual(await runCommand(registry, 'desktop_get_autostart_enabled', {}, context), {
-        kind: 'implemented',
-        value: false,
-    });
-    assert.deepEqual(await runCommand(registry, 'desktop_set_autostart_enabled', { enabled: true }, context), {
-        kind: 'implemented',
-        value: true,
-    });
-    assert.deepEqual(await runCommand(registry, 'desktop_get_autostart_enabled', {}, context), {
-        kind: 'implemented',
-        value: true,
-    });
+test('development and unpackaged hosts never change the OS login item or report unsupported-platform notices', async (t) => {
+    const warnings: unknown[][] = [];
+    t.mock.method(console, 'warn', (...args: unknown[]) => { warnings.push(args); });
+    for (const options of [{ development: true }, { isPackaged: false }, { development: true, platform: 'linux' as const }]) {
+        const { registry, context, loginItemWrites, readAutostartEnabled } = createHarness(options);
+        await runCommand(registry, 'desktop_set_tray_state', { state: { serviceAutostart: 'at-login' } }, context);
+        assert.deepEqual(loginItemWrites, []);
+        assert.equal(readAutostartEnabled(), false);
+    }
+    assert.deepEqual(warnings, []);
+});
+
+test('Windows uses its existing normal launch rather than an unconsumed menu-bar argument', async () => {
+    const { registry, context, loginItemWrites } = createHarness({ platform: 'win32' });
+    await runCommand(registry, 'desktop_set_tray_state', { state: { serviceAutostart: 'at-login' } }, context);
+    assert.deepEqual(loginItemWrites, [{ openAtLogin: true }]);
+});
+
+test('repeated tray pushes write the OS login item once per successfully applied mode', async () => {
+    const { registry, context, loginItemWrites, readAutostartEnabled } = createHarness();
+    for (const serviceAutostart of ['at-login', 'at-login', null, 'at-login', 'on-demand', 'on-demand', null, 'on-demand', 'at-login']) {
+        await runCommand(registry, 'desktop_set_tray_state', { state: { serviceAutostart } }, context);
+    }
+    assert.deepEqual(loginItemWrites, [{ openAtLogin: true }, { openAtLogin: false }, { openAtLogin: true }]);
+    assert.equal(readAutostartEnabled(), true);
+});
+
+test('unsupported Linux login-item writes are a no-op with one named notice', async (t) => {
+    const warnings: unknown[][] = [];
+    t.mock.method(console, 'warn', (...args: unknown[]) => { warnings.push(args); });
+    const { registry, context, loginItemWrites } = createHarness({ platform: 'linux' });
+    for (const serviceAutostart of ['at-login', 'at-login', 'on-demand', 'on-demand']) {
+        assert.deepEqual(await runCommand(registry, 'desktop_set_tray_state', { state: { serviceAutostart } }, context), {
+            kind: 'implemented',
+            value: null,
+        });
+    }
+    assert.deepEqual(loginItemWrites, []);
+    assert.equal(warnings.length, 1);
+    assert.match(String(warnings[0]?.[0]), /desktop_login_item_unsupported_platform: linux/);
+});
+
+test('a login-item write that does not take effect stays a failure and is not cached as applied', async () => {
+    const { registry, context, readAutostartEnabled, loginItemWrites } = createHarness({ rejectLoginItemWrite: true });
+    for (let push = 0; push < 2; push += 1) {
+        await assert.rejects(
+            runCommand(registry, 'desktop_set_tray_state', { state: { serviceAutostart: 'at-login' } }, context),
+            /desktop_login_item_update_failed/,
+        );
+    }
+    assert.deepEqual(loginItemWrites, [{ openAtLogin: true }, { openAtLogin: true }]);
+    assert.equal(readAutostartEnabled(), false);
 });
 
 test('iroh commands share the exact Tauri names and route through the shared lifecycle service', async () => {
