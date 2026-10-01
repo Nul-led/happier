@@ -76,6 +76,9 @@ export type AgentSessionCapabilities = Readonly<{
     usageLimitRecovery?: Readonly<{
         checkNow: AgentSessionCapabilitySupportLevel;
     }>;
+    compaction?: Readonly<{
+        manual: AgentSessionCapabilitySupportLevel;
+    }>;
 }>;
 
 export type VendorResumeIdField =
